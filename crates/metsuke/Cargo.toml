@@ -1,0 +1,9 @@
+[package]
+name = "metsuke"
+description = "Telemetry agent sampling cardano-node metrics and uploading signed batches"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
