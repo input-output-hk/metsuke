@@ -1,10 +1,37 @@
-//! Every ingest limit an operator sets, in one struct. No field has a
-//! default: a missing limit is a deployment mistake, not a value to guess.
+//! Every value an operator sets, in one file's worth of structs. No field has
+//! a default: a missing limit is a deployment mistake, not a value to guess.
 
 use std::collections::HashSet;
+use std::path::PathBuf;
 
 use metsuke::envelope::PoolId;
 use serde::Deserialize;
+
+/// The whole config file: where to listen, where the two stores live, and the
+/// ingest limits under `[ingest]`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerConfig {
+    /// `host:port` to bind, plain HTTP (what fronts it: `http`).
+    pub listen: String,
+    /// The replay counter database (ADR 0002). Created if absent.
+    pub counters_path: PathBuf,
+    /// Root the filesystem archive writes under (`archive`).
+    pub archive_root: PathBuf,
+    pub ingest: IngestConfig,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("config does not parse: {0}")]
+    Toml(#[from] toml::de::Error),
+}
+
+impl ServerConfig {
+    pub fn from_toml(text: &str) -> Result<ServerConfig, ConfigError> {
+        Ok(toml::from_str(text)?)
+    }
+}
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -14,8 +41,8 @@ pub struct IngestConfig {
     /// cryptography runs.
     pub allowlist: HashSet<PoolId>,
     /// Cap on the compressed body. `intake` measures what it was handed;
-    /// refusing an oversized upload before reading it is the HTTP layer's
-    /// job (ticket metsuke-4zo.16).
+    /// `http::read_body` is what refuses an oversized upload before reading
+    /// it.
     pub max_body_bytes: u64,
     /// Ceiling the decompressor is allowed to inflate to.
     pub max_decompressed_bytes: u64,

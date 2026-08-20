@@ -1,5 +1,9 @@
 //! Helpers for the ingest tests: keys, an envelope, and the sealed form of
 //! one.
+//!
+//! Every test target compiles the whole module, so a helper only one of them
+//! needs reads as dead code in the others.
+#![allow(dead_code)]
 
 use metsuke::envelope::{
     self, Envelope, PoolId, SCHEMA_VERSION, Sample, Signature, SigningKey, VerifyingKey,
@@ -28,14 +32,19 @@ pub fn test_now() -> OffsetDateTime {
 }
 
 pub fn envelope_for(key: &SigningKey, counter: u64) -> Envelope {
+    envelope_at(key, counter, test_now())
+}
+
+/// An envelope stamped with a caller-chosen clock.
+pub fn envelope_at(key: &SigningKey, counter: u64, now: OffsetDateTime) -> Envelope {
     Envelope {
         schema_version: SCHEMA_VERSION,
         pool_id: pool_of(key),
         agent_version: metsuke::AGENT_VERSION.to_string(),
         counter,
-        timestamp: test_now(),
+        timestamp: now,
         samples: vec![Sample {
-            sampled_at: test_now(),
+            sampled_at: now,
             block_height: Some(12_345),
             slot: None,
             slot_in_epoch: None,
@@ -46,6 +55,11 @@ pub fn envelope_for(key: &SigningKey, counter: u64) -> Envelope {
             clock_offset_ms: None,
         }],
     }
+}
+
+/// Lowercase hex, as the vkey and signature headers carry it.
+pub fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// The wire bytes and signature a client would send for this envelope.

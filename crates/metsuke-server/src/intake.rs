@@ -84,6 +84,12 @@ impl<A: Archive> Intake<A> {
         }
     }
 
+    /// The body cap, so the HTTP layer refuses at the number this checks
+    /// against rather than holding a second copy of it.
+    pub fn max_body_bytes(&self) -> u64 {
+        self.config.max_body_bytes
+    }
+
     /// Run one submission through the chain. `now` is the server clock,
     /// taken once so every check in a submission judges the same instant.
     pub fn submit(
