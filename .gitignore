@@ -3,3 +3,4 @@
 /.pre-commit-config.yaml
 /.direnv
 /scratch
+/.claude/settings.local.json
