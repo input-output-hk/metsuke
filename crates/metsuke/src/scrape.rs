@@ -26,8 +26,8 @@ pub struct ScrapeConfig {
     pub max_body_bytes: u64,
 }
 
-/// Scrape once. `clock_offset_ms` stays null here — it comes from the SNTP
-/// probe, not the metrics endpoint. `sync_progress` also stays null: the
+/// Scrape once. `clock_offset_ms` stays null here — the sampler fills it
+/// from the SNTP probe. `sync_progress` also stays null: the
 /// Leios PrometheusSimple endpoint exposes no sync-progress metric (see the
 /// recorded fixtures), so v1 has nothing to fill it from.
 pub fn scrape(config: &ScrapeConfig) -> Sample {
