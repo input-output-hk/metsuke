@@ -1,6 +1,6 @@
 # 5. Archive stores the raw signed bytes; SQLite is a rebuildable index
 
-Status: accepted (2026-08-19)
+Status: accepted (2026-08-19), amended (2026-08-20)
 
 ## Context
 
@@ -12,9 +12,11 @@ signature gives us: the stored bytes are provably what the pool sent.
 
 Each accepted submission becomes one S3 object holding the zstd bytes exactly as
 received, keyed `v1/<pool_id>/<date>/<timestamp>-<counter>.json.zst`. Envelope
-metadata (signature, key, counter, schema version) is stored twice: as object
-metadata headers and as a SQLite row. SQLite serves queries and the download
-endpoint; the bucket alone is the source of truth.
+metadata (signature, key, counter, schema version) rides along as object metadata
+headers, so an object carries everything its own verification needs. SQLite
+indexes the bucket for whatever has to be queried — replay counters first,
+per-submission rows once an endpoint reads them — and the bucket alone is the
+source of truth.
 
 ## Consequences
 

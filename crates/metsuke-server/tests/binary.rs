@@ -4,12 +4,15 @@
 
 use std::io::{BufRead, BufReader, Read};
 use std::process::{Child, ChildStderr, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use metsuke::envelope::{
     Ack, Envelope, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, SigningKey,
 };
 use metsuke_server::archive::StoredSubmission;
+use metsuke_server::counters::CounterStore;
 use time::OffsetDateTime;
 
 mod support;
@@ -24,6 +27,13 @@ rate_limit_uploads = 100
 rate_limit_window_secs = 3600
 max_timestamp_skew_secs = 300
 "#;
+
+/// What the S3 archive reads its credentials from. Passed to every spawn, so
+/// the one test that asserts they are required can withhold them.
+const TEST_CREDENTIALS: [(&str, &str); 2] = [
+    ("AWS_ACCESS_KEY_ID", "test-key-id"),
+    ("AWS_SECRET_ACCESS_KEY", "test-secret"),
+];
 
 /// A spawned server, killed when the test drops it.
 struct Server {
@@ -50,6 +60,21 @@ impl Server {
         ingest: &str,
         archive_root: impl Fn(&std::path::Path) -> std::path::PathBuf,
     ) -> Server {
+        Server::start_archiving(allowed, ingest, &|dir| {
+            format!(
+                "kind = \"filesystem\"\nroot = \"{}\"",
+                archive_root(dir).display()
+            )
+        })
+    }
+
+    /// Spawn with a caller-written `[archive]` body, which is what lets a test
+    /// point the binary at an S3 endpoint it controls.
+    fn start_archiving(
+        allowed: &[PoolId],
+        ingest: &str,
+        archive: &dyn Fn(&std::path::Path) -> String,
+    ) -> Server {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("server.toml");
         let allowlist: Vec<String> = allowed
@@ -62,20 +87,23 @@ impl Server {
                 r#"
                 listen = "127.0.0.1:0"
                 counters_path = "{counters}"
-                archive_root = "{archive}"
+
+                [archive]
+                {archive}
 
                 [ingest]
                 allowlist = [{allowlist}]
                 {ingest}
                 "#,
                 counters = dir.path().join("counters.sqlite").display(),
-                archive = archive_root(dir.path()).display(),
+                archive = archive(dir.path()),
                 allowlist = allowlist.join(", "),
             ),
         )
         .unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_metsuke-server"))
             .args(["--config", config.to_str().unwrap()])
+            .envs(TEST_CREDENTIALS)
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
@@ -85,6 +113,39 @@ impl Server {
 
     fn archive_root(&self) -> std::path::PathBuf {
         self.dir.path().join("archive")
+    }
+
+    /// Kill the server, so what follows reads files nobody is writing.
+    fn stop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+
+    fn counters_path(&self) -> std::path::PathBuf {
+        self.dir.path().join("counters.sqlite")
+    }
+
+    /// Run a subcommand against this server's own config, as an operator would.
+    fn run(&self, command: &str) -> std::process::Output {
+        Command::new(env!("CARGO_BIN_EXE_metsuke-server"))
+            .args([
+                "--config",
+                self.dir.path().join("server.toml").to_str().unwrap(),
+                command,
+            ])
+            .envs(TEST_CREDENTIALS)
+            .output()
+            .unwrap()
+    }
+
+    fn rebuild_index(&self) -> String {
+        let output = self.run(metsuke_server::cli::REBUILD_INDEX);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
     }
 
     /// POST a sealed batch with the ADR-0001 headers. Returns the status and
@@ -297,6 +358,194 @@ fn a_failed_store_leaves_the_counter_unspent() {
     assert_eq!(server.post(&key, &envelope_now(&key, 1)).0, 503);
     // Same counter, and the only reason it can still fail is the archive.
     assert_eq!(server.post(&key, &envelope_now(&key, 1)).0, 503);
+}
+
+/// An S3 endpoint that refuses every request, standing in for a bucket the
+/// server cannot write to, with a count of what it was asked. Serves for the
+/// rest of the test binary.
+fn refusing_endpoint() -> (String, Arc<AtomicUsize>) {
+    let endpoint = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", endpoint.server_addr());
+    let refused = Arc::new(AtomicUsize::new(0));
+    std::thread::spawn({
+        let refused = Arc::clone(&refused);
+        move || {
+            for request in endpoint.incoming_requests() {
+                refused.fetch_add(1, Ordering::SeqCst);
+                let _ = request.respond(
+                    tiny_http::Response::from_string("InternalError").with_status_code(500),
+                );
+            }
+        }
+    });
+    (url, refused)
+}
+
+fn s3_archive(endpoint: &str, put_retries: u32) -> String {
+    format!(
+        r#"kind = "s3"
+        bucket = "metsuke-test"
+        region = "test-region"
+        endpoint = "{endpoint}"
+        request_timeout_secs = 5
+        put_retries = {put_retries}"#
+    )
+}
+
+/// The S3 archive on the ingest path: a PUT that will not land, retried as
+/// configured, must reach the client as 503 with the counter unspent, or the
+/// agent acks samples the bucket never took (ADR 0004).
+#[test]
+fn an_s3_put_that_fails_after_its_retry_answers_503_and_spends_no_counter() {
+    let key = test_key();
+    let (endpoint, refused) = refusing_endpoint();
+    let server = Server::start_archiving(&[pool_of(&key)], PERMISSIVE_INGEST, &|_| {
+        s3_archive(&endpoint, 1)
+    });
+    let (status, reason) = server.post(&key, &envelope_now(&key, 1));
+    assert_eq!(status, 503, "{reason}");
+    assert_eq!(
+        refused.load(Ordering::SeqCst),
+        2,
+        "the PUT and its one configured retry must both have been attempted"
+    );
+    // The same counter again: the only reason it can still fail is the bucket.
+    assert_eq!(server.post(&key, &envelope_now(&key, 1)).0, 503);
+}
+
+#[test]
+fn verify_archive_on_a_filesystem_archive_exits_nonzero() {
+    let key = test_key();
+    let mut server = Server::start(&[pool_of(&key)], PERMISSIVE_INGEST);
+    assert_eq!(server.post(&key, &envelope_now(&key, 1)).0, 200);
+    server.stop();
+
+    let output = server.run(metsuke_server::cli::VERIFY_ARCHIVE);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no metadata"), "{stderr}");
+}
+
+/// Two subcommands in one invocation: one would silently win, and the operator
+/// would believe the other ran.
+#[test]
+fn two_subcommands_are_refused_naming_both() {
+    let output = Command::new(env!("CARGO_BIN_EXE_metsuke-server"))
+        .args([
+            metsuke_server::cli::REBUILD_INDEX,
+            metsuke_server::cli::VERIFY_ARCHIVE,
+        ])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(metsuke_server::cli::REBUILD_INDEX)
+            && stderr.contains(metsuke_server::cli::VERIFY_ARCHIVE),
+        "{stderr}"
+    );
+}
+
+/// An empty bucket verified nothing, so it must not exit zero: that code is
+/// what a monitor reads as "the corpus is intact".
+#[test]
+fn verify_archive_on_an_empty_bucket_exits_nonzero() {
+    let key = test_key();
+    let endpoint = empty_bucket_endpoint();
+    let server = Server::start_archiving(&[pool_of(&key)], PERMISSIVE_INGEST, &|_| {
+        s3_archive(&endpoint, 0)
+    });
+    let output = server.run(metsuke_server::cli::VERIFY_ARCHIVE);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("no objects"), "{stderr}");
+}
+
+/// An endpoint answering a valid listing of an empty bucket.
+fn empty_bucket_endpoint() -> String {
+    let endpoint = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", endpoint.server_addr());
+    std::thread::spawn(move || {
+        for request in endpoint.incoming_requests() {
+            let _ = request.respond(tiny_http::Response::from_string(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+    <Name>metsuke-test</Name>
+    <IsTruncated>false</IsTruncated>
+    <EncodingType>url</EncodingType>
+</ListBucketResult>"#
+                    .to_string(),
+            ));
+        }
+    });
+    url
+}
+
+#[test]
+fn verify_archive_fails_when_the_bucket_cannot_be_listed() {
+    let key = test_key();
+    let (endpoint, _) = refusing_endpoint();
+    let server = Server::start_archiving(&[pool_of(&key)], PERMISSIVE_INGEST, &|_| {
+        s3_archive(&endpoint, 0)
+    });
+    let output = server.run(metsuke_server::cli::VERIFY_ARCHIVE);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("500"), "{stderr}");
+}
+
+/// Credentials come from the environment, so a server configured for S3
+/// without them must refuse to start rather than serve 503s.
+#[test]
+fn an_s3_archive_without_credentials_exits_nonzero_naming_them() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("server.toml");
+    std::fs::write(
+        &config,
+        format!(
+            r#"
+            listen = "127.0.0.1:0"
+            counters_path = "{counters}"
+
+            [archive]
+            {archive}
+
+            [ingest]
+            allowlist = ["{pool}"]
+            {PERMISSIVE_INGEST}
+            "#,
+            counters = dir.path().join("counters.sqlite").display(),
+            archive = s3_archive("http://127.0.0.1:9", 0),
+            pool = pool_of(&test_key()).to_bech32(),
+        ),
+    )
+    .unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_metsuke-server"))
+        .args(["--config", config.to_str().unwrap()])
+        .env_remove("AWS_ACCESS_KEY_ID")
+        .env_remove("AWS_SECRET_ACCESS_KEY")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("AWS_ACCESS_KEY_ID"), "{stderr}");
+}
+
+#[test]
+fn rebuild_index_restores_the_counter_state_from_the_archive() {
+    let key = test_key();
+    let mut server = Server::start(&[pool_of(&key)], PERMISSIVE_INGEST);
+    assert_eq!(server.post(&key, &envelope_now(&key, 7)).0, 200);
+    server.stop();
+    std::fs::remove_file(server.counters_path()).unwrap();
+
+    let summary = server.rebuild_index();
+    assert!(
+        summary.contains("1 objects") && summary.contains(&pool_of(&key).to_bech32()),
+        "got: {summary}"
+    );
+    let counters = CounterStore::open(&server.counters_path()).unwrap();
+    assert_eq!(counters.last_counter(pool_of(&key)).unwrap(), Some(7));
 }
 
 #[test]

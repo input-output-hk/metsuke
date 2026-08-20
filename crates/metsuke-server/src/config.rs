@@ -16,9 +16,33 @@ pub struct ServerConfig {
     pub listen: String,
     /// The replay counter database (ADR 0002). Created if absent.
     pub counters_path: PathBuf,
-    /// Root the filesystem archive writes under (`archive`).
-    pub archive_root: PathBuf,
+    pub archive: ArchiveConfig,
     pub ingest: IngestConfig,
+}
+
+/// Where accepted submissions go. S3 is what production runs (ADR 0005).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ArchiveConfig {
+    Filesystem { root: PathBuf },
+    S3(S3Config),
+}
+
+/// The bucket and how long the server waits on it. Credentials are not here —
+/// they come from the process environment, which is what keeps this file
+/// Nix-managed and public.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct S3Config {
+    pub bucket: String,
+    pub region: String,
+    /// Endpoint URL, bucket name excluded: the AWS regional endpoint in
+    /// production, a Garage or MinIO address in a test.
+    pub endpoint: String,
+    /// Deadline for one S3 request, and how long a signed URL stays usable.
+    pub request_timeout_secs: u64,
+    /// Extra PUT attempts after the first.
+    pub put_retries: u32,
 }
 
 #[derive(Debug, thiserror::Error)]

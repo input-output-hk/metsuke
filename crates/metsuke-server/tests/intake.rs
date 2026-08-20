@@ -315,6 +315,10 @@ impl Archive for UnavailableArchive {
             source: std::io::Error::other("archive is down"),
         })
     }
+
+    fn list_keys(&self) -> Result<Vec<String>, ArchiveError> {
+        unreachable!("the intake never lists")
+    }
 }
 
 // A store that cannot store is the server's failure, not the client's: it

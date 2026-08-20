@@ -9,6 +9,9 @@ pub mod counters;
 pub mod http;
 pub mod intake;
 pub mod ratelimit;
+pub mod rebuild;
+pub mod s3;
+pub mod verify;
 
 /// sd-daemon severity prefixes journald parses off stderr.
 pub const ERR: &str = "<3>";

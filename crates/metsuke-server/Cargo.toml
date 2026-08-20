@@ -10,15 +10,23 @@ repository.workspace = true
 [dependencies]
 metsuke = { path = "../metsuke" }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+# Request signing and listing only: the transport is ureq, so no async
+# runtime enters the server.
+rusty-s3 = { version = "0.10.2", default-features = false, features = [
+  "rustcrypto",
+  "xml",
+] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.20"
 time = "0.3.55"
 tiny_http = { version = "0.12.0", default-features = false }
 toml = "0.9.8"
+# TLS included: the bucket is reached over HTTPS.
+ureq = "3.4.0"
+url = "2.5.8"
 
 [dev-dependencies]
 proptest = "1.11.0"
 tempfile = "3.27.0"
-ureq = { version = "3.4.0", default-features = false }
 zstd = "0.13.3"

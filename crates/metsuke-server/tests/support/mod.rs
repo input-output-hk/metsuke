@@ -26,6 +26,9 @@ pub fn pool_of(key: &SigningKey) -> PoolId {
     PoolId::from_cold_key(&key.verifying_key())
 }
 
+/// A decompression ceiling wide enough that no test payload reaches it.
+pub const MAX_DECOMPRESSED_BYTES: u64 = 4 * 1024 * 1024;
+
 /// The clock every test judges against; envelopes are stamped with it.
 pub fn test_now() -> OffsetDateTime {
     OffsetDateTime::from_unix_timestamp(1_755_000_000).unwrap()
@@ -87,7 +90,7 @@ pub fn permissive_config(allowed: &[PoolId]) -> IngestConfig {
     IngestConfig {
         allowlist: allowed.iter().copied().collect(),
         max_body_bytes: 1024 * 1024,
-        max_decompressed_bytes: 4 * 1024 * 1024,
+        max_decompressed_bytes: MAX_DECOMPRESSED_BYTES,
         rate_limit_uploads: 100,
         rate_limit_window_secs: 3600,
         max_timestamp_skew_secs: 300,
