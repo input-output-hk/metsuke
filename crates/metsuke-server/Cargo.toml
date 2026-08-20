@@ -1,9 +1,11 @@
 [package]
 name = "metsuke-server"
 description = "Ingest server verifying and storing signed telemetry submissions"
-version.workspace = true
+version = "0.1.0"
+publish = false
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
+metsuke = { path = "../metsuke" }

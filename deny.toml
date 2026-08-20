@@ -16,6 +16,9 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Unpublished workspace crates reference each other by path alone; a version
+# requirement there would re-couple the independently versioned crates (ADR 0006).
+allow-wildcard-paths = true
 
 [sources]
 unknown-registry = "deny"

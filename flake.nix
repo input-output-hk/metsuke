@@ -100,6 +100,9 @@
             };
           };
 
+          # The sandboxed hook run cannot vendor crates for clippy; checks.clippy
+          # and checks.treefmt already cover both hooks hermetically.
+          pre-commit.check.enable = false;
           pre-commit.settings.hooks = {
             treefmt.enable = true;
             clippy = {
