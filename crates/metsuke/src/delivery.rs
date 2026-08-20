@@ -12,6 +12,9 @@ use crate::spool::{Spool, SpoolError};
 pub struct Delivery {
     spool: Spool,
     key: SigningKey,
+    /// From config, not derived from `key`: a Calidus key's hash is not the
+    /// pool id (ADR 0003).
+    pool_id: PoolId,
     /// zstd level passed to `seal` (0 = zstd's default).
     compression_level: i32,
 }
@@ -35,10 +38,11 @@ pub enum DeliveryError {
 }
 
 impl Delivery {
-    pub fn new(spool: Spool, key: SigningKey, compression_level: i32) -> Self {
+    pub fn new(spool: Spool, key: SigningKey, pool_id: PoolId, compression_level: i32) -> Self {
         Delivery {
             spool,
             key,
+            pool_id,
             compression_level,
         }
     }
@@ -64,7 +68,7 @@ impl Delivery {
         let (ids, samples) = rows.into_iter().map(|row| (row.id, row.sample)).unzip();
         let batch = Envelope {
             schema_version: SCHEMA_VERSION,
-            pool_id: PoolId::from_cold_key(&self.key.verifying_key()),
+            pool_id: self.pool_id,
             agent_version: env!("CARGO_PKG_VERSION").to_string(),
             counter,
             timestamp: now,

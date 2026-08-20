@@ -14,6 +14,19 @@ pub use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 /// bumps this without breaking v1 clients.
 pub const SCHEMA_VERSION: u32 = 1;
 
+/// Upload request headers (ADR 0001): pool id as bech32, verification key
+/// and detached signature as lowercase hex over the body bytes as sent.
+pub const HEADER_POOL_ID: &str = "x-metsuke-pool-id";
+pub const HEADER_VKEY: &str = "x-metsuke-vkey";
+pub const HEADER_SIGNATURE: &str = "x-metsuke-signature";
+
+/// The server's answer to an accepted upload. `latest_version` is the
+/// client-crate version embedded at server build (ADR 0006).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Ack {
+    pub latest_version: String,
+}
+
 /// A pool id: the blake2b-224 hash of the pool's cold verification key,
 /// bech32 `pool1…` on the wire. The only constructors validate, so a held
 /// `PoolId` is always a real 28-byte hash.

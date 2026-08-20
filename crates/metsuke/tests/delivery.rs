@@ -30,7 +30,12 @@ fn temp_delivery(dir: &tempfile::TempDir, key: &SigningKey) -> Delivery {
         max_samples: 100,
     })
     .unwrap();
-    Delivery::new(spool, key.clone(), 0)
+    Delivery::new(
+        spool,
+        key.clone(),
+        PoolId::from_cold_key(&key.verifying_key()),
+        0,
+    )
 }
 
 // The whole loop contract: what was pushed comes out as a batch the server's

@@ -1,0 +1,44 @@
+# metsuke agent configuration. Copy to /etc/metsuke/config.toml and set the
+# three required values; every commented line shows a default (pinned to the
+# code by a test — see crates/metsuke/tests/config.rs).
+
+# Required: your pool id, bech32.
+pool_id = "pool1CHANGEME"
+
+# Required: the node's loopback PrometheusSimple endpoint.
+metrics_url = "http://127.0.0.1:12798/metrics"
+
+# Required: the metsuke-server submission endpoint.
+upload_url = "https://metsuke.example.org/v1/submit"
+
+# Path to the signing key (cardano-cli TextEnvelope: pool.skey or
+# pool.calidus.skey). The --signing-key flag overrides this; with systemd
+# LoadCredential, leave it unset and pass
+# --signing-key "${CREDENTIALS_DIRECTORY}/signing-key".
+# signing_key = "/etc/metsuke/pool.skey"
+
+# Cadences: sampling and uploading are independent.
+# sample_interval_secs = 300
+# upload_interval_secs = 3600
+
+# SNTP clock-offset probe: servers tried in order, per-server timeout.
+# sntp_servers = ["time.cloudflare.com:123"]
+# sntp_timeout_secs = 5
+
+# SQLite spool: samples wait here until the server acks them. Oldest rows
+# beyond spool_max_samples are dropped.
+# spool_path = "/var/lib/metsuke/spool.sqlite"
+# spool_max_samples = 100000
+
+# Scrape limits.
+# scrape_timeout_secs = 5
+# scrape_max_body_bytes = 4194304
+
+# Upload limits: request deadline, retry jitter bound after server/network
+# failures, and the clamp on the rejection backoff.
+# upload_timeout_secs = 60
+# upload_jitter_max_secs = 300
+# upload_backoff_max_secs = 86400
+
+# zstd level for the upload body (0 = zstd's default).
+# compression_level = 0
