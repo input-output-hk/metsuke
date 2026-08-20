@@ -11,12 +11,13 @@ use std::time::Duration;
 use metsuke::envelope::{
     Ack, Envelope, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, SigningKey,
 };
-use metsuke_server::archive::StoredSubmission;
 use metsuke_server::counters::CounterStore;
 use time::OffsetDateTime;
 
 mod support;
-use support::{envelope_at, hex, other_key, pool_of, seal, test_key};
+use support::{
+    envelope_at, example_s3_archive, hex, other_key, pool_of, seal, stored_submission, test_key,
+};
 
 /// Limits wide enough that no check fires on its own. A test exercising one
 /// of them passes its own `[ingest]` body instead.
@@ -127,12 +128,16 @@ impl Server {
 
     /// Run a subcommand against this server's own config, as an operator would.
     fn run(&self, command: &str) -> std::process::Output {
+        self.run_with(&[command])
+    }
+
+    fn run_with(&self, args: &[&str]) -> std::process::Output {
         Command::new(env!("CARGO_BIN_EXE_metsuke-server"))
             .args([
                 "--config",
                 self.dir.path().join("server.toml").to_str().unwrap(),
-                command,
             ])
+            .args(args)
             .envs(TEST_CREDENTIALS)
             .output()
             .unwrap()
@@ -250,15 +255,13 @@ fn a_sealed_batch_is_acked_and_archived_byte_for_byte() {
     assert_eq!(ack.latest_version, metsuke::AGENT_VERSION);
 
     let (wire_bytes, signature) = seal(&key, &envelope);
-    let stored = StoredSubmission {
-        pool_id: envelope.pool_id,
-        counter: envelope.counter,
-        timestamp: envelope.timestamp,
-        schema_version: envelope.schema_version,
-        vkey: key.verifying_key(),
+    let stored = stored_submission(
+        &key,
+        envelope.counter,
+        envelope.timestamp,
         signature,
-        wire_bytes: &wire_bytes,
-    };
+        &wire_bytes,
+    );
     let object = server.archive_root().join(stored.object_key());
     assert_eq!(
         std::fs::read(&object).unwrap(),
@@ -381,17 +384,6 @@ fn refusing_endpoint() -> (String, Arc<AtomicUsize>) {
     (url, refused)
 }
 
-fn s3_archive(endpoint: &str, put_retries: u32) -> String {
-    format!(
-        r#"kind = "s3"
-        bucket = "metsuke-test"
-        region = "test-region"
-        endpoint = "{endpoint}"
-        request_timeout_secs = 5
-        put_retries = {put_retries}"#
-    )
-}
-
 /// The S3 archive on the ingest path: a PUT that will not land, retried as
 /// configured, must reach the client as 503 with the counter unspent, or the
 /// agent acks samples the bucket never took (ADR 0004).
@@ -400,7 +392,7 @@ fn an_s3_put_that_fails_after_its_retry_answers_503_and_spends_no_counter() {
     let key = test_key();
     let (endpoint, refused) = refusing_endpoint();
     let server = Server::start_archiving(&[pool_of(&key)], PERMISSIVE_INGEST, &|_| {
-        s3_archive(&endpoint, 1)
+        example_s3_archive(&endpoint, 1)
     });
     let (status, reason) = server.post(&key, &envelope_now(&key, 1));
     assert_eq!(status, 503, "{reason}");
@@ -453,7 +445,7 @@ fn verify_archive_on_an_empty_bucket_exits_nonzero() {
     let key = test_key();
     let endpoint = empty_bucket_endpoint();
     let server = Server::start_archiving(&[pool_of(&key)], PERMISSIVE_INGEST, &|_| {
-        s3_archive(&endpoint, 0)
+        example_s3_archive(&endpoint, 0)
     });
     let output = server.run(metsuke_server::cli::VERIFY_ARCHIVE);
     assert!(!output.status.success());
@@ -486,7 +478,7 @@ fn verify_archive_fails_when_the_bucket_cannot_be_listed() {
     let key = test_key();
     let (endpoint, _) = refusing_endpoint();
     let server = Server::start_archiving(&[pool_of(&key)], PERMISSIVE_INGEST, &|_| {
-        s3_archive(&endpoint, 0)
+        example_s3_archive(&endpoint, 0)
     });
     let output = server.run(metsuke_server::cli::VERIFY_ARCHIVE);
     assert!(!output.status.success());
@@ -515,7 +507,7 @@ fn an_s3_archive_without_credentials_exits_nonzero_naming_them() {
             {PERMISSIVE_INGEST}
             "#,
             counters = dir.path().join("counters.sqlite").display(),
-            archive = s3_archive("http://127.0.0.1:9", 0),
+            archive = example_s3_archive("http://127.0.0.1:9", 0),
             pool = pool_of(&test_key()).to_bech32(),
         ),
     )
@@ -546,6 +538,72 @@ fn rebuild_index_restores_the_counter_state_from_the_archive() {
     );
     let counters = CounterStore::open(&server.counters_path()).unwrap();
     assert_eq!(counters.last_counter(pool_of(&key)).unwrap(), Some(7));
+}
+
+/// Refused as misplaced, not as unknown: the usage text carries the flag name
+/// too, so only `ArgsError::AllowEmptyWithoutRebuild`'s own words tell the two
+/// refusals apart.
+#[test]
+fn allow_empty_without_rebuild_index_is_refused() {
+    let key = test_key();
+    let server = Server::start(&[pool_of(&key)], PERMISSIVE_INGEST);
+    for args in [
+        vec![metsuke_server::cli::ALLOW_EMPTY],
+        vec![
+            metsuke_server::cli::VERIFY_ARCHIVE,
+            metsuke_server::cli::ALLOW_EMPTY,
+        ],
+    ] {
+        let output = server.run_with(&args);
+        assert!(!output.status.success(), "{args:?} must be refused");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("only means anything to"),
+            "{args:?}: {stderr}"
+        );
+    }
+}
+
+/// `rebuild::EmptyArchive` reached from the command line, both ways.
+#[test]
+fn rebuild_index_on_an_archive_with_nothing_in_it_exits_nonzero() {
+    let key = test_key();
+    let mut server = Server::start(&[pool_of(&key)], PERMISSIVE_INGEST);
+    server.stop();
+
+    let output = server.run(metsuke_server::cli::REBUILD_INDEX);
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("no objects") && stderr.contains(metsuke_server::cli::ALLOW_EMPTY),
+        "{stderr}"
+    );
+    // Which archive listed nothing is the whole question the operator is being
+    // asked to answer.
+    assert!(
+        stderr.contains(server.archive_root().to_str().unwrap()),
+        "{stderr}"
+    );
+
+    // Either order, as `Args::parse` claims.
+    for args in [
+        [
+            metsuke_server::cli::REBUILD_INDEX,
+            metsuke_server::cli::ALLOW_EMPTY,
+        ],
+        [
+            metsuke_server::cli::ALLOW_EMPTY,
+            metsuke_server::cli::REBUILD_INDEX,
+        ],
+    ] {
+        let output = server.run_with(&args);
+        assert!(
+            output.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("0 objects"));
+    }
 }
 
 #[test]

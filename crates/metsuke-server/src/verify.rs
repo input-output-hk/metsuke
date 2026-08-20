@@ -3,7 +3,7 @@
 
 use metsuke::envelope::{self, Envelope, PoolId, SCHEMA_VERSION};
 
-use crate::archive::{Archive, ArchiveError, Fetch, FetchedObject, ObjectName};
+use crate::archive::{ArchiveError, Fetch, FetchedObject, List, ObjectName};
 
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyError {
@@ -132,12 +132,14 @@ pub enum AuditError {
 /// otherwise report a clean bucket it never looked at. One object that cannot
 /// be read or does not verify does not: the point is to find all of them.
 pub fn audit(
-    archive: &(impl Archive + Fetch),
+    archive: &(impl List + Fetch),
     max_decompressed_bytes: u64,
 ) -> Result<Audit, AuditError> {
     let mut verified = 0;
     let mut failures = Vec::new();
-    for key in archive.list_keys()? {
+    // The whole listing first: fetching inside the visitor would hold the
+    // listing open for as long as re-verifying the bucket takes.
+    for key in archive.keys()? {
         match archive.fetch(&key) {
             Err(error) => failures.push(AuditFailure::Unreadable {
                 key,

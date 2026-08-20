@@ -3,7 +3,7 @@
 //! rejecting on its own with its own reason.
 
 use metsuke::envelope::{Envelope, PoolId, SCHEMA_VERSION, SigningKey};
-use metsuke_server::archive::{Archive, ArchiveError, FilesystemArchive, StoredSubmission};
+use metsuke_server::archive::FilesystemArchive;
 use metsuke_server::config::IngestConfig;
 use metsuke_server::counters::CounterStore;
 use metsuke_server::intake::{IngestError, Intake, Rejection};
@@ -11,14 +11,15 @@ use time::OffsetDateTime;
 
 mod support;
 use support::{
-    envelope_for, other_key, permissive_config, pool_of, seal, submission, test_key, test_now,
+    FailingArchive, counter_store, envelope_for, nonzero_u32, nonzero_u64, other_key,
+    permissive_config, pool_of, seal, stored_submission, submission, test_key, test_now,
 };
 
 /// An intake wired to a temporary directory and database, ready to submit
 /// to. The directory is returned because dropping it deletes the archive.
 fn intake_with(config: IngestConfig) -> (Intake<FilesystemArchive>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let counters = CounterStore::open(&dir.path().join("counters.sqlite")).unwrap();
+    let counters = counter_store(dir.path());
     let archive = FilesystemArchive::new(&dir.path().join("archive"));
     (Intake::new(config, counters, archive), dir)
 }
@@ -64,16 +65,8 @@ fn valid_submission_is_archived_raw_and_acked() {
         .unwrap();
 
     assert_eq!(ack.latest_version, metsuke::AGENT_VERSION);
-    let key_path = StoredSubmission {
-        pool_id: envelope.pool_id,
-        counter: envelope.counter,
-        timestamp: envelope.timestamp,
-        schema_version: envelope.schema_version,
-        vkey: key.verifying_key(),
-        signature,
-        wire_bytes: &body,
-    }
-    .object_key();
+    let key_path = stored_submission(&key, envelope.counter, envelope.timestamp, signature, &body)
+        .object_key();
     let stored = std::fs::read(dir.path().join("archive").join(&key_path)).unwrap();
     assert_eq!(stored, body, "archived object must be the received bytes");
 }
@@ -96,7 +89,7 @@ fn unknown_pool_is_rejected() {
 fn second_upload_in_the_window_is_rate_limited() {
     let key = test_key();
     let config = IngestConfig {
-        rate_limit_uploads: 1,
+        rate_limit_uploads: nonzero_u32(1),
         ..permissive_config(&[pool_of(&key)])
     };
     let (mut intake, _dir) = intake_with(config);
@@ -160,7 +153,7 @@ fn tampered_body_is_rejected() {
 fn unsigned_bomb_is_rejected_before_it_is_decompressed() {
     let key = test_key();
     let config = IngestConfig {
-        max_decompressed_bytes: 1024,
+        max_decompressed_bytes: nonzero_u64(1024),
         ..permissive_config(&[pool_of(&key)])
     };
     let (mut intake, _dir) = intake_with(config);
@@ -187,7 +180,7 @@ fn unsigned_bomb_is_rejected_before_it_is_decompressed() {
 fn payload_over_the_decompression_ceiling_is_rejected() {
     let key = test_key();
     let config = IngestConfig {
-        max_decompressed_bytes: 512,
+        max_decompressed_bytes: nonzero_u64(512),
         ..permissive_config(&[pool_of(&key)])
     };
     let (mut intake, _dir) = intake_with(config);
@@ -207,7 +200,7 @@ fn payload_over_the_decompression_ceiling_is_rejected() {
 fn oversized_body_is_rejected() {
     let key = test_key();
     let config = IngestConfig {
-        max_body_bytes: 16,
+        max_body_bytes: nonzero_u64(16),
         ..permissive_config(&[pool_of(&key)])
     };
     let (mut intake, _dir) = intake_with(config);
@@ -305,22 +298,6 @@ fn timestamp_outside_the_window_is_rejected() {
     }
 }
 
-/// An archive that always fails, standing in for S3 being unreachable.
-struct UnavailableArchive;
-
-impl Archive for UnavailableArchive {
-    fn store(&self, submission: &StoredSubmission<'_>) -> Result<(), ArchiveError> {
-        Err(ArchiveError::Io {
-            key: submission.object_key(),
-            source: std::io::Error::other("archive is down"),
-        })
-    }
-
-    fn list_keys(&self) -> Result<Vec<String>, ArchiveError> {
-        unreachable!("the intake never lists")
-    }
-}
-
 // A store that cannot store is the server's failure, not the client's: it
 // must not come back as a rejection the operator would chase (ADR 0004 —
 // no ACK, so the client keeps the samples spooled). And counter state must
@@ -334,7 +311,9 @@ fn archive_failure_is_not_a_rejection_and_leaves_the_counter_alone() {
     let mut intake = Intake::new(
         permissive_config(&[pool_of(&key)]),
         counters,
-        UnavailableArchive,
+        FailingArchive {
+            reason: "archive is down",
+        },
     );
     let envelope = envelope_for(&key, 1);
     let (body, signature) = seal(&key, &envelope);
@@ -363,15 +342,13 @@ fn archive_failure_is_not_a_rejection_and_leaves_the_counter_alone() {
 fn object_key_groups_by_pool_and_day() {
     let key = test_key();
     let timestamp = OffsetDateTime::from_unix_timestamp(1_755_000_000).unwrap();
-    let stored = StoredSubmission {
-        pool_id: pool_of(&key),
-        counter: 12,
+    let stored = stored_submission(
+        &key,
+        12,
         timestamp,
-        schema_version: SCHEMA_VERSION,
-        vkey: key.verifying_key(),
-        signature: seal(&key, &envelope_for(&key, 12)).1,
-        wire_bytes: &[],
-    };
+        seal(&key, &envelope_for(&key, 12)).1,
+        &[],
+    );
     assert_eq!(
         stored.object_key(),
         format!("v1/{}/2025-08-12/1755000000-12.json.zst", pool_of(&key))

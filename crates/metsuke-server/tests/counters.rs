@@ -4,8 +4,11 @@
 
 use metsuke::envelope::PoolId;
 use metsuke_server::counters::{CounterError, CounterStore, Reservation};
+
+mod support;
 use proptest::prelude::*;
 use std::collections::HashMap;
+use support::counter_store;
 use time::OffsetDateTime;
 
 /// Acceptance here is judged on counters alone, so the instant recorded
@@ -56,7 +59,7 @@ fn accepted_counters_survive_reopening() {
 #[test]
 fn a_dropped_reservation_leaves_the_counter_unspent() {
     let dir = tempfile::tempdir().unwrap();
-    let mut store = CounterStore::open(&dir.path().join("counters.sqlite")).unwrap();
+    let mut store = counter_store(dir.path());
     let Ok(Reservation::Reserved(reserved)) = store.reserve(pool(1), 5, test_now()) else {
         panic!("a first counter must reserve");
     };
@@ -91,7 +94,7 @@ fn a_database_from_a_newer_build_fails_loudly() {
 #[test]
 fn a_pool_with_no_history_has_no_counter() {
     let dir = tempfile::tempdir().unwrap();
-    let store = CounterStore::open(&dir.path().join("counters.sqlite")).unwrap();
+    let store = counter_store(dir.path());
     assert_eq!(store.last_counter(pool(1)).unwrap(), None);
 }
 
@@ -104,7 +107,7 @@ proptest! {
         submissions in proptest::collection::vec((0u8..4, 0u64..40), 0..80)
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let mut store = CounterStore::open(&dir.path().join("counters.sqlite")).unwrap();
+        let mut store = counter_store(dir.path());
         let mut highest: HashMap<u8, u64> = HashMap::new();
 
         for (index, counter) in submissions {

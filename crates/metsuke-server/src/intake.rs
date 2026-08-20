@@ -4,7 +4,7 @@
 use metsuke::envelope::{self, Ack, Envelope, PoolId, SCHEMA_VERSION, Signature, VerifyingKey};
 use time::OffsetDateTime;
 
-use crate::archive::{Archive, ArchiveError, StoredSubmission};
+use crate::archive::{ArchiveError, Store, StoredSubmission};
 use crate::config::IngestConfig;
 use crate::counters::{CounterError, CounterStore, Reservation};
 use crate::ratelimit::RateLimiter;
@@ -66,14 +66,14 @@ pub enum IngestError {
     Archive(#[from] ArchiveError),
 }
 
-pub struct Intake<A: Archive> {
+pub struct Intake<A: Store> {
     config: IngestConfig,
     counters: CounterStore,
     limiter: RateLimiter,
     archive: A,
 }
 
-impl<A: Archive> Intake<A> {
+impl<A: Store> Intake<A> {
     pub fn new(config: IngestConfig, counters: CounterStore, archive: A) -> Self {
         let limiter = RateLimiter::new(config.rate_limit_uploads, config.rate_limit_window_secs);
         Intake {
@@ -87,7 +87,7 @@ impl<A: Archive> Intake<A> {
     /// The body cap, so the HTTP layer refuses at the number this checks
     /// against rather than holding a second copy of it.
     pub fn max_body_bytes(&self) -> u64 {
-        self.config.max_body_bytes
+        self.config.max_body_bytes.get()
     }
 
     /// Run one submission through the chain. `now` is the server clock,
@@ -98,10 +98,10 @@ impl<A: Archive> Intake<A> {
         now: OffsetDateTime,
     ) -> Result<Ack, IngestError> {
         let pool_id = submission.pool_id;
-        if submission.wire_bytes.len() as u64 > self.config.max_body_bytes {
+        if submission.wire_bytes.len() as u64 > self.config.max_body_bytes.get() {
             return Err(Rejection::OversizedBody {
                 found: submission.wire_bytes.len(),
-                max: self.config.max_body_bytes,
+                max: self.config.max_body_bytes.get(),
             }
             .into());
         }
@@ -111,8 +111,8 @@ impl<A: Archive> Intake<A> {
         if !self.limiter.allow(pool_id, now) {
             return Err(Rejection::RateLimited {
                 pool_id,
-                max: self.config.rate_limit_uploads,
-                window_secs: self.config.rate_limit_window_secs,
+                max: self.config.rate_limit_uploads.get(),
+                window_secs: self.config.rate_limit_window_secs.get(),
             }
             .into());
         }
@@ -125,7 +125,7 @@ impl<A: Archive> Intake<A> {
             &submission.vkey,
             submission.wire_bytes,
             &submission.signature,
-            self.config.max_decompressed_bytes,
+            self.config.max_decompressed_bytes.get(),
         )
         .map_err(|error| match error {
             envelope::OpenError::Signature(_) => Rejection::BadSignature,
@@ -166,10 +166,10 @@ impl<A: Archive> Intake<A> {
             .into());
         }
         let skew = (now - envelope.timestamp).abs();
-        if skew > time::Duration::seconds(self.config.max_timestamp_skew_secs as i64) {
+        if skew > time::Duration::seconds(self.config.max_timestamp_skew_secs.get() as i64) {
             return Err(Rejection::TimestampOutOfWindow {
                 timestamp: envelope.timestamp,
-                max_skew_secs: self.config.max_timestamp_skew_secs,
+                max_skew_secs: self.config.max_timestamp_skew_secs.get(),
             }
             .into());
         }

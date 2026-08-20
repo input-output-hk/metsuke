@@ -152,18 +152,48 @@ pub enum ArchiveError {
     List { reason: String },
 }
 
-pub trait Archive {
+/// The ingest half. Separate from `List` because the two are used by different
+/// commands and neither needs the other: `Intake` only ever stores.
+pub trait Store {
     /// Store the submission. Returning `Ok` is what lets the server ACK, so
     /// an implementation returns only once the bytes are durable (ADR 0004).
     fn store(&self, submission: &StoredSubmission<'_>) -> Result<(), ArchiveError>;
-
-    /// Every object key held, in no particular order.
-    fn list_keys(&self) -> Result<Vec<String>, ArchiveError>;
 }
 
-/// The inverse of `Archive::store`, read by `verify::audit` and, once it
+/// The recovery half, read by `rebuild` and `verify::audit`.
+pub trait List {
+    /// Where this archive is, for a message about its listing. An operator
+    /// told a listing came back empty has to tell a mistyped location from a
+    /// genuinely empty one, and this is what they tell it by.
+    fn location(&self) -> String;
+
+    /// Hand every object key held to `visit`, in no particular order, as the
+    /// listing produces them. A visitor rather than a `Vec` so that a caller
+    /// folding the listing down — `rebuild` keeps one name per pool — never
+    /// holds a whole bucket's keys at once.
+    ///
+    /// `E` is the caller's own error, so a visitor that fails for its own
+    /// reasons stops the listing without a detour through `ArchiveError`.
+    fn for_each_key<E: From<ArchiveError>>(
+        &self,
+        visit: impl FnMut(&str) -> Result<(), E>,
+    ) -> Result<(), E>;
+
+    /// The whole listing at once, for a caller that needs the keys after the
+    /// listing is closed.
+    fn keys(&self) -> Result<Vec<String>, ArchiveError> {
+        let mut keys = Vec::new();
+        self.for_each_key(|key| -> Result<(), ArchiveError> {
+            keys.push(key.to_string());
+            Ok(())
+        })?;
+        Ok(keys)
+    }
+}
+
+/// The inverse of `Store::store`, read by `verify::audit` and, once it
 /// exists, the download endpoint (ticket metsuke-4zo.10). Separate from
-/// `Archive` because storing and reading back are different privileges — the
+/// `Store` because storing and reading back are different privileges — the
 /// ingest path never fetches.
 pub trait Fetch {
     fn fetch(&self, key: &str) -> Result<FetchedObject, ArchiveError>;
@@ -172,7 +202,7 @@ pub trait Fetch {
 /// Objects as files under a root directory, keyed exactly as S3 keys them.
 ///
 /// Implements no `Fetch`: the metadata would need a sidecar, and a sidecar
-/// under the same prefix comes back in `list_keys` as an object whose key
+/// under the same prefix comes back from `for_each_key` as an object whose key
 /// nothing can parse.
 pub struct FilesystemArchive {
     root: PathBuf,
@@ -185,9 +215,13 @@ impl FilesystemArchive {
         }
     }
 
-    /// Append every object under `relative`, a path already below the archive
-    /// root, so what lands in `keys` is the key and not the local path.
-    fn walk(&self, relative: &Path, keys: &mut Vec<String>) -> Result<(), ArchiveError> {
+    /// Visit every object under `relative`, a path already below the archive
+    /// root, so what `visit` is handed is the key and not the local path.
+    fn walk<E: From<ArchiveError>>(
+        &self,
+        relative: &Path,
+        visit: &mut impl FnMut(&str) -> Result<(), E>,
+    ) -> Result<(), E> {
         let directory = self.root.join(relative);
         for entry in read_dir(&directory)? {
             let entry = entry.map_err(|error| unreadable(&directory, &error))?;
@@ -199,12 +233,12 @@ impl FilesystemArchive {
                 .file_type()
                 .map_err(|error| unreadable(&self.root.join(&path), &error))?;
             if kind.is_dir() {
-                self.walk(&path, keys)?;
+                self.walk(&path, visit)?;
             } else {
                 let key = path.to_str().ok_or_else(|| ArchiveError::List {
                     reason: format!("{} is not a UTF-8 object key", path.display()),
                 })?;
-                keys.push(key.to_string());
+                visit(key)?;
             }
         }
         Ok(())
@@ -221,7 +255,7 @@ fn unreadable(path: &Path, error: &io::Error) -> ArchiveError {
     }
 }
 
-impl Archive for FilesystemArchive {
+impl Store for FilesystemArchive {
     fn store(&self, submission: &StoredSubmission<'_>) -> Result<(), ArchiveError> {
         let key = submission.object_key();
         let path = self.root.join(&key);
@@ -233,19 +267,27 @@ impl Archive for FilesystemArchive {
         };
         write().map_err(|source| ArchiveError::Io { key, source })
     }
+}
 
-    fn list_keys(&self) -> Result<Vec<String>, ArchiveError> {
+impl List for FilesystemArchive {
+    fn location(&self) -> String {
+        self.root.display().to_string()
+    }
+
+    fn for_each_key<E: From<ArchiveError>>(
+        &self,
+        mut visit: impl FnMut(&str) -> Result<(), E>,
+    ) -> Result<(), E> {
         // Only a root that is not there yet is an empty archive. A root that
         // exists and cannot be read must fail: reported as empty it would
-        // reset every counter the objects still hold.
+        // reset every counter the objects still hold. What a *mistyped* root
+        // means is the caller's to judge — `rebuild::EmptyArchive`.
         if let Err(error) = fs::read_dir(&self.root) {
             return match error.kind() {
-                io::ErrorKind::NotFound => Ok(Vec::new()),
-                _ => Err(unreadable(&self.root, &error)),
+                io::ErrorKind::NotFound => Ok(()),
+                _ => Err(unreadable(&self.root, &error).into()),
             };
         }
-        let mut keys = Vec::new();
-        self.walk(Path::new(""), &mut keys)?;
-        Ok(keys)
+        self.walk(Path::new(""), &mut visit)
     }
 }

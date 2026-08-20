@@ -4,7 +4,7 @@
 //! so rather than parse into a plausible wrong pool.
 
 use metsuke::envelope::{PoolId, SigningKey};
-use metsuke_server::archive::{Archive, FilesystemArchive, ObjectName};
+use metsuke_server::archive::{FilesystemArchive, List, ObjectName};
 use proptest::prelude::*;
 use time::{OffsetDateTime, UtcOffset};
 
@@ -122,9 +122,43 @@ fn the_filesystem_archive_lists_what_it_stored() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"body").unwrap();
     }
-    let mut listed = archive.list_keys().unwrap();
+    let mut listed = archive.keys().unwrap();
     listed.sort();
     assert_eq!(listed, written);
+}
+
+/// The half of `List::for_each_key` its callers rely on: a visitor that fails
+/// stops the walk, and its error survives rather than becoming an
+/// `ArchiveError`.
+#[test]
+fn a_visitor_that_fails_stops_the_listing_with_its_own_error() {
+    #[derive(Debug, thiserror::Error)]
+    enum Stopped {
+        #[error(transparent)]
+        Archive(#[from] metsuke_server::archive::ArchiveError),
+        #[error("the second key is one too many")]
+        Enough,
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let archive = FilesystemArchive::new(dir.path());
+    let pool = pool_of(&test_key());
+    for counter in [1, 2, 3] {
+        let path = dir
+            .path()
+            .join(name_at(pool, counter, 1_755_000_000 + counter as i64).to_key());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"body").unwrap();
+    }
+    let mut visited = 0;
+    let stopped = archive.for_each_key(|_| {
+        visited += 1;
+        match visited {
+            1 => Ok(()),
+            _ => Err(Stopped::Enough),
+        }
+    });
+    assert!(matches!(stopped, Err(Stopped::Enough)), "got: {stopped:?}");
+    assert_eq!(visited, 2, "the walk must stop at the refusal");
 }
 
 /// Listing a root that was never written to is an empty archive, not a
@@ -133,7 +167,7 @@ fn the_filesystem_archive_lists_what_it_stored() {
 fn listing_an_archive_that_does_not_exist_yet_is_empty() {
     let dir = tempfile::tempdir().unwrap();
     let archive = FilesystemArchive::new(&dir.path().join("not-created"));
-    assert!(archive.list_keys().unwrap().is_empty());
+    assert!(archive.keys().unwrap().is_empty());
 }
 
 #[test]
@@ -142,7 +176,7 @@ fn listing_a_root_that_is_not_a_directory_fails_naming_it() {
     let root = dir.path().join("archive-is-a-file");
     std::fs::write(&root, b"not a directory").unwrap();
     let error = FilesystemArchive::new(&root)
-        .list_keys()
+        .keys()
         .unwrap_err()
         .to_string();
     assert!(error.contains("archive-is-a-file"), "got: {error}");

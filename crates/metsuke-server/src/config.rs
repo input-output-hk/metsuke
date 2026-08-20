@@ -1,11 +1,15 @@
 //! Every value an operator sets, in one file's worth of structs. No field has
-//! a default: a missing limit is a deployment mistake, not a value to guess.
+//! a default: a missing limit is a deployment mistake, not a value to guess,
+//! and zero is the same mistake — every field where it means nothing is a
+//! `NonZero`, so serde refuses it at load rather than at first use.
 
 use std::collections::HashSet;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::path::PathBuf;
 
 use metsuke::envelope::PoolId;
 use serde::Deserialize;
+use url::Url;
 
 /// The whole config file: where to listen, where the two stores live, and the
 /// ingest limits under `[ingest]`.
@@ -38,11 +42,25 @@ pub struct S3Config {
     pub region: String,
     /// Endpoint URL, bucket name excluded: the AWS regional endpoint in
     /// production, a Garage or MinIO address in a test.
-    pub endpoint: String,
-    /// Deadline for one S3 request, and how long a signed URL stays usable.
-    pub request_timeout_secs: u64,
-    /// Extra PUT attempts after the first.
+    pub endpoint: Url,
+    /// Deadline for one S3 request.
+    pub request_timeout_secs: NonZeroU64,
+    /// How long a presigned URL stays usable. Separate from the deadline:
+    /// tightening the ops timeout would otherwise shrink signature validity to
+    /// the same window, and clock skew against the endpoint then rejects every
+    /// request with an error naming neither cause.
+    pub signature_validity_secs: NonZeroU64,
+    /// Extra PUT attempts after the first. The one number here that is not a
+    /// `NonZero`: zero is the deliberate choice to let the client's spool be
+    /// the only retry layer (ADR 0004).
     pub put_retries: u32,
+    /// Waited between PUT attempts. The failures a retry is for — 503
+    /// SlowDown, a transport reset — need the endpoint given time.
+    pub put_retry_backoff_ms: NonZeroU64,
+    /// Pages a bucket listing may take before it fails naming the bound. An
+    /// endpoint that keeps handing back a continuation token would otherwise
+    /// list forever.
+    pub list_max_pages: NonZeroU32,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -67,13 +85,13 @@ pub struct IngestConfig {
     /// Cap on the compressed body. `intake` measures what it was handed;
     /// `http::read_body` is what refuses an oversized upload before reading
     /// it.
-    pub max_body_bytes: u64,
+    pub max_body_bytes: NonZeroU64,
     /// Ceiling the decompressor is allowed to inflate to.
-    pub max_decompressed_bytes: u64,
+    pub max_decompressed_bytes: NonZeroU64,
     /// Uploads one pool may make per `rate_limit_window_secs`.
-    pub rate_limit_uploads: u32,
-    pub rate_limit_window_secs: u64,
+    pub rate_limit_uploads: NonZeroU32,
+    pub rate_limit_window_secs: NonZeroU64,
     /// How far an envelope timestamp may sit from the server clock in
     /// either direction. The ADR-0002 backstop for lost counter state.
-    pub max_timestamp_skew_secs: u64,
+    pub max_timestamp_skew_secs: NonZeroU64,
 }

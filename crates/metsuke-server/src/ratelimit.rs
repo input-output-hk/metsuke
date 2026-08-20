@@ -3,6 +3,7 @@
 //! keeps one clock reading per submission.
 
 use std::collections::HashMap;
+use std::num::{NonZeroU32, NonZeroU64};
 
 use metsuke::envelope::PoolId;
 use time::OffsetDateTime;
@@ -19,10 +20,10 @@ struct Window {
 }
 
 impl RateLimiter {
-    pub fn new(max_uploads: u32, window_secs: u64) -> Self {
+    pub fn new(max_uploads: NonZeroU32, window_secs: NonZeroU64) -> Self {
         RateLimiter {
-            max_uploads,
-            window: time::Duration::seconds(window_secs as i64),
+            max_uploads: max_uploads.get(),
+            window: time::Duration::seconds(window_secs.get() as i64),
             windows: HashMap::new(),
         }
     }

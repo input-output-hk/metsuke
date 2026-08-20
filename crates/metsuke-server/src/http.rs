@@ -18,7 +18,7 @@ use metsuke::envelope::{
 use time::OffsetDateTime;
 use tiny_http::{Header, Method, Request, Response, Server};
 
-use crate::archive::Archive;
+use crate::archive::Store;
 use crate::intake::{IngestError, Intake, Rejection, Submission};
 use crate::{ERR, WARNING};
 
@@ -130,7 +130,7 @@ pub fn status_for(error: &IngestError) -> u16 {
 /// error once, so a second `recv` would block on an empty queue forever —
 /// logging and continuing would leave a process that looks healthy to systemd
 /// and accepts nothing. Failing out is what turns it back into a restart.
-pub fn serve<A: Archive>(
+pub fn serve<A: Store>(
     server: &Server,
     intake: &mut Intake<A>,
 ) -> Result<std::convert::Infallible, std::io::Error> {
@@ -151,7 +151,7 @@ struct Answer {
     claimed: Option<PoolId>,
 }
 
-fn route<A: Archive>(intake: &mut Intake<A>, request: &mut Request) -> Answer {
+fn route<A: Store>(intake: &mut Intake<A>, request: &mut Request) -> Answer {
     if request.method() != &Method::Post {
         return refuse(None, 405, format!("{SUBMIT_PATH} takes POST"));
     }

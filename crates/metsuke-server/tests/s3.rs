@@ -7,16 +7,18 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use metsuke::envelope::SCHEMA_VERSION;
-use metsuke_server::archive::{Archive, Fetch, ObjectName, StoredSubmission};
+use metsuke_server::archive::{Fetch, List, ObjectName, Store, StoredSubmission};
 use metsuke_server::config::S3Config;
-use metsuke_server::counters::CounterStore;
-use metsuke_server::rebuild::rebuild;
+use metsuke_server::rebuild::{EmptyArchive, rebuild};
 use metsuke_server::s3::{META_COUNTER, META_SCHEMA_VERSION, META_SIGNATURE, META_VKEY, S3Archive};
 use metsuke_server::verify::{audit, verify};
 use rusty_s3::Credentials;
 
 mod support;
-use support::{MAX_DECOMPRESSED_BYTES, envelope_for, hex, pool_of, seal, test_key, test_now};
+use support::{
+    MAX_DECOMPRESSED_BYTES, counter_store, envelope_for, hex, nonzero_u32, nonzero_u64, pool_of,
+    seal, stored_submission, test_key, test_now,
+};
 
 /// One request the fake endpoint received.
 #[derive(Clone)]
@@ -146,6 +148,16 @@ impl FakeS3 {
         S3Archive::new(&config_for(&self.endpoint, put_retries), credentials()).unwrap()
     }
 
+    /// The same archive with a caller-chosen listing bound, for the tests
+    /// about what a listing that will not end does.
+    fn archive_listing_at_most(&self, list_max_pages: u32) -> S3Archive {
+        let config = S3Config {
+            list_max_pages: nonzero_u32(list_max_pages),
+            ..config_for(&self.endpoint, 0)
+        };
+        S3Archive::new(&config, credentials()).unwrap()
+    }
+
     fn requests(&self) -> std::sync::MutexGuard<'_, Vec<Seen>> {
         self.seen.lock().unwrap()
     }
@@ -163,13 +175,20 @@ const TIMEOUT: Duration = Duration::from_secs(1);
 /// recover an object key.
 const BUCKET: &str = "metsuke-test";
 
+/// Short enough that the retry tests do not stall the suite, long enough to be
+/// measurable against a PUT that answers immediately.
+const RETRY_BACKOFF: Duration = Duration::from_millis(50);
+
 fn config_for(endpoint: &str, put_retries: u32) -> S3Config {
     S3Config {
         bucket: BUCKET.to_string(),
         region: "test-region".to_string(),
-        endpoint: endpoint.to_string(),
-        request_timeout_secs: TIMEOUT.as_secs(),
+        endpoint: endpoint.parse().expect("the fake endpoint is a URL"),
+        request_timeout_secs: nonzero_u64(TIMEOUT.as_secs()),
+        signature_validity_secs: nonzero_u64(TIMEOUT.as_secs()),
         put_retries,
+        put_retry_backoff_ms: nonzero_u64(RETRY_BACKOFF.as_millis() as u64),
+        list_max_pages: nonzero_u32(10),
     }
 }
 
@@ -186,26 +205,17 @@ fn submission(counter: u64) -> (Vec<u8>, metsuke::envelope::Signature) {
 /// The submission `seal`ed at `counter`, as the archive is asked to store it.
 fn stored<'a>(
     counter: u64,
-    wire_bytes: &'a [u8],
     signature: metsuke::envelope::Signature,
+    wire_bytes: &'a [u8],
 ) -> StoredSubmission<'a> {
-    let key = test_key();
-    StoredSubmission {
-        pool_id: pool_of(&key),
-        counter,
-        timestamp: test_now(),
-        schema_version: SCHEMA_VERSION,
-        vkey: key.verifying_key(),
-        signature,
-        wire_bytes,
-    }
+    stored_submission(&test_key(), counter, test_now(), signature, wire_bytes)
 }
 
 #[test]
 fn a_stored_object_is_put_at_its_key_with_the_body_verbatim() {
     let endpoint = FakeS3::start(vec![(200, String::new())]);
     let (wire_bytes, signature) = submission(COUNTER);
-    let submission = stored(COUNTER, &wire_bytes, signature);
+    let submission = stored(COUNTER, signature, &wire_bytes);
     endpoint.archive(1).store(&submission).unwrap();
 
     let requests = endpoint.requests();
@@ -228,7 +238,7 @@ fn the_metadata_headers_carry_what_re_verifying_the_object_needs() {
     let key = test_key();
     endpoint
         .archive(1)
-        .store(&stored(COUNTER, &wire_bytes, signature))
+        .store(&stored(COUNTER, signature, &wire_bytes))
         .unwrap();
 
     let requests = endpoint.requests();
@@ -256,7 +266,7 @@ fn the_metadata_headers_are_signed() {
     let (wire_bytes, signature) = submission(COUNTER);
     endpoint
         .archive(1)
-        .store(&stored(COUNTER, &wire_bytes, signature))
+        .store(&stored(COUNTER, signature, &wire_bytes))
         .unwrap();
 
     let requests = endpoint.requests();
@@ -270,22 +280,30 @@ fn the_metadata_headers_are_signed() {
     }
 }
 
+/// Both halves of the retry: the count, and the `put_retry_backoff_ms` wait
+/// that is what makes spending it worth anything.
 #[test]
-fn a_failed_put_is_retried_up_to_the_configured_count() {
+fn a_failed_put_is_retried_up_to_the_configured_count_after_the_backoff() {
     let endpoint = FakeS3::start(vec![(500, "slow down".to_string()), (200, String::new())]);
     let (wire_bytes, signature) = submission(COUNTER);
+    let started = std::time::Instant::now();
     endpoint
         .archive(1)
-        .store(&stored(COUNTER, &wire_bytes, signature))
+        .store(&stored(COUNTER, signature, &wire_bytes))
         .unwrap();
     assert_eq!(endpoint.requests().len(), 2);
+    assert!(
+        started.elapsed() >= RETRY_BACKOFF,
+        "the retry came after {:?}, not the configured {RETRY_BACKOFF:?}",
+        started.elapsed()
+    );
 }
 
 #[test]
 fn a_put_that_keeps_failing_is_an_error_naming_the_key_and_the_attempts() {
     let endpoint = FakeS3::start(vec![(500, "no".to_string()), (500, "no".to_string())]);
     let (wire_bytes, signature) = submission(COUNTER);
-    let submission = stored(COUNTER, &wire_bytes, signature);
+    let submission = stored(COUNTER, signature, &wire_bytes);
     let error = endpoint
         .archive(1)
         .store(&submission)
@@ -306,7 +324,7 @@ fn a_refused_put_is_not_retried() {
     let (wire_bytes, signature) = submission(COUNTER);
     let error = endpoint
         .archive(1)
-        .store(&stored(COUNTER, &wire_bytes, signature))
+        .store(&stored(COUNTER, signature, &wire_bytes))
         .unwrap_err()
         .to_string();
     assert!(
@@ -322,7 +340,7 @@ fn a_refused_put_is_not_retried() {
 fn a_stored_object_fetches_back_and_verifies() {
     let endpoint = FakeS3::start(Vec::new());
     let (wire_bytes, signature) = submission(COUNTER);
-    let submission = stored(COUNTER, &wire_bytes, signature);
+    let submission = stored(COUNTER, signature, &wire_bytes);
     let archive = endpoint.archive(1);
     archive.store(&submission).unwrap();
 
@@ -345,15 +363,8 @@ fn an_audit_verifies_what_is_stored_and_names_what_is_missing() {
         .map(|counter| {
             let envelope = envelope_for(&key, counter);
             let (wire_bytes, signature) = seal(&key, &envelope);
-            let submission = StoredSubmission {
-                pool_id: envelope.pool_id,
-                counter,
-                timestamp: envelope.timestamp,
-                schema_version: envelope.schema_version,
-                vkey: key.verifying_key(),
-                signature,
-                wire_bytes: &wire_bytes,
-            };
+            let submission =
+                stored_submission(&key, counter, envelope.timestamp, signature, &wire_bytes);
             archive.store(&submission).unwrap();
             submission.object_key()
         })
@@ -384,7 +395,7 @@ fn an_audit_verifies_what_is_stored_and_names_what_is_missing() {
 #[test]
 fn fetching_a_key_the_bucket_does_not_hold_is_an_error() {
     let endpoint = FakeS3::start(Vec::new());
-    let key = stored(COUNTER, b"", submission(COUNTER).1).object_key();
+    let key = stored(COUNTER, submission(COUNTER).1, b"").object_key();
     let error = endpoint.archive(1).fetch(&key).unwrap_err().to_string();
     assert!(
         error.contains(&key) && error.contains("404"),
@@ -395,9 +406,20 @@ fn fetching_a_key_the_bucket_does_not_hold_is_an_error() {
 #[test]
 fn fetching_an_object_without_its_metadata_names_the_missing_header() {
     let endpoint = FakeS3::start(vec![(200, "body".to_string())]);
-    let key = stored(COUNTER, b"", submission(COUNTER).1).object_key();
+    let key = stored(COUNTER, submission(COUNTER).1, b"").object_key();
     let error = endpoint.archive(1).fetch(&key).unwrap_err().to_string();
     assert!(error.contains(META_VKEY), "got: {error}");
+}
+
+/// A URL the config accepts but a bucket cannot be built on: `S3Config` makes
+/// the unparseable case unrepresentable, and this is what is left for
+/// `S3Error::Endpoint` to catch at startup.
+#[test]
+fn a_url_that_is_not_an_s3_endpoint_is_refused_at_construction() {
+    let error = S3Archive::new(&config_for("mailto:nobody@example.org", 0), credentials())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("mailto:nobody@example.org"), "got: {error}");
 }
 
 #[test]
@@ -406,17 +428,9 @@ fn an_endpoint_that_is_not_listening_is_an_error() {
     // timeout.
     let archive = S3Archive::new(&config_for("http://127.0.0.1:9", 0), credentials()).unwrap();
     let (wire_bytes, signature) = submission(COUNTER);
-    let submission = stored(COUNTER, &wire_bytes, signature);
+    let submission = stored(COUNTER, signature, &wire_bytes);
     let error = archive.store(&submission).unwrap_err().to_string();
     assert!(error.contains(&submission.object_key()), "got: {error}");
-}
-
-#[test]
-fn an_endpoint_that_is_not_a_url_is_refused_at_construction() {
-    let error = S3Archive::new(&config_for("not a url", 1), credentials())
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("not a url"), "got: {error}");
 }
 
 /// The two objects a listing fixture holds, keyed the way the archive keys
@@ -476,7 +490,7 @@ fn listing_follows_the_continuation_token_to_the_end() {
         (200, listing(&listed[..1], Some("page-two"))),
         (200, listing(&listed[1..], None)),
     ]);
-    assert_eq!(endpoint.archive(1).list_keys().unwrap(), listed);
+    assert_eq!(endpoint.archive(1).keys().unwrap(), listed);
     let requests = endpoint.requests();
     assert_eq!(requests.len(), 2);
     assert!(requests[0].method == "GET" && !requests[0].url.contains("continuation-token"));
@@ -500,8 +514,8 @@ fn a_bucket_listing_seeds_the_rebuild() {
     let listed = listed_keys();
     let endpoint = FakeS3::start(vec![(200, listing(&listed, None))]);
     let dir = tempfile::tempdir().unwrap();
-    let mut counters = CounterStore::open(&dir.path().join("counters.sqlite")).unwrap();
-    let summary = rebuild(&endpoint.archive(1), &mut counters).unwrap();
+    let mut counters = counter_store(dir.path());
+    let summary = rebuild(&endpoint.archive(1), &mut counters, EmptyArchive::Refuse).unwrap();
 
     assert_eq!(summary.objects, listed.len());
     let highest = listed
@@ -514,17 +528,52 @@ fn a_bucket_listing_seeds_the_rebuild() {
     );
 }
 
+/// An endpoint that stays truncated forever, stopped by `list_max_pages`.
+#[test]
+fn a_listing_that_never_ends_fails_at_the_configured_page_bound() {
+    let listed = listed_keys();
+    let endpoint = FakeS3::start(
+        (0..8)
+            .map(|page| (200, listing(&listed[..1], Some(&format!("page-{page}")))))
+            .collect(),
+    );
+    let error = endpoint
+        .archive_listing_at_most(3)
+        .keys()
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("3 pages"), "got: {error}");
+    assert_eq!(endpoint.requests().len(), 3);
+}
+
+/// The same non-ending listing by another route: a token that repeats.
+#[test]
+fn a_listing_whose_token_does_not_advance_is_an_error() {
+    let listed = listed_keys();
+    let endpoint = FakeS3::start(vec![
+        (200, listing(&listed[..1], Some("stuck"))),
+        (200, listing(&listed[..1], Some("stuck"))),
+    ]);
+    let error = endpoint
+        .archive_listing_at_most(100)
+        .keys()
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("stuck"), "got: {error}");
+    assert_eq!(endpoint.requests().len(), 2);
+}
+
 #[test]
 fn a_listing_the_endpoint_refuses_is_an_error() {
     let endpoint = FakeS3::start(vec![(500, "NoSuchBucket".to_string())]);
-    let error = endpoint.archive(1).list_keys().unwrap_err().to_string();
+    let error = endpoint.archive(1).keys().unwrap_err().to_string();
     assert!(error.contains("500"), "got: {error}");
 }
 
 #[test]
 fn a_listing_that_is_not_the_expected_xml_is_an_error() {
     let endpoint = FakeS3::start(vec![(200, "<html>hello</html>".to_string())]);
-    assert!(endpoint.archive(1).list_keys().is_err());
+    assert!(endpoint.archive(1).keys().is_err());
 }
 
 /// The timeout bounds the whole request, so an endpoint that accepts and then
@@ -547,7 +596,7 @@ fn a_put_gives_up_at_the_configured_timeout() {
     let started = std::time::Instant::now();
     assert!(
         archive
-            .store(&stored(COUNTER, &wire_bytes, signature))
+            .store(&stored(COUNTER, signature, &wire_bytes))
             .is_err()
     );
     let elapsed = started.elapsed();

@@ -5,6 +5,7 @@
 //! returns a signed URL, and ureq has no hook for signing headers as they go
 //! out.
 
+use std::num::NonZeroU32;
 use std::time::Duration;
 
 use rusty_s3::actions::{ListObjectsV2, S3Action as _};
@@ -14,7 +15,7 @@ use metsuke::envelope::{Signature, VerifyingKey};
 
 use crate::WARNING;
 use crate::archive::{
-    Archive, ArchiveError, Fetch, FetchedObject, KEY_PREFIX, ObjectName, StoredSubmission,
+    ArchiveError, Fetch, FetchedObject, KEY_PREFIX, List, ObjectName, Store, StoredSubmission,
 };
 use crate::config::S3Config;
 
@@ -32,40 +33,34 @@ pub struct S3Archive {
     bucket: Bucket,
     credentials: Credentials,
     agent: ureq::Agent,
-    request_timeout: Duration,
-    /// Spent only on failures that can clear on their own; the client keeps
-    /// spooling either way (ADR 0004).
+    signature_validity: Duration,
     put_retries: u32,
+    put_retry_backoff: Duration,
+    list_max_pages: NonZeroU32,
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum S3Error {
-    #[error("endpoint {endpoint:?} is not an S3 endpoint: {reason}")]
-    Endpoint { endpoint: String, reason: String },
+    #[error("endpoint {endpoint} is not an S3 endpoint: {reason}")]
+    Endpoint { endpoint: url::Url, reason: String },
 }
 
 impl S3Archive {
     pub fn new(config: &S3Config, credentials: Credentials) -> Result<S3Archive, S3Error> {
-        let refuse = |reason: String| S3Error::Endpoint {
-            endpoint: config.endpoint.clone(),
-            reason,
-        };
-        let endpoint = config
-            .endpoint
-            .parse()
-            .map_err(|error: url::ParseError| refuse(error.to_string()))?;
         // Path style: the bucket name stays in the path, which is what an
         // S3-compatible endpoint without wildcard DNS (Garage, MinIO) serves.
         let bucket = Bucket::new(
-            endpoint,
+            config.endpoint.clone(),
             UrlStyle::Path,
             config.bucket.clone(),
             config.region.clone(),
         )
-        .map_err(|error| refuse(error.to_string()))?;
-        let request_timeout = Duration::from_secs(config.request_timeout_secs);
+        .map_err(|error| S3Error::Endpoint {
+            endpoint: config.endpoint.clone(),
+            reason: error.to_string(),
+        })?;
         let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(request_timeout))
+            .timeout_global(Some(Duration::from_secs(config.request_timeout_secs.get())))
             // Status handling is ours: a refusal is a reason to report, not an
             // opaque error.
             .http_status_as_error(false)
@@ -75,8 +70,10 @@ impl S3Archive {
             bucket,
             credentials,
             agent,
-            request_timeout,
+            signature_validity: Duration::from_secs(config.signature_validity_secs.get()),
             put_retries: config.put_retries,
+            put_retry_backoff: Duration::from_millis(config.put_retry_backoff_ms.get()),
+            list_max_pages: config.list_max_pages,
         })
     }
 
@@ -87,7 +84,7 @@ impl S3Archive {
         for (name, value) in metadata {
             action.headers_mut().insert(*name, value.clone());
         }
-        let url = action.sign(self.request_timeout);
+        let url = action.sign(self.signature_validity);
         let mut request = self.agent.put(url.as_str());
         for (name, value) in metadata {
             request = request.header(*name, value);
@@ -102,7 +99,10 @@ impl S3Archive {
             .read_to_string()
             .map_err(|error| Failure {
                 reason: format!("unreadable answer: {error}"),
-                retryable: true,
+                // Same variant matching as the transport path: an answer over
+                // the body limit reads the same way however often it is asked
+                // for.
+                retryable: transient(&error),
             })
     }
 }
@@ -157,7 +157,7 @@ fn transient(error: &ureq::Error) -> bool {
     )
 }
 
-impl Archive for S3Archive {
+impl Store for S3Archive {
     fn store(&self, submission: &StoredSubmission<'_>) -> Result<(), ArchiveError> {
         let key = submission.object_key();
         let metadata = [
@@ -173,6 +173,7 @@ impl Archive for S3Archive {
                 Ok(()) => return Ok(()),
                 Err(failure) if failure.retryable && attempts <= self.put_retries => {
                     eprintln!("{WARNING}retrying the PUT of {key}: {}", failure.reason);
+                    std::thread::sleep(self.put_retry_backoff);
                 }
                 Err(failure) => {
                     return Err(ArchiveError::Upload {
@@ -184,32 +185,50 @@ impl Archive for S3Archive {
             }
         }
     }
+}
 
-    fn list_keys(&self) -> Result<Vec<String>, ArchiveError> {
-        let mut keys = Vec::new();
+impl List for S3Archive {
+    fn location(&self) -> String {
+        format!("{} at {}", self.bucket.name(), self.bucket.base_url())
+    }
+
+    fn for_each_key<E: From<ArchiveError>>(
+        &self,
+        mut visit: impl FnMut(&str) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let refuse = |reason: String| E::from(ArchiveError::List { reason });
         let mut token: Option<String> = None;
-        loop {
+        for page_number in 1..=self.list_max_pages.get() {
             let mut action = self.bucket.list_objects_v2(Some(&self.credentials));
             action.with_prefix(KEY_PREFIX);
-            if let Some(token) = token {
-                action.with_continuation_token(token);
+            if let Some(token) = &token {
+                action.with_continuation_token(token.clone());
             }
-            let url = action.sign(self.request_timeout);
-            let text = self.get(&url).map_err(|failure| ArchiveError::List {
-                reason: failure.reason,
-            })?;
-            let page =
-                ListObjectsV2::parse_response(&text).map_err(|error| ArchiveError::List {
-                    reason: format!("the listing does not parse: {error}"),
-                })?;
-            keys.extend(page.contents.into_iter().map(|object| object.key));
+            let url = action.sign(self.signature_validity);
+            let text = self.get(&url).map_err(|failure| refuse(failure.reason))?;
+            let page = ListObjectsV2::parse_response(&text)
+                .map_err(|error| refuse(format!("the listing does not parse: {error}")))?;
+            for object in &page.contents {
+                visit(&object.key)?;
+            }
             // A truncated listing hands back the token to resume from; the
-            // rebuild needs every page or it seeds from a short corpus.
+            // rebuild needs every page or it seeds from a short corpus. A token
+            // that does not advance would resume the same page forever, and a
+            // hang is worse news than a bound that fails.
             match page.next_continuation_token {
+                None => return Ok(()),
+                Some(next) if Some(&next) == token.as_ref() => {
+                    return Err(refuse(format!(
+                        "page {page_number} handed back its own continuation token {next:?}"
+                    )));
+                }
                 Some(next) => token = Some(next),
-                None => return Ok(keys),
             }
         }
+        Err(refuse(format!(
+            "the listing is still truncated after {} pages (list_max_pages)",
+            self.list_max_pages
+        )))
     }
 }
 
@@ -221,7 +240,7 @@ impl Fetch for S3Archive {
         };
         let name = ObjectName::parse(key).map_err(|error| refuse(error.to_string()))?;
         let action = self.bucket.get_object(Some(&self.credentials), key);
-        let url = action.sign(self.request_timeout);
+        let url = action.sign(self.signature_validity);
         let mut response = answer(self.agent.get(url.as_str()).call())
             .map_err(|failure| refuse(failure.reason))?;
         // Read the metadata out before the body: an object missing a header is

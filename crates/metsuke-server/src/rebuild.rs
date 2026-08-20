@@ -6,8 +6,19 @@ use std::collections::HashMap;
 
 use metsuke::envelope::PoolId;
 
-use crate::archive::{Archive, ArchiveError, ObjectName, ObjectNameError};
+use crate::archive::{ArchiveError, List, ObjectName, ObjectNameError};
+use crate::cli::ALLOW_EMPTY;
 use crate::counters::{CounterError, CounterStore, Reservation};
+
+/// What a listing with no objects in it means. A mistyped or unmounted
+/// `archive.root` and a bucket that has never been written to list the same
+/// way, and the operator running this has already lost their index: the
+/// ambiguity is refused unless they say which one it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmptyArchive {
+    Refuse,
+    Accept,
+}
 
 /// What the rebuild found, for the operator to compare against what they
 /// expected to be in the bucket.
@@ -35,17 +46,24 @@ pub enum RebuildError {
     ObjectName(#[from] ObjectNameError),
     #[error(transparent)]
     Counters(#[from] CounterError),
+    #[error(
+        "{archive} listed no objects, so every replay counter would stay unseeded \
+         (pass {ALLOW_EMPTY} if that archive really is empty)"
+    )]
+    Empty { archive: String },
 }
 
 /// Seed every pool's counter from its newest stored object, writing through
 /// `reserve` (see `SeededPool::seeded`).
 pub fn rebuild(
-    archive: &impl Archive,
+    archive: &impl List,
     counters: &mut CounterStore,
+    empty: EmptyArchive,
 ) -> Result<RebuiltIndex, RebuildError> {
-    let keys = archive.list_keys()?;
+    let mut objects = 0;
     let mut newest: HashMap<PoolId, ObjectName> = HashMap::new();
-    for key in &keys {
+    archive.for_each_key(|key| -> Result<(), RebuildError> {
+        objects += 1;
         let name = ObjectName::parse(key)?;
         newest
             .entry(name.pool_id)
@@ -55,6 +73,12 @@ pub fn rebuild(
                 }
             })
             .or_insert(name);
+        Ok(())
+    })?;
+    if objects == 0 && empty == EmptyArchive::Refuse {
+        return Err(RebuildError::Empty {
+            archive: archive.location(),
+        });
     }
     let mut newest: Vec<ObjectName> = newest.into_values().collect();
     newest.sort_by_key(|name| name.pool_id.to_bech32());
@@ -72,8 +96,5 @@ pub fn rebuild(
             seeded,
         });
     }
-    Ok(RebuiltIndex {
-        objects: keys.len(),
-        pools,
-    })
+    Ok(RebuiltIndex { objects, pools })
 }

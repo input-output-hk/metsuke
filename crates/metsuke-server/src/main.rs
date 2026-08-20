@@ -4,12 +4,12 @@
 //! The subcommands are the exception: they run once against the same config
 //! and exit, zero only if what they were asked to check holds.
 
-use metsuke_server::archive::{Archive, FilesystemArchive};
+use metsuke_server::archive::{FilesystemArchive, List, Store};
 use metsuke_server::cli::{Args, ArgsError, Command};
 use metsuke_server::config::{ArchiveConfig, ConfigError, IngestConfig, S3Config, ServerConfig};
 use metsuke_server::counters::{CounterError, CounterStore};
 use metsuke_server::intake::Intake;
-use metsuke_server::rebuild::{RebuildError, RebuiltIndex, rebuild};
+use metsuke_server::rebuild::{EmptyArchive, RebuildError, RebuiltIndex, rebuild};
 use metsuke_server::s3::{S3Archive, S3Error};
 use metsuke_server::verify::{Audit, AuditError, audit};
 use metsuke_server::{ERR, INFO, http};
@@ -72,26 +72,51 @@ fn run() -> Result<(), Fatal> {
         archive,
         ingest,
     } = ServerConfig::from_toml(&text)?;
-    let mut counters = CounterStore::open(&counters_path)?;
-    match (args.command, archive) {
-        (Command::Serve, ArchiveConfig::Filesystem { root }) => {
-            serve(FilesystemArchive::new(&root), &listen, ingest, counters)
+    let counters = CounterStore::open(&counters_path)?;
+    // The archive kind is matched once: pairing it with the subcommand would
+    // multiply the arms by every kind this grows.
+    match archive {
+        ArchiveConfig::Filesystem { root } => dispatch(
+            FilesystemArchive::new(&root),
+            args,
+            &listen,
+            ingest,
+            counters,
+            // A filesystem archive stores no metadata, so there is nothing to
+            // re-verify an object against.
+            |_, _| Err(Fatal::CannotVerifyFilesystem),
+        ),
+        ArchiveConfig::S3(config) => dispatch(
+            s3_archive(&config)?,
+            args,
+            &listen,
+            ingest,
+            counters,
+            |archive, max_decompressed_bytes| report_audit(audit(archive, max_decompressed_bytes)?),
+        ),
+    }
+}
+
+/// Run the named subcommand against one archive. `verify_archive` is the only
+/// step that is not the same work for every kind, so it is the parameter.
+fn dispatch<A: Store + List>(
+    archive: A,
+    args: Args,
+    listen: &str,
+    ingest: IngestConfig,
+    mut counters: CounterStore,
+    verify_archive: impl FnOnce(&A, u64) -> Result<(), Fatal>,
+) -> Result<(), Fatal> {
+    match args.command {
+        Command::Serve => serve(archive, listen, ingest, counters),
+        Command::RebuildIndex { allow_empty } => {
+            let empty = match allow_empty {
+                true => EmptyArchive::Accept,
+                false => EmptyArchive::Refuse,
+            };
+            report_rebuild(rebuild(&archive, &mut counters, empty)?)
         }
-        (Command::Serve, ArchiveConfig::S3(config)) => {
-            serve(s3_archive(&config)?, &listen, ingest, counters)
-        }
-        (Command::RebuildIndex, ArchiveConfig::Filesystem { root }) => {
-            report(rebuild(&FilesystemArchive::new(&root), &mut counters)?)
-        }
-        (Command::RebuildIndex, ArchiveConfig::S3(config)) => {
-            report(rebuild(&s3_archive(&config)?, &mut counters)?)
-        }
-        (Command::VerifyArchive, ArchiveConfig::Filesystem { .. }) => {
-            Err(Fatal::CannotVerifyFilesystem)
-        }
-        (Command::VerifyArchive, ArchiveConfig::S3(config)) => {
-            verified(audit(&s3_archive(&config)?, ingest.max_decompressed_bytes)?)
-        }
+        Command::VerifyArchive => verify_archive(&archive, ingest.max_decompressed_bytes.get()),
     }
 }
 
@@ -99,7 +124,7 @@ fn run() -> Result<(), Fatal> {
 /// bucket that held objects and verified every one of them exits zero: an
 /// empty bucket checked nothing, and a failure carries both counts because
 /// "did not verify" and "could not be read" are different news.
-fn verified(found: Audit) -> Result<(), Fatal> {
+fn report_audit(found: Audit) -> Result<(), Fatal> {
     println!("verified {} objects", found.verified);
     for failure in &found.failures {
         println!("{failure}");
@@ -118,7 +143,7 @@ fn s3_archive(config: &S3Config) -> Result<S3Archive, Fatal> {
 
 /// The rebuild's findings on stdout: it is the command's output, not a log
 /// line.
-fn report(summary: RebuiltIndex) -> Result<(), Fatal> {
+fn report_rebuild(summary: RebuiltIndex) -> Result<(), Fatal> {
     println!(
         "rebuilt the index from {} objects across {} pools",
         summary.objects,
@@ -140,7 +165,7 @@ fn report(summary: RebuiltIndex) -> Result<(), Fatal> {
     Ok(())
 }
 
-fn serve<A: Archive>(
+fn serve<A: Store>(
     archive: A,
     listen: &str,
     ingest: IngestConfig,
