@@ -76,10 +76,11 @@ async fn recorded_startup_body_yields_build_info_only() {
 
 #[tokio::test]
 async fn unreachable_endpoint_yields_all_nulls() {
-    let server = MockServer::start().await;
-    let url = format!("{}/metrics", server.uri());
-    drop(server);
-    let sample = scrape_config(config(url)).await;
+    // TEST-NET-1 (RFC 5737) is unroutable: nothing answers, and no other test
+    // can claim it the way a released MockServer port gets reclaimed.
+    let mut unreachable = config("http://192.0.2.1:9/metrics".into());
+    unreachable.timeout = Duration::from_millis(200);
+    let sample = scrape_config(unreachable).await;
     assert_eq!(sample, all_null(sample.sampled_at));
 }
 
