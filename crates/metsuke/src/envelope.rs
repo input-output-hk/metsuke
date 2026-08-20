@@ -147,10 +147,10 @@ pub fn seal(
     level: i32,
 ) -> Result<(Vec<u8>, Signature), SealError> {
     for (index, sample) in envelope.samples.iter().enumerate() {
-        if let Some(value) = sample.sync_progress {
-            if !value.is_finite() {
-                return Err(SealError::NonFiniteSyncProgress { index, value });
-            }
+        if let Some(value) = sample.sync_progress
+            && !value.is_finite()
+        {
+            return Err(SealError::NonFiniteSyncProgress { index, value });
         }
     }
     let json = serde_json::to_vec(envelope)?;
