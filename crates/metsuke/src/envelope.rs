@@ -30,7 +30,7 @@ pub struct Ack {
 /// A pool id: the blake2b-224 hash of the pool's cold verification key,
 /// bech32 `pool1…` on the wire. The only constructors validate, so a held
 /// `PoolId` is always a real 28-byte hash.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PoolId([u8; 28]);
 
 /// CIP-5 human-readable prefix for pool ids.
@@ -173,6 +173,10 @@ pub fn seal(
     Ok((wire_bytes, signature))
 }
 
+/// How much decompressed output `open` copies per read. Granularity, not a
+/// limit: it bounds the scratch buffer, never what is accepted.
+const DECOMPRESS_CHUNK_BYTES: usize = 64 * 1024;
+
 /// Verify the signature over the wire bytes as received, then decompress —
 /// refusing to inflate past `max_decompressed_bytes` — and parse. Uses
 /// `verify_strict` to reject signatures that only pass under malleable or
@@ -185,12 +189,21 @@ pub fn open(
 ) -> Result<Envelope, OpenError> {
     key.verify_strict(wire_bytes, signature)?;
     let decoder = zstd::Decoder::new(wire_bytes).map_err(OpenError::Decompress)?;
-    let mut json = Vec::new();
-    let read = decoder
-        .take(max_decompressed_bytes + 1)
-        .read_to_end(&mut json)
-        .map_err(OpenError::Decompress)?;
-    if read as u64 > max_decompressed_bytes {
+    // One chunk out of the decoder at a time, reserving exactly what each
+    // chunk needs: the payload never claims more than its own size, and the
+    // reader stops one byte past the ceiling, so nothing bigger is held.
+    let mut reader = decoder.take(max_decompressed_bytes.saturating_add(1));
+    let mut chunk = vec![0u8; DECOMPRESS_CHUNK_BYTES];
+    let mut json: Vec<u8> = Vec::new();
+    loop {
+        let read = reader.read(&mut chunk).map_err(OpenError::Decompress)?;
+        if read == 0 {
+            break;
+        }
+        json.reserve_exact(read);
+        json.extend_from_slice(&chunk[..read]);
+    }
+    if json.len() as u64 > max_decompressed_bytes {
         return Err(OpenError::TooLarge {
             max_decompressed_bytes,
         });

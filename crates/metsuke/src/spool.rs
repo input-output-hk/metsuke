@@ -32,6 +32,8 @@ pub struct SpooledSample {
 pub enum SpoolError {
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error(transparent)]
+    Migrate(#[from] crate::sqlite::MigrateError),
     #[error("sample row {id} does not deserialize: {source}")]
     Corrupt {
         id: i64,
@@ -42,8 +44,6 @@ pub enum SpoolError {
     Serialize(#[source] serde_json::Error),
 }
 
-/// One entry per released schema version; `user_version` records how many
-/// have run, so opening an old DB applies exactly the missing suffix.
 const MIGRATIONS: &[&str] = &["CREATE TABLE samples (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         sample TEXT NOT NULL
@@ -54,20 +54,11 @@ const MIGRATIONS: &[&str] = &["CREATE TABLE samples (
     );
     INSERT INTO delivery (id, counter) VALUES (1, 0);"];
 
-fn migrate(conn: &Connection) -> Result<(), SpoolError> {
-    let applied: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    for (version, migration) in MIGRATIONS.iter().enumerate().skip(applied as usize) {
-        conn.execute_batch(migration)?;
-        conn.pragma_update(None, "user_version", version as u32 + 1)?;
-    }
-    Ok(())
-}
-
 impl Spool {
     /// Open (creating if absent) and migrate the spool database.
     pub fn open(config: &SpoolConfig) -> Result<Self, SpoolError> {
         let conn = Connection::open(&config.path)?;
-        migrate(&conn)?;
+        crate::sqlite::migrate(&conn, MIGRATIONS)?;
         Ok(Spool {
             conn,
             max_samples: config.max_samples,

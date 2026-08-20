@@ -69,7 +69,7 @@ impl Delivery {
         let batch = Envelope {
             schema_version: SCHEMA_VERSION,
             pool_id: self.pool_id,
-            agent_version: env!("CARGO_PKG_VERSION").to_string(),
+            agent_version: crate::AGENT_VERSION.to_string(),
             counter,
             timestamp: now,
             samples,

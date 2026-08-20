@@ -171,6 +171,25 @@ fn open_rejects_oversized_payload() {
     ));
 }
 
+// The ceiling is a cap, not a reservation: a small payload under a huge
+// limit must cost what the payload costs, not what the limit allows.
+#[test]
+fn open_under_a_huge_limit_costs_only_the_payload() {
+    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let env = Envelope {
+        schema_version: SCHEMA_VERSION,
+        pool_id: PoolId::from_cold_key(&key.verifying_key()),
+        agent_version: "0.1.0".into(),
+        counter: 1,
+        timestamp: OffsetDateTime::UNIX_EPOCH,
+        samples: vec![],
+    };
+    let (bytes, sig) = envelope::seal(&key, &env, 0).unwrap();
+    let opened =
+        envelope::open(&key.verifying_key(), &bytes, &sig, 64 * 1024 * 1024 * 1024).unwrap();
+    assert_eq!(opened, env);
+}
+
 #[test]
 fn seal_rejects_non_finite_sync_progress() {
     let key = SigningKey::from_bytes(&[7u8; 32]);

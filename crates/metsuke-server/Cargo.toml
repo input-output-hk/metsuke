@@ -9,3 +9,12 @@ repository.workspace = true
 
 [dependencies]
 metsuke = { path = "../metsuke" }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.20"
+time = "0.3.55"
+
+[dev-dependencies]
+proptest = "1.11.0"
+tempfile = "3.27.0"
+zstd = "0.13.3"
