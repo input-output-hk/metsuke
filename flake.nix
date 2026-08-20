@@ -13,6 +13,13 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     crane.url = "github:ipetkov/crane";
+    # Leios prototype the MusashiNet nodes run (same pin as cardano-playground).
+    # Source only, never evaluated as a flake: scripts/record-scrape-fixtures.sh
+    # records scrape fixtures from it, and the VM test will run it.
+    cardano-node-leios = {
+      url = "github:input-output-hk/ouroboros-leios?ref=refs/tags/prototype-2026w32";
+      flake = false;
+    };
     advisory-db = {
       url = "github:rustsec/advisory-db";
       flake = false;
@@ -40,7 +47,12 @@
         }:
         let
           craneLib = inputs.crane.mkLib pkgs;
-          src = craneLib.cleanCargoSource ./.;
+          # Cargo sources plus the scrape fixtures include_str! compiles in.
+          src = pkgs.lib.cleanSourceWith {
+            src = ./.;
+            filter = path: type: (craneLib.filterCargoSources path type) || pkgs.lib.hasSuffix ".prom" path;
+            name = "source";
+          };
 
           commonArgs = {
             inherit src;

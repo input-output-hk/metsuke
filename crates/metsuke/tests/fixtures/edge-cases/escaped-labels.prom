@@ -1,0 +1,3 @@
+# Hand-authored: Prometheus text-format escapes and metachars inside label
+# values must not derail the label scan.
+cardano_node_metrics_cardano_build_info{extra="a\"b,c=d",version="1\\2\n3",revision="r"} 1

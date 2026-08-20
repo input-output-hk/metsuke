@@ -1,0 +1,4 @@
+# Hand-authored: build_info carries a version but no revision label.
+# TYPE cardano_node_metrics_cardano_build_info info
+cardano_node_metrics_cardano_build_info{version="99.0.0"} 1
+cardano_node_metrics_blockNum_int 42

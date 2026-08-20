@@ -1,0 +1,10 @@
+# Hand-authored: unparseable values and near-miss metric names.
+# A labelled variant of an int gauge is not the label-less metric.
+cardano_node_metrics_blockNum_int{node="x"} 9
+cardano_node_metrics_blockNum_int not-a-number
+cardano_node_metrics_slotNum_int 1.5
+cardano_node_metrics_epoch_int -1
+# A longer name sharing the prefix must not match.
+cardano_node_metrics_slotInEpoch_int_total 99
+cardano_node_metrics_slotInEpoch_int 7
+cardano_node_metrics_cardano_build_info{version="9",revision="abc"} 1

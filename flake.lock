@@ -16,6 +16,23 @@
         "type": "github"
       }
     },
+    "cardano-node-leios": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1786342374,
+        "narHash": "sha256-6ioSN5qxvL6b67UKPY2iVytiOoZlTnCgG3ep+kJiPxg=",
+        "owner": "input-output-hk",
+        "repo": "ouroboros-leios",
+        "rev": "3534e7065419c906b35d3be7c976aeace8cf2085",
+        "type": "github"
+      },
+      "original": {
+        "owner": "input-output-hk",
+        "ref": "refs/tags/prototype-2026w32",
+        "repo": "ouroboros-leios",
+        "type": "github"
+      }
+    },
     "crane": {
       "locked": {
         "lastModified": 1787074141,
@@ -120,6 +137,7 @@
     "root": {
       "inputs": {
         "advisory-db": "advisory-db",
+        "cardano-node-leios": "cardano-node-leios",
         "crane": "crane",
         "flake-parts": "flake-parts",
         "git-hooks": "git-hooks",
