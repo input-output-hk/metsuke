@@ -12,23 +12,29 @@ unauthenticated bytes ever reach the decompressor.
 
 ## Decision
 
-A per-pool monotonic counter and a timestamp live inside the signed JSON payload.
-The server processes each upload cheap-to-expensive:
+A per-pool monotonic counter and a timestamp live inside the signed JSON payload,
+covered by the same signature as the data. Counter state (`pool_id →
+last_counter, last_seen`) lives in server SQLite.
 
-size cap → allowlist → per-pool rate limit → Ed25519 verify (over the compressed
-bytes) → bounded decompression → replay check (counter must increase, timestamp
-within window) → accept.
+Three things the ingest path must hold, whatever checks it grows:
 
-Counter state (`pool_id → last_counter, last_seen`) lives in server SQLite and is
-updated only after the full chain passes. Size and rate limits are configuration,
-not constants.
+- Nothing is decompressed before its signature verifies.
+- Cheap checks run before expensive ones, so the work an unauthenticated sender
+  can cause is bounded by the first check that rejects them.
+- A counter is spent only by a submission that succeeded outright, storage
+  included.
+
+Size and rate limits are configuration, not constants.
 
 ## Consequences
 
-- Only authenticated bytes are decompressed; a signature check is the only work an
-  unknown sender can cause past the allowlist.
+- A signature check is the most an unknown sender can cost the server past the
+  allowlist.
 - A replayed valid message costs one bounded decompress before rejection,
   rate-limited per pool.
 - Each archived object carries its own replay evidence inside the signed bytes.
 - The timestamp is a backstop: if counter state is lost, it bounds the replay
   window while counters re-seed from the archive (ADR 5).
+- The check sequence is not fixed here. Adding, removing or reordering a check is
+  a code change, answerable to the three invariants above and to nothing else in
+  this file.
