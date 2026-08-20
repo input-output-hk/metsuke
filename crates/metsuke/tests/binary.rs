@@ -7,8 +7,8 @@
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use metsuke::envelope::{PoolId, Signature, VerifyingKey};
 use metsuke::envelope::{HEADER_SIGNATURE, HEADER_VKEY};
+use metsuke::envelope::{PoolId, Signature, VerifyingKey};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -20,7 +20,11 @@ const RECORDED_CHAIN: &str = include_str!("fixtures/recordings/leios-node.prom")
 // Large enough for any test batch; the real limit is server config.
 const TEST_DECOMPRESS_LIMIT: u64 = 64 * 1024 * 1024;
 
-fn write_config(dir: &tempfile::TempDir, server_uri: &str, signing_key_line: &str) -> std::path::PathBuf {
+fn write_config(
+    dir: &tempfile::TempDir,
+    server_uri: &str,
+    signing_key_line: &str,
+) -> std::path::PathBuf {
     let path = dir.path().join("config.toml");
     std::fs::write(
         &path,

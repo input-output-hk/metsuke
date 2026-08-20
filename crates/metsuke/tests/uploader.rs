@@ -6,8 +6,7 @@ use std::time::Duration;
 
 use metsuke::delivery::Delivery;
 use metsuke::envelope::{
-    self, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, Sample, Signature,
-    VerifyingKey,
+    self, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, Sample, Signature, VerifyingKey,
 };
 use metsuke::spool::{Spool, SpoolConfig};
 use metsuke::uploader::{UploadConfig, UploadOutcome, upload};
