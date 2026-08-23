@@ -4,9 +4,9 @@
 
 use std::time::Duration;
 
-use metsuke::envelope::Ack;
 use metsuke::schedule::{Schedule, ScheduleConfig};
 use metsuke::uploader::UploadOutcome;
+use metsuke_wire::envelope::Ack;
 
 fn config() -> ScheduleConfig {
     ScheduleConfig {

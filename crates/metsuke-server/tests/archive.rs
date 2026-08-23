@@ -3,8 +3,8 @@
 //! reading it back must be one bijection, and a key that is not one must say
 //! so rather than parse into a plausible wrong pool.
 
-use metsuke::envelope::{PoolId, SigningKey};
 use metsuke_server::archive::{FilesystemArchive, List, ObjectName};
+use metsuke_wire::envelope::{PoolId, SigningKey};
 use proptest::prelude::*;
 use time::{OffsetDateTime, UtcOffset};
 

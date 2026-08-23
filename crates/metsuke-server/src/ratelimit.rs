@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroU64};
 
-use metsuke::envelope::PoolId;
+use metsuke_wire::envelope::PoolId;
 use time::OffsetDateTime;
 
 pub struct RateLimiter {

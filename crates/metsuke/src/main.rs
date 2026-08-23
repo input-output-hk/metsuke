@@ -15,11 +15,7 @@ use metsuke::scrape::ScrapeConfig;
 use metsuke::sntp::SntpConfig;
 use metsuke::spool::{Spool, SpoolConfig, SpoolError};
 use metsuke::uploader::{UploadConfig, UploadOutcome, newer_version_available};
-
-/// sd-daemon severity prefixes journald parses off stderr.
-const ERR: &str = "<3>";
-const WARNING: &str = "<4>";
-const INFO: &str = "<6>";
+use metsuke_wire::journal::{ERR, INFO, WARNING};
 
 #[derive(Debug, thiserror::Error)]
 enum StartupError {

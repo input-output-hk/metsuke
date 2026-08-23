@@ -8,11 +8,12 @@ use metsuke_server::archive::{FilesystemArchive, List, Store};
 use metsuke_server::cli::{Args, ArgsError, Command};
 use metsuke_server::config::{ArchiveConfig, ConfigError, IngestConfig, S3Config, ServerConfig};
 use metsuke_server::counters::{CounterError, CounterStore};
+use metsuke_server::http;
 use metsuke_server::intake::Intake;
 use metsuke_server::rebuild::{EmptyArchive, RebuildError, RebuiltIndex, rebuild};
 use metsuke_server::s3::{S3Archive, S3Error};
 use metsuke_server::verify::{Audit, AuditError, audit};
-use metsuke_server::{ERR, INFO, http};
+use metsuke_wire::journal::{ERR, INFO};
 use rusty_s3::Credentials;
 
 #[derive(Debug, thiserror::Error)]

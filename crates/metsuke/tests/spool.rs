@@ -1,8 +1,8 @@
 //! Spool durability tests (ticket metsuke-4zo.4): nothing is lost across
 //! restarts or server downtime, and rows leave only through ACK.
 
-use metsuke::envelope::Sample;
 use metsuke::spool::{Spool, SpoolConfig};
+use metsuke_wire::envelope::Sample;
 use proptest::prelude::*;
 use time::OffsetDateTime;
 

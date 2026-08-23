@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use time::OffsetDateTime;
 
-use crate::envelope::Sample;
+use metsuke_wire::envelope::Sample;
 
 /// Metric names as emitted by the Leios node's PrometheusSimple backend,
 /// frozen against the recorded fixtures under tests/fixtures/recordings/.

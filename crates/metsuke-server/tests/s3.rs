@@ -6,18 +6,19 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use metsuke::envelope::SCHEMA_VERSION;
 use metsuke_server::archive::{Fetch, List, ObjectName, Store, StoredSubmission};
 use metsuke_server::config::S3Config;
 use metsuke_server::rebuild::{EmptyArchive, rebuild};
 use metsuke_server::s3::{META_COUNTER, META_SCHEMA_VERSION, META_SIGNATURE, META_VKEY, S3Archive};
 use metsuke_server::verify::{audit, verify};
+use metsuke_wire::envelope::SCHEMA_VERSION;
+use metsuke_wire::hex;
 use rusty_s3::Credentials;
 
 mod support;
 use support::{
-    MAX_DECOMPRESSED_BYTES, counter_store, envelope_for, hex, nonzero_u32, nonzero_u64, pool_of,
-    seal, stored_submission, test_key, test_now,
+    MAX_DECOMPRESSED_BYTES, counter_store, envelope_for, nonzero_u32, nonzero_u64, pool_of, seal,
+    stored_submission, test_key, test_now,
 };
 
 /// One request the fake endpoint received.
@@ -197,7 +198,7 @@ const COUNTER: u64 = 42;
 
 /// A submission and the bytes it was sealed from, so a test can compare what
 /// the endpoint received against what the client sent.
-fn submission(counter: u64) -> (Vec<u8>, metsuke::envelope::Signature) {
+fn submission(counter: u64) -> (Vec<u8>, metsuke_wire::envelope::Signature) {
     let key = test_key();
     seal(&key, &envelope_for(&key, counter))
 }
@@ -205,7 +206,7 @@ fn submission(counter: u64) -> (Vec<u8>, metsuke::envelope::Signature) {
 /// The submission `seal`ed at `counter`, as the archive is asked to store it.
 fn stored<'a>(
     counter: u64,
-    signature: metsuke::envelope::Signature,
+    signature: metsuke_wire::envelope::Signature,
     wire_bytes: &'a [u8],
 ) -> StoredSubmission<'a> {
     stored_submission(&test_key(), counter, test_now(), signature, wire_bytes)
@@ -245,11 +246,11 @@ fn the_metadata_headers_carry_what_re_verifying_the_object_needs() {
     let put = &requests[0];
     assert_eq!(
         put.header(META_SIGNATURE),
-        Some(hex(&signature.to_bytes()).as_str())
+        Some(hex::encode(&signature.to_bytes()).as_str())
     );
     assert_eq!(
         put.header(META_VKEY),
-        Some(hex(key.verifying_key().as_bytes()).as_str())
+        Some(hex::encode(key.verifying_key().as_bytes()).as_str())
     );
     assert_eq!(put.header(META_COUNTER), Some(COUNTER.to_string().as_str()));
     assert_eq!(

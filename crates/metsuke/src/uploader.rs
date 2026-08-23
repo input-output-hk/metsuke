@@ -5,7 +5,10 @@
 use std::time::Duration;
 
 use crate::delivery::SealedBatch;
-use crate::envelope::{Ack, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, VerifyingKey};
+use metsuke_wire::envelope::{
+    Ack, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, VerifyingKey,
+};
+use metsuke_wire::hex;
 
 pub struct UploadConfig {
     pub upload_url: String,
@@ -38,8 +41,8 @@ pub fn upload(config: &UploadConfig, vkey: &VerifyingKey, batch: &SealedBatch) -
     let response = agent
         .post(&config.upload_url)
         .header(HEADER_POOL_ID, config.pool_id.to_bech32())
-        .header(HEADER_VKEY, hex(vkey.as_bytes()))
-        .header(HEADER_SIGNATURE, hex(&batch.signature.to_bytes()))
+        .header(HEADER_VKEY, hex::encode(vkey.as_bytes()))
+        .header(HEADER_SIGNATURE, hex::encode(&batch.signature.to_bytes()))
         .header("content-encoding", "zstd")
         .content_type("application/json")
         .send(&batch.wire_bytes[..]);
@@ -86,8 +89,4 @@ fn parse_version(version: &str) -> Option<Vec<u64>> {
         .split('.')
         .map(|segment| segment.parse().ok())
         .collect()
-}
-
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }

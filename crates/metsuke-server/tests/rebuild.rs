@@ -2,10 +2,10 @@
 //! replay counter state, because that is the only thing a lost index would let
 //! an attacker replay past.
 
-use metsuke::envelope::{PoolId, SigningKey};
 use metsuke_server::archive::{FilesystemArchive, ObjectName, Store};
 use metsuke_server::counters::CounterStore;
 use metsuke_server::rebuild::{EmptyArchive, RebuildError, SeededPool, rebuild};
+use metsuke_wire::envelope::{PoolId, SigningKey};
 use time::OffsetDateTime;
 
 mod support;

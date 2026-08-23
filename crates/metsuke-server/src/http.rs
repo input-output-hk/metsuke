@@ -12,15 +12,16 @@
 
 use std::io::Read;
 
-use metsuke::envelope::{
+use metsuke_wire::envelope::{
     HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, PoolIdError, Signature, VerifyingKey,
 };
+use metsuke_wire::hex::{self, HexError};
+use metsuke_wire::journal::{ERR, WARNING};
 use time::OffsetDateTime;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::archive::Store;
 use crate::intake::{IngestError, Intake, Rejection, Submission};
-use crate::{ERR, WARNING};
 
 /// The one route this server answers.
 pub const SUBMIT_PATH: &str = "/v1/submit";
@@ -76,28 +77,19 @@ fn value<'a>(headers: &'a [Header], header: &'static str) -> Result<&'a str, Hea
         .ok_or(HeaderError::Missing { header })
 }
 
-/// A fixed-width hex header. Lowercase is what the agent emits (the
-/// `HEADER_*` constants in `metsuke::envelope`), but uppercase decodes too:
-/// refusing the other casing would only turn a verifiable upload into a
-/// rejection.
+/// Carries which header was wrong into `HeaderError`, so a refusal names the
+/// one the operator has to fix.
 fn decode_hex<const N: usize>(
     headers: &[Header],
     header: &'static str,
 ) -> Result<[u8; N], HeaderError> {
-    let text = value(headers, header)?.as_bytes();
-    if text.len() % 2 != 0 {
-        return Err(HeaderError::NotHex { header });
-    }
-    let mut bytes = Vec::with_capacity(text.len() / 2);
-    for pair in text.chunks(2) {
-        let digits = std::str::from_utf8(pair).map_err(|_| HeaderError::NotHex { header })?;
-        bytes.push(u8::from_str_radix(digits, 16).map_err(|_| HeaderError::NotHex { header })?);
-    }
-    let found = bytes.len();
-    bytes.try_into().map_err(|_| HeaderError::WrongLength {
-        header,
-        found,
-        expected: N,
+    hex::decode(value(headers, header)?).map_err(|error| match error {
+        HexError::NotHex => HeaderError::NotHex { header },
+        HexError::WrongLength { found, expected } => HeaderError::WrongLength {
+            header,
+            found,
+            expected,
+        },
     })
 }
 

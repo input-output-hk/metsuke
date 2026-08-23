@@ -8,15 +8,16 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use metsuke::envelope::{
+use metsuke_server::counters::CounterStore;
+use metsuke_wire::envelope::{
     Ack, Envelope, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, SigningKey,
 };
-use metsuke_server::counters::CounterStore;
+use metsuke_wire::hex;
 use time::OffsetDateTime;
 
 mod support;
 use support::{
-    envelope_at, example_s3_archive, hex, other_key, pool_of, seal, stored_submission, test_key,
+    envelope_at, example_s3_archive, other_key, pool_of, seal, stored_submission, test_key,
 };
 
 /// Limits wide enough that no check fires on its own. A test exercising one
@@ -160,8 +161,8 @@ impl Server {
         let (wire_bytes, signature) = seal(key, envelope);
         self.post_raw(
             &pool_of(key).to_bech32(),
-            &hex(key.verifying_key().as_bytes()),
-            &hex(&signature.to_bytes()),
+            &hex::encode(key.verifying_key().as_bytes()),
+            &hex::encode(&signature.to_bytes()),
             wire_bytes,
         )
     }
@@ -252,7 +253,7 @@ fn a_sealed_batch_is_acked_and_archived_byte_for_byte() {
     let (status, body) = server.post(&key, &envelope);
     assert_eq!(status, 200, "{body}");
     let ack: Ack = serde_json::from_str(&body).unwrap();
-    assert_eq!(ack.latest_version, metsuke::AGENT_VERSION);
+    assert_eq!(ack.latest_version, metsuke_server::CLIENT_VERSION);
 
     let (wire_bytes, signature) = seal(&key, &envelope);
     let stored = stored_submission(

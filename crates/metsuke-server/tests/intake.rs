@@ -2,11 +2,11 @@
 //! archived object and an ACK out, and every check in the ADR-0002 chain
 //! rejecting on its own with its own reason.
 
-use metsuke::envelope::{Envelope, PoolId, SCHEMA_VERSION, SigningKey};
 use metsuke_server::archive::FilesystemArchive;
 use metsuke_server::config::IngestConfig;
 use metsuke_server::counters::CounterStore;
 use metsuke_server::intake::{IngestError, Intake, Rejection};
+use metsuke_wire::envelope::{Envelope, PoolId, SCHEMA_VERSION, SigningKey};
 use time::OffsetDateTime;
 
 mod support;
@@ -39,7 +39,7 @@ fn submit(
     intake: &mut Intake<FilesystemArchive>,
     key: &SigningKey,
     envelope: &Envelope,
-) -> Result<metsuke::envelope::Ack, IngestError> {
+) -> Result<metsuke_wire::envelope::Ack, IngestError> {
     let (body, signature) = seal(key, envelope);
     intake.submit(
         &submission(key.verifying_key(), envelope.pool_id, signature, &body),
@@ -64,7 +64,7 @@ fn valid_submission_is_archived_raw_and_acked() {
         )
         .unwrap();
 
-    assert_eq!(ack.latest_version, metsuke::AGENT_VERSION);
+    assert_eq!(ack.latest_version, metsuke_server::CLIENT_VERSION);
     let key_path = stored_submission(&key, envelope.counter, envelope.timestamp, signature, &body)
         .object_key();
     let stored = std::fs::read(dir.path().join("archive").join(&key_path)).unwrap();

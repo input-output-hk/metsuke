@@ -2,9 +2,9 @@
 //! and their merge, so "clock offset comes from the agent's own SNTP query"
 //! (ADR 0007) is a code path, not caller discipline.
 
-use crate::envelope::Sample;
 use crate::scrape::{ScrapeConfig, scrape};
 use crate::sntp::{SntpConfig, probe};
+use metsuke_wire::envelope::Sample;
 
 pub struct SamplerConfig {
     pub scrape: ScrapeConfig,

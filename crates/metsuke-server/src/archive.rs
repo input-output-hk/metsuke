@@ -6,7 +6,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use metsuke::envelope::{PoolId, PoolIdError, Signature, VerifyingKey};
+use metsuke_wire::envelope::{PoolId, PoolIdError, Signature, VerifyingKey};
 use time::{OffsetDateTime, UtcOffset};
 
 /// One accepted submission: the bytes to store, plus what `S3Archive` writes

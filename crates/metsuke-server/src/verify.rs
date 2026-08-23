@@ -1,7 +1,7 @@
 //! Re-verify a stored object from nothing but the object: its key, its
 //! metadata and its bytes (ADR 0005). `audit` runs it over a whole bucket.
 
-use metsuke::envelope::{self, Envelope, PoolId, SCHEMA_VERSION};
+use metsuke_wire::envelope::{self, Envelope, PoolId, SCHEMA_VERSION};
 
 use crate::archive::{ArchiveError, Fetch, FetchedObject, List, ObjectName};
 

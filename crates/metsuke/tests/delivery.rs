@@ -3,8 +3,8 @@
 //! verifying key — the same call the server makes.
 
 use metsuke::delivery::Delivery;
-use metsuke::envelope::{self, PoolId, Sample, SigningKey};
 use metsuke::spool::{Spool, SpoolConfig};
+use metsuke_wire::envelope::{self, PoolId, Sample, SigningKey};
 use time::OffsetDateTime;
 
 // Large enough for any test batch; the real limit is server config.

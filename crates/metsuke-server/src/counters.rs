@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use metsuke::envelope::PoolId;
+use metsuke_wire::envelope::PoolId;
 use rusqlite::Connection;
 use time::OffsetDateTime;
 
@@ -18,7 +18,7 @@ pub enum CounterError {
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]
-    Migrate(#[from] metsuke::sqlite::MigrateError),
+    Migrate(#[from] metsuke_wire::sqlite::MigrateError),
 }
 
 /// What a submitted counter is worth against the pool's recorded state.
@@ -56,7 +56,7 @@ impl CounterStore {
     /// Open (creating if absent) and migrate the counter database.
     pub fn open(path: &Path) -> Result<Self, CounterError> {
         let conn = Connection::open(path)?;
-        metsuke::sqlite::migrate(&conn, MIGRATIONS)?;
+        metsuke_wire::sqlite::migrate(&conn, MIGRATIONS)?;
         Ok(CounterStore { conn })
     }
 

@@ -7,8 +7,8 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use crate::envelope::PoolId;
 use crate::sntp;
+use metsuke_wire::envelope::PoolId;
 
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]

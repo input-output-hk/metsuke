@@ -8,13 +8,13 @@
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::Path;
 
-use metsuke::envelope::{
-    self, Envelope, PoolId, SCHEMA_VERSION, Sample, Signature, SigningKey, VerifyingKey,
-};
 use metsuke_server::archive::{ArchiveError, List, Store, StoredSubmission};
 use metsuke_server::config::IngestConfig;
 use metsuke_server::counters::CounterStore;
 use metsuke_server::intake::Submission;
+use metsuke_wire::envelope::{
+    self, Envelope, PoolId, SCHEMA_VERSION, Sample, Signature, SigningKey, VerifyingKey,
+};
 use time::OffsetDateTime;
 
 /// The all-sevens test seed, matching the agent suite.
@@ -49,7 +49,7 @@ pub fn envelope_at(key: &SigningKey, counter: u64, now: OffsetDateTime) -> Envel
     Envelope {
         schema_version: SCHEMA_VERSION,
         pool_id: pool_of(key),
-        agent_version: metsuke::AGENT_VERSION.to_string(),
+        agent_version: metsuke_server::CLIENT_VERSION.to_string(),
         counter,
         timestamp: now,
         samples: vec![Sample {
@@ -64,11 +64,6 @@ pub fn envelope_at(key: &SigningKey, counter: u64, now: OffsetDateTime) -> Envel
             clock_offset_ms: None,
         }],
     }
-}
-
-/// Lowercase hex, as the vkey and signature headers carry it.
-pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// The wire bytes and signature a client would send for this envelope.

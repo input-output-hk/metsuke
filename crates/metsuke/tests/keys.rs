@@ -37,7 +37,7 @@ fn flag_path_beats_config_path() {
     let flag = write_envelope(&dir, "flag.skey", 1);
     let config = write_envelope(&dir, "config.skey", 2);
     let key = keys::resolve_signing_key(Some(&flag), Some(&config)).unwrap();
-    let expected = metsuke::envelope::SigningKey::from_bytes(&[1u8; 32]);
+    let expected = metsuke_wire::envelope::SigningKey::from_bytes(&[1u8; 32]);
     assert_eq!(key.verifying_key(), expected.verifying_key());
 }
 
@@ -46,7 +46,7 @@ fn config_path_used_when_no_flag() {
     let dir = tempfile::tempdir().unwrap();
     let config = write_envelope(&dir, "config.skey", 2);
     let key = keys::resolve_signing_key(None, Some(&config)).unwrap();
-    let expected = metsuke::envelope::SigningKey::from_bytes(&[2u8; 32]);
+    let expected = metsuke_wire::envelope::SigningKey::from_bytes(&[2u8; 32]);
     assert_eq!(key.verifying_key(), expected.verifying_key());
 }
 
@@ -62,12 +62,55 @@ fn missing_at_flag_and_config_fails_loudly() {
     );
 }
 
+/// A TextEnvelope carrying `cbor_hex` verbatim.
+fn write_cbor_hex(dir: &tempfile::TempDir, name: &str, cbor_hex: &str) -> std::path::PathBuf {
+    let path = dir.path().join(name);
+    let envelope = format!(
+        r#"{{"type": "StakePoolSigningKey_ed25519", "description": "", "cborHex": "{cbor_hex}"}}"#
+    );
+    std::fs::write(&path, envelope).unwrap();
+    path
+}
+
+#[test]
+fn cbor_hex_without_the_seed_prefix_names_the_prefix_it_wanted() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_cbor_hex(
+        &dir,
+        "wrong-prefix.skey",
+        &format!("5840{}", "07".repeat(32)),
+    );
+    let message = keys::load_signing_key(&path).unwrap_err().to_string();
+    assert!(message.contains("5820"), "got: {message}");
+}
+
+// The seed's own length and digits are what `hex::decode` checks, so the
+// failure must arrive with its detail rather than as a bare refusal.
+#[test]
+fn a_seed_of_the_wrong_length_reports_the_byte_count_it_found() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_cbor_hex(&dir, "short.skey", &format!("5820{}", "07".repeat(31)));
+    let message = keys::load_signing_key(&path).unwrap_err().to_string();
+    assert!(
+        message.contains("31 bytes") && message.contains("expected 32"),
+        "got: {message}"
+    );
+}
+
+#[test]
+fn a_seed_that_is_not_hex_reports_that() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = write_cbor_hex(&dir, "not-hex.skey", &format!("5820{}", "zz".repeat(32)));
+    let message = keys::load_signing_key(&path).unwrap_err().to_string();
+    assert!(message.contains("hex digits"), "got: {message}");
+}
+
 #[test]
 fn text_envelope_file_loads_the_seed_it_carries() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("pool.skey");
     std::fs::write(&path, seven_seed_envelope()).unwrap();
     let key = keys::load_signing_key(&path).unwrap();
-    let expected = metsuke::envelope::SigningKey::from_bytes(&[7u8; 32]);
+    let expected = metsuke_wire::envelope::SigningKey::from_bytes(&[7u8; 32]);
     assert_eq!(key.verifying_key(), expected.verifying_key());
 }

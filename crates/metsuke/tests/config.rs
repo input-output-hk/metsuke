@@ -3,7 +3,7 @@
 //! default to the shipped values the example config documents.
 
 use metsuke::config::Config;
-use metsuke::envelope::{PoolId, SigningKey};
+use metsuke_wire::envelope::{PoolId, SigningKey};
 
 fn test_pool_id() -> PoolId {
     PoolId::from_cold_key(&SigningKey::from_bytes(&[7u8; 32]).verifying_key())

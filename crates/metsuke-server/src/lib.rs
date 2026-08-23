@@ -13,7 +13,5 @@ pub mod rebuild;
 pub mod s3;
 pub mod verify;
 
-/// sd-daemon severity prefixes journald parses off stderr.
-pub const ERR: &str = "<3>";
-pub const WARNING: &str = "<4>";
-pub const INFO: &str = "<6>";
+/// The agent version this server nudges operators towards (`build.rs`).
+pub const CLIENT_VERSION: &str = env!("CLIENT_VERSION");

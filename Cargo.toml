@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/metsuke", "crates/metsuke-server"]
+members = ["crates/metsuke", "crates/metsuke-server", "crates/metsuke-wire"]
 
 [workspace.metadata.crane]
 name = "metsuke-workspace"

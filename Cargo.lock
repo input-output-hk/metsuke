@@ -968,9 +968,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "metsuke"
 version = "0.1.0"
 dependencies = [
- "bech32",
- "blake2",
- "ed25519-dalek",
+ "metsuke-wire",
  "proptest",
  "rusqlite",
  "serde",
@@ -982,14 +980,13 @@ dependencies = [
  "toml",
  "ureq",
  "wiremock",
- "zstd",
 ]
 
 [[package]]
 name = "metsuke-server"
 version = "0.1.0"
 dependencies = [
- "metsuke",
+ "metsuke-wire",
  "proptest",
  "rusqlite",
  "rusty-s3",
@@ -1002,6 +999,22 @@ dependencies = [
  "toml",
  "ureq",
  "url",
+ "zstd",
+]
+
+[[package]]
+name = "metsuke-wire"
+version = "0.1.0"
+dependencies = [
+ "bech32",
+ "blake2",
+ "ed25519-dalek",
+ "proptest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "time",
  "zstd",
 ]
 

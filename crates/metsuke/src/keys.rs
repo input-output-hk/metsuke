@@ -6,7 +6,8 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::envelope::SigningKey;
+use metsuke_wire::envelope::SigningKey;
+use metsuke_wire::hex::{self, HexError};
 
 /// CBOR major type 2 (byte string), length 32 — the prefix cardano-cli puts
 /// before a raw Ed25519 seed in `cborHex`. Matching it as a literal keeps
@@ -35,10 +36,16 @@ pub enum KeyError {
         source: serde_json::Error,
     },
     #[error(
-        "signing key {path}: cborHex is not a 32-byte Ed25519 seed \
-         (expected {SEED_PREFIX} followed by 64 hex digits)"
+        "signing key {path}: cborHex does not begin with {SEED_PREFIX}, so it \
+         is not a 32-byte Ed25519 seed"
     )]
     NotAnEd25519Seed { path: String },
+    #[error("signing key {path}: cborHex after {SEED_PREFIX} {source}")]
+    SeedNotHex {
+        path: String,
+        #[source]
+        source: HexError,
+    },
     #[error(
         "no signing key: pass --signing-key <path> (systemd: \
          --signing-key \"${{CREDENTIALS_DIRECTORY}}/signing-key\") or set \
@@ -68,21 +75,15 @@ pub fn load_signing_key(path: &Path) -> Result<SigningKey, KeyError> {
             path: display.clone(),
             source,
         })?;
-    let seed = envelope
+    let digits = envelope
         .cbor_hex
         .strip_prefix(SEED_PREFIX)
-        .and_then(decode_seed)
-        .ok_or(KeyError::NotAnEd25519Seed { path: display })?;
+        .ok_or(KeyError::NotAnEd25519Seed {
+            path: display.clone(),
+        })?;
+    let seed = hex::decode::<32>(digits).map_err(|source| KeyError::SeedNotHex {
+        path: display,
+        source,
+    })?;
     Ok(SigningKey::from_bytes(&seed))
-}
-
-fn decode_seed(hex: &str) -> Option<[u8; 32]> {
-    if hex.len() != 64 {
-        return None;
-    }
-    let mut seed = [0u8; 32];
-    for (byte, pair) in seed.iter_mut().zip(hex.as_bytes().chunks(2)) {
-        *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
-    }
-    Some(seed)
 }

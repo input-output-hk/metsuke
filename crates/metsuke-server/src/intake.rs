@@ -1,7 +1,9 @@
 //! The one path an upload takes. `submit` read top to bottom is the check
 //! order; ADR 0002 fixes only what that order must satisfy.
 
-use metsuke::envelope::{self, Ack, Envelope, PoolId, SCHEMA_VERSION, Signature, VerifyingKey};
+use metsuke_wire::envelope::{
+    self, Ack, Envelope, PoolId, SCHEMA_VERSION, Signature, VerifyingKey,
+};
 use time::OffsetDateTime;
 
 use crate::archive::{ArchiveError, Store, StoredSubmission};
@@ -197,7 +199,7 @@ impl<A: Store> Intake<A> {
         })?;
         reserved.commit()?;
         Ok(Ack {
-            latest_version: metsuke::AGENT_VERSION.to_string(),
+            latest_version: crate::CLIENT_VERSION.to_string(),
         })
     }
 }

@@ -1,7 +1,7 @@
 //! Tier-1 property tests for the wire contract: seal→open roundtrip and
 //! tamper rejection (ticket metsuke-4zo.1).
 
-use metsuke::envelope::{self, Envelope, PoolId, SCHEMA_VERSION, Sample, SigningKey};
+use metsuke_wire::envelope::{self, Envelope, PoolId, SCHEMA_VERSION, Sample, SigningKey};
 use proptest::prelude::*;
 use time::OffsetDateTime;
 

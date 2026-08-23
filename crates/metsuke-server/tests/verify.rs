@@ -2,9 +2,9 @@
 //! hand back and breaks exactly one thing about it, so what the verification
 //! rests on is visible one failure at a time.
 
-use metsuke::envelope::{Envelope, SigningKey};
 use metsuke_server::archive::{FetchedObject, ObjectName};
 use metsuke_server::verify::{Audit, AuditFailure, VerifyError, verify};
+use metsuke_wire::envelope::{Envelope, SigningKey};
 
 mod support;
 use support::{MAX_DECOMPRESSED_BYTES, envelope_for, other_key, pool_of, seal, test_key, test_now};

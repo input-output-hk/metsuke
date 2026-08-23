@@ -11,13 +11,14 @@ use std::time::Duration;
 use rusty_s3::actions::{ListObjectsV2, S3Action as _};
 use rusty_s3::{Bucket, Credentials, UrlStyle};
 
-use metsuke::envelope::{Signature, VerifyingKey};
+use metsuke_wire::envelope::{Signature, VerifyingKey};
+use metsuke_wire::hex;
 
-use crate::WARNING;
 use crate::archive::{
     ArchiveError, Fetch, FetchedObject, KEY_PREFIX, List, ObjectName, Store, StoredSubmission,
 };
 use crate::config::S3Config;
+use metsuke_wire::journal::WARNING;
 
 /// The metadata an object carries beside its bytes. These four plus the key's
 /// pool id are the whole verification input (ADR 0005).
@@ -161,8 +162,11 @@ impl Store for S3Archive {
     fn store(&self, submission: &StoredSubmission<'_>) -> Result<(), ArchiveError> {
         let key = submission.object_key();
         let metadata = [
-            (META_SIGNATURE, hex(&submission.signature.to_bytes())),
-            (META_VKEY, hex(submission.vkey.as_bytes())),
+            (
+                META_SIGNATURE,
+                hex::encode(&submission.signature.to_bytes()),
+            ),
+            (META_VKEY, hex::encode(submission.vkey.as_bytes())),
             (META_COUNTER, submission.counter.to_string()),
             (META_SCHEMA_VERSION, submission.schema_version.to_string()),
         ];
@@ -279,23 +283,10 @@ impl Fetch for S3Archive {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-/// A fixed-width hex metadata value. Mirrors the header decoder in `http`,
-/// which reads the same encoding off the upload (ticket metsuke-4zo.23).
+/// Carries which metadata header was wrong into `fetch`'s reason string,
+/// alongside `number` below.
 fn unhex<const N: usize>(text: &str, header: &str) -> Result<[u8; N], String> {
-    let refuse = || format!("{header} is not {N} bytes of hex: {text:?}");
-    if text.len() != N * 2 {
-        return Err(refuse());
-    }
-    let mut bytes = [0u8; N];
-    for (byte, pair) in bytes.iter_mut().zip(text.as_bytes().chunks(2)) {
-        let digits = std::str::from_utf8(pair).map_err(|_| refuse())?;
-        *byte = u8::from_str_radix(digits, 16).map_err(|_| refuse())?;
-    }
-    Ok(bytes)
+    hex::decode(text).map_err(|error| format!("{header} is not hex: {error} ({text:?})"))
 }
 
 fn number<T: std::str::FromStr>(text: &str, header: &str) -> Result<T, String> {

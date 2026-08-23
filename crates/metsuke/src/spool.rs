@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use rusqlite::Connection;
 
-use crate::envelope::Sample;
+use metsuke_wire::envelope::Sample;
 
 pub struct SpoolConfig {
     pub path: PathBuf,
@@ -33,7 +33,7 @@ pub enum SpoolError {
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]
-    Migrate(#[from] crate::sqlite::MigrateError),
+    Migrate(#[from] metsuke_wire::sqlite::MigrateError),
     #[error("sample row {id} does not deserialize: {source}")]
     Corrupt {
         id: i64,
@@ -58,7 +58,7 @@ impl Spool {
     /// Open (creating if absent) and migrate the spool database.
     pub fn open(config: &SpoolConfig) -> Result<Self, SpoolError> {
         let conn = Connection::open(&config.path)?;
-        crate::sqlite::migrate(&conn, MIGRATIONS)?;
+        metsuke_wire::sqlite::migrate(&conn, MIGRATIONS)?;
         Ok(Spool {
             conn,
             max_samples: config.max_samples,

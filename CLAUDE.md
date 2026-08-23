@@ -2,7 +2,8 @@
 
 Telemetry for the MusashiNet rewards program: `crates/metsuke` (SPO agent) samples
 cardano-node's Prometheus endpoint and uploads signed batches; `crates/metsuke-server`
-verifies and archives them to S3. Security is the top constraint — least privilege,
+verifies and archives them to S3; `crates/metsuke-wire` is what the two agree on, and
+neither depends on the other. Security is the top constraint — least privilege,
 smallest attack surface.
 
 ## Invariants

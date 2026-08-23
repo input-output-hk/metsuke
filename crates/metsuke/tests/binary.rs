@@ -7,13 +7,14 @@
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use metsuke::envelope::{HEADER_SIGNATURE, HEADER_VKEY};
-use metsuke::envelope::{PoolId, Signature, VerifyingKey};
+use metsuke_wire::envelope::{HEADER_SIGNATURE, HEADER_VKEY};
+use metsuke_wire::envelope::{PoolId, Signature, VerifyingKey};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod support;
-use support::{decode_hex, test_key};
+use metsuke_wire::hex;
+use support::test_key;
 
 const RECORDED_CHAIN: &str = include_str!("fixtures/recordings/leios-node.prom");
 
@@ -135,9 +136,9 @@ async fn binary_uploads_a_batch_signed_by_the_flag_key() {
     child.wait().unwrap();
 
     let header = |name: &str| post.headers.get(name).unwrap().to_str().unwrap();
-    let vkey_bytes: [u8; 32] = decode_hex(header(HEADER_VKEY)).try_into().unwrap();
-    let sig_bytes: [u8; 64] = decode_hex(header(HEADER_SIGNATURE)).try_into().unwrap();
-    let opened = metsuke::envelope::open(
+    let vkey_bytes = hex::decode::<32>(header(HEADER_VKEY)).unwrap();
+    let sig_bytes = hex::decode::<64>(header(HEADER_SIGNATURE)).unwrap();
+    let opened = metsuke_wire::envelope::open(
         &VerifyingKey::from_bytes(&vkey_bytes).unwrap(),
         &post.body,
         &Signature::from_bytes(&sig_bytes),

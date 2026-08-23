@@ -4,8 +4,8 @@
 
 use std::time::Duration;
 
-use metsuke::envelope::Sample;
 use metsuke::scrape::{ScrapeConfig, scrape};
+use metsuke_wire::envelope::Sample;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

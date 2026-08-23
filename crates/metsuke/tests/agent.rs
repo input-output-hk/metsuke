@@ -7,18 +7,19 @@ use std::time::Duration;
 
 use metsuke::agent::Agent;
 use metsuke::delivery::Delivery;
-use metsuke::envelope::{self, PoolId, Signature, VerifyingKey};
-use metsuke::envelope::{HEADER_SIGNATURE, HEADER_VKEY};
 use metsuke::sampler::SamplerConfig;
 use metsuke::scrape::ScrapeConfig;
 use metsuke::sntp::SntpConfig;
 use metsuke::spool::{Spool, SpoolConfig};
 use metsuke::uploader::{UploadConfig, UploadOutcome};
+use metsuke_wire::envelope::{self, PoolId, Signature, VerifyingKey};
+use metsuke_wire::envelope::{HEADER_SIGNATURE, HEADER_VKEY};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod support;
-use support::{decode_hex, test_key};
+use metsuke_wire::hex;
+use support::test_key;
 
 const RECORDED_CHAIN: &str = include_str!("fixtures/recordings/leios-node.prom");
 
@@ -102,8 +103,8 @@ async fn sampled_metrics_upload_as_a_verified_batch_and_ack_drains_the_spool() {
 
     let request = &uploads.received_requests().await.unwrap()[0];
     let header = |name: &str| request.headers.get(name).unwrap().to_str().unwrap();
-    let vkey_bytes: [u8; 32] = decode_hex(header(HEADER_VKEY)).try_into().unwrap();
-    let sig_bytes: [u8; 64] = decode_hex(header(HEADER_SIGNATURE)).try_into().unwrap();
+    let vkey_bytes = hex::decode::<32>(header(HEADER_VKEY)).unwrap();
+    let sig_bytes = hex::decode::<64>(header(HEADER_SIGNATURE)).unwrap();
     let opened = envelope::open(
         &VerifyingKey::from_bytes(&vkey_bytes).unwrap(),
         &request.body,

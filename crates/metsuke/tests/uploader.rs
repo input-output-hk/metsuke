@@ -5,17 +5,18 @@
 use std::time::Duration;
 
 use metsuke::delivery::Delivery;
-use metsuke::envelope::{
-    self, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, Sample, Signature, VerifyingKey,
-};
 use metsuke::spool::{Spool, SpoolConfig};
 use metsuke::uploader::{UploadConfig, UploadOutcome, upload};
+use metsuke_wire::envelope::{
+    self, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, Sample, Signature, VerifyingKey,
+};
 use time::OffsetDateTime;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod support;
-use support::{decode_hex, test_key};
+use metsuke_wire::hex;
+use support::test_key;
 
 // Large enough for any test batch; the real limit is server config.
 const TEST_DECOMPRESS_LIMIT: u64 = 64 * 1024 * 1024;
@@ -169,9 +170,9 @@ async fn acked_upload_carries_verifiable_headers_and_body() {
         PoolId::from_cold_key(&test_key().verifying_key()).to_bech32()
     );
     assert_eq!(header("content-encoding"), "zstd");
-    let vkey_bytes: [u8; 32] = decode_hex(header(HEADER_VKEY)).try_into().unwrap();
+    let vkey_bytes = hex::decode::<32>(header(HEADER_VKEY)).unwrap();
     let vkey = VerifyingKey::from_bytes(&vkey_bytes).unwrap();
-    let sig_bytes: [u8; 64] = decode_hex(header(HEADER_SIGNATURE)).try_into().unwrap();
+    let sig_bytes = hex::decode::<64>(header(HEADER_SIGNATURE)).unwrap();
     let signature = Signature::from_bytes(&sig_bytes);
     let opened = envelope::open(&vkey, &request.body, &signature, TEST_DECOMPRESS_LIMIT).unwrap();
     assert_eq!(opened.samples[0].block_height, Some(5));

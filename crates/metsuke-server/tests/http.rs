@@ -2,12 +2,13 @@
 //! an arbitrary internet request and the intake, so every malformed shape
 //! must name what is wrong rather than reach `submit`.
 
-use metsuke::envelope::{HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY};
 use metsuke_server::http::SubmissionHeaders;
+use metsuke_wire::envelope::{HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY};
 use tiny_http::Header;
 
 mod support;
-use support::{hex, pool_of, seal, test_key};
+use metsuke_wire::hex;
+use support::{pool_of, seal, test_key};
 
 fn header(field: &str, value: &str) -> Header {
     Header::from_bytes(field.as_bytes(), value.as_bytes()).unwrap()
@@ -19,8 +20,8 @@ fn valid_headers() -> Vec<Header> {
     let (_, signature) = seal(&key, &support::envelope_for(&key, 1));
     vec![
         header(HEADER_POOL_ID, &pool_of(&key).to_bech32()),
-        header(HEADER_VKEY, &hex(key.verifying_key().as_bytes())),
-        header(HEADER_SIGNATURE, &hex(&signature.to_bytes())),
+        header(HEADER_VKEY, &hex::encode(key.verifying_key().as_bytes())),
+        header(HEADER_SIGNATURE, &hex::encode(&signature.to_bytes())),
     ]
 }
 
@@ -50,7 +51,7 @@ fn valid_headers_decode_to_the_claimed_identity() {
     let (wire_bytes, signature) = seal(&key, &support::envelope_for(&key, 1));
     assert_eq!(decoded.signature, signature);
     // Decoded well enough to verify with: the whole point of the layer.
-    metsuke::envelope::open(&decoded.vkey, &wire_bytes, &decoded.signature, 1 << 20).unwrap();
+    metsuke_wire::envelope::open(&decoded.vkey, &wire_bytes, &decoded.signature, 1 << 20).unwrap();
 }
 
 #[test]
@@ -71,11 +72,11 @@ fn header_names_are_matched_case_insensitively() {
         header(&HEADER_POOL_ID.to_uppercase(), &pool_of(&key).to_bech32()),
         header(
             &HEADER_VKEY.to_uppercase(),
-            &hex(key.verifying_key().as_bytes()),
+            &hex::encode(key.verifying_key().as_bytes()),
         ),
         header(
             &HEADER_SIGNATURE.to_uppercase(),
-            &hex(&seal(&key, &support::envelope_for(&key, 1)).1.to_bytes()),
+            &hex::encode(&seal(&key, &support::envelope_for(&key, 1)).1.to_bytes()),
         ),
     ];
     assert_eq!(
@@ -120,7 +121,7 @@ fn uppercase_hex_decodes() {
     let key = test_key();
     let decoded = SubmissionHeaders::decode(&with(
         HEADER_VKEY,
-        &hex(key.verifying_key().as_bytes()).to_uppercase(),
+        &hex::encode(key.verifying_key().as_bytes()).to_uppercase(),
     ))
     .unwrap();
     assert_eq!(decoded.vkey, key.verifying_key());

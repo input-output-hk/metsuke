@@ -7,7 +7,7 @@ use std::collections::HashSet;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::PathBuf;
 
-use metsuke::envelope::PoolId;
+use metsuke_wire::envelope::PoolId;
 use serde::Deserialize;
 use url::Url;
 

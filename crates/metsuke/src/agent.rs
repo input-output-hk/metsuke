@@ -7,9 +7,9 @@
 use time::OffsetDateTime;
 
 use crate::delivery::{Delivery, DeliveryError};
-use crate::envelope::VerifyingKey;
 use crate::sampler::{SamplerConfig, sample};
 use crate::uploader::{UploadConfig, UploadOutcome, upload};
+use metsuke_wire::envelope::VerifyingKey;
 
 pub struct Agent {
     sampler: SamplerConfig,

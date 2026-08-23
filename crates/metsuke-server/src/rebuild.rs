@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use metsuke::envelope::PoolId;
+use metsuke_wire::envelope::PoolId;
 
 use crate::archive::{ArchiveError, List, ObjectName, ObjectNameError};
 use crate::cli::ALLOW_EMPTY;

@@ -6,8 +6,8 @@
 
 use time::OffsetDateTime;
 
-use crate::envelope::{self, Envelope, PoolId, SCHEMA_VERSION, Sample, SigningKey};
 use crate::spool::{Spool, SpoolError};
+use metsuke_wire::envelope::{self, Envelope, PoolId, SCHEMA_VERSION, Sample, SigningKey};
 
 pub struct Delivery {
     spool: Spool,

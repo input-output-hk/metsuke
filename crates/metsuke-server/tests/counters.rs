@@ -2,8 +2,8 @@
 //! is "strictly greater than everything accepted for this pool", and it
 //! holds across restarts because the state is the SQLite row, not memory.
 
-use metsuke::envelope::PoolId;
 use metsuke_server::counters::{CounterError, CounterStore, Reservation};
+use metsuke_wire::envelope::PoolId;
 
 mod support;
 use proptest::prelude::*;
@@ -18,7 +18,7 @@ fn test_now() -> OffsetDateTime {
 }
 
 fn pool(index: u8) -> PoolId {
-    let key = metsuke::envelope::SigningKey::from_bytes(&[index; 32]);
+    let key = metsuke_wire::envelope::SigningKey::from_bytes(&[index; 32]);
     PoolId::from_cold_key(&key.verifying_key())
 }
 
