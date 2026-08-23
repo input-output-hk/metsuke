@@ -22,3 +22,4 @@ Each is an accepted decision; read the ADR before working near it.
 
 - Limits (sizes, rates, intervals) are configuration, never constants.
 - Research notes live under docs/research/.
+- $CARGO_TARGET_DIR is set, look for dependencies there.
