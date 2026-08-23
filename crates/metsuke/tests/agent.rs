@@ -38,7 +38,7 @@ fn test_agent(dir: &tempfile::TempDir, metrics: &MockServer, uploads: &MockServe
     Agent::new(
         SamplerConfig {
             scrape: ScrapeConfig {
-                metrics_url: format!("{}/metrics", metrics.uri()),
+                metrics_url: format!("{}/metrics", metrics.uri()).try_into().unwrap(),
                 timeout: Duration::from_secs(5),
                 max_body_bytes: 1024 * 1024,
             },

@@ -14,7 +14,7 @@ const RECORDED_STARTUP: &str = include_str!("fixtures/recordings/leios-node-star
 
 fn config(metrics_url: String) -> ScrapeConfig {
     ScrapeConfig {
-        metrics_url,
+        metrics_url: metrics_url.try_into().unwrap(),
         timeout: Duration::from_secs(5),
         max_body_bytes: 1024 * 1024,
     }
@@ -74,14 +74,39 @@ async fn recorded_startup_body_yields_build_info_only() {
     );
 }
 
+// Loopback because `MetricsUrl` refuses anything else, and the discard port
+// because it is privileged, so no MockServer can take it (metsuke-4zo.18).
 #[tokio::test]
-async fn unreachable_endpoint_yields_all_nulls() {
-    // TEST-NET-1 (RFC 5737) is unroutable: nothing answers, and no other test
-    // can claim it the way a released MockServer port gets reclaimed.
-    let mut unreachable = config("http://192.0.2.1:9/metrics".into());
-    unreachable.timeout = Duration::from_millis(200);
-    let sample = scrape_config(unreachable).await;
+async fn refused_endpoint_yields_all_nulls() {
+    let sample = scrape_config(config("http://127.0.0.1:9/metrics".into())).await;
     assert_eq!(sample, all_null(sample.sampled_at));
+}
+
+// A refused connect returns at once, so it cannot show that the deadline is
+// the thing bounding a scrape: an endpoint that answers too late must.
+#[tokio::test]
+async fn endpoint_slower_than_the_timeout_yields_all_nulls() {
+    let server = MockServer::start().await;
+    let timeout = Duration::from_millis(200);
+    Mock::given(method("GET"))
+        .and(path("/metrics"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(RECORDED_CHAIN, "text/plain")
+                .set_delay(timeout * 10),
+        )
+        .mount(&server)
+        .await;
+    let mut slow = config(format!("{}/metrics", server.uri()));
+    slow.timeout = timeout;
+    let started = std::time::Instant::now();
+    let sample = scrape_config(slow).await;
+    assert_eq!(sample, all_null(sample.sampled_at));
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed >= timeout && elapsed < timeout * 10,
+        "the scrape took {elapsed:?}, not the configured {timeout:?}"
+    );
 }
 
 #[tokio::test]

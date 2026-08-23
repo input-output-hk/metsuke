@@ -4,71 +4,12 @@
 
 use std::time::Duration;
 
-use serde::Deserialize;
-
 use crate::delivery::SealedBatch;
+use crate::endpoint::UploadUrl;
 use metsuke_wire::envelope::{
     Ack, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, VerifyingKey,
 };
 use metsuke_wire::{hex, http};
-
-/// An endpoint the signed body may go to. `TryFrom` is the only way in, so
-/// no `UploadConfig` can name a plaintext endpoint out on the network.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(try_from = "String")]
-pub struct UploadUrl(String);
-
-#[derive(Debug, thiserror::Error)]
-pub enum UploadUrlError {
-    #[error("upload_url does not parse as a URL: {value:?}")]
-    Malformed {
-        value: String,
-        #[source]
-        source: ureq::http::uri::InvalidUri,
-    },
-    #[error("upload_url must be an absolute URL with a host, got {0:?}")]
-    NotAbsolute(String),
-    /// Plaintext to loopback cannot be intercepted, because it never leaves
-    /// the host. Anywhere else it exposes the whole batch.
-    #[error("upload_url must be https, or http to a loopback address, got {0:?}")]
-    Plaintext(String),
-}
-
-impl TryFrom<String> for UploadUrl {
-    type Error = UploadUrlError;
-
-    fn try_from(text: String) -> Result<UploadUrl, UploadUrlError> {
-        let uri = text
-            .parse::<ureq::http::Uri>()
-            .map_err(|source| UploadUrlError::Malformed {
-                value: text.clone(),
-                source,
-            })?;
-        let (Some(scheme), Some(host)) = (uri.scheme_str(), uri.host()) else {
-            return Err(UploadUrlError::NotAbsolute(text));
-        };
-        match scheme {
-            "https" => Ok(UploadUrl(text)),
-            "http" if is_loopback(host) => Ok(UploadUrl(text)),
-            _ => Err(UploadUrlError::Plaintext(text)),
-        }
-    }
-}
-
-/// An IP literal that routes back to this host. A name is not enough: what
-/// `localhost` resolves to is a file the agent does not read.
-fn is_loopback(host: &str) -> bool {
-    host.trim_start_matches('[')
-        .trim_end_matches(']')
-        .parse::<std::net::IpAddr>()
-        .is_ok_and(|address| address.is_loopback())
-}
-
-impl UploadUrl {
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
 
 pub struct UploadConfig {
     pub upload_url: UploadUrl,

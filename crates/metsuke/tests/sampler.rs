@@ -48,7 +48,7 @@ async fn one_sample_carries_metrics_and_clock_offset() {
         .await;
     let config = SamplerConfig {
         scrape: ScrapeConfig {
-            metrics_url: format!("{}/metrics", metrics.uri()),
+            metrics_url: format!("{}/metrics", metrics.uri()).try_into().unwrap(),
             timeout: Duration::from_secs(5),
             max_body_bytes: 1024 * 1024,
         },

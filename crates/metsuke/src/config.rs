@@ -7,8 +7,8 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
+use crate::endpoint::{MetricsUrl, UploadUrl};
 use crate::sntp;
-use crate::uploader::UploadUrl;
 use metsuke_wire::envelope::PoolId;
 
 #[derive(Debug, PartialEq, Deserialize)]
@@ -17,8 +17,8 @@ pub struct Config {
     /// The pool this agent reports for, bech32 `pool1…` (why it is
     /// configured rather than derived: `delivery::Delivery`).
     pub pool_id: PoolId,
-    /// The node's loopback PrometheusSimple endpoint (ADR 0007).
-    pub metrics_url: String,
+    /// The node's PrometheusSimple endpoint.
+    pub metrics_url: MetricsUrl,
     /// The metsuke-server submission endpoint.
     pub upload_url: UploadUrl,
     /// Path to the signing key; `--signing-key` overrides it.

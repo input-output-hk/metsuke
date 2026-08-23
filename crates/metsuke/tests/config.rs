@@ -26,7 +26,10 @@ fn minimal_toml() -> String {
 fn minimal_config_parses_with_shipped_defaults() {
     let config = Config::from_toml(&minimal_toml()).unwrap();
     assert_eq!(config.pool_id, test_pool_id());
-    assert_eq!(config.metrics_url, "http://127.0.0.1:12798/metrics");
+    assert_eq!(
+        config.metrics_url.as_str(),
+        "http://127.0.0.1:12798/metrics"
+    );
     assert_eq!(
         config.upload_url.as_str(),
         "https://metsuke.example.org/v1/submit"
@@ -155,6 +158,39 @@ fn path_only_upload_url_names_the_missing_host() {
             .contains("must be an absolute URL with a host"),
         "error must name what it wanted, got: {err}"
     );
+}
+
+/// The rule both rejections must name, so neither passes on a `NotAbsolute`
+/// that happens to mention the field.
+const NOT_LOOPBACK: &str = "metrics_url must be http or https to a loopback address";
+
+// Ticket metsuke-4zo.42; why loopback only: `endpoint::MetricsUrl`.
+#[test]
+fn off_host_metrics_url_fails_loudly() {
+    let toml = minimal_toml().replace("127.0.0.1:12798", "10.0.0.5:12798");
+    let err = Config::from_toml(&toml).unwrap_err();
+    assert!(
+        err.to_string().contains(NOT_LOOPBACK),
+        "error must name the rule, got: {err}"
+    );
+}
+
+// `localhost` is a name, not an address (why that matters: `MetricsUrl`).
+#[test]
+fn metrics_url_naming_localhost_fails_loudly() {
+    let toml = minimal_toml().replace("127.0.0.1:12798", "localhost:12798");
+    let err = Config::from_toml(&toml).unwrap_err();
+    assert!(
+        err.to_string().contains(NOT_LOOPBACK),
+        "error must name the rule, got: {err}"
+    );
+}
+
+#[test]
+fn ipv6_loopback_metrics_url_parses() {
+    let toml = minimal_toml().replace("127.0.0.1:12798", "[::1]:12798");
+    let config = Config::from_toml(&toml).unwrap();
+    assert_eq!(config.metrics_url.as_str(), "http://[::1]:12798/metrics");
 }
 
 // A typo'd knob silently falling back to a default would hide operator

@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use time::OffsetDateTime;
 
+use crate::endpoint::MetricsUrl;
 use metsuke_wire::envelope::Sample;
 use metsuke_wire::http;
 
@@ -19,8 +20,7 @@ const EPOCH: &str = "cardano_node_metrics_epoch_int";
 const BUILD_INFO: &str = "cardano_node_metrics_cardano_build_info";
 
 pub struct ScrapeConfig {
-    /// PrometheusSimple endpoint, e.g. `http://127.0.0.1:12798/metrics`.
-    pub metrics_url: String,
+    pub metrics_url: MetricsUrl,
     /// Whole-request deadline, as bounded by `metsuke_wire::http::agent`.
     pub timeout: Duration,
     /// A body larger than this is treated as a failed scrape.
@@ -39,7 +39,7 @@ pub fn scrape(config: &ScrapeConfig) -> Sample {
 
 fn fetch(config: &ScrapeConfig) -> Option<String> {
     let mut response = http::agent(config.timeout)
-        .get(&config.metrics_url)
+        .get(config.metrics_url.as_str())
         .call()
         .ok()?;
     // An error page is not a metrics body, whatever its lines parse as.
