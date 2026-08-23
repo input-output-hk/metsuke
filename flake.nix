@@ -54,8 +54,14 @@
             name = "source";
           };
 
+          # Names the workspace derivations, and nothing else. The crates are
+          # versioned apart (ADR 0006), so there is no
+          # workspace.package.version for crane to find; passing this to every
+          # crane call is what keeps it from warning about the absence.
+          version = "0";
+
           commonArgs = {
-            inherit src;
+            inherit src version;
             strictDeps = true;
           };
 
@@ -98,7 +104,7 @@
               inherit (inputs) advisory-db;
             };
 
-            deny = craneLib.cargoDeny { inherit src; };
+            deny = craneLib.cargoDeny { inherit src version; };
           };
 
           treefmt = {
