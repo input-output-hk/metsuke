@@ -8,6 +8,7 @@ use std::time::Duration;
 use time::OffsetDateTime;
 
 use metsuke_wire::envelope::Sample;
+use metsuke_wire::http;
 
 /// Metric names as emitted by the Leios node's PrometheusSimple backend,
 /// frozen against the recorded fixtures under tests/fixtures/recordings/.
@@ -20,7 +21,7 @@ const BUILD_INFO: &str = "cardano_node_metrics_cardano_build_info";
 pub struct ScrapeConfig {
     /// PrometheusSimple endpoint, e.g. `http://127.0.0.1:12798/metrics`.
     pub metrics_url: String,
-    /// Whole-request deadline: connect, send, and body read together.
+    /// Whole-request deadline, as bounded by `metsuke_wire::http::agent`.
     pub timeout: Duration,
     /// A body larger than this is treated as a failed scrape.
     pub max_body_bytes: u64,
@@ -37,14 +38,13 @@ pub fn scrape(config: &ScrapeConfig) -> Sample {
 }
 
 fn fetch(config: &ScrapeConfig) -> Option<String> {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(config.timeout))
-        .build()
-        .into();
-    agent
+    let mut response = http::agent(config.timeout)
         .get(&config.metrics_url)
         .call()
-        .ok()?
+        .ok()?;
+    // An error page is not a metrics body, whatever its lines parse as.
+    http::classify(&mut response).ok()?;
+    response
         .body_mut()
         .with_config()
         .limit(config.max_body_bytes)

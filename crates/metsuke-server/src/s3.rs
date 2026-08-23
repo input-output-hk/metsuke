@@ -12,7 +12,7 @@ use rusty_s3::actions::{ListObjectsV2, S3Action as _};
 use rusty_s3::{Bucket, Credentials, UrlStyle};
 
 use metsuke_wire::envelope::{Signature, VerifyingKey};
-use metsuke_wire::hex;
+use metsuke_wire::{hex, http};
 
 use crate::archive::{
     ArchiveError, Fetch, FetchedObject, KEY_PREFIX, List, ObjectName, Store, StoredSubmission,
@@ -60,13 +60,7 @@ impl S3Archive {
             endpoint: config.endpoint.clone(),
             reason: error.to_string(),
         })?;
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(Duration::from_secs(config.request_timeout_secs.get())))
-            // Status handling is ours: a refusal is a reason to report, not an
-            // opaque error.
-            .http_status_as_error(false)
-            .build()
-            .into();
+        let agent = http::agent(Duration::from_secs(config.request_timeout_secs.get()));
         Ok(S3Archive {
             bucket,
             credentials,
@@ -108,8 +102,8 @@ impl S3Archive {
     }
 }
 
-/// A single failed attempt. `retryable` is what separates an endpoint that may
-/// come back from a refusal that will answer the same way twice.
+/// A single failed attempt, transport error and refusal alike, with
+/// `retryable` carried through from `transient` or `http::Refusal`.
 struct Failure {
     reason: String,
     retryable: bool,
@@ -122,26 +116,24 @@ fn answer(
         retryable: transient(&error),
         reason: error.to_string(),
     })?;
-    let status = response.status().as_u16();
-    if (200..300).contains(&status) {
-        return Ok(response);
+    match http::classify(&mut response) {
+        Ok(()) => Ok(response),
+        Err(refusal) => Err(Failure {
+            reason: format!(
+                "the endpoint answered {}: {}",
+                refusal.status, refusal.reason
+            ),
+            retryable: refusal.retryable,
+        }),
     }
-    let reason = response
-        .body_mut()
-        .read_to_string()
-        .unwrap_or_else(|error| format!("unreadable reason: {error}"));
-    Err(Failure {
-        reason: format!("the endpoint answered {status}: {reason}"),
-        // A 4xx is a misconfigured bucket, policy or clock; retrying it only
-        // holds the client's request open longer.
-        retryable: status >= 500,
-    })
 }
 
 /// Whether a transport failure is worth a second attempt. A name that does not
 /// resolve, a certificate that does not verify and a URL that will not parse
 /// are deployment errors: retrying them costs the client a whole timeout
-/// before it hears the reason.
+/// before it hears the reason. A redirect is not listed, because
+/// `http::classify` reads a redirect that arrives as a status as retryable
+/// and one condition cannot have two answers.
 fn transient(error: &ureq::Error) -> bool {
     !matches!(
         error,
@@ -152,8 +144,6 @@ fn transient(error: &ureq::Error) -> bool {
             | ureq::Error::Tls(_)
             | ureq::Error::Pem(_)
             | ureq::Error::Rustls(_)
-            | ureq::Error::RedirectFailed
-            | ureq::Error::TooManyRedirects
             | ureq::Error::BodyExceedsLimit(_)
     )
 }

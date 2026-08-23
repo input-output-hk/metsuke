@@ -183,12 +183,10 @@ impl Server {
     }
 }
 
+/// The client the server itself is reached with, generous enough that a
+/// timeout here means the binary hung.
 fn agent() -> ureq::Agent {
-    ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(30)))
-        .http_status_as_error(false)
-        .build()
-        .into()
+    metsuke_wire::http::agent(Duration::from_secs(30))
 }
 
 /// Reading the startup line is the readiness wait: it is printed after the

@@ -75,7 +75,7 @@ fn nudge_fires_only_when_the_ack_version_is_newer() {
 async fn server_error_is_retryable() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(503))
+        .respond_with(ResponseTemplate::new(503).set_body_string("no archive right now"))
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
@@ -85,10 +85,12 @@ async fn server_error_is_retryable() {
         tokio::task::spawn_blocking(move || upload(&config, &test_key().verifying_key(), &batch))
             .await
             .unwrap();
-    assert!(
-        matches!(outcome, UploadOutcome::Retryable(_)),
-        "expected retryable, got {outcome:?}"
-    );
+    // The server's own words reach the journal on this path too, not just on
+    // a rejection.
+    let UploadOutcome::Retryable(reason) = outcome else {
+        panic!("expected retryable, got {outcome:?}");
+    };
+    assert_eq!(reason, "server answered 503: no archive right now");
 }
 
 // An unreachable server is the same scheduling decision as a 5xx.

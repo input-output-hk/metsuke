@@ -8,12 +8,12 @@ use crate::delivery::SealedBatch;
 use metsuke_wire::envelope::{
     Ack, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, VerifyingKey,
 };
-use metsuke_wire::hex;
+use metsuke_wire::{hex, http};
 
 pub struct UploadConfig {
     pub upload_url: String,
     pub pool_id: PoolId,
-    /// Whole-request deadline: connect, send, and response read together.
+    /// Whole-request deadline, as bounded by `metsuke_wire::http::agent`.
     pub timeout: Duration,
 }
 
@@ -22,23 +22,17 @@ pub struct UploadConfig {
 pub enum UploadOutcome {
     /// The server stored the batch: ack the rows.
     Acked(Ack),
-    /// Transport failure or 5xx: the server may recover on its own; retry
-    /// next interval.
+    /// Transport failure, or any status `metsuke_wire::http::classify` reads
+    /// as retryable: the server may recover on its own; retry next interval.
     Retryable(String),
-    /// 4xx: the server named a reason an operator must act on; back off.
+    /// The server refused with a reason an operator must act on; back off.
     Rejected { status: u16, reason: String },
 }
 
 /// POST one sealed batch. Infallible by design: every failure mode is a
 /// scheduling decision, not an error path.
 pub fn upload(config: &UploadConfig, vkey: &VerifyingKey, batch: &SealedBatch) -> UploadOutcome {
-    let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(config.timeout))
-        // Status handling is ours: 4xx and 5xx are outcomes, not errors.
-        .http_status_as_error(false)
-        .build()
-        .into();
-    let response = agent
+    let response = http::agent(config.timeout)
         .post(&config.upload_url)
         .header(HEADER_POOL_ID, config.pool_id.to_bech32())
         .header(HEADER_VKEY, hex::encode(vkey.as_bytes()))
@@ -50,9 +44,8 @@ pub fn upload(config: &UploadConfig, vkey: &VerifyingKey, batch: &SealedBatch) -
         Ok(response) => response,
         Err(error) => return UploadOutcome::Retryable(error.to_string()),
     };
-    let status = response.status().as_u16();
-    match status {
-        200..=299 => match response
+    match http::classify(&mut response) {
+        Ok(()) => match response
             .body_mut()
             .read_to_string()
             .map_err(|error| error.to_string())
@@ -63,14 +56,14 @@ pub fn upload(config: &UploadConfig, vkey: &VerifyingKey, batch: &SealedBatch) -
             // keep the rows and retry.
             Err(error) => UploadOutcome::Retryable(format!("unreadable ack: {error}")),
         },
-        400..=499 => UploadOutcome::Rejected {
-            status,
-            reason: response
-                .body_mut()
-                .read_to_string()
-                .unwrap_or_else(|error| format!("unreadable reason: {error}")),
+        Err(refusal) if refusal.retryable => UploadOutcome::Retryable(format!(
+            "server answered {}: {}",
+            refusal.status, refusal.reason
+        )),
+        Err(refusal) => UploadOutcome::Rejected {
+            status: refusal.status,
+            reason: refusal.reason,
         },
-        _ => UploadOutcome::Retryable(format!("server answered {status}")),
     }
 }
 

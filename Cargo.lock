@@ -1015,6 +1015,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "time",
+ "ureq",
  "zstd",
 ]
 

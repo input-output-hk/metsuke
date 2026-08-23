@@ -96,6 +96,20 @@ async fn http_error_yields_all_nulls() {
     assert_eq!(sample, all_null(sample.sampled_at));
 }
 
+// A refused scrape stays a failed scrape even when the error page carries
+// something a metric parser would read.
+#[tokio::test]
+async fn http_error_carrying_metric_lines_yields_all_nulls() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/metrics"))
+        .respond_with(ResponseTemplate::new(500).set_body_raw(RECORDED_CHAIN, "text/plain"))
+        .mount(&server)
+        .await;
+    let sample = scrape_config(config(format!("{}/metrics", server.uri()))).await;
+    assert_eq!(sample, all_null(sample.sampled_at));
+}
+
 #[tokio::test]
 async fn oversized_body_yields_all_nulls() {
     let server = MockServer::start().await;
