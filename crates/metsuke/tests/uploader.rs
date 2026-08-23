@@ -50,7 +50,7 @@ fn sealed_test_batch(dir: &tempfile::TempDir) -> metsuke::delivery::SealedBatch 
 
 fn upload_config(base_url: &str) -> UploadConfig {
     UploadConfig {
-        upload_url: format!("{base_url}/v1/submit"),
+        upload_url: format!("{base_url}/v1/submit").try_into().unwrap(),
         pool_id: PoolId::from_cold_key(&test_key().verifying_key()),
         timeout: Duration::from_secs(5),
     }
@@ -101,7 +101,7 @@ async fn unreachable_server_is_retryable() {
     let config = UploadConfig {
         timeout: Duration::from_millis(200),
         // TEST-NET-1 (RFC 5737) is unroutable: connect fails, nothing answers.
-        ..upload_config("http://192.0.2.1:9")
+        ..upload_config("https://192.0.2.1:9")
     };
     let outcome =
         tokio::task::spawn_blocking(move || upload(&config, &test_key().verifying_key(), &batch))

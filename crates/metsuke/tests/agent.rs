@@ -49,7 +49,7 @@ fn test_agent(dir: &tempfile::TempDir, metrics: &MockServer, uploads: &MockServe
         },
         Delivery::new(spool, test_key(), pool_id, 0),
         UploadConfig {
-            upload_url: format!("{}/v1/submit", uploads.uri()),
+            upload_url: format!("{}/v1/submit", uploads.uri()).try_into().unwrap(),
             pool_id,
             timeout: Duration::from_secs(5),
         },

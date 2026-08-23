@@ -27,7 +27,10 @@ fn minimal_config_parses_with_shipped_defaults() {
     let config = Config::from_toml(&minimal_toml()).unwrap();
     assert_eq!(config.pool_id, test_pool_id());
     assert_eq!(config.metrics_url, "http://127.0.0.1:12798/metrics");
-    assert_eq!(config.upload_url, "https://metsuke.example.org/v1/submit");
+    assert_eq!(
+        config.upload_url.as_str(),
+        "https://metsuke.example.org/v1/submit"
+    );
     assert_eq!(config.signing_key, None);
     assert_eq!(config.sample_interval_secs, 300);
     assert_eq!(config.upload_interval_secs, 3600);
@@ -103,6 +106,54 @@ fn missing_required_field_fails_loudly() {
     assert!(
         err.to_string().contains("upload_url"),
         "error must name the missing field, got: {err}"
+    );
+}
+
+// Ticket metsuke-4zo.40.
+#[test]
+fn plaintext_upload_url_fails_loudly() {
+    let toml = minimal_toml().replace("https://metsuke", "http://metsuke");
+    let err = Config::from_toml(&toml).unwrap_err();
+    assert!(
+        err.to_string().contains("upload_url"),
+        "error must name the field, got: {err}"
+    );
+}
+
+// The loopback exemption (why: `UploadUrlError::Plaintext`) is what the
+// integration suite uploads through.
+#[test]
+fn loopback_plaintext_upload_url_parses() {
+    let toml = minimal_toml().replace("https://metsuke.example.org", "http://127.0.0.1:9000");
+    let config = Config::from_toml(&toml).unwrap();
+    assert_eq!(
+        config.upload_url.as_str(),
+        "http://127.0.0.1:9000/v1/submit"
+    );
+}
+
+// Dropping the scheme leaves something the URL parser rejects outright,
+// which is a different operator mistake from a scheme the agent refuses.
+#[test]
+fn schemeless_upload_url_says_it_does_not_parse() {
+    let toml = minimal_toml().replace("https://metsuke.example.org", "metsuke.example.org");
+    let err = Config::from_toml(&toml).unwrap_err();
+    assert!(
+        err.to_string().contains("does not parse as a URL"),
+        "error must say it does not parse, got: {err}"
+    );
+}
+
+// A path alone parses, so only the absent host makes it unusable: say that
+// rather than blame the parser.
+#[test]
+fn path_only_upload_url_names_the_missing_host() {
+    let toml = minimal_toml().replace("https://metsuke.example.org/v1/submit", "/v1/submit");
+    let err = Config::from_toml(&toml).unwrap_err();
+    assert!(
+        err.to_string()
+            .contains("must be an absolute URL with a host"),
+        "error must name what it wanted, got: {err}"
     );
 }
 

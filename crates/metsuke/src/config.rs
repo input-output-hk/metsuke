@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 use crate::sntp;
+use crate::uploader::UploadUrl;
 use metsuke_wire::envelope::PoolId;
 
 #[derive(Debug, PartialEq, Deserialize)]
@@ -19,7 +20,7 @@ pub struct Config {
     /// The node's loopback PrometheusSimple endpoint (ADR 0007).
     pub metrics_url: String,
     /// The metsuke-server submission endpoint.
-    pub upload_url: String,
+    pub upload_url: UploadUrl,
     /// Path to the signing key; `--signing-key` overrides it.
     #[serde(default)]
     pub signing_key: Option<PathBuf>,
