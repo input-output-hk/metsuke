@@ -221,6 +221,6 @@ pub fn opening_bytes(listener: std::net::TcpListener, budget: std::time::Duratio
     let mut buffer = [0u8; 5];
     let read = stream
         .read(&mut buffer)
-        .expect("peer connected but sent nothing");
+        .expect("reading the peer's opening bytes");
     buffer[..read].to_vec()
 }
