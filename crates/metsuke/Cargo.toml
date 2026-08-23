@@ -15,7 +15,9 @@ serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 thiserror = "2.0.20"
 time = { version = "0.3.55", features = ["serde-well-known"] }
 toml = "0.9.8"
-ureq = { version = "3.4.0", default-features = false }
+# Without a provider ureq answers TlsRequired, which the uploader can only
+# read as a retryable failure.
+ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
 proptest = "1.11.0"

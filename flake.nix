@@ -135,6 +135,18 @@
 
             test = craneLib.cargoTest (commonArgs // { inherit cargoArtifacts; });
 
+            # The workspace run unifies dependency features across members, so
+            # a feature the agent must carry on its own can be supplied by the
+            # server and still pass there (ticket metsuke-b4r).
+            test-agent = craneLib.cargoTest (
+              commonArgs
+              // {
+                inherit cargoArtifacts;
+                pname = "metsuke-agent-alone";
+                cargoExtraArgs = "--package metsuke";
+              }
+            );
+
             audit = craneLib.cargoAudit {
               inherit src;
               inherit (inputs) advisory-db;

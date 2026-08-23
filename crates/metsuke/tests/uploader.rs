@@ -48,9 +48,9 @@ fn sealed_test_batch(dir: &tempfile::TempDir) -> metsuke::delivery::SealedBatch 
         .unwrap()
 }
 
-fn upload_config(server: &MockServer) -> UploadConfig {
+fn upload_config(base_url: &str) -> UploadConfig {
     UploadConfig {
-        upload_url: format!("{}/v1/submit", server.uri()),
+        upload_url: format!("{base_url}/v1/submit"),
         pool_id: PoolId::from_cold_key(&test_key().verifying_key()),
         timeout: Duration::from_secs(5),
     }
@@ -80,7 +80,7 @@ async fn server_error_is_retryable() {
         .await;
     let dir = tempfile::tempdir().unwrap();
     let batch = sealed_test_batch(&dir);
-    let config = upload_config(&server);
+    let config = upload_config(&server.uri());
     let outcome =
         tokio::task::spawn_blocking(move || upload(&config, &test_key().verifying_key(), &batch))
             .await
@@ -99,15 +99,71 @@ async fn unreachable_server_is_retryable() {
     let dir = tempfile::tempdir().unwrap();
     let batch = sealed_test_batch(&dir);
     let config = UploadConfig {
-        // TEST-NET-1 (RFC 5737) is unroutable: connect fails, nothing answers.
-        upload_url: "http://192.0.2.1:9/v1/submit".into(),
-        pool_id: PoolId::from_cold_key(&test_key().verifying_key()),
         timeout: Duration::from_millis(200),
+        // TEST-NET-1 (RFC 5737) is unroutable: connect fails, nothing answers.
+        ..upload_config("http://192.0.2.1:9")
     };
     let outcome =
         tokio::task::spawn_blocking(move || upload(&config, &test_key().verifying_key(), &batch))
             .await
             .unwrap();
+    assert!(
+        matches!(outcome, UploadOutcome::Retryable(_)),
+        "expected retryable, got {outcome:?}"
+    );
+}
+
+// The opening two bytes of a TLS record: content type 22 (handshake), then
+// the legacy record version's major byte (RFC 8446 §5.1).
+const TLS_HANDSHAKE_PREFIX: [u8; 2] = [0x16, 0x03];
+
+/// Whatever one connection to `listener` sends first. Takes more bytes than
+/// the caller asserts on so a cleartext regression prints as readable text.
+fn opening_bytes(listener: std::net::TcpListener, budget: Duration) -> Vec<u8> {
+    use std::io::{ErrorKind, Read};
+
+    listener.set_nonblocking(true).unwrap();
+    let start = std::time::Instant::now();
+    let mut stream = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                assert!(start.elapsed() < budget, "nothing connected in {budget:?}");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("accept failed: {error}"),
+        }
+    };
+    stream.set_nonblocking(false).unwrap();
+    stream.set_read_timeout(Some(budget)).unwrap();
+    let mut buffer = [0u8; 5];
+    let read = stream
+        .read(&mut buffer)
+        .expect("peer connected but sent nothing");
+    buffer[..read].to_vec()
+}
+
+// An https upload_url must leave the host as TLS.
+#[test]
+fn an_https_upload_url_speaks_tls() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let peer = std::thread::spawn(move || opening_bytes(listener, Duration::from_secs(5)));
+
+    let dir = tempfile::tempdir().unwrap();
+    let batch = sealed_test_batch(&dir);
+    let config = upload_config(&format!("https://127.0.0.1:{port}"));
+    let outcome = upload(&config, &test_key().verifying_key(), &batch);
+
+    let bytes = peer.join().unwrap();
+    assert_eq!(
+        bytes.get(..2),
+        Some(&TLS_HANDSHAKE_PREFIX[..]),
+        "expected a TLS handshake, peer saw {:?}",
+        String::from_utf8_lossy(&bytes)
+    );
+    // The peer read its five bytes and went away mid-handshake, so the
+    // handshake fails, and a failed handshake is a transport failure.
     assert!(
         matches!(outcome, UploadOutcome::Retryable(_)),
         "expected retryable, got {outcome:?}"
@@ -125,7 +181,7 @@ async fn client_error_is_rejected_with_the_server_reason() {
         .await;
     let dir = tempfile::tempdir().unwrap();
     let batch = sealed_test_batch(&dir);
-    let config = upload_config(&server);
+    let config = upload_config(&server.uri());
     let outcome =
         tokio::task::spawn_blocking(move || upload(&config, &test_key().verifying_key(), &batch))
             .await
@@ -151,7 +207,7 @@ async fn acked_upload_carries_verifiable_headers_and_body() {
         .await;
     let dir = tempfile::tempdir().unwrap();
     let batch = sealed_test_batch(&dir);
-    let config = upload_config(&server);
+    let config = upload_config(&server.uri());
 
     let outcome =
         tokio::task::spawn_blocking(move || upload(&config, &test_key().verifying_key(), &batch))
