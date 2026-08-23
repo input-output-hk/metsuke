@@ -25,8 +25,9 @@ thiserror = "2.0.20"
 time = "0.3.55"
 tiny_http = { version = "0.12.0", default-features = false }
 toml = "0.9.8"
-# TLS included: the bucket is reached over HTTPS.
-ureq = "3.4.0"
+# Named rather than taken from ureq's defaults, because `s3::transient`
+# matches `Error::Rustls`, which only exists while this feature is on.
+ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
 # serde: the archive endpoint deserializes as a `Url`, so a bad one is a
 # config error naming the field.
 url = { version = "2.5.8", features = ["serde"] }

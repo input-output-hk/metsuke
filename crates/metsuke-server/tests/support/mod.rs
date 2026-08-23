@@ -194,3 +194,33 @@ impl List for FailingArchive {
         .into())
     }
 }
+
+/// The opening two bytes of a TLS record: content type 22 (handshake), then
+/// the legacy record version's major byte (RFC 8446 §5.1).
+pub const TLS_HANDSHAKE_PREFIX: [u8; 2] = [0x16, 0x03];
+
+/// Whatever one connection to `listener` sends first. Takes more bytes than
+/// the caller asserts on so a cleartext regression prints as readable text.
+pub fn opening_bytes(listener: std::net::TcpListener, budget: std::time::Duration) -> Vec<u8> {
+    use std::io::{ErrorKind, Read};
+
+    listener.set_nonblocking(true).unwrap();
+    let start = std::time::Instant::now();
+    let mut stream = loop {
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                assert!(start.elapsed() < budget, "nothing connected in {budget:?}");
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(error) => panic!("accept failed: {error}"),
+        }
+    };
+    stream.set_nonblocking(false).unwrap();
+    stream.set_read_timeout(Some(budget)).unwrap();
+    let mut buffer = [0u8; 5];
+    let read = stream
+        .read(&mut buffer)
+        .expect("peer connected but sent nothing");
+    buffer[..read].to_vec()
+}

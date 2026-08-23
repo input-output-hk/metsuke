@@ -92,6 +92,17 @@
             strictDeps = true;
             doCheck = false;
           };
+
+          testAlone =
+            crate:
+            craneLib.cargoTest (
+              commonArgs
+              // {
+                inherit cargoArtifacts;
+                pname = "${crate}-alone";
+                cargoExtraArgs = "--package ${crate}";
+              }
+            );
         in
         {
           packages = {
@@ -136,16 +147,10 @@
             test = craneLib.cargoTest (commonArgs // { inherit cargoArtifacts; });
 
             # The workspace run unifies dependency features across members, so
-            # a feature the agent must carry on its own can be supplied by the
-            # server and still pass there (ticket metsuke-b4r).
-            test-agent = craneLib.cargoTest (
-              commonArgs
-              // {
-                inherit cargoArtifacts;
-                pname = "metsuke-agent-alone";
-                cargoExtraArgs = "--package metsuke";
-              }
-            );
+            # a feature one binary must carry on its own can be supplied by the
+            # other and still pass there (ticket metsuke-b4r).
+            test-agent = testAlone "metsuke";
+            test-server = testAlone "metsuke-server";
 
             audit = craneLib.cargoAudit {
               inherit src;

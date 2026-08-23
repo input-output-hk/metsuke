@@ -423,6 +423,32 @@ fn a_url_that_is_not_an_s3_endpoint_is_refused_at_construction() {
     assert!(error.contains("mailto:nobody@example.org"), "got: {error}");
 }
 
+// The bucket is reached over https (ticket metsuke-4zo.41).
+#[test]
+fn an_https_endpoint_is_reached_over_tls() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let peer = std::thread::spawn(move || support::opening_bytes(listener, TIMEOUT));
+
+    let archive = S3Archive::new(
+        &config_for(&format!("https://127.0.0.1:{port}"), 0),
+        credentials(),
+    )
+    .unwrap();
+    let (wire_bytes, signature) = submission(COUNTER);
+    // The peer drops the connection mid-handshake, so the PUT fails either
+    // way; what it saw on the wire is the assertion.
+    let _ = archive.store(&stored(COUNTER, signature, &wire_bytes));
+
+    let bytes = peer.join().unwrap();
+    assert_eq!(
+        bytes.get(..2),
+        Some(&support::TLS_HANDSHAKE_PREFIX[..]),
+        "expected a TLS handshake, peer saw {:?}",
+        String::from_utf8_lossy(&bytes)
+    );
+}
+
 #[test]
 fn an_endpoint_that_is_not_listening_is_an_error() {
     // Nothing listens on discard/9, so this fails without waiting out the
