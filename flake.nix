@@ -66,20 +66,56 @@
           };
 
           cargoArtifacts = craneLib.buildDepsOnly commonArgs;
+
+          # Builds a binary from a tree holding only the crates it compiles, so
+          # an edit elsewhere in the workspace does not invalidate it. The
+          # wildcard workspace.members in Cargo.toml is what lets a crate be
+          # absent; a member cargo can see but whose sources are missing is an
+          # error, so a crate is either whole here or gone.
+          crateSrc =
+            crates:
+            pkgs.lib.fileset.toSource {
+              root = ./.;
+              fileset = pkgs.lib.fileset.unions (
+                [
+                  ./Cargo.toml
+                  ./Cargo.lock
+                ]
+                ++ map craneLib.fileset.commonCargoSources crates
+              );
+            };
+
+          # Tests run once, in checks.test. Crane defaults doCheck to true,
+          # which would run the suite again inside each binary.
+          binaryArgs = {
+            inherit cargoArtifacts version;
+            strictDeps = true;
+            doCheck = false;
+          };
         in
         {
           packages = {
             metsuke = craneLib.buildPackage (
-              commonArgs
+              binaryArgs
               // {
-                inherit cargoArtifacts;
+                src = crateSrc [
+                  ./crates/metsuke-wire
+                  ./crates/metsuke
+                ];
                 cargoExtraArgs = "--package metsuke";
               }
             );
             metsuke-server = craneLib.buildPackage (
-              commonArgs
+              binaryArgs
               // {
-                inherit cargoArtifacts;
+                # build.rs reads the agent manifest for CLIENT_VERSION, so the
+                # agent crate has to be here in full even though nothing links
+                # against it.
+                src = crateSrc [
+                  ./crates/metsuke-wire
+                  ./crates/metsuke
+                  ./crates/metsuke-server
+                ];
                 cargoExtraArgs = "--package metsuke-server";
               }
             );

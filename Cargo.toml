@@ -1,6 +1,8 @@
 [workspace]
 resolver = "2"
-members = ["crates/metsuke", "crates/metsuke-server", "crates/metsuke-wire"]
+# Wildcard, not a list: the flake builds each binary from a source tree
+# containing only its own crates, and cargo rejects a member it cannot find.
+members = ["crates/*"]
 
 [workspace.metadata.crane]
 name = "metsuke-workspace"
