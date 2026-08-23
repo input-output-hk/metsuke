@@ -5,6 +5,10 @@
 //! and exit, zero only if what they were asked to check holds.
 
 use metsuke_server::archive::{FilesystemArchive, List, Store};
+// Cold key only, at both the ingest and the audit site: ADR 0003's Calidus
+// half needs a directory, and which source is trustworthy enough to be one is
+// ticket metsuke-4zo.44.
+use metsuke_server::authority::ColdKey;
 use metsuke_server::cli::{Args, ArgsError, Command};
 use metsuke_server::config::{ArchiveConfig, ConfigError, IngestConfig, S3Config, ServerConfig};
 use metsuke_server::counters::{CounterError, CounterStore};
@@ -15,6 +19,7 @@ use metsuke_server::s3::{S3Archive, S3Error};
 use metsuke_server::verify::{Audit, AuditError, audit};
 use metsuke_wire::journal::{ERR, INFO};
 use rusty_s3::Credentials;
+use time::OffsetDateTime;
 
 #[derive(Debug, thiserror::Error)]
 enum Fatal {
@@ -93,7 +98,14 @@ fn run() -> Result<(), Fatal> {
             &listen,
             ingest,
             counters,
-            |archive, max_decompressed_bytes| report_audit(audit(archive, max_decompressed_bytes)?),
+            |archive, max_decompressed_bytes| {
+                report_audit(audit(
+                    archive,
+                    max_decompressed_bytes,
+                    &mut ColdKey,
+                    OffsetDateTime::now_utc(),
+                )?)
+            },
         ),
     }
 }
@@ -185,6 +197,6 @@ fn serve<A: Store>(
         server.server_addr(),
         http::SUBMIT_PATH,
     );
-    let mut intake = Intake::new(ingest, counters, archive);
+    let mut intake = Intake::new(ingest, counters, archive, ColdKey);
     match http::serve(&server, &mut intake)? {}
 }

@@ -1,18 +1,25 @@
 //! Re-verify a stored object from nothing but the object: its key, its
 //! metadata and its bytes (ADR 0005). `audit` runs it over a whole bucket.
 
-use metsuke_wire::envelope::{self, Envelope, PoolId, SCHEMA_VERSION};
+use metsuke_wire::envelope::{Envelope, PoolId, SCHEMA_VERSION};
+use time::OffsetDateTime;
 
 use crate::archive::{ArchiveError, Fetch, FetchedObject, List, ObjectName};
+use crate::authority::{AuthError, Authority, Signed, Undecided, authenticate};
 
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyError {
     #[error("{key}: the stored key does not speak for pool {pool_id}")]
     UnauthorizedKey { key: String, pool_id: PoolId },
+    /// Not a finding about the object: nothing was decided about it.
+    #[error(transparent)]
+    Undecided(#[from] Undecided),
     #[error("{key}: the signature does not verify over the stored bytes")]
     BadSignature { key: String },
     #[error("{key}: the payload is not a schema v{SCHEMA_VERSION} envelope: {reason}")]
     MalformedPayload { key: String, reason: String },
+    #[error("{key}: the payload inflates past the {max} byte limit")]
+    OversizedPayload { key: String, max: u64 },
     #[error("{key}: metadata says {field} is {stored}, the signed payload says {signed}")]
     Disagrees {
         key: String,
@@ -26,9 +33,9 @@ pub enum VerifyError {
 
 /// Verify one stored object, yielding the envelope it holds.
 ///
-/// The key check is the cold-key half of ADR 0003; an object signed with a
-/// Calidus key (ticket metsuke-4zo.8) needs that path here too, and until then
-/// verifies only against the pool's cold key.
+/// `authority` is ADR 0003's key check, the same one ingest ran: an object a
+/// pool's Calidus key signed verifies only against an authority that can
+/// resolve it.
 ///
 /// The metadata is checked against the payload rather than trusted: a header
 /// that disagrees with the signed bytes is unsigned, so the bytes win and the
@@ -36,25 +43,35 @@ pub enum VerifyError {
 pub fn verify(
     object: &FetchedObject,
     max_decompressed_bytes: u64,
+    authority: &mut impl Authority,
+    now: OffsetDateTime,
 ) -> Result<Envelope, VerifyError> {
     let key = object.name.to_key();
     let pool_id = object.name.pool_id;
-    if PoolId::from_cold_key(&object.vkey) != pool_id {
-        return Err(VerifyError::UnauthorizedKey { key, pool_id });
-    }
-    let envelope = envelope::open(
-        &object.vkey,
-        &object.wire_bytes,
-        &object.signature,
-        max_decompressed_bytes,
-    )
-    .map_err(|error| match error {
-        envelope::OpenError::Signature(_) => VerifyError::BadSignature { key: key.clone() },
-        other => VerifyError::MalformedPayload {
-            key: key.clone(),
-            reason: other.to_string(),
+    let signed = Signed {
+        pool_id,
+        vkey: object.vkey,
+        signature: object.signature,
+        wire_bytes: &object.wire_bytes,
+    };
+    let envelope = authenticate(authority, &signed, max_decompressed_bytes, now).map_err(
+        |error| match error {
+            AuthError::UnauthorizedKey { pool_id } => VerifyError::UnauthorizedKey {
+                key: key.clone(),
+                pool_id,
+            },
+            AuthError::BadSignature => VerifyError::BadSignature { key: key.clone() },
+            AuthError::Undecided(error) => error.into(),
+            AuthError::OversizedPayload { max } => VerifyError::OversizedPayload {
+                key: key.clone(),
+                max,
+            },
+            AuthError::MalformedPayload { reason } => VerifyError::MalformedPayload {
+                key: key.clone(),
+                reason,
+            },
         },
-    })?;
+    )?;
     // The key is `store`'s output, so re-deriving it from the payload checks
     // the pool, the counter and the timestamp it was filed under in one go.
     let expected = ObjectName {
@@ -124,16 +141,26 @@ impl Audit {
 pub enum AuditError {
     #[error(transparent)]
     Archive(#[from] ArchiveError),
+    #[error(transparent)]
+    Undecided(#[from] Undecided),
 }
 
 /// Fetch and re-verify every object in the archive.
 ///
 /// A listing that cannot be read stops the audit — a short listing would
-/// otherwise report a clean bucket it never looked at. One object that cannot
-/// be read or does not verify does not: the point is to find all of them.
+/// otherwise report a clean bucket it never looked at. So does a key check
+/// that reached no answer: every Calidus pool's objects would be reported as
+/// findings about the corpus when the finding is about the directory. One object
+/// that cannot be read or does not verify stops nothing: the point is to find
+/// all of them.
+///
+/// `now` is read once for the whole run, so the refresh budget an audit spends
+/// against db-sync is one window's worth however long the bucket takes.
 pub fn audit(
     archive: &(impl List + Fetch),
     max_decompressed_bytes: u64,
+    authority: &mut impl Authority,
+    now: OffsetDateTime,
 ) -> Result<Audit, AuditError> {
     let mut verified = 0;
     let mut failures = Vec::new();
@@ -145,8 +172,9 @@ pub fn audit(
                 key,
                 reason: error.to_string(),
             }),
-            Ok(object) => match verify(&object, max_decompressed_bytes) {
+            Ok(object) => match verify(&object, max_decompressed_bytes, authority, now) {
                 Ok(_) => verified += 1,
+                Err(VerifyError::Undecided(error)) => return Err(error.into()),
                 Err(error) => failures.push(error.into()),
             },
         }

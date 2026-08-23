@@ -3,6 +3,8 @@
 //! rejecting on its own with its own reason.
 
 use metsuke_server::archive::FilesystemArchive;
+use metsuke_server::authority::{ColdKey, ColdKeyOrCalidus};
+use metsuke_server::calidus::CalidusKeys;
 use metsuke_server::config::IngestConfig;
 use metsuke_server::counters::CounterStore;
 use metsuke_server::intake::{IngestError, Intake, Rejection};
@@ -11,20 +13,21 @@ use time::OffsetDateTime;
 
 mod support;
 use support::{
-    FailingArchive, counter_store, envelope_for, nonzero_u32, nonzero_u64, other_key,
-    permissive_config, pool_of, seal, stored_submission, submission, test_key, test_now,
+    CannedDirectory, FailingArchive, UnavailableDirectory, calidus_authority, calidus_key,
+    counter_store, envelope_for, nonzero_u32, nonzero_u64, other_key, permissive_config, pool_of,
+    registration, rotated_calidus_key, seal, stored_submission, submission, test_key, test_now,
 };
 
 /// An intake wired to a temporary directory and database, ready to submit
 /// to. The directory is returned because dropping it deletes the archive.
-fn intake_with(config: IngestConfig) -> (Intake<FilesystemArchive>, tempfile::TempDir) {
+fn intake_with(config: IngestConfig) -> (Intake<FilesystemArchive, ColdKey>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let counters = counter_store(dir.path());
     let archive = FilesystemArchive::new(&dir.path().join("archive"));
-    (Intake::new(config, counters, archive), dir)
+    (Intake::new(config, counters, archive, ColdKey), dir)
 }
 
-fn intake_for(pools: &[PoolId]) -> (Intake<FilesystemArchive>, tempfile::TempDir) {
+fn intake_for(pools: &[PoolId]) -> (Intake<FilesystemArchive, ColdKey>, tempfile::TempDir) {
     intake_with(permissive_config(pools))
 }
 
@@ -36,7 +39,7 @@ fn rejection(error: IngestError) -> Rejection {
 }
 
 fn submit(
-    intake: &mut Intake<FilesystemArchive>,
+    intake: &mut Intake<FilesystemArchive, ColdKey>,
     key: &SigningKey,
     envelope: &Envelope,
 ) -> Result<metsuke_wire::envelope::Ack, IngestError> {
@@ -314,6 +317,7 @@ fn archive_failure_is_not_a_rejection_and_leaves_the_counter_alone() {
         FailingArchive {
             reason: "archive is down",
         },
+        ColdKey,
     );
     let envelope = envelope_for(&key, 1);
     let (body, signature) = seal(&key, &envelope);
@@ -352,5 +356,164 @@ fn object_key_groups_by_pool_and_day() {
     assert_eq!(
         stored.object_key(),
         format!("v1/{}/2025-08-12/1755000000-12.json.zst", pool_of(&key))
+    );
+}
+
+/// An intake whose authority can resolve Calidus keys, plus the directory it
+/// resolves them from (ADR 0003).
+fn calidus_intake(
+    pools: &[PoolId],
+    directory: CannedDirectory,
+) -> (
+    Intake<FilesystemArchive, ColdKeyOrCalidus<CannedDirectory>>,
+    tempfile::TempDir,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let counters = counter_store(dir.path());
+    let archive = FilesystemArchive::new(&dir.path().join("archive"));
+    let intake = Intake::new(
+        permissive_config(pools),
+        counters,
+        archive,
+        calidus_authority(directory),
+    );
+    (intake, dir)
+}
+
+/// What a pool's Calidus-signed upload looks like: the envelope is the pool's,
+/// the signature is the hot key's.
+fn calidus_submit(
+    intake: &mut Intake<FilesystemArchive, ColdKeyOrCalidus<CannedDirectory>>,
+    signer: &SigningKey,
+    counter: u64,
+) -> Result<metsuke_wire::envelope::Ack, IngestError> {
+    let envelope = envelope_for(&test_key(), counter);
+    let (body, signature) = seal(signer, &envelope);
+    intake.submit(
+        &submission(signer.verifying_key(), envelope.pool_id, signature, &body),
+        test_now(),
+    )
+}
+
+// Acceptance: the second key path of ADR 0003.
+#[test]
+fn upload_signed_with_the_pools_registered_calidus_key_is_accepted() {
+    let pool = pool_of(&test_key());
+    let directory = CannedDirectory::holding(pool, vec![registration(&calidus_key(), 1)]);
+    let (mut intake, _dir) = calidus_intake(&[pool], directory.clone());
+
+    calidus_submit(&mut intake, &calidus_key(), 1).unwrap();
+
+    assert_eq!(directory.lookups(), 1);
+}
+
+// Acceptance: a key nobody registered is refused. The attempt that resolved
+// the pool must not also refresh it — a fetch one line old cannot come back
+// different, and spending the budget there is what would keep a real rotation
+// in the same window from converging.
+#[test]
+fn a_key_the_pool_never_registered_is_rejected() {
+    let pool = pool_of(&test_key());
+    let directory = CannedDirectory::holding(pool, vec![registration(&calidus_key(), 1)]);
+    let (mut intake, _dir) = calidus_intake(&[pool], directory.clone());
+
+    let error = calidus_submit(&mut intake, &other_key(), 1).unwrap_err();
+
+    assert!(
+        matches!(rejection(error), Rejection::UnauthorizedKey { .. }),
+        "an unregistered key must not speak for the pool"
+    );
+    assert_eq!(directory.lookups(), 1);
+}
+
+// The pool's rotation still converges after a stranger's attempt, because that
+// attempt left the budget alone. The pool rotates to a key the cache has never
+// held, so only a refresh can accept it.
+#[test]
+fn a_strangers_attempt_does_not_spend_the_pools_refresh() {
+    let pool = pool_of(&test_key());
+    let directory = CannedDirectory::holding(pool, vec![registration(&calidus_key(), 1)]);
+    let (mut intake, _dir) = calidus_intake(&[pool], directory.clone());
+    calidus_submit(&mut intake, &other_key(), 1).unwrap_err();
+
+    directory.rotate(pool, vec![registration(&rotated_calidus_key(), 2)]);
+    calidus_submit(&mut intake, &rotated_calidus_key(), 2).unwrap();
+
+    assert_eq!(directory.lookups(), 2, "the stranger cost the first lookup");
+}
+
+// A refresh the budget refused decided nothing: the server declined to look
+// again, which is not the same answer as "this key is not the pool's" and must
+// not reach the client as its fault.
+#[test]
+fn an_upload_whose_refresh_is_throttled_is_not_a_rejection() {
+    let pool = pool_of(&test_key());
+    let directory = CannedDirectory::holding(pool, vec![registration(&calidus_key(), 1)]);
+    let (mut intake, _dir) = calidus_intake(&[pool], directory.clone());
+    // The first attempt fills the cache, the second spends the one refresh.
+    calidus_submit(&mut intake, &other_key(), 1).unwrap_err();
+    calidus_submit(&mut intake, &other_key(), 2).unwrap_err();
+
+    let error = calidus_submit(&mut intake, &other_key(), 3).unwrap_err();
+
+    assert!(
+        matches!(error, IngestError::Undecided(_)),
+        "expected an availability error, got {error:?}"
+    );
+    assert_eq!(directory.lookups(), 2, "a throttled refresh asks nothing");
+}
+
+// Acceptance: rotation converges without a TTL. The cache predates the new
+// registration, and the upload it cannot explain is what fetches it.
+#[test]
+fn a_rotated_calidus_key_is_accepted_after_one_refresh() {
+    let pool = pool_of(&test_key());
+    let directory = CannedDirectory::holding(pool, vec![registration(&calidus_key(), 1)]);
+    let (mut intake, _dir) = calidus_intake(&[pool], directory.clone());
+    calidus_submit(&mut intake, &calidus_key(), 1).unwrap();
+
+    directory.rotate(pool, vec![registration(&other_key(), 2)]);
+    calidus_submit(&mut intake, &other_key(), 2).unwrap();
+
+    assert_eq!(directory.lookups(), 2, "one refresh, not one per upload");
+}
+
+// A directory that cannot answer decided nothing, so the upload is worth
+// retrying and must not come back as the client's fault (ADR 0004).
+#[test]
+fn a_directory_that_cannot_answer_is_not_a_rejection() {
+    let pool = pool_of(&test_key());
+    let dir = tempfile::tempdir().unwrap();
+    let counters = counter_store(dir.path());
+    let mut intake = Intake::new(
+        permissive_config(&[pool]),
+        counters,
+        FilesystemArchive::new(&dir.path().join("archive")),
+        ColdKeyOrCalidus::new(CalidusKeys::new(
+            UnavailableDirectory {
+                reason: "db-sync is down",
+            },
+            nonzero_u32(1),
+            nonzero_u64(3600),
+        )),
+    );
+    let envelope = envelope_for(&test_key(), 1);
+    let (body, signature) = seal(&calidus_key(), &envelope);
+
+    let error = intake
+        .submit(
+            &submission(
+                calidus_key().verifying_key(),
+                envelope.pool_id,
+                signature,
+                &body,
+            ),
+            test_now(),
+        )
+        .unwrap_err();
+
+    assert!(
+        matches!(error, IngestError::Undecided(_)),
+        "expected an availability error, got {error:?}"
     );
 }

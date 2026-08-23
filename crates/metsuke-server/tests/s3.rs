@@ -7,18 +7,20 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use metsuke_server::archive::{Fetch, List, ObjectName, Store, StoredSubmission};
+use metsuke_server::authority::{ColdKey, ColdKeyOrCalidus};
+use metsuke_server::calidus::CalidusKeys;
 use metsuke_server::config::S3Config;
 use metsuke_server::rebuild::{EmptyArchive, rebuild};
 use metsuke_server::s3::{META_COUNTER, META_SCHEMA_VERSION, META_SIGNATURE, META_VKEY, S3Archive};
-use metsuke_server::verify::{audit, verify};
+use metsuke_server::verify::{AuditError, audit, verify};
 use metsuke_wire::envelope::SCHEMA_VERSION;
 use metsuke_wire::hex;
 use rusty_s3::Credentials;
 
 mod support;
 use support::{
-    MAX_DECOMPRESSED_BYTES, counter_store, envelope_for, nonzero_u32, nonzero_u64, pool_of, seal,
-    stored_submission, test_key, test_now,
+    MAX_DECOMPRESSED_BYTES, UnavailableDirectory, calidus_key, counter_store, envelope_for,
+    nonzero_u32, nonzero_u64, pool_of, seal, stored_submission, test_key, test_now,
 };
 
 /// One request the fake endpoint received.
@@ -347,7 +349,7 @@ fn a_stored_object_fetches_back_and_verifies() {
 
     let fetched = archive.fetch(&submission.object_key()).unwrap();
     assert_eq!(fetched.wire_bytes, wire_bytes);
-    let envelope = verify(&fetched, MAX_DECOMPRESSED_BYTES).unwrap();
+    let envelope = verify(&fetched, MAX_DECOMPRESSED_BYTES, &mut ColdKey, test_now()).unwrap();
     assert_eq!(envelope.counter, submission.counter);
     assert_eq!(envelope.pool_id, pool_of(&test_key()));
 }
@@ -371,7 +373,7 @@ fn an_audit_verifies_what_is_stored_and_names_what_is_missing() {
         })
         .collect();
 
-    let found = audit(&archive, MAX_DECOMPRESSED_BYTES).unwrap();
+    let found = audit(&archive, MAX_DECOMPRESSED_BYTES, &mut ColdKey, test_now()).unwrap();
     assert_eq!(found.verified, 2);
     assert!(found.failures.is_empty(), "{:?}", found.failures);
 
@@ -385,7 +387,13 @@ fn an_audit_verifies_what_is_stored_and_names_what_is_missing() {
     let mut listed = stored_keys.clone();
     listed.push(missing.to_key());
     let endpoint = FakeS3::start(vec![(200, listing(&listed, None))]);
-    let found = audit(&endpoint.archive(1), MAX_DECOMPRESSED_BYTES).unwrap();
+    let found = audit(
+        &endpoint.archive(1),
+        MAX_DECOMPRESSED_BYTES,
+        &mut ColdKey,
+        test_now(),
+    )
+    .unwrap();
     assert_eq!(found.verified, 0);
     // Unreadable, not failed: nothing was checked, so nothing can be said
     // about these objects.
@@ -633,4 +641,42 @@ fn a_put_gives_up_at_the_configured_timeout() {
     );
     drop(release);
     stalled.join().unwrap();
+}
+
+// A bucket holding one Calidus pool's object, audited while db-sync is down.
+#[test]
+fn an_audit_stops_when_the_directory_cannot_answer() {
+    let endpoint = FakeS3::start(Vec::new());
+    let archive = endpoint.archive(1);
+    let hot = calidus_key();
+    let mut envelope = envelope_for(&hot, 1);
+    envelope.pool_id = pool_of(&test_key());
+    let (wire_bytes, signature) = seal(&hot, &envelope);
+    archive
+        .store(&StoredSubmission {
+            pool_id: envelope.pool_id,
+            counter: envelope.counter,
+            timestamp: envelope.timestamp,
+            schema_version: envelope.schema_version,
+            vkey: hot.verifying_key(),
+            signature,
+            wire_bytes: &wire_bytes,
+        })
+        .unwrap();
+
+    let error = audit(
+        &archive,
+        MAX_DECOMPRESSED_BYTES,
+        &mut ColdKeyOrCalidus::new(CalidusKeys::new(
+            UnavailableDirectory {
+                reason: "db-sync is down",
+            },
+            nonzero_u32(1),
+            nonzero_u64(3600),
+        )),
+        test_now(),
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, AuditError::Undecided(_)), "got: {error}");
 }

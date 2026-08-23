@@ -29,7 +29,12 @@ Size and rate limits are configuration, not constants.
 ## Consequences
 
 - A signature check is the most an unknown sender can cost the server past the
-  allowlist.
+  allowlist, unless the server runs a Calidus directory: the key check runs
+  ahead of the signature and reaches the directory for any allowlisted pool it
+  has not resolved yet, cold-key-only pools included, since nothing says which
+  kind a pool is until the lookup comes back empty (ADR 3). What bounds it is
+  not the ordering but the allowlist, the per-pool upload limit, and a ceiling
+  per pool of one resolution plus that pool's refresh budget per window.
 - A replayed valid message costs one bounded decompress before rejection,
   rate-limited per pool.
 - Each archived object carries its own replay evidence inside the signed bytes.

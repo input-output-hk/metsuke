@@ -5,13 +5,17 @@
 //! needs reads as dead code in the others.
 #![allow(dead_code)]
 
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::Path;
+use std::rc::Rc;
 
 use metsuke_server::archive::{ArchiveError, List, Store, StoredSubmission};
+use metsuke_server::authority::{ColdKeyOrCalidus, Signed};
+use metsuke_server::calidus::{CalidusKeys, Directory, DirectoryError, Registration};
 use metsuke_server::config::IngestConfig;
 use metsuke_server::counters::CounterStore;
-use metsuke_server::intake::Submission;
 use metsuke_wire::envelope::{
     self, Envelope, PoolId, SCHEMA_VERSION, Sample, Signature, SigningKey, VerifyingKey,
 };
@@ -25,6 +29,18 @@ pub fn test_key() -> SigningKey {
 /// A second key, for the pool that did not sign.
 pub fn other_key() -> SigningKey {
     SigningKey::from_bytes(&[9u8; 32])
+}
+
+/// A hot key an SPO would register as their pool's Calidus key: it hashes to
+/// no pool, so only the directory can make it speak for one.
+pub fn calidus_key() -> SigningKey {
+    SigningKey::from_bytes(&[3u8; 32])
+}
+
+/// What the pool rotates to, for a test that must tell a fetched answer from a
+/// cached one.
+pub fn rotated_calidus_key() -> SigningKey {
+    SigningKey::from_bytes(&[5u8; 32])
 }
 
 pub fn pool_of(key: &SigningKey) -> PoolId {
@@ -77,8 +93,8 @@ pub fn submission<'a>(
     pool_id: PoolId,
     signature: Signature,
     wire_bytes: &'a [u8],
-) -> Submission<'a> {
-    Submission {
+) -> Signed<'a> {
+    Signed {
         pool_id,
         vkey,
         signature,
@@ -192,6 +208,89 @@ impl List for FailingArchive {
             reason: self.reason.to_string(),
         }
         .into())
+    }
+}
+
+/// A Calidus directory serving what a test put in it, counting what it was
+/// asked. The count is the assertion behind cache-forever: a resolution that
+/// did not increment it never reached db-sync.
+///
+/// Shared rather than owned, so a test still holds it after the authority
+/// under test took it.
+#[derive(Clone)]
+pub struct CannedDirectory {
+    chain: Rc<Chain>,
+}
+
+#[derive(Default)]
+struct Chain {
+    registrations: RefCell<HashMap<PoolId, Vec<Registration>>>,
+    lookups: Cell<usize>,
+}
+
+impl CannedDirectory {
+    pub fn holding(pool_id: PoolId, registrations: Vec<Registration>) -> Self {
+        let directory = CannedDirectory {
+            chain: Rc::new(Chain::default()),
+        };
+        directory.rotate(pool_id, registrations);
+        directory
+    }
+
+    /// What the chain says from now on, as a re-registration would leave it.
+    pub fn rotate(&self, pool_id: PoolId, registrations: Vec<Registration>) {
+        self.chain
+            .registrations
+            .borrow_mut()
+            .insert(pool_id, registrations);
+    }
+
+    pub fn lookups(&self) -> usize {
+        self.chain.lookups.get()
+    }
+}
+
+impl Directory for CannedDirectory {
+    fn registrations(&self, pool_id: PoolId) -> Result<Vec<Registration>, DirectoryError> {
+        self.chain.lookups.set(self.lookups() + 1);
+        Ok(self
+            .chain
+            .registrations
+            .borrow()
+            .get(&pool_id)
+            .cloned()
+            .unwrap_or_default())
+    }
+}
+
+/// The CIP-151 registration naming one of the tests' keys.
+pub fn registration(key: &SigningKey, nonce: u64) -> Registration {
+    Registration {
+        nonce,
+        key: key.verifying_key().to_bytes(),
+    }
+}
+
+/// The Calidus-capable authority over a directory the caller still holds.
+pub fn calidus_authority(directory: CannedDirectory) -> ColdKeyOrCalidus<CannedDirectory> {
+    ColdKeyOrCalidus::new(CalidusKeys::new(
+        directory,
+        nonzero_u32(1),
+        nonzero_u64(3600),
+    ))
+}
+
+/// A directory that cannot answer, standing in for a db-sync that is down.
+pub struct UnavailableDirectory {
+    pub reason: &'static str,
+}
+
+impl Directory for UnavailableDirectory {
+    fn registrations(&self, pool_id: PoolId) -> Result<Vec<Registration>, DirectoryError> {
+        Err(DirectoryError::Unavailable {
+            pool_id,
+            reason: self.reason.to_string(),
+        })
     }
 }
 

@@ -3,11 +3,17 @@
 //! rests on is visible one failure at a time.
 
 use metsuke_server::archive::{FetchedObject, ObjectName};
+use metsuke_server::authority::{ColdKey, ColdKeyOrCalidus};
+use metsuke_server::calidus::CalidusKeys;
 use metsuke_server::verify::{Audit, AuditFailure, VerifyError, verify};
 use metsuke_wire::envelope::{Envelope, SigningKey};
 
 mod support;
-use support::{MAX_DECOMPRESSED_BYTES, envelope_for, other_key, pool_of, seal, test_key, test_now};
+use support::{
+    CannedDirectory, MAX_DECOMPRESSED_BYTES, UnavailableDirectory, calidus_authority, calidus_key,
+    envelope_for, nonzero_u32, nonzero_u64, other_key, pool_of, registration, seal, test_key,
+    test_now,
+};
 
 /// The object the archive holds for `envelope`, signed by `signer`.
 fn object_of(signer: &SigningKey, envelope: &Envelope) -> FetchedObject {
@@ -32,7 +38,7 @@ fn stored_object() -> FetchedObject {
 }
 
 fn verified(object: &FetchedObject) -> Result<Envelope, VerifyError> {
-    verify(object, MAX_DECOMPRESSED_BYTES)
+    verify(object, MAX_DECOMPRESSED_BYTES, &mut ColdKey, test_now())
 }
 
 #[test]
@@ -118,12 +124,14 @@ fn an_object_filed_under_the_wrong_key_does_not_verify() {
     );
 }
 
+// Reported as its own finding, not as corruption: an auditor reading
+// "malformed" would chase the object rather than the ceiling.
 #[test]
 fn a_payload_over_the_ceiling_does_not_verify() {
     let object = stored_object();
-    let error = verify(&object, 1).unwrap_err();
+    let error = verify(&object, 1, &mut ColdKey, test_now()).unwrap_err();
     assert!(
-        matches!(error, VerifyError::MalformedPayload { .. }),
+        matches!(error, VerifyError::OversizedPayload { max: 1, .. }),
         "got: {error}"
     );
 }
@@ -163,8 +171,47 @@ fn every_failure_names_the_object() {
     *tampered.wire_bytes.last_mut().unwrap() ^= 0xff;
     for error in [
         verified(&tampered).unwrap_err(),
-        verify(&stored_object(), 1).unwrap_err(),
+        verify(&stored_object(), 1, &mut ColdKey, test_now()).unwrap_err(),
     ] {
         assert!(error.to_string().contains(&key), "got: {error}");
     }
+}
+
+// Acceptance: the Calidus half of ADR 0003 reaches the archive too.
+#[test]
+fn an_object_signed_by_the_pools_calidus_key_verifies() {
+    let hot = calidus_key();
+    let mut envelope = envelope_for(&hot, 7);
+    envelope.pool_id = pool_of(&test_key());
+    let object = object_of(&hot, &envelope);
+    let directory = CannedDirectory::holding(envelope.pool_id, vec![registration(&hot, 1)]);
+
+    let verified = verify(
+        &object,
+        MAX_DECOMPRESSED_BYTES,
+        &mut calidus_authority(directory),
+        test_now(),
+    )
+    .unwrap();
+
+    assert_eq!(verified.counter, 7);
+}
+
+// A directory that cannot answer is reported apart from a finding about the
+// object, which is what lets `audit` stop on it.
+#[test]
+fn an_object_no_directory_can_decide_on_is_not_a_finding() {
+    let hot = calidus_key();
+    let mut envelope = envelope_for(&hot, 7);
+    envelope.pool_id = pool_of(&test_key());
+    let object = object_of(&hot, &envelope);
+    let mut authority = ColdKeyOrCalidus::new(CalidusKeys::new(
+        UnavailableDirectory {
+            reason: "db-sync is down",
+        },
+        nonzero_u32(1),
+        nonzero_u64(3600),
+    ));
+    let error = verify(&object, MAX_DECOMPRESSED_BYTES, &mut authority, test_now()).unwrap_err();
+    assert!(matches!(error, VerifyError::Undecided(_)), "got: {error}");
 }

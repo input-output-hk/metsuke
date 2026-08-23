@@ -3,6 +3,8 @@
 //! adapters it drives.
 
 pub mod archive;
+pub mod authority;
+pub mod calidus;
 pub mod cli;
 pub mod config;
 pub mod counters;

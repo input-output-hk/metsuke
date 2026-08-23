@@ -1,24 +1,14 @@
 //! The one path an upload takes. `submit` read top to bottom is the check
 //! order; ADR 0002 fixes only what that order must satisfy.
 
-use metsuke_wire::envelope::{
-    self, Ack, Envelope, PoolId, SCHEMA_VERSION, Signature, VerifyingKey,
-};
+use metsuke_wire::envelope::{Ack, Envelope, PoolId, SCHEMA_VERSION};
 use time::OffsetDateTime;
 
 use crate::archive::{ArchiveError, Store, StoredSubmission};
+use crate::authority::{AuthError, Authority, Signed, Undecided, authenticate};
 use crate::config::IngestConfig;
 use crate::counters::{CounterError, CounterStore, Reservation};
 use crate::ratelimit::RateLimiter;
-
-/// One upload as it arrives: the ADR-0001 headers plus the body as sent.
-pub struct Submission<'a> {
-    pub pool_id: PoolId,
-    pub vkey: VerifyingKey,
-    pub signature: Signature,
-    /// The compressed body, byte for byte as received.
-    pub wire_bytes: &'a [u8],
-}
 
 /// Why the server refused. Every variant is the client's fault and its text
 /// is what the client logs, so each names what to change.
@@ -66,23 +56,27 @@ pub enum IngestError {
     CounterState(#[from] CounterError),
     #[error("archive unavailable: {0}")]
     Archive(#[from] ArchiveError),
+    #[error("{0}")]
+    Undecided(#[from] Undecided),
 }
 
-pub struct Intake<A: Store> {
+pub struct Intake<A: Store, K: Authority> {
     config: IngestConfig,
     counters: CounterStore,
     limiter: RateLimiter,
     archive: A,
+    authority: K,
 }
 
-impl<A: Store> Intake<A> {
-    pub fn new(config: IngestConfig, counters: CounterStore, archive: A) -> Self {
+impl<A: Store, K: Authority> Intake<A, K> {
+    pub fn new(config: IngestConfig, counters: CounterStore, archive: A, authority: K) -> Self {
         let limiter = RateLimiter::new(config.rate_limit_uploads, config.rate_limit_window_secs);
         Intake {
             config,
             counters,
             limiter,
             archive,
+            authority,
         }
     }
 
@@ -92,17 +86,13 @@ impl<A: Store> Intake<A> {
         self.config.max_body_bytes.get()
     }
 
-    /// Run one submission through the chain. `now` is the server clock,
-    /// taken once so every check in a submission judges the same instant.
-    pub fn submit(
-        &mut self,
-        submission: &Submission<'_>,
-        now: OffsetDateTime,
-    ) -> Result<Ack, IngestError> {
-        let pool_id = submission.pool_id;
-        if submission.wire_bytes.len() as u64 > self.config.max_body_bytes.get() {
+    /// Run one upload through the chain. `now` is the server clock,
+    /// taken once so every check in one upload judges the same instant.
+    pub fn submit(&mut self, signed: &Signed<'_>, now: OffsetDateTime) -> Result<Ack, IngestError> {
+        let pool_id = signed.pool_id;
+        if signed.wire_bytes.len() as u64 > self.config.max_body_bytes.get() {
             return Err(Rejection::OversizedBody {
-                found: submission.wire_bytes.len(),
+                found: signed.wire_bytes.len(),
                 max: self.config.max_body_bytes.get(),
             }
             .into());
@@ -118,39 +108,29 @@ impl<A: Store> Intake<A> {
             }
             .into());
         }
-        // The cold-key path of ADR 0003; the Calidus path (ticket
-        // metsuke-4zo.8) joins here.
-        if PoolId::from_cold_key(&submission.vkey) != pool_id {
-            return Err(Rejection::UnauthorizedKey { pool_id }.into());
-        }
-        let envelope = envelope::open(
-            &submission.vkey,
-            submission.wire_bytes,
-            &submission.signature,
+        let envelope = authenticate(
+            &mut self.authority,
+            signed,
             self.config.max_decompressed_bytes.get(),
+            now,
         )
         .map_err(|error| match error {
-            envelope::OpenError::Signature(_) => Rejection::BadSignature,
-            envelope::OpenError::TooLarge {
-                max_decompressed_bytes,
-            } => Rejection::OversizedPayload {
-                max: max_decompressed_bytes,
-            },
-            envelope::OpenError::Decompress(error) => Rejection::MalformedPayload {
-                reason: error.to_string(),
-            },
-            envelope::OpenError::Json(error) => Rejection::MalformedPayload {
-                reason: error.to_string(),
-            },
+            AuthError::UnauthorizedKey { pool_id } => {
+                IngestError::from(Rejection::UnauthorizedKey { pool_id })
+            }
+            AuthError::BadSignature => Rejection::BadSignature.into(),
+            AuthError::OversizedPayload { max } => Rejection::OversizedPayload { max }.into(),
+            AuthError::MalformedPayload { reason } => Rejection::MalformedPayload { reason }.into(),
+            AuthError::Undecided(error) => error.into(),
         })?;
-        self.accept(submission, envelope, now)
+        self.accept(signed, envelope, now)
     }
 
     /// The post-decompression half: what the signed payload itself claims
     /// must hold before the bytes are archived.
     fn accept(
         &mut self,
-        submission: &Submission<'_>,
+        signed: &Signed<'_>,
         envelope: Envelope,
         now: OffsetDateTime,
     ) -> Result<Ack, IngestError> {
@@ -160,9 +140,9 @@ impl<A: Store> Intake<A> {
             }
             .into());
         }
-        if envelope.pool_id != submission.pool_id {
+        if envelope.pool_id != signed.pool_id {
             return Err(Rejection::PoolIdMismatch {
-                submitted: submission.pool_id,
+                submitted: signed.pool_id,
                 found: envelope.pool_id,
             }
             .into());
@@ -193,9 +173,9 @@ impl<A: Store> Intake<A> {
             counter: envelope.counter,
             timestamp: envelope.timestamp,
             schema_version: envelope.schema_version,
-            vkey: submission.vkey,
-            signature: submission.signature,
-            wire_bytes: submission.wire_bytes,
+            vkey: signed.vkey,
+            signature: signed.signature,
+            wire_bytes: signed.wire_bytes,
         })?;
         reserved.commit()?;
         Ok(Ack {

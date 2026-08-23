@@ -1,5 +1,5 @@
 //! The HTTP surface: one POST route, its headers decoded into an
-//! `intake::Submission`, and the status the intake's answer implies. TLS
+//! `authority::Signed`, and the status the intake's answer implies. TLS
 //! belongs to the reverse proxy in front of this (endpoint-protection.md,
 //! Transport), as does any IP-keyed limit (same doc, cost asymmetry and abuse
 //! handling) — this layer knows only pool ids.
@@ -21,7 +21,8 @@ use time::OffsetDateTime;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::archive::Store;
-use crate::intake::{IngestError, Intake, Rejection, Submission};
+use crate::authority::{Authority, Signed};
+use crate::intake::{IngestError, Intake, Rejection};
 
 /// The one route this server answers.
 pub const SUBMIT_PATH: &str = "/v1/submit";
@@ -110,7 +111,7 @@ pub fn status_for(error: &IngestError) -> u16 {
             | Rejection::TimestampOutOfWindow { .. }
             | Rejection::ReplayedCounter { .. } => 400,
         },
-        IngestError::CounterState(_) | IngestError::Archive(_) => 503,
+        IngestError::CounterState(_) | IngestError::Archive(_) | IngestError::Undecided(_) => 503,
     }
 }
 
@@ -122,9 +123,9 @@ pub fn status_for(error: &IngestError) -> u16 {
 /// error once, so a second `recv` would block on an empty queue forever —
 /// logging and continuing would leave a process that looks healthy to systemd
 /// and accepts nothing. Failing out is what turns it back into a restart.
-pub fn serve<A: Store>(
+pub fn serve<A: Store, K: Authority>(
     server: &Server,
-    intake: &mut Intake<A>,
+    intake: &mut Intake<A, K>,
 ) -> Result<std::convert::Infallible, std::io::Error> {
     loop {
         let mut request = server.recv()?;
@@ -143,7 +144,7 @@ struct Answer {
     claimed: Option<PoolId>,
 }
 
-fn route<A: Store>(intake: &mut Intake<A>, request: &mut Request) -> Answer {
+fn route<A: Store, K: Authority>(intake: &mut Intake<A, K>, request: &mut Request) -> Answer {
     if request.method() != &Method::Post {
         return refuse(None, 405, format!("{SUBMIT_PATH} takes POST"));
     }
@@ -164,7 +165,7 @@ fn route<A: Store>(intake: &mut Intake<A>, request: &mut Request) -> Answer {
         Ok(wire_bytes) => wire_bytes,
         Err(reason) => return refuse(claimed, reason.status, reason.text),
     };
-    let submission = Submission {
+    let submission = Signed {
         pool_id: headers.pool_id,
         vkey: headers.vkey,
         signature: headers.signature,
