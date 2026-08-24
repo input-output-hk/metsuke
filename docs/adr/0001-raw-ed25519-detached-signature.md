@@ -27,3 +27,5 @@ result.
 - The server can verify before decompressing (see ADR 2 for the check order).
 - SPOs cannot reuse wallet-produced COSE signatures; the client binary does the
   signing.
+- "Runtime data path" means the submission: reading a pool's on-chain Calidus
+  registration is CBOR and is not this path (ADR 8).
