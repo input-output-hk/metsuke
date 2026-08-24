@@ -25,10 +25,20 @@ list_max_pages = 1000
 # root = "/var/lib/metsuke-server/archive"
 
 [ingest]
-# Change this: the pools you onboarded.
-allowlist = ["pool1CHANGEME"]
+# Change this: the pools you onboarded against the application code each came
+# in on, as `metsuke-server generate-allowlist` emits them.
+allowlist = { pool1CHANGEME = "MUSA-0000" }
 max_body_bytes = 1048576
 max_decompressed_bytes = 4194304
 rate_limit_uploads = 24
 rate_limit_window_secs = 3600
 max_timestamp_skew_secs = 300
+
+# Optional, and the only section that is.
+[applications]
+applications_csv = "/var/lib/metsuke-server/applications.csv"
+psql_path = "/run/current-system/sw/bin/psql"
+socket_dir = "/run/postgresql"
+dbname = "cexplorer"
+role = "metsuke_ro"
+query_timeout_secs = 60

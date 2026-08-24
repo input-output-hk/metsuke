@@ -59,6 +59,18 @@ The set of **Pools** the rewards program accepts **Submissions** from. Separate
 from, and prior to, whether a key speaks for a **Pool**.
 _Avoid_: whitelist, roster, participants
 
+**Application**:
+An **Operator** asking for their **Pool** to join the rewards program, carrying
+an **Application Code**.
+_Avoid_: signup, enrolment, request
+
+**Application Code**:
+The string an **Operator** puts in both their **Application** and their pool
+registration transaction's metadata. The pair is what shows the **Application**
+came from whoever holds the **Pool**'s **Cold Key**, since only that key can
+sign a pool registration. Public, never a secret.
+_Avoid_: token, secret, invite code
+
 ## Relationships
 
 - A **Pool** has exactly one **Cold Key** and at most one current **Calidus Key**
@@ -66,6 +78,8 @@ _Avoid_: whitelist, roster, participants
 - A **Registration** is authorised by exactly one **Witness** from the **Pool**'s **Cold Key**
 - A **Submission** is signed by one key, which must speak for the **Pool** it names
 - A **Pool** outside the **Allowlist** has no accepted **Submissions**, whatever key it holds
+- A **Pool** reaches the **Allowlist** only when its **Application Code** appears in both an
+  **Application** and its current pool registration
 
 ## Example dialogue
 

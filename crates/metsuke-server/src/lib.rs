@@ -2,6 +2,7 @@
 //! object. `intake` is the single entry point; the other modules are
 //! adapters it drives.
 
+pub mod applications;
 pub mod archive;
 pub mod authority;
 pub mod calidus;

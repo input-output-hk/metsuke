@@ -7,6 +7,7 @@ pub const DEFAULT_CONFIG_PATH: &str = "/etc/metsuke-server/config.toml";
 
 pub const REBUILD_INDEX: &str = "rebuild-index";
 pub const VERIFY_ARCHIVE: &str = "verify-archive";
+pub const GENERATE_ALLOWLIST: &str = "generate-allowlist";
 
 /// Says the operator meant an archive with nothing in it, so `rebuild-index`
 /// may seed nothing rather than refuse (`rebuild::EmptyArchive`).
@@ -20,6 +21,17 @@ pub struct Args {
 
 #[derive(Debug, PartialEq)]
 pub enum Command {
+    /// Everything that needs the archive and the counter database opened.
+    Archive(ArchiveCommand),
+    /// Emit the allowlist. Its own variant rather than a third
+    /// `ArchiveCommand` because it reads neither store, and an operator
+    /// onboarding pools from the db-sync host holds no archive credentials to
+    /// open one with.
+    GenerateAllowlist,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ArchiveCommand {
     Serve,
     /// `allow_empty` rides the variant it applies to: on `serve` or
     /// `verify-archive` the flag would have nothing to mean, and accepting it
@@ -34,7 +46,7 @@ pub enum Command {
 pub enum ArgsError {
     #[error(
         "unknown argument {argument:?} (usage: metsuke-server [--config <path>] \
-         [{REBUILD_INDEX} [{ALLOW_EMPTY}]|{VERIFY_ARCHIVE}])"
+         [{REBUILD_INDEX} [{ALLOW_EMPTY}]|{VERIFY_ARCHIVE}|{GENERATE_ALLOWLIST}])"
     )]
     Unknown { argument: String },
     #[error("--config needs a <path> value")]
@@ -65,7 +77,7 @@ impl Args {
                         .ok_or(ArgsError::MissingValue)?;
                 }
                 ALLOW_EMPTY => allow_empty = true,
-                REBUILD_INDEX | VERIFY_ARCHIVE => match named {
+                REBUILD_INDEX | VERIFY_ARCHIVE | GENERATE_ALLOWLIST => match named {
                     Some(first) => {
                         return Err(ArgsError::TwoCommands {
                             first,
@@ -78,10 +90,13 @@ impl Args {
             }
         }
         let command = match (named.as_deref(), allow_empty) {
-            (Some(REBUILD_INDEX), allow_empty) => Command::RebuildIndex { allow_empty },
+            (Some(REBUILD_INDEX), allow_empty) => {
+                Command::Archive(ArchiveCommand::RebuildIndex { allow_empty })
+            }
             (_, true) => return Err(ArgsError::AllowEmptyWithoutRebuild),
-            (Some(VERIFY_ARCHIVE), false) => Command::VerifyArchive,
-            (_, false) => Command::Serve,
+            (Some(VERIFY_ARCHIVE), false) => Command::Archive(ArchiveCommand::VerifyArchive),
+            (Some(GENERATE_ALLOWLIST), false) => Command::GenerateAllowlist,
+            (_, false) => Command::Archive(ArchiveCommand::Serve),
         };
         Ok(Args { config, command })
     }

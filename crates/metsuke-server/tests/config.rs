@@ -5,7 +5,7 @@
 use metsuke_server::config::{ArchiveConfig, ServerConfig};
 
 mod support;
-use support::{example_config as example, pool_of, test_key};
+use support::{allowlist_toml, example_config as example, pool_of, test_key};
 
 /// The example is the complete config every test here mutates, so a field the
 /// server grows must reach the file an operator copies from before this suite
@@ -14,7 +14,7 @@ use support::{example_config as example, pool_of, test_key};
 fn the_shipped_example_config_loads() {
     let config = ServerConfig::from_toml(&example()).unwrap();
     assert_eq!(config.listen, "127.0.0.1:8080");
-    assert!(config.ingest.allowlist.contains(&pool_of(&test_key())));
+    assert!(config.ingest.allowlist.contains_key(&pool_of(&test_key())));
     assert_eq!(config.ingest.max_timestamp_skew_secs.get(), 300);
     let ArchiveConfig::S3(s3) = config.archive else {
         panic!("the example names an S3 archive");
@@ -27,9 +27,9 @@ fn the_shipped_example_config_loads() {
     );
 }
 
-/// The other archive kind: a config with no bucket in it must load.
+/// The other archive kind, and a config leaving `[applications]` out.
 #[test]
-fn a_filesystem_archive_loads() {
+fn a_filesystem_archive_without_an_applications_section_loads() {
     let text = format!(
         r#"
 listen = "127.0.0.1:8080"
@@ -40,14 +40,14 @@ kind = "filesystem"
 root = "/var/lib/metsuke-server/archive"
 
 [ingest]
-allowlist = ["{pool}"]
+allowlist = {allowlist}
 max_body_bytes = 1048576
 max_decompressed_bytes = 4194304
 rate_limit_uploads = 24
 rate_limit_window_secs = 3600
 max_timestamp_skew_secs = 300
 "#,
-        pool = pool_of(&test_key()).to_bech32(),
+        allowlist = allowlist_toml(&[pool_of(&test_key())]),
     );
     let config = ServerConfig::from_toml(&text).unwrap();
     let ArchiveConfig::Filesystem { root } = config.archive else {
@@ -57,6 +57,7 @@ max_timestamp_skew_secs = 300
         root,
         std::path::Path::new("/var/lib/metsuke-server/archive")
     );
+    assert!(config.applications.is_none());
 }
 
 /// `example()` with the line that sets `field` replaced by `replacement`, or
@@ -95,7 +96,8 @@ fn an_archive_without_a_kind_is_refused() {
 }
 
 /// The fields typed `NonZero`, so zero and absence are the same refusal.
-const NONZERO_FIELDS: [&str; 9] = [
+const NONZERO_FIELDS: [&str; 10] = [
+    "query_timeout_secs",
     "request_timeout_secs",
     "signature_validity_secs",
     "put_retry_backoff_ms",
@@ -109,7 +111,7 @@ const NONZERO_FIELDS: [&str; 9] = [
 
 /// The rest, where only absence is a mistake. Together with `NONZERO_FIELDS`
 /// this is every field the server reads, so a new one joins exactly one list.
-const OTHER_FIELDS: [&str; 7] = [
+const OTHER_FIELDS: [&str; 12] = [
     "listen",
     "counters_path",
     "bucket",
@@ -117,6 +119,11 @@ const OTHER_FIELDS: [&str; 7] = [
     "endpoint",
     "put_retries",
     "allowlist",
+    "applications_csv",
+    "psql_path",
+    "socket_dir",
+    "dbname",
+    "role",
 ];
 
 #[test]
@@ -129,6 +136,16 @@ fn every_field_is_required() {
             error.contains(field),
             "config without {field} must fail naming it, got: {error}"
         );
+    }
+}
+
+#[test]
+fn a_path_that_is_not_absolute_is_refused() {
+    for field in ["psql_path", "socket_dir", "applications_csv"] {
+        let error = ServerConfig::from_toml(&with(field, "\"relative\""))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("absolute"), "{field}, got: {error}");
     }
 }
 

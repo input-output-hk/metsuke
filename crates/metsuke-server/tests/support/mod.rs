@@ -6,15 +6,16 @@
 #![allow(dead_code)]
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::num::{NonZeroU32, NonZeroU64};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use metsuke_server::applications::ApplicationCode;
 use metsuke_server::archive::{ArchiveError, List, Store, StoredSubmission};
 use metsuke_server::authority::{ColdKeyOrCalidus, Signed};
 use metsuke_server::calidus::{CalidusKeys, Directory, DirectoryError, Registration};
-use metsuke_server::config::IngestConfig;
+use metsuke_server::config::{AbsolutePath, ApplicationsConfig, IngestConfig};
 use metsuke_server::counters::CounterStore;
 use metsuke_wire::envelope::{
     self, Envelope, PoolId, SCHEMA_VERSION, Sample, Signature, SigningKey, VerifyingKey,
@@ -102,10 +103,32 @@ pub fn submission<'a>(
     }
 }
 
+/// The application code every test pool is allowlisted against.
+pub fn test_code() -> ApplicationCode {
+    ApplicationCode::parse("MUSA-0000").expect("the test code is well formed")
+}
+
+/// The allowlist as the config holds it: pool against the code it came in on.
+pub fn allowlist(allowed: &[PoolId]) -> BTreeMap<PoolId, ApplicationCode> {
+    allowed
+        .iter()
+        .map(|pool_id| (*pool_id, test_code()))
+        .collect()
+}
+
+/// The same allowlist as the inline TOML table a config file holds.
+pub fn allowlist_toml(allowed: &[PoolId]) -> String {
+    let pairs: Vec<String> = allowlist(allowed)
+        .iter()
+        .map(|(pool_id, code)| format!("{pool_id} = \"{code}\""))
+        .collect();
+    format!("{{ {} }}", pairs.join(", "))
+}
+
 /// Limits wide enough that only the check under test can fire.
 pub fn permissive_config(allowed: &[PoolId]) -> IngestConfig {
     IngestConfig {
-        allowlist: allowed.iter().copied().collect(),
+        allowlist: allowlist(allowed),
         max_body_bytes: nonzero_u64(1024 * 1024),
         max_decompressed_bytes: nonzero_u64(MAX_DECOMPRESSED_BYTES),
         rate_limit_uploads: nonzero_u32(100),
@@ -178,6 +201,52 @@ pub fn example_s3_archive(endpoint: &str, put_retries: u32) -> String {
         })
         .collect::<Vec<_>>();
     body.join("\n")
+}
+
+/// The gate's config pointed at a `psql` a test placed, with the connection
+/// values the assertions name. These tests drive the registered half, so the
+/// applications path is a placeholder nothing opens.
+pub fn applications_config(psql_path: &Path, socket_dir: &Path) -> ApplicationsConfig {
+    ApplicationsConfig {
+        applications_csv: absolute("/nonexistent/applications.csv"),
+        psql_path: absolute(psql_path),
+        socket_dir: absolute(socket_dir),
+        dbname: "cexplorer".to_string(),
+        role: "metsuke_ro".to_string(),
+        query_timeout_secs: nonzero_u64(7),
+    }
+}
+
+pub fn absolute(path: impl Into<PathBuf>) -> AbsolutePath {
+    AbsolutePath::new(path.into()).expect("a test path is absolute")
+}
+
+/// A `psql` that records what it was run with and prints `csv` back. Shell
+/// builtins alone: `Psql` clears the environment, leaving the shell on whatever
+/// default `PATH` it was compiled with.
+///
+/// The CSV a test hands it is written by hand: no db-sync has answered this
+/// query yet (ticket metsuke-4zo.52), so what it proves is the reading, not the
+/// shape of a real answer.
+pub fn fake_psql(dir: &Path, recording: &Path, csv: &str) -> PathBuf {
+    let psql = dir.join("psql");
+    std::fs::write(
+        &psql,
+        format!(
+            "#!/bin/sh\n\
+             printf '%s\\n' \"PGOPTIONS=$PGOPTIONS\" \"$@\" > {recording}\n\
+             printf '%s' '{csv}'\n",
+            recording = recording.display(),
+        ),
+    )
+    .unwrap();
+    make_executable(&psql);
+    psql
+}
+
+pub fn make_executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
 /// An archive that fails whichever half the caller under test uses, standing

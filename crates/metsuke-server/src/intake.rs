@@ -97,7 +97,7 @@ impl<A: Store, K: Authority> Intake<A, K> {
             }
             .into());
         }
-        if !self.config.allowlist.contains(&pool_id) {
+        if !self.config.allowlist.contains_key(&pool_id) {
             return Err(Rejection::UnknownPool { pool_id }.into());
         }
         if !self.limiter.allow(pool_id, now) {

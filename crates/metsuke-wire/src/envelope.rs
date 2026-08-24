@@ -30,7 +30,7 @@ pub struct Ack {
 /// A pool id: the blake2b-224 hash of the pool's cold verification key,
 /// bech32 `pool1…` on the wire. The only constructors validate, so a held
 /// `PoolId` is always a real 28-byte hash.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PoolId([u8; 28]);
 
 /// CIP-5 human-readable prefix for pool ids.

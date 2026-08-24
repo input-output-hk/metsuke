@@ -8,9 +8,14 @@ use metsuke_server::archive::{FilesystemArchive, List, Store};
 // Cold key only, at both the ingest and the audit site: ADR 0003's Calidus
 // half needs a directory, and which source is trustworthy enough to be one is
 // ticket metsuke-4zo.44.
+use metsuke_server::applications::{
+    ApplicationsCsvError, ChainError, Excluded, Gate, Psql, gate, read_codes,
+};
 use metsuke_server::authority::ColdKey;
-use metsuke_server::cli::{Args, ArgsError, Command};
-use metsuke_server::config::{ArchiveConfig, ConfigError, IngestConfig, S3Config, ServerConfig};
+use metsuke_server::cli::{ArchiveCommand, Args, ArgsError, Command, GENERATE_ALLOWLIST};
+use metsuke_server::config::{
+    ApplicationsConfig, ArchiveConfig, ConfigError, IngestConfig, S3Config, ServerConfig,
+};
 use metsuke_server::counters::{CounterError, CounterStore};
 use metsuke_server::http;
 use metsuke_server::intake::Intake;
@@ -41,6 +46,24 @@ enum Fatal {
     MissingCredentials,
     #[error("cannot rebuild the index: {0}")]
     Rebuild(#[from] RebuildError),
+    #[error("{GENERATE_ALLOWLIST} needs an [applications] section in the config")]
+    NoApplications,
+    #[error("cannot open the applications {path}: {source}")]
+    OpenApplications {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("cannot read the applications {path}: {source}")]
+    ReadApplications {
+        path: String,
+        #[source]
+        source: ApplicationsCsvError,
+    },
+    #[error("cannot read the registered application codes: {0}")]
+    Chain(#[from] ChainError),
+    #[error("no pool both applied and registered its code, so the allowlist would accept nobody")]
+    NobodyMatched,
     #[error("cannot audit the archive: {0}")]
     Audit(#[from] AuditError),
     #[error("a filesystem archive stores no metadata to re-verify against")]
@@ -77,14 +100,21 @@ fn run() -> Result<(), Fatal> {
         counters_path,
         archive,
         ingest,
+        applications,
     } = ServerConfig::from_toml(&text)?;
+    let command = match args.command {
+        Command::GenerateAllowlist => {
+            return generate_allowlist(applications.as_ref().ok_or(Fatal::NoApplications)?);
+        }
+        Command::Archive(command) => command,
+    };
     let counters = CounterStore::open(&counters_path)?;
     // The archive kind is matched once: pairing it with the subcommand would
     // multiply the arms by every kind this grows.
     match archive {
         ArchiveConfig::Filesystem { root } => dispatch(
             FilesystemArchive::new(&root),
-            args,
+            command,
             &listen,
             ingest,
             counters,
@@ -94,7 +124,7 @@ fn run() -> Result<(), Fatal> {
         ),
         ArchiveConfig::S3(config) => dispatch(
             s3_archive(&config)?,
-            args,
+            command,
             &listen,
             ingest,
             counters,
@@ -114,22 +144,75 @@ fn run() -> Result<(), Fatal> {
 /// step that is not the same work for every kind, so it is the parameter.
 fn dispatch<A: Store + List>(
     archive: A,
-    args: Args,
+    command: ArchiveCommand,
     listen: &str,
     ingest: IngestConfig,
     mut counters: CounterStore,
     verify_archive: impl FnOnce(&A, u64) -> Result<(), Fatal>,
 ) -> Result<(), Fatal> {
-    match args.command {
-        Command::Serve => serve(archive, listen, ingest, counters),
-        Command::RebuildIndex { allow_empty } => {
+    match command {
+        ArchiveCommand::Serve => serve(archive, listen, ingest, counters),
+        ArchiveCommand::RebuildIndex { allow_empty } => {
             let empty = match allow_empty {
                 true => EmptyArchive::Accept,
                 false => EmptyArchive::Refuse,
             };
             report_rebuild(rebuild(&archive, &mut counters, empty)?)
         }
-        Command::VerifyArchive => verify_archive(&archive, ingest.max_decompressed_bytes.get()),
+        ArchiveCommand::VerifyArchive => {
+            verify_archive(&archive, ingest.max_decompressed_bytes.get())
+        }
+    }
+}
+
+/// The pairs on stdout, the summary on stderr: stdout is the artifact another
+/// config reads, so anything meant for the operator has to stay out of it.
+fn generate_allowlist(config: &ApplicationsConfig) -> Result<(), Fatal> {
+    let applications = config.applications_csv.as_path();
+    let path = applications.display().to_string();
+    let text = std::fs::read_to_string(applications).map_err(|source| Fatal::OpenApplications {
+        path: path.clone(),
+        source,
+    })?;
+    let applied = read_codes(&text).map_err(|source| Fatal::ReadApplications { path, source })?;
+    let found = gate(applied, Psql::new(config).registered_codes()?);
+    print!("{}", found.to_toml());
+    report_gate(&found)
+}
+
+fn report_gate(found: &Gate) -> Result<(), Fatal> {
+    eprintln!(
+        "{} pools allowlisted, {} applicants excluded",
+        found.allowed.len(),
+        found.excluded.len()
+    );
+    for (pool_id, why) in &found.excluded {
+        let reason = match why {
+            Excluded::NotRegistered => "applied, but registered no application code".to_string(),
+            Excluded::CodeMismatch { registered } => {
+                format!("applied with a code that is not its registered {registered}")
+            }
+            Excluded::ContradictoryCodes => {
+                "applied, and has more than one code registered".to_string()
+            }
+        };
+        eprintln!("excluded {pool_id}: {reason}");
+    }
+    if found.did_not_apply > 0 {
+        eprintln!(
+            "{} pools have a registered code and never applied",
+            found.did_not_apply
+        );
+    }
+    if found.unreadable > 0 {
+        eprintln!(
+            "{} registered rows are not a pool and a code",
+            found.unreadable
+        );
+    }
+    match found.allowed.is_empty() {
+        true => Err(Fatal::NobodyMatched),
+        false => Ok(()),
     }
 }
 
