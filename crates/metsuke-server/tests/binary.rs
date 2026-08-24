@@ -17,8 +17,8 @@ use time::OffsetDateTime;
 
 mod support;
 use support::{
-    allowlist_toml, envelope_at, example_s3_archive, other_key, pool_of, seal, stored_submission,
-    test_key,
+    allowlist_toml, calidus_toml, envelope_at, example_s3_archive, other_key, pool_of, seal,
+    stored_submission, test_key,
 };
 
 /// Limits wide enough that no check fires on its own. A test exercising one
@@ -93,10 +93,12 @@ impl Server {
                 [ingest]
                 allowlist = {allowlist}
                 {ingest}
+                {calidus}
                 "#,
                 counters = dir.path().join("counters.sqlite").display(),
                 archive = archive(dir.path()),
                 allowlist = allowlist_toml(allowed),
+                calidus = calidus_toml(dir.path()),
             ),
         )
         .unwrap();
@@ -236,7 +238,8 @@ fn a_missing_config_exits_nonzero_naming_the_path() {
 fn allowlist_config(dir: &std::path::Path, applied: &str, registered: &str) -> std::path::PathBuf {
     let applications_csv = dir.join("applications.csv");
     std::fs::write(&applications_csv, applied).unwrap();
-    let psql = support::fake_psql(dir, &dir.join("argv"), registered);
+    support::psql_answers(dir, registered);
+    let psql = support::fake_psql();
     let config = dir.join("server.toml");
     std::fs::write(
         &config,
@@ -252,6 +255,7 @@ fn allowlist_config(dir: &std::path::Path, applied: &str, registered: &str) -> s
             [ingest]
             allowlist = {allowlist}
             {PERMISSIVE_INGEST}
+            {calidus}
 
             [applications]
             applications_csv = "{applications_csv}"
@@ -262,6 +266,7 @@ fn allowlist_config(dir: &std::path::Path, applied: &str, registered: &str) -> s
             query_timeout_secs = 7
             "#,
             counters = dir.join("counters.sqlite").display(),
+            calidus = calidus_toml(dir),
             root = dir.join("archive").display(),
             allowlist = allowlist_toml(&[pool_of(&test_key())]),
             applications_csv = applications_csv.display(),
@@ -637,8 +642,10 @@ fn an_s3_archive_without_credentials_exits_nonzero_naming_them() {
             [ingest]
             allowlist = {allowlist}
             {PERMISSIVE_INGEST}
+            {calidus}
             "#,
             counters = dir.path().join("counters.sqlite").display(),
+            calidus = calidus_toml(dir.path()),
             archive = example_s3_archive("http://127.0.0.1:9", 0),
             allowlist = allowlist_toml(&[pool_of(&test_key())]),
         ),

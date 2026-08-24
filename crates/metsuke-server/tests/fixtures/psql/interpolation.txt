@@ -1,0 +1,17 @@
+Why psql::Query hands its query to psql on stdin: --set variables reach a
+script psql reads and not a --command string. Re-record against the psql the
+server runs when that version changes; tests/support::fake_psql stands in for
+the refusal below.
+
+$ psql --version
+psql (PostgreSQL) 17.10
+
+$ psql --csv --no-psqlrc --quiet --tuples-only --set foo=bar --set k=42 --command "select :'foo' as x, :k as y"
+ERROR:  syntax error at or near ":"
+LINE 1: select :'foo' as x, :k as y
+               ^
+exit=1
+
+$ echo "select :'foo' as x, :k as y" | psql --csv --no-psqlrc --quiet --tuples-only --set foo=bar --set k=42 --file -
+bar,42
+exit=0

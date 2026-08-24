@@ -41,9 +41,13 @@ Source: https://cips.cardano.org/cip/CIP-0151
   the pool cold key over the payload. This is what proves the pool operator
   authorized this Calidus key — only the cold key holder can add a valid
   witness.
-- **Signing payload (v2 change)**: v2 signs `blake2b-256(hex-CBOR(payload
-  object))`, not the raw CBOR — chosen for hardware-wallet compatibility.
-  Fields must be in numeric index order for deterministic hashing.
+- **Signing payload (v2 change)**: v2 signs a `blake2b-256` of the payload
+  object rather than the payload itself, chosen for hardware-wallet
+  compatibility. Fields must be in numeric index order for deterministic
+  hashing. The CIP text says the hash is over the payload's hex; cardano-signer
+  hashes the CBOR bytes, which is what the recordings under
+  crates/metsuke-server/tests/fixtures/calidus carry and what the server
+  follows.
 - **Witness formats (v2)**:
   - Simple witness: `[witnessType, pubKeyBytes, sigBytes]`.
   - COSE witness (hardware wallets): CIP-0008/CIP-30 `COSE_Key` +

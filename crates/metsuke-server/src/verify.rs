@@ -5,12 +5,16 @@ use metsuke_wire::envelope::{Envelope, PoolId, SCHEMA_VERSION};
 use time::OffsetDateTime;
 
 use crate::archive::{ArchiveError, Fetch, FetchedObject, List, ObjectName};
-use crate::authority::{AuthError, Authority, Signed, Undecided, authenticate};
+use crate::authority::{AuthError, Authority, Refusal, Signed, Undecided, authenticate};
 
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyError {
-    #[error("{key}: the stored key does not speak for pool {pool_id}")]
-    UnauthorizedKey { key: String, pool_id: PoolId },
+    #[error("{key}: the stored key does not speak for pool {pool_id}: {refusal}")]
+    UnauthorizedKey {
+        key: String,
+        pool_id: PoolId,
+        refusal: Refusal,
+    },
     /// Not a finding about the object: nothing was decided about it.
     #[error(transparent)]
     Undecided(#[from] Undecided),
@@ -56,9 +60,10 @@ pub fn verify(
     };
     let envelope = authenticate(authority, &signed, max_decompressed_bytes, now).map_err(
         |error| match error {
-            AuthError::UnauthorizedKey { pool_id } => VerifyError::UnauthorizedKey {
+            AuthError::UnauthorizedKey { pool_id, refusal } => VerifyError::UnauthorizedKey {
                 key: key.clone(),
                 pool_id,
+                refusal,
             },
             AuthError::BadSignature => VerifyError::BadSignature { key: key.clone() },
             AuthError::Undecided(error) => error.into(),
@@ -154,8 +159,8 @@ pub enum AuditError {
 /// that cannot be read or does not verify stops nothing: the point is to find
 /// all of them.
 ///
-/// `now` is read once for the whole run, so the refresh budget an audit spends
-/// against db-sync is one window's worth however long the bucket takes.
+/// `now` is read once for the whole run, so one resolution stands for the whole
+/// bucket however long it takes, whatever the TTL says.
 pub fn audit(
     archive: &(impl List + Fetch),
     max_decompressed_bytes: u64,

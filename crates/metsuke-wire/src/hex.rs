@@ -1,4 +1,4 @@
-//! Hex, fixed-width on the way back: a decode names the byte count it
+//! Hex, fixed-width where a width is fixed: `decode` names the byte count it
 //! needs, so callers get an array and never a length check of their own.
 
 #[derive(Debug, thiserror::Error)]
@@ -27,14 +27,26 @@ pub fn decode<const N: usize>(text: &str) -> Result<[u8; N], HexError> {
             expected: N,
         });
     }
-    let mut bytes = [0u8; N];
-    for (byte, pair) in bytes.iter_mut().zip(digits.chunks(2)) {
-        // `from_str_radix` would take a sign character; only digits are hex.
-        if !pair.iter().all(u8::is_ascii_hexdigit) {
-            return Err(HexError::NotHex);
-        }
-        let pair = std::str::from_utf8(pair).expect("ascii hex digits are utf8");
-        *byte = u8::from_str_radix(pair, 16).map_err(|_| HexError::NotHex)?;
+    let bytes = decode_bytes(text)?;
+    Ok(bytes.try_into().expect("N bytes, as the length check says"))
+}
+
+/// Decode however many bytes the text holds, for what nothing fixes a width
+/// for: a CIP-151 registration is as long as its witnesses make it.
+pub fn decode_bytes(text: &str) -> Result<Vec<u8>, HexError> {
+    let digits = text.as_bytes();
+    if !digits.len().is_multiple_of(2) {
+        return Err(HexError::NotHex);
     }
-    Ok(bytes)
+    digits
+        .chunks(2)
+        .map(|pair| {
+            // `from_str_radix` would take a sign character; only digits are hex.
+            if !pair.iter().all(u8::is_ascii_hexdigit) {
+                return Err(HexError::NotHex);
+            }
+            let pair = std::str::from_utf8(pair).expect("ascii hex digits are utf8");
+            u8::from_str_radix(pair, 16).map_err(|_| HexError::NotHex)
+        })
+        .collect()
 }

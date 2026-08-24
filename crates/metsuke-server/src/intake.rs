@@ -5,7 +5,7 @@ use metsuke_wire::envelope::{Ack, Envelope, PoolId, SCHEMA_VERSION};
 use time::OffsetDateTime;
 
 use crate::archive::{ArchiveError, Store, StoredSubmission};
-use crate::authority::{AuthError, Authority, Signed, Undecided, authenticate};
+use crate::authority::{AuthError, Authority, Refusal, Signed, Undecided, authenticate};
 use crate::config::IngestConfig;
 use crate::counters::{CounterError, CounterStore, Reservation};
 use crate::ratelimit::RateLimiter;
@@ -25,7 +25,7 @@ pub enum Rejection {
         window_secs: u64,
     },
     #[error("the presented key does not speak for pool {pool_id}")]
-    UnauthorizedKey { pool_id: PoolId },
+    UnauthorizedKey { pool_id: PoolId, refusal: Refusal },
     #[error("signature does not verify over the body as received")]
     BadSignature,
     #[error("payload inflates past the {max} byte limit")]
@@ -58,6 +58,21 @@ pub enum IngestError {
     Archive(#[from] ArchiveError),
     #[error("{0}")]
     Undecided(#[from] Undecided),
+}
+
+impl IngestError {
+    /// What the log line says and the answer does not. Which chain state
+    /// refused a key is a different fix per state for the operator, and every
+    /// one of them is on chain — but nothing asked for a client to learn it
+    /// from a 403.
+    pub fn withheld(&self) -> Option<String> {
+        match self {
+            IngestError::Rejected(Rejection::UnauthorizedKey { refusal, .. }) => {
+                Some(refusal.to_string())
+            }
+            _ => None,
+        }
+    }
 }
 
 pub struct Intake<A: Store, K: Authority> {
@@ -115,8 +130,8 @@ impl<A: Store, K: Authority> Intake<A, K> {
             now,
         )
         .map_err(|error| match error {
-            AuthError::UnauthorizedKey { pool_id } => {
-                IngestError::from(Rejection::UnauthorizedKey { pool_id })
+            AuthError::UnauthorizedKey { pool_id, refusal } => {
+                IngestError::from(Rejection::UnauthorizedKey { pool_id, refusal })
             }
             AuthError::BadSignature => Rejection::BadSignature.into(),
             AuthError::OversizedPayload { max } => Rejection::OversizedPayload { max }.into(),

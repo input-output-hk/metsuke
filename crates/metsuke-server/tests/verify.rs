@@ -10,9 +10,9 @@ use metsuke_wire::envelope::{Envelope, SigningKey};
 
 mod support;
 use support::{
-    CannedDirectory, MAX_DECOMPRESSED_BYTES, UnavailableDirectory, calidus_authority, calidus_key,
-    envelope_for, nonzero_u32, nonzero_u64, other_key, pool_of, registration, seal, test_key,
-    test_now,
+    CannedDirectory, MAX_DECOMPRESSED_BYTES, TEST_TTL_SECS, UnavailableDirectory,
+    calidus_authority, calidus_key, envelope_for, nonzero_u32, other_key, pool_of, registration,
+    seal, test_key, test_now,
 };
 
 /// The object the archive holds for `envelope`, signed by `signer`.
@@ -184,7 +184,7 @@ fn an_object_signed_by_the_pools_calidus_key_verifies() {
     let mut envelope = envelope_for(&hot, 7);
     envelope.pool_id = pool_of(&test_key());
     let object = object_of(&hot, &envelope);
-    let directory = CannedDirectory::holding(envelope.pool_id, vec![registration(&hot, 1)]);
+    let directory = CannedDirectory::holding(envelope.pool_id, vec![registration("nonce-1-key-a")]);
 
     let verified = verify(
         &object,
@@ -209,8 +209,7 @@ fn an_object_no_directory_can_decide_on_is_not_a_finding() {
         UnavailableDirectory {
             reason: "db-sync is down",
         },
-        nonzero_u32(1),
-        nonzero_u64(3600),
+        nonzero_u32(TEST_TTL_SECS),
     ));
     let error = verify(&object, MAX_DECOMPRESSED_BYTES, &mut authority, test_now()).unwrap_err();
     assert!(matches!(error, VerifyError::Undecided(_)), "got: {error}");

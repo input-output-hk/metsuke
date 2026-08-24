@@ -22,6 +22,7 @@ pub struct ServerConfig {
     pub counters_path: PathBuf,
     pub archive: ArchiveConfig,
     pub ingest: IngestConfig,
+    pub calidus: CalidusConfig,
     /// Read by `generate-allowlist` alone, so a server that never onboards
     /// pools carries neither export path nor db-sync connection. Absent is
     /// what that server's config looks like, and the command is what refuses
@@ -82,6 +83,35 @@ pub struct ApplicationsConfig {
     pub role: String,
     /// Reaches Postgres as `statement_timeout`.
     pub query_timeout_secs: NonZeroU64,
+}
+
+/// The db-sync the Calidus half reads registrations out of, and how long one
+/// resolution stands. No `[applications]`-style `Option`: every serving host
+/// must be able to answer ADR 0003's Calidus half, and a missing section would
+/// silently leave it on the cold key alone.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CalidusConfig {
+    /// Why the path and not a bare name: `ApplicationsConfig::psql_path`.
+    pub psql_path: AbsolutePath,
+    /// Why a directory and not a host: `ApplicationsConfig::socket_dir`.
+    pub socket_dir: AbsolutePath,
+    pub dbname: String,
+    /// Read-only, and nothing here can widen it: the query is fixed at compile
+    /// time.
+    pub role: String,
+    /// A `.pgpass` reaching psql as `PGPASSFILE`. The path is config, the
+    /// password is whatever systemd's `LoadCredential` put there.
+    pub password_file: AbsolutePath,
+    /// Reaches Postgres as `statement_timeout`.
+    pub query_timeout_secs: NonZeroU64,
+    /// The network's Shelley genesis, which is the only place k is written
+    /// (ADR 0008).
+    pub shelley_genesis_path: AbsolutePath,
+    /// How long a resolved registration stands before the server asks again.
+    /// What it is chosen against: ADR 0008. Seconds as a `NonZeroU32` so the
+    /// cast to a signed duration cannot wrap.
+    pub resolution_ttl_secs: NonZeroU32,
 }
 
 /// Where accepted submissions go. S3 is what production runs (ADR 0005).

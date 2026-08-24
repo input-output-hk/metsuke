@@ -34,7 +34,7 @@ Size and rate limits are configuration, not constants.
   has not resolved yet, cold-key-only pools included, since nothing says which
   kind a pool is until the lookup comes back empty (ADR 3). What bounds it is
   not the ordering but the allowlist, the per-pool upload limit, and a ceiling
-  per pool of one resolution plus that pool's refresh budget per window.
+  per pool of one resolution per TTL (ADR 8).
 - A replayed valid message costs one bounded decompress before rejection,
   rate-limited per pool.
 - Each archived object carries its own replay evidence inside the signed bytes.

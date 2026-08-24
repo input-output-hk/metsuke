@@ -178,7 +178,12 @@ fn route<A: Store, K: Authority>(intake: &mut Intake<A, K>, request: &mut Reques
             body: serde_json::to_vec(&ack).expect("an Ack of two strings serializes"),
             claimed,
         },
-        Err(error) => refuse(claimed, status_for(&error), error.to_string()),
+        Err(error) => refuse_withholding(
+            claimed,
+            status_for(&error),
+            error.to_string(),
+            error.withheld(),
+        ),
     }
 }
 
@@ -225,9 +230,24 @@ fn read_body(request: &mut Request, max_body_bytes: u64) -> Result<Vec<u8>, Body
 /// Every refusal is logged: the reason text is the only record of why a
 /// pool's uploads are not landing.
 fn refuse(claimed: Option<PoolId>, status: u16, reason: String) -> Answer {
+    refuse_withholding(claimed, status, reason, None)
+}
+
+/// A refusal whose log line carries more than its body: `withheld` is appended
+/// to what is logged and never sent.
+fn refuse_withholding(
+    claimed: Option<PoolId>,
+    status: u16,
+    reason: String,
+    withheld: Option<String>,
+) -> Answer {
     let severity = if status >= 500 { ERR } else { WARNING };
+    let logged = match &withheld {
+        Some(withheld) => format!("{reason}: {withheld}"),
+        None => reason.clone(),
+    };
     eprintln!(
-        "{severity}refused {}: {status}, {reason}",
+        "{severity}refused {}: {status}, {logged}",
         claimant(claimed)
     );
     Answer {

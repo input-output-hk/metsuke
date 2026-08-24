@@ -3,12 +3,12 @@
 //! proves is CONTEXT.md, under **Application Code**.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::process::Command;
 
 use metsuke_wire::envelope::{PoolId, PoolIdError};
 use serde::{Deserialize, Serialize};
 
 use crate::config::ApplicationsConfig;
+use crate::psql::{PsqlError, Query, Rows};
 
 /// Where a pool registration carries its application code: CIP-20 fixes the
 /// label, the key inside it is the rewards program's own.
@@ -70,24 +70,8 @@ pub type Codes = BTreeMap<PoolId, ApplicationCode>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ChainError {
-    #[error("cannot run {psql}: {source}")]
-    CannotRun {
-        psql: String,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("{psql} exited {status}: {stderr}")]
-    QueryFailed {
-        psql: String,
-        status: String,
-        stderr: String,
-    },
-    #[error("{psql} printed something that is not UTF-8: {source}")]
-    NotUtf8 {
-        psql: String,
-        #[source]
-        source: std::string::FromUtf8Error,
-    },
+    #[error(transparent)]
+    Query(#[from] PsqlError),
     #[error("cannot read what {psql} printed: {source}")]
     Unreadable {
         psql: String,
@@ -106,12 +90,12 @@ pub enum ChainError {
 /// once per certificate.
 const QUERY: &str = "\
 SELECT DISTINCT ph.view AS pool_id,
-       tm.json ->> '{key}' AS application_code
+       tm.json ->> :'key' AS application_code
 FROM pool_hash ph
 JOIN pool_update pu ON pu.hash_id = ph.id
 JOIN tx_metadata tm ON tm.tx_id = pu.registered_tx_id
-WHERE tm.key = {label}
-  AND tm.json ? '{key}'
+WHERE tm.key = :label
+  AND tm.json ? :'key'
   AND pu.registered_tx_id = (
         SELECT MAX(registered_tx_id) FROM pool_update WHERE hash_id = ph.id)
   AND NOT EXISTS (
@@ -120,8 +104,7 @@ WHERE tm.key = {label}
         WHERE pr.hash_id = ph.id
           AND pr.announced_tx_id > pu.registered_tx_id)";
 
-/// The chain half, read by running the shipped query through `psql`. Why not a
-/// Postgres client: ADR 0008 Consequences.
+/// The chain half, read by running the shipped query through `psql`.
 pub struct Psql<'a> {
     config: &'a ApplicationsConfig,
 }
@@ -132,51 +115,27 @@ impl<'a> Psql<'a> {
     }
 
     pub fn registered_codes(&self) -> Result<Registered, ChainError> {
-        let psql = self.config.psql_path.as_path().display().to_string();
-        // Nothing is inherited: PGPASSWORD, PGSERVICE and PGDATABASE would each
-        // reach a database the config does not name. There is no password to
-        // pass instead — the connection is a peer-authenticated unix socket,
+        // No password: the connection is a peer-authenticated unix socket,
         // which is a deployment choice, not something the protocol fixes.
-        let printed = Command::new(self.config.psql_path.as_path())
-            .env_clear()
-            .env(
-                "PGOPTIONS",
-                format!(
-                    "-c statement_timeout={}s",
-                    self.config.query_timeout_secs.get()
-                ),
-            )
-            .args(["--csv", "--no-psqlrc", "--quiet"])
-            .args([
-                "--host".as_ref(),
-                self.config.socket_dir.as_path().as_os_str(),
-            ])
-            .args(["--dbname", &self.config.dbname])
-            .args(["--username", &self.config.role])
-            .args(["--command", &self.query()])
-            .output()
-            .map_err(|source| ChainError::CannotRun {
-                psql: psql.clone(),
-                source,
-            })?;
-        if !printed.status.success() {
-            return Err(ChainError::QueryFailed {
-                psql,
-                status: printed.status.to_string(),
-                stderr: String::from_utf8_lossy(&printed.stderr).trim().to_string(),
-            });
+        let csv = Query {
+            psql_path: self.config.psql_path.as_path(),
+            socket_dir: self.config.socket_dir.as_path(),
+            dbname: &self.config.dbname,
+            role: &self.config.role,
+            query_timeout_secs: self.config.query_timeout_secs.get(),
+            password_file: None,
+            variables: &[
+                ("key", METADATA_KEY.to_string()),
+                ("label", METADATA_LABEL.to_string()),
+            ],
+            rows: Rows::WithHeader,
+            text: QUERY,
         }
-        let csv = String::from_utf8(printed.stdout).map_err(|source| ChainError::NotUtf8 {
-            psql: psql.clone(),
+        .run()?;
+        read_registered(&csv).map_err(|source| ChainError::Unreadable {
+            psql: self.config.psql_path.as_path().display().to_string(),
             source,
-        })?;
-        read_registered(&csv).map_err(|source| ChainError::Unreadable { psql, source })
-    }
-
-    fn query(&self) -> String {
-        QUERY
-            .replace("{key}", METADATA_KEY)
-            .replace("{label}", &METADATA_LABEL.to_string())
+        })
     }
 }
 

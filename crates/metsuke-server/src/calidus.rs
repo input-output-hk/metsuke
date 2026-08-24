@@ -1,24 +1,15 @@
-//! The Calidus half of ADR 0003: which hot key a pool has registered on chain,
-//! and how often the server is willing to ask. Resolving registrations is the
-//! `Directory`'s job; choosing among them and remembering the answer is this
+//! Which Calidus key a pool's registrations name, and how long the server
+//! reuses that answer (ADR 0003). Finding the rows is the `Directory`'s job and
+//! checking their witnesses is `cip151`'s; choosing among what passed is this
 //! module's.
 
 use std::collections::HashMap;
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::NonZeroU32;
 
 use metsuke_wire::envelope::{PoolId, VerifyingKey};
-use time::OffsetDateTime;
+use time::{Duration, OffsetDateTime};
 
-use crate::ratelimit::RateLimiter;
-
-/// One CIP-151 registration, reduced to what the choice rests on. `key` is the
-/// 32 bytes as registered rather than a `VerifyingKey`: metadata is written by
-/// whoever pays for the transaction, so the bytes need not be a key at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Registration {
-    pub nonce: u64,
-    pub key: [u8; 32],
-}
+use crate::cip151::{self, Registration};
 
 /// The key CIP-151 revokes with.
 const REVOKED: [u8; 32] = [0u8; 32];
@@ -29,99 +20,120 @@ pub enum DirectoryError {
     Unavailable { pool_id: PoolId, reason: String },
 }
 
-/// Where a pool's CIP-151 registrations come from. A trait because the answer
-/// is off-box: everything above it is decided from the rows alone.
+/// Where a pool's label-867 rows come from, as the bytes the chain carries. A
+/// directory that handed up `Registration`s would be asserting a witness it
+/// never checked, and a test double could then fabricate authority.
 pub trait Directory {
-    fn registrations(&self, pool_id: PoolId) -> Result<Vec<Registration>, DirectoryError>;
+    fn registrations(&self, pool_id: PoolId) -> Result<Vec<Vec<u8>>, DirectoryError>;
 }
 
-/// The key a pool's registrations currently name, if any.
+/// What a pool's witnessed registrations say. The three refusals are separate
+/// because each is a different thing for the operator to do, and collapsing
+/// them would make a contested rotation read as a pool that never registered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resolution {
+    /// The registered key: witnessed, highest nonce, and a point on the curve.
+    /// The bytes rather than a `VerifyingKey` because this travels inside a
+    /// refusal, and a decompressed point there would make every error the
+    /// server returns carry one.
+    Key([u8; 32]),
+    NeverRegistered,
+    Revoked,
+    /// Two keys share the highest nonce, so the rows do not say which rotation
+    /// is later. Re-posting one registration above them is the fix.
+    Contested {
+        nonce: u64,
+    },
+    /// The highest nonce names 32 bytes that are not a point on the curve.
+    NotAKey {
+        nonce: u64,
+    },
+}
+
+impl std::fmt::Display for Resolution {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Resolution::Key(_) => f.write_str("a Calidus key is registered"),
+            Resolution::NeverRegistered => f.write_str("no Calidus key is registered"),
+            Resolution::Revoked => f.write_str("the Calidus key was revoked"),
+            Resolution::Contested { nonce } => {
+                write!(f, "two Calidus keys share nonce {nonce}")
+            }
+            Resolution::NotAKey { nonce } => {
+                write!(f, "the key registered at nonce {nonce} is not on the curve")
+            }
+        }
+    }
+}
+
+/// The key a pool's registrations currently name.
 ///
 /// Highest nonce wins. Two different keys sharing that nonce name none: the
 /// rows do not say which rotation is later, and a key that cannot be shown to
 /// be the pool's must not speak for it.
-pub fn current(registrations: &[Registration]) -> Option<VerifyingKey> {
-    let newest = registrations.iter().max_by_key(|found| found.nonce)?;
-    let contested = registrations
+pub fn current(registrations: &[Registration]) -> Resolution {
+    let Some(newest) = registrations.iter().max_by_key(|found| found.nonce()) else {
+        return Resolution::NeverRegistered;
+    };
+    let nonce = newest.nonce();
+    if registrations
         .iter()
-        .any(|found| found.nonce == newest.nonce && found.key != newest.key);
-    if contested || newest.key == REVOKED {
-        return None;
+        .any(|found| found.nonce() == nonce && found.key() != newest.key())
+    {
+        return Resolution::Contested { nonce };
     }
-    VerifyingKey::from_bytes(&newest.key).ok()
+    if newest.key() == REVOKED {
+        return Resolution::Revoked;
+    }
+    match VerifyingKey::from_bytes(&newest.key()) {
+        Ok(_) => Resolution::Key(newest.key()),
+        Err(_) => Resolution::NotAKey { nonce },
+    }
 }
 
-/// Every pool's Calidus key as last resolved.
-///
-/// Cache-forever with refresh-on-fail (ADR 0003): nothing expires, so db-sync
-/// sees no per-upload load, and a rotation reaches the server through the
-/// first upload the cached key cannot explain. `refresh` is what that upload
-/// spends, and the budget is what stops a key nobody registered from costing a
-/// query per attempt.
+/// Every pool's Calidus key as last resolved, for as long as the TTL says.
+/// What the TTL is chosen against: ADR 0008.
 pub struct CalidusKeys<D: Directory> {
     directory: D,
-    resolved: HashMap<PoolId, Option<VerifyingKey>>,
-    refreshes: RateLimiter,
+    ttl: Duration,
+    resolved: HashMap<PoolId, (OffsetDateTime, Resolution)>,
 }
 
 impl<D: Directory> CalidusKeys<D> {
-    pub fn new(directory: D, max_refreshes: NonZeroU32, window_secs: NonZeroU64) -> Self {
+    pub fn new(directory: D, ttl_secs: NonZeroU32) -> Self {
         CalidusKeys {
             directory,
+            ttl: Duration::seconds(i64::from(ttl_secs.get())),
             resolved: HashMap::new(),
-            refreshes: RateLimiter::new(max_refreshes, window_secs),
         }
     }
 
-    /// The pool's key, resolved on the first ask and reused after that.
-    /// `Cached` is what makes a refresh worth spending: an answer this call
-    /// just fetched cannot change one line later.
-    pub fn key_for(&mut self, pool_id: PoolId) -> Result<Resolution, DirectoryError> {
-        if let Some(known) = self.resolved.get(&pool_id) {
-            return Ok(Resolution::Cached(*known));
-        }
-        Ok(Resolution::Fetched(self.fetch(pool_id)?))
-    }
-
-    /// Resolve the pool again, spending one of its refreshes.
-    pub fn refresh(
+    /// The pool's key, resolved again once the last answer is older than the
+    /// TTL.
+    pub fn key_for(
         &mut self,
         pool_id: PoolId,
         now: OffsetDateTime,
-    ) -> Result<Refreshed, DirectoryError> {
-        if !self.refreshes.allow(pool_id, now) {
-            return Ok(Refreshed::Throttled);
+    ) -> Result<Resolution, DirectoryError> {
+        if let Some((resolved_at, resolution)) = self.resolved.get(&pool_id)
+            && now - *resolved_at < self.ttl
+        {
+            return Ok(*resolution);
         }
-        Ok(Refreshed::Fetched(self.fetch(pool_id)?))
+        let resolution = current(&self.witnessed(pool_id)?);
+        self.resolved.insert(pool_id, (now, resolution));
+        Ok(resolution)
     }
 
-    fn fetch(&mut self, pool_id: PoolId) -> Result<Option<VerifyingKey>, DirectoryError> {
-        let resolved = current(&self.directory.registrations(pool_id)?);
-        self.resolved.insert(pool_id, resolved);
-        Ok(resolved)
+    /// The rows that are this pool's own. A row whose witness does not check is
+    /// a stranger's transaction, so it is dropped rather than reported: anyone
+    /// can post one, and naming them per pool would let a stranger fill the log.
+    fn witnessed(&self, pool_id: PoolId) -> Result<Vec<Registration>, DirectoryError> {
+        Ok(self
+            .directory
+            .registrations(pool_id)?
+            .iter()
+            .filter_map(|blob| cip151::verify(pool_id, blob).ok())
+            .collect())
     }
-}
-
-/// A pool's key, and whether answering cost a directory lookup.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Resolution {
-    Cached(Option<VerifyingKey>),
-    Fetched(Option<VerifyingKey>),
-}
-
-impl Resolution {
-    pub fn key(self) -> Option<VerifyingKey> {
-        match self {
-            Resolution::Cached(key) | Resolution::Fetched(key) => key,
-        }
-    }
-}
-
-/// What a refresh cost. `Throttled` decided nothing: the cached answer stands
-/// but was not re-checked, and a caller that reads it as a refusal turns a
-/// spent budget into the pool's fault.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Refreshed {
-    Fetched(Option<VerifyingKey>),
-    Throttled,
 }

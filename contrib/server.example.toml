@@ -34,6 +34,19 @@ rate_limit_uploads = 24
 rate_limit_window_secs = 3600
 max_timestamp_skew_secs = 300
 
+# The db-sync the Calidus half reads registrations out of. Colocated, so the
+# socket is local; the role is read-only and its password reaches psql through
+# the file named here and never through the environment.
+[calidus]
+psql_path = "/run/current-system/sw/bin/psql"
+socket_dir = "/run/postgresql"
+dbname = "cexplorer"
+role = "metsuke_ro"
+password_file = "/run/credentials/metsuke-server.service/pgpass"
+query_timeout_secs = 30
+shelley_genesis_path = "/var/lib/metsuke-server/shelley-genesis.json"
+resolution_ttl_secs = 3600
+
 # Optional, and the only section that is.
 [applications]
 applications_csv = "/var/lib/metsuke-server/applications.csv"

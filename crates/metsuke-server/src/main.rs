@@ -4,19 +4,19 @@
 //! The subcommands are the exception: they run once against the same config
 //! and exit, zero only if what they were asked to check holds.
 
-use metsuke_server::archive::{FilesystemArchive, List, Store};
-// Cold key only, at both the ingest and the audit site: ADR 0003's Calidus
-// half needs a directory, and which source is trustworthy enough to be one is
-// ticket metsuke-4zo.44.
 use metsuke_server::applications::{
     ApplicationsCsvError, ChainError, Excluded, Gate, Psql, gate, read_codes,
 };
-use metsuke_server::authority::ColdKey;
+use metsuke_server::archive::{FilesystemArchive, List, Store};
+use metsuke_server::authority::{ColdKey, ColdKeyOrCalidus};
+use metsuke_server::calidus::CalidusKeys;
 use metsuke_server::cli::{ArchiveCommand, Args, ArgsError, Command, GENERATE_ALLOWLIST};
 use metsuke_server::config::{
-    ApplicationsConfig, ArchiveConfig, ConfigError, IngestConfig, S3Config, ServerConfig,
+    ApplicationsConfig, ArchiveConfig, CalidusConfig, ConfigError, IngestConfig, S3Config,
+    ServerConfig,
 };
 use metsuke_server::counters::{CounterError, CounterStore};
+use metsuke_server::dbsync::{DbSync, GenesisError, security_parameter};
 use metsuke_server::http;
 use metsuke_server::intake::Intake;
 use metsuke_server::rebuild::{EmptyArchive, RebuildError, RebuiltIndex, rebuild};
@@ -40,6 +40,8 @@ enum Fatal {
     Config(#[from] ConfigError),
     #[error("cannot open the counter database: {0}")]
     Counters(#[from] CounterError),
+    #[error(transparent)]
+    Genesis(#[from] GenesisError),
     #[error(transparent)]
     S3(#[from] S3Error),
     #[error("the S3 archive needs AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in the environment")]
@@ -100,6 +102,7 @@ fn run() -> Result<(), Fatal> {
         counters_path,
         archive,
         ingest,
+        calidus,
         applications,
     } = ServerConfig::from_toml(&text)?;
     let command = match args.command {
@@ -117,6 +120,7 @@ fn run() -> Result<(), Fatal> {
             command,
             &listen,
             ingest,
+            calidus,
             counters,
             // A filesystem archive stores no metadata, so there is nothing to
             // re-verify an object against.
@@ -127,6 +131,7 @@ fn run() -> Result<(), Fatal> {
             command,
             &listen,
             ingest,
+            calidus,
             counters,
             |archive, max_decompressed_bytes| {
                 report_audit(audit(
@@ -147,11 +152,12 @@ fn dispatch<A: Store + List>(
     command: ArchiveCommand,
     listen: &str,
     ingest: IngestConfig,
+    calidus: CalidusConfig,
     mut counters: CounterStore,
     verify_archive: impl FnOnce(&A, u64) -> Result<(), Fatal>,
 ) -> Result<(), Fatal> {
     match command {
-        ArchiveCommand::Serve => serve(archive, listen, ingest, counters),
+        ArchiveCommand::Serve => serve(archive, listen, ingest, calidus, counters),
         ArchiveCommand::RebuildIndex { allow_empty } => {
             let empty = match allow_empty {
                 true => EmptyArchive::Accept,
@@ -265,8 +271,17 @@ fn serve<A: Store>(
     archive: A,
     listen: &str,
     ingest: IngestConfig,
+    calidus: CalidusConfig,
     counters: CounterStore,
 ) -> Result<(), Fatal> {
+    // Before the listener: k is what decides which registrations count, and a
+    // server that cannot read it would accept uploads on an unbounded rule.
+    let security_parameter = security_parameter(calidus.shelley_genesis_path.as_path())?;
+    let ttl_secs = calidus.resolution_ttl_secs;
+    let authority = ColdKeyOrCalidus::new(CalidusKeys::new(
+        DbSync::new(calidus, security_parameter),
+        ttl_secs,
+    ));
     let server = tiny_http::Server::http(listen).map_err(|source| Fatal::Listen {
         listen: listen.to_string(),
         reason: source.to_string(),
@@ -280,6 +295,6 @@ fn serve<A: Store>(
         server.server_addr(),
         http::SUBMIT_PATH,
     );
-    let mut intake = Intake::new(ingest, counters, archive, ColdKey);
+    let mut intake = Intake::new(ingest, counters, archive, authority);
     match http::serve(&server, &mut intake)? {}
 }

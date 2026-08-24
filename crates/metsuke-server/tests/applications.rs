@@ -319,14 +319,12 @@ fn the_emitted_pairs_do_not_depend_on_the_order_the_rows_arrive_in() {
 fn psql_is_run_against_the_configured_database_and_its_csv_is_read() {
     let pool = pool_of(&test_key());
     let dir = tempfile::tempdir().unwrap();
-    let recorded = dir.path().join("argv");
-    let fake = support::fake_psql(
+    support::psql_answers(
         dir.path(),
-        &recorded,
         &format!("pool_id,application_code\n{pool},MUSA-0001\n"),
     );
 
-    let config = applications_config(&fake, dir.path());
+    let config = applications_config(&support::fake_psql(), dir.path());
     let found = Psql::new(&config).registered_codes().unwrap();
     assert_eq!(
         found,
@@ -338,7 +336,7 @@ fn psql_is_run_against_the_configured_database_and_its_csv_is_read() {
     );
 
     // One argument per line, as the double writes them.
-    let argv = std::fs::read_to_string(&recorded).unwrap();
+    let argv = std::fs::read_to_string(support::recorded_argv(dir.path())).unwrap();
     let after = |flag: &str| {
         let mut lines = argv.lines().skip_while(|line| *line != flag);
         lines.next();
@@ -349,12 +347,24 @@ fn psql_is_run_against_the_configured_database_and_its_csv_is_read() {
     assert_eq!(after("--username"), "metsuke_ro");
     assert_eq!(after("--host"), dir.path().display().to_string());
     assert!(
-        argv.contains("musashinet_incentives_application_code"),
-        "got: {argv}"
+        argv.contains("key=musashinet_incentives_application_code"),
+        "the metadata key is bound as a variable, not spliced: {argv}"
     );
     assert_eq!(
         argv.lines().next(),
         Some("PGOPTIONS=-c statement_timeout=7s")
+    );
+
+    // The metadata key and label are the query's variables, so it goes in as a
+    // script: tests/fixtures/psql.
+    let script = std::fs::read_to_string(support::recorded_script(dir.path())).unwrap();
+    assert!(
+        script.contains(":'key'") && script.contains(":label"),
+        "got: {script}"
+    );
+    assert!(
+        !script.contains("musashinet_incentives_application_code"),
+        "got: {script}"
     );
 }
 
@@ -363,15 +373,9 @@ fn psql_is_run_against_the_configured_database_and_its_csv_is_read() {
 #[test]
 fn a_psql_that_fails_is_an_error_carrying_what_it_said() {
     let dir = tempfile::tempdir().unwrap();
-    let failing = dir.path().join("psql");
-    std::fs::write(
-        &failing,
-        "#!/bin/sh\nprintf '%s\\n' 'FATAL: role does not exist' >&2\nexit 2\n",
-    )
-    .unwrap();
-    support::make_executable(&failing);
+    support::psql_fails(dir.path(), "FATAL: role does not exist");
 
-    let config = applications_config(&failing, dir.path());
+    let config = applications_config(&support::fake_psql(), dir.path());
     let error = Psql::new(&config)
         .registered_codes()
         .unwrap_err()

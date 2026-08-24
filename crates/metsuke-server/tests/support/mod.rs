@@ -14,8 +14,8 @@ use std::rc::Rc;
 use metsuke_server::applications::ApplicationCode;
 use metsuke_server::archive::{ArchiveError, List, Store, StoredSubmission};
 use metsuke_server::authority::{ColdKeyOrCalidus, Signed};
-use metsuke_server::calidus::{CalidusKeys, Directory, DirectoryError, Registration};
-use metsuke_server::config::{AbsolutePath, ApplicationsConfig, IngestConfig};
+use metsuke_server::calidus::{CalidusKeys, Directory, DirectoryError};
+use metsuke_server::config::{AbsolutePath, ApplicationsConfig, CalidusConfig, IngestConfig};
 use metsuke_server::counters::CounterStore;
 use metsuke_wire::envelope::{
     self, Envelope, PoolId, SCHEMA_VERSION, Sample, Signature, SigningKey, VerifyingKey,
@@ -217,36 +217,84 @@ pub fn applications_config(psql_path: &Path, socket_dir: &Path) -> ApplicationsC
     }
 }
 
+/// The Calidus half's config pointed at a `psql` a test placed, with the
+/// connection values the assertions name.
+pub fn calidus_config(psql_path: &Path, socket_dir: &Path, genesis: &Path) -> CalidusConfig {
+    CalidusConfig {
+        psql_path: absolute(psql_path),
+        socket_dir: absolute(socket_dir),
+        dbname: "cexplorer".to_string(),
+        role: "metsuke_ro".to_string(),
+        password_file: absolute(socket_dir.join("pgpass")),
+        query_timeout_secs: nonzero_u64(11),
+        shelley_genesis_path: absolute(genesis),
+        resolution_ttl_secs: nonzero_u32(TEST_TTL_SECS),
+    }
+}
+
+/// The security parameter every test genesis carries. Not any network's k:
+/// where the real one comes from is `dbsync::security_parameter`'s to prove.
+pub const TEST_SECURITY_PARAMETER: u32 = 6;
+
+/// A Shelley genesis holding the one field the server reads, and the
+/// `[calidus]` section naming it. The file is written because `serve` reads it
+/// before it binds; the `psql` it names is never run by a cold-key upload.
+pub fn calidus_toml(dir: &Path) -> String {
+    let genesis = dir.join("shelley-genesis.json");
+    std::fs::write(
+        &genesis,
+        format!("{{\"securityParam\": {TEST_SECURITY_PARAMETER}}}"),
+    )
+    .unwrap();
+    format!(
+        r#"
+[calidus]
+psql_path = "{psql}"
+socket_dir = "{dir}"
+dbname = "cexplorer"
+role = "metsuke_ro"
+password_file = "{dir}/pgpass"
+query_timeout_secs = 7
+shelley_genesis_path = "{genesis}"
+resolution_ttl_secs = {TEST_TTL_SECS}
+"#,
+        psql = fake_psql().display(),
+        dir = dir.display(),
+        genesis = genesis.display(),
+    )
+}
+
 pub fn absolute(path: impl Into<PathBuf>) -> AbsolutePath {
     AbsolutePath::new(path.into()).expect("a test path is absolute")
 }
 
-/// A `psql` that records what it was run with and prints `csv` back. Shell
-/// builtins alone: `Psql` clears the environment, leaving the shell on whatever
-/// default `PATH` it was compiled with.
-///
-/// The CSV a test hands it is written by hand: no db-sync has answered this
-/// query yet (ticket metsuke-4zo.52), so what it proves is the reading, not the
-/// shape of a real answer.
-pub fn fake_psql(dir: &Path, recording: &Path, csv: &str) -> PathBuf {
-    let psql = dir.join("psql");
-    std::fs::write(
-        &psql,
-        format!(
-            "#!/bin/sh\n\
-             printf '%s\\n' \"PGOPTIONS=$PGOPTIONS\" \"$@\" > {recording}\n\
-             printf '%s' '{csv}'\n",
-            recording = recording.display(),
-        ),
-    )
-    .unwrap();
-    make_executable(&psql);
-    psql
+/// The `psql` every test runs, and what it does: tests/support/fake-psql.sh.
+pub fn fake_psql() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/fake-psql.sh")
 }
 
-pub fn make_executable(path: &Path) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+/// What the double prints back for a query against `socket_dir`. Whether the
+/// CSV describes a real answer is the caller's to say: the Calidus half hands
+/// it a recording, the allowlist half a hand-written one (ticket
+/// metsuke-4zo.52).
+pub fn psql_answers(socket_dir: &Path, csv: &str) {
+    std::fs::write(socket_dir.join("answer.csv"), csv).unwrap();
+}
+
+/// What the double says on stderr instead of answering, exiting nonzero as a
+/// psql that could not run the query does.
+pub fn psql_fails(socket_dir: &Path, stderr: &str) {
+    std::fs::write(socket_dir.join("failure"), stderr).unwrap();
+}
+
+/// The arguments and environment the double was handed, one per line.
+pub fn recorded_argv(socket_dir: &Path) -> PathBuf {
+    socket_dir.join("argv")
+}
+
+/// The script the double was piped, which is where the query goes.
+pub fn recorded_script(socket_dir: &Path) -> PathBuf {
+    socket_dir.join("argv.sql")
 }
 
 /// An archive that fails whichever half the caller under test uses, standing
@@ -280,8 +328,47 @@ impl List for FailingArchive {
     }
 }
 
-/// A Calidus directory serving what a test put in it, counting what it was
-/// asked. The count is the assertion behind cache-forever: a resolution that
+/// One recorded label-867 blob, as db-sync hands it back. Which registration
+/// each name is: tests/fixtures/calidus/README.md.
+pub fn registration(name: &str) -> Vec<u8> {
+    fixture("recordings", name)
+}
+
+/// A blob assembled out of real signatures to be one no tool produces.
+pub fn crafted(name: &str) -> Vec<u8> {
+    fixture("crafted", name)
+}
+
+/// What the shipped query printed on a devnet holding one registration.
+pub fn query_csv() -> String {
+    std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/calidus/recordings/query.csv"),
+    )
+    .expect("reading the recorded query answer")
+}
+
+fn fixture(kind: &str, name: &str) -> Vec<u8> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/calidus")
+        .join(kind)
+        .join(format!("{name}.hex"));
+    let hex = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+    decode_hex(hex.trim())
+}
+
+fn decode_hex(text: &str) -> Vec<u8> {
+    metsuke_wire::hex::decode_bytes(text).expect("a fixture is pairs of hex digits")
+}
+
+/// The pool every recorded registration scopes: the recorder signs their
+/// witnesses with the suite's own `test_key`.
+pub fn registered_pool() -> PoolId {
+    pool_of(&test_key())
+}
+
+/// A Calidus directory serving the blobs a test put in it, counting what it was
+/// asked. The count is the assertion behind the resolution TTL: an answer that
 /// did not increment it never reached db-sync.
 ///
 /// Shared rather than owned, so a test still holds it after the authority
@@ -293,12 +380,12 @@ pub struct CannedDirectory {
 
 #[derive(Default)]
 struct Chain {
-    registrations: RefCell<HashMap<PoolId, Vec<Registration>>>,
+    registrations: RefCell<HashMap<PoolId, Vec<Vec<u8>>>>,
     lookups: Cell<usize>,
 }
 
 impl CannedDirectory {
-    pub fn holding(pool_id: PoolId, registrations: Vec<Registration>) -> Self {
+    pub fn holding(pool_id: PoolId, registrations: Vec<Vec<u8>>) -> Self {
         let directory = CannedDirectory {
             chain: Rc::new(Chain::default()),
         };
@@ -307,7 +394,7 @@ impl CannedDirectory {
     }
 
     /// What the chain says from now on, as a re-registration would leave it.
-    pub fn rotate(&self, pool_id: PoolId, registrations: Vec<Registration>) {
+    pub fn rotate(&self, pool_id: PoolId, registrations: Vec<Vec<u8>>) {
         self.chain
             .registrations
             .borrow_mut()
@@ -320,7 +407,7 @@ impl CannedDirectory {
 }
 
 impl Directory for CannedDirectory {
-    fn registrations(&self, pool_id: PoolId) -> Result<Vec<Registration>, DirectoryError> {
+    fn registrations(&self, pool_id: PoolId) -> Result<Vec<Vec<u8>>, DirectoryError> {
         self.chain.lookups.set(self.lookups() + 1);
         Ok(self
             .chain
@@ -332,21 +419,13 @@ impl Directory for CannedDirectory {
     }
 }
 
-/// The CIP-151 registration naming one of the tests' keys.
-pub fn registration(key: &SigningKey, nonce: u64) -> Registration {
-    Registration {
-        nonce,
-        key: key.verifying_key().to_bytes(),
-    }
-}
+/// How long a test's resolutions stand. Inside `permissive_config`'s timestamp
+/// skew, so a test can both age a resolution out and still submit an envelope.
+pub const TEST_TTL_SECS: u32 = 60;
 
 /// The Calidus-capable authority over a directory the caller still holds.
 pub fn calidus_authority(directory: CannedDirectory) -> ColdKeyOrCalidus<CannedDirectory> {
-    ColdKeyOrCalidus::new(CalidusKeys::new(
-        directory,
-        nonzero_u32(1),
-        nonzero_u64(3600),
-    ))
+    ColdKeyOrCalidus::new(CalidusKeys::new(directory, nonzero_u32(TEST_TTL_SECS)))
 }
 
 /// A directory that cannot answer, standing in for a db-sync that is down.
@@ -355,7 +434,7 @@ pub struct UnavailableDirectory {
 }
 
 impl Directory for UnavailableDirectory {
-    fn registrations(&self, pool_id: PoolId) -> Result<Vec<Registration>, DirectoryError> {
+    fn registrations(&self, pool_id: PoolId) -> Result<Vec<Vec<u8>>, DirectoryError> {
         Err(DirectoryError::Unavailable {
             pool_id,
             reason: self.reason.to_string(),

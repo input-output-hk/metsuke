@@ -47,10 +47,30 @@
         }:
         let
           craneLib = inputs.crane.mkLib pkgs;
-          # Cargo sources plus the scrape fixtures include_str! compiles in.
+          # Cargo sources, the shipped SQL, the fixtures and the test doubles:
+          # the scrape bodies and the SQL are compiled in with include_str!,
+          # the CIP-151 recordings and the psql double are run at test time.
+          #
+          # Under crates/ alone, because this filter is not gitignore-aware: a
+          # devnet run leaves .hex and .csv files in the working tree, and
+          # matching those by suffix anywhere would re-hash every derivation.
+          extraSources = [
+            ".prom"
+            ".sql"
+            ".hex"
+            ".csv"
+            ".sh"
+          ];
+          cratesDir = "${toString ./crates}/";
           src = pkgs.lib.cleanSourceWith {
             src = ./.;
-            filter = path: type: (craneLib.filterCargoSources path type) || pkgs.lib.hasSuffix ".prom" path;
+            filter =
+              path: type:
+              (craneLib.filterCargoSources path type)
+              || (
+                pkgs.lib.hasPrefix cratesDir path
+                && pkgs.lib.any (suffix: pkgs.lib.hasSuffix suffix path) extraSources
+              );
             name = "source";
           };
 
@@ -122,11 +142,18 @@
                 # build.rs reads the agent manifest for CLIENT_VERSION, so the
                 # agent crate has to be here in full even though nothing links
                 # against it.
-                src = crateSrc [
-                  ./crates/metsuke-wire
-                  ./crates/metsuke
-                  ./crates/metsuke-server
-                ];
+                src = pkgs.lib.fileset.toSource {
+                  root = ./.;
+                  fileset =
+                    pkgs.lib.fileset.union
+                      (pkgs.lib.fileset.fromSource (crateSrc [
+                        ./crates/metsuke-wire
+                        ./crates/metsuke
+                        ./crates/metsuke-server
+                      ]))
+                      # include_str!'d, so cargo sources alone do not build.
+                      ./crates/metsuke-server/src/registrations.sql;
+                };
                 cargoExtraArgs = "--package metsuke-server";
               }
             );

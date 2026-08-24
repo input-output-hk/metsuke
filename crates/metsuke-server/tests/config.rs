@@ -5,7 +5,7 @@
 use metsuke_server::config::{ArchiveConfig, ServerConfig};
 
 mod support;
-use support::{allowlist_toml, example_config as example, pool_of, test_key};
+use support::{allowlist_toml, calidus_toml, example_config as example, pool_of, test_key};
 
 /// The example is the complete config every test here mutates, so a field the
 /// server grows must reach the file an operator copies from before this suite
@@ -30,6 +30,7 @@ fn the_shipped_example_config_loads() {
 /// The other archive kind, and a config leaving `[applications]` out.
 #[test]
 fn a_filesystem_archive_without_an_applications_section_loads() {
+    let dir = tempfile::tempdir().unwrap();
     let text = format!(
         r#"
 listen = "127.0.0.1:8080"
@@ -46,8 +47,10 @@ max_decompressed_bytes = 4194304
 rate_limit_uploads = 24
 rate_limit_window_secs = 3600
 max_timestamp_skew_secs = 300
+{calidus}
 "#,
         allowlist = allowlist_toml(&[pool_of(&test_key())]),
+        calidus = calidus_toml(dir.path()),
     );
     let config = ServerConfig::from_toml(&text).unwrap();
     let ArchiveConfig::Filesystem { root } = config.archive else {
@@ -96,8 +99,9 @@ fn an_archive_without_a_kind_is_refused() {
 }
 
 /// The fields typed `NonZero`, so zero and absence are the same refusal.
-const NONZERO_FIELDS: [&str; 10] = [
+const NONZERO_FIELDS: [&str; 11] = [
     "query_timeout_secs",
+    "resolution_ttl_secs",
     "request_timeout_secs",
     "signature_validity_secs",
     "put_retry_backoff_ms",
@@ -111,7 +115,7 @@ const NONZERO_FIELDS: [&str; 10] = [
 
 /// The rest, where only absence is a mistake. Together with `NONZERO_FIELDS`
 /// this is every field the server reads, so a new one joins exactly one list.
-const OTHER_FIELDS: [&str; 12] = [
+const OTHER_FIELDS: [&str; 14] = [
     "listen",
     "counters_path",
     "bucket",
@@ -124,6 +128,8 @@ const OTHER_FIELDS: [&str; 12] = [
     "socket_dir",
     "dbname",
     "role",
+    "password_file",
+    "shelley_genesis_path",
 ];
 
 #[test]
@@ -141,7 +147,13 @@ fn every_field_is_required() {
 
 #[test]
 fn a_path_that_is_not_absolute_is_refused() {
-    for field in ["psql_path", "socket_dir", "applications_csv"] {
+    for field in [
+        "psql_path",
+        "socket_dir",
+        "applications_csv",
+        "password_file",
+        "shelley_genesis_path",
+    ] {
         let error = ServerConfig::from_toml(&with(field, "\"relative\""))
             .unwrap_err()
             .to_string();

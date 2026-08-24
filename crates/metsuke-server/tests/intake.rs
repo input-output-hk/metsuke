@@ -3,8 +3,8 @@
 //! rejecting on its own with its own reason.
 
 use metsuke_server::archive::FilesystemArchive;
-use metsuke_server::authority::{ColdKey, ColdKeyOrCalidus};
-use metsuke_server::calidus::CalidusKeys;
+use metsuke_server::authority::{ColdKey, ColdKeyOrCalidus, Refusal};
+use metsuke_server::calidus::{CalidusKeys, Resolution};
 use metsuke_server::config::IngestConfig;
 use metsuke_server::counters::CounterStore;
 use metsuke_server::intake::{IngestError, Intake, Rejection};
@@ -13,9 +13,10 @@ use time::OffsetDateTime;
 
 mod support;
 use support::{
-    CannedDirectory, FailingArchive, UnavailableDirectory, calidus_authority, calidus_key,
-    counter_store, envelope_for, nonzero_u32, nonzero_u64, other_key, permissive_config, pool_of,
-    registration, rotated_calidus_key, seal, stored_submission, submission, test_key, test_now,
+    CannedDirectory, FailingArchive, TEST_TTL_SECS, UnavailableDirectory, calidus_authority,
+    calidus_key, counter_store, envelope_at, envelope_for, nonzero_u32, nonzero_u64, other_key,
+    permissive_config, pool_of, registered_pool, registration, rotated_calidus_key, seal,
+    stored_submission, submission, test_key, test_now,
 };
 
 /// An intake wired to a temporary directory and database, ready to submit
@@ -386,96 +387,84 @@ fn calidus_submit(
     intake: &mut Intake<FilesystemArchive, ColdKeyOrCalidus<CannedDirectory>>,
     signer: &SigningKey,
     counter: u64,
+    now: OffsetDateTime,
 ) -> Result<metsuke_wire::envelope::Ack, IngestError> {
-    let envelope = envelope_for(&test_key(), counter);
+    let envelope = envelope_at(&test_key(), counter, now);
     let (body, signature) = seal(signer, &envelope);
     intake.submit(
         &submission(signer.verifying_key(), envelope.pool_id, signature, &body),
-        test_now(),
+        now,
     )
 }
 
 // Acceptance: the second key path of ADR 0003.
 #[test]
 fn upload_signed_with_the_pools_registered_calidus_key_is_accepted() {
-    let pool = pool_of(&test_key());
-    let directory = CannedDirectory::holding(pool, vec![registration(&calidus_key(), 1)]);
+    let pool = registered_pool();
+    let directory = CannedDirectory::holding(pool, vec![registration("nonce-1-key-a")]);
     let (mut intake, _dir) = calidus_intake(&[pool], directory.clone());
 
-    calidus_submit(&mut intake, &calidus_key(), 1).unwrap();
+    calidus_submit(&mut intake, &calidus_key(), 1, test_now()).unwrap();
 
     assert_eq!(directory.lookups(), 1);
 }
 
-// Acceptance: a key nobody registered is refused. The attempt that resolved
-// the pool must not also refresh it — a fetch one line old cannot come back
-// different, and spending the budget there is what would keep a real rotation
-// in the same window from converging.
+// Acceptance: a key nobody registered is refused, and the refusal says what the
+// chain held — an operator whose registration is contested or revoked has a
+// different thing to fix than one who never made it.
 #[test]
 fn a_key_the_pool_never_registered_is_rejected() {
-    let pool = pool_of(&test_key());
-    let directory = CannedDirectory::holding(pool, vec![registration(&calidus_key(), 1)]);
+    let pool = registered_pool();
+    let directory = CannedDirectory::holding(pool, vec![registration("revoked-nonce-9")]);
     let (mut intake, _dir) = calidus_intake(&[pool], directory.clone());
 
-    let error = calidus_submit(&mut intake, &other_key(), 1).unwrap_err();
+    let error = calidus_submit(&mut intake, &calidus_key(), 1, test_now()).unwrap_err();
 
     assert!(
-        matches!(rejection(error), Rejection::UnauthorizedKey { .. }),
-        "an unregistered key must not speak for the pool"
+        matches!(
+            rejection(error),
+            Rejection::UnauthorizedKey {
+                refusal: Refusal::Chain(Resolution::Revoked),
+                ..
+            }
+        ),
+        "a revoked key must not speak for the pool, and must say so"
     );
     assert_eq!(directory.lookups(), 1);
 }
 
-// The pool's rotation still converges after a stranger's attempt, because that
-// attempt left the budget alone. The pool rotates to a key the cache has never
-// held, so only a refresh can accept it.
+// Which chain state refused the key is for the log, not for the answer: the
+// text the HTTP layer sends back is the refusal's Display.
 #[test]
-fn a_strangers_attempt_does_not_spend_the_pools_refresh() {
-    let pool = pool_of(&test_key());
-    let directory = CannedDirectory::holding(pool, vec![registration(&calidus_key(), 1)]);
-    let (mut intake, _dir) = calidus_intake(&[pool], directory.clone());
-    calidus_submit(&mut intake, &other_key(), 1).unwrap_err();
+fn the_refused_text_does_not_name_the_chain_state_the_log_does() {
+    let pool = registered_pool();
+    let directory = CannedDirectory::holding(pool, vec![registration("revoked-nonce-9")]);
+    let (mut intake, _dir) = calidus_intake(&[pool], directory);
 
-    directory.rotate(pool, vec![registration(&rotated_calidus_key(), 2)]);
-    calidus_submit(&mut intake, &rotated_calidus_key(), 2).unwrap();
+    let error = calidus_submit(&mut intake, &calidus_key(), 1, test_now()).unwrap_err();
 
-    assert_eq!(directory.lookups(), 2, "the stranger cost the first lookup");
+    let sent = error.to_string();
+    let withheld = error
+        .withheld()
+        .expect("a refused key withholds its reason");
+    assert!(!sent.contains("revoked"), "got: {sent}");
+    assert!(withheld.contains("revoked"), "got: {withheld}");
 }
 
-// A refresh the budget refused decided nothing: the server declined to look
-// again, which is not the same answer as "this key is not the pool's" and must
-// not reach the client as its fault.
+// Acceptance: a rotation reaches a running server once the resolution ages out,
+// which is the whole of what a revoked key waits on too (ADR 0008).
 #[test]
-fn an_upload_whose_refresh_is_throttled_is_not_a_rejection() {
-    let pool = pool_of(&test_key());
-    let directory = CannedDirectory::holding(pool, vec![registration(&calidus_key(), 1)]);
+fn a_rotated_calidus_key_is_accepted_once_the_resolution_ages_out() {
+    let pool = registered_pool();
+    let directory = CannedDirectory::holding(pool, vec![registration("nonce-1-key-a")]);
     let (mut intake, _dir) = calidus_intake(&[pool], directory.clone());
-    // The first attempt fills the cache, the second spends the one refresh.
-    calidus_submit(&mut intake, &other_key(), 1).unwrap_err();
-    calidus_submit(&mut intake, &other_key(), 2).unwrap_err();
+    calidus_submit(&mut intake, &calidus_key(), 1, test_now()).unwrap();
 
-    let error = calidus_submit(&mut intake, &other_key(), 3).unwrap_err();
+    directory.rotate(pool, vec![registration("nonce-5-key-b")]);
+    let expired = test_now() + time::Duration::seconds(i64::from(TEST_TTL_SECS));
+    calidus_submit(&mut intake, &rotated_calidus_key(), 2, expired).unwrap();
 
-    assert!(
-        matches!(error, IngestError::Undecided(_)),
-        "expected an availability error, got {error:?}"
-    );
-    assert_eq!(directory.lookups(), 2, "a throttled refresh asks nothing");
-}
-
-// Acceptance: rotation converges without a TTL. The cache predates the new
-// registration, and the upload it cannot explain is what fetches it.
-#[test]
-fn a_rotated_calidus_key_is_accepted_after_one_refresh() {
-    let pool = pool_of(&test_key());
-    let directory = CannedDirectory::holding(pool, vec![registration(&calidus_key(), 1)]);
-    let (mut intake, _dir) = calidus_intake(&[pool], directory.clone());
-    calidus_submit(&mut intake, &calidus_key(), 1).unwrap();
-
-    directory.rotate(pool, vec![registration(&other_key(), 2)]);
-    calidus_submit(&mut intake, &other_key(), 2).unwrap();
-
-    assert_eq!(directory.lookups(), 2, "one refresh, not one per upload");
+    assert_eq!(directory.lookups(), 2, "one lookup per TTL, not per upload");
 }
 
 // A directory that cannot answer decided nothing, so the upload is worth
@@ -493,8 +482,7 @@ fn a_directory_that_cannot_answer_is_not_a_rejection() {
             UnavailableDirectory {
                 reason: "db-sync is down",
             },
-            nonzero_u32(1),
-            nonzero_u64(3600),
+            nonzero_u32(TEST_TTL_SECS),
         )),
     );
     let envelope = envelope_for(&test_key(), 1);

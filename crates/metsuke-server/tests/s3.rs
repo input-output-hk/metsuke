@@ -19,8 +19,8 @@ use rusty_s3::Credentials;
 
 mod support;
 use support::{
-    MAX_DECOMPRESSED_BYTES, UnavailableDirectory, calidus_key, counter_store, envelope_for,
-    nonzero_u32, nonzero_u64, pool_of, seal, stored_submission, test_key, test_now,
+    MAX_DECOMPRESSED_BYTES, TEST_TTL_SECS, UnavailableDirectory, calidus_key, counter_store,
+    envelope_for, nonzero_u32, nonzero_u64, pool_of, seal, stored_submission, test_key, test_now,
 };
 
 /// One request the fake endpoint received.
@@ -671,8 +671,7 @@ fn an_audit_stops_when_the_directory_cannot_answer() {
             UnavailableDirectory {
                 reason: "db-sync is down",
             },
-            nonzero_u32(1),
-            nonzero_u64(3600),
+            nonzero_u32(TEST_TTL_SECS),
         )),
         test_now(),
     )

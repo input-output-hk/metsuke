@@ -71,6 +71,12 @@ impl PoolId {
         PoolId(Blake2b::<U28>::digest(key.as_bytes()).into())
     }
 
+    /// The 28 bytes themselves, for the one caller that reads a pool id out of
+    /// something that is not bech32: a CIP-151 registration scope.
+    pub fn as_hash(&self) -> &[u8; 28] {
+        &self.0
+    }
+
     pub fn to_bech32(&self) -> String {
         bech32::encode::<bech32::Bech32>(bech32::Hrp::parse_unchecked(POOL_HRP), &self.0)
             .expect("28-byte payload is within the bech32 length limit")
