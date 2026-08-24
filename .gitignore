@@ -3,4 +3,5 @@
 /.pre-commit-config.yaml
 /.direnv
 /scratch
+/devnet/.devnet
 /.claude/settings.local.json
