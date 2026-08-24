@@ -49,7 +49,22 @@
           inherit (nodePkgs) cardano-cli;
           cardano-db-sync =
             inputs.cardano-db-sync-leios.packages.${system}."cardano-db-sync:exe:cardano-db-sync";
-          dbSyncSchema = "${inputs.cardano-db-sync-leios}/schema";
+          # db-sync self-deadlocks: chain-sync holds AccessExclusive on
+          # epoch_stake while its own stage-4 migration waits to index it --
+          # metsuke-4zo.64. Upstream's log (DbSync.hs) calls these client
+          # indexes db-sync does not use and names deleting migration-4-* as
+          # the fix. Nothing here needs them.
+          dbSyncSchema = pkgs.runCommand "db-sync-schema-no-stage-4" { } ''
+            cp -r ${inputs.cardano-db-sync-leios}/schema $out
+            chmod -R u+w $out
+            # Nothing to filter means the deadlock has moved, so the comment
+            # above no longer describes what db-sync does.
+            ls $out/migration-4-*.sql >/dev/null || {
+              echo "error: no migration-4-* in the db-sync schema" >&2
+              exit 1
+            }
+            rm $out/migration-4-*.sql
+          '';
           devnetSrc = "${inputs.leios}/demo/proto-devnet";
 
           # Everything the stack writes. Wiped by `scripts/devnet.sh up` before
