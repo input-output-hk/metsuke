@@ -130,26 +130,33 @@ done
 tr -d '\n' <"$work/on-chain.hex" >"$out/recordings/on-chain-nonce-1-key-a.hex"
 echo "on-chain-nonce-1-key-a"
 
-# The query the server ships, run as the server runs it. k comes from the
-# devnet's own genesis, which is not the network's -- docs/research/leios-devnet.md.
+# The query the server ships, against the chain it was recorded on. k comes from
+# the devnet's own genesis, which is not the network's --
+# docs/research/leios-devnet.md.
 pool_id=$(jq -r .poolIdHex <<<"$extended")
 k=$(jq -er .securityParam "$repo/devnet/.devnet/shelley-genesis.json")
 query="$repo/crates/metsuke-server/src/registrations.sql"
 
-# Until the registration is k deep the query is right to answer nothing, so a
-# recording taken before then would be a cassette of the depth filter alone.
+# Nothing is recorded from this: the server binds its parameters over the wire
+# protocol (ADR 0009), which psql cannot speak, so an answer taken here is not
+# an answer the server asked for. PREPARE is the closest psql gets, and running
+# it is what says the shipped SQL still finds a registration on a real chain.
 #
-# Run the way psql::Query runs it, down to --file -: an invocation that differs
-# would record an answer the server cannot ask for.
+# Until the registration is k deep the query is right to answer nothing, so this
+# waits the depth out rather than reading an empty answer as a broken query.
+prepared() {
+  {
+    echo "PREPARE registrations AS"
+    cat "$query"
+    echo "EXECUTE registrations('0x$pool_id', $k);"
+  } | reader --no-psqlrc --quiet -v ON_ERROR_STOP=1 --file -
+}
 for _ in $(seq 120); do
-  reader --csv --no-psqlrc --quiet --set "scope=0x$pool_id" --set "k=$k" --file - \
-    <"$query" >"$work/query.csv"
-  [ -s "$work/query.csv" ] && break
+  prepared >"$work/answer" && [ -s "$work/answer" ] && break
   sleep 5
 done
-[ -s "$work/query.csv" ] || {
+[ -s "$work/answer" ] || {
   echo "error: the registration is still less than $k blocks deep" >&2
   exit 1
 }
-cp "$work/query.csv" "$out/recordings/query.csv"
-echo "query.csv"
+echo "the shipped query answers on chain"

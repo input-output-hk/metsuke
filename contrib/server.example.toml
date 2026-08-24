@@ -35,14 +35,13 @@ rate_limit_window_secs = 3600
 max_timestamp_skew_secs = 300
 
 # The db-sync the Calidus half reads registrations out of. Colocated, so the
-# socket is local; the role is read-only and its password reaches psql through
-# the file named here and never through the environment.
+# socket is local. password_file holds the password alone, which is what
+# systemd's LoadCredential puts there.
 [calidus]
-psql_path = "/run/current-system/sw/bin/psql"
 socket_dir = "/run/postgresql"
 dbname = "cexplorer"
 role = "metsuke_ro"
-password_file = "/run/credentials/metsuke-server.service/pgpass"
+password_file = "/run/credentials/metsuke-server.service/pgpassword"
 query_timeout_secs = 30
 shelley_genesis_path = "/var/lib/metsuke-server/shelley-genesis.json"
 resolution_ttl_secs = 3600
@@ -50,7 +49,6 @@ resolution_ttl_secs = 3600
 # Optional, and the only section that is.
 [applications]
 applications_csv = "/var/lib/metsuke-server/applications.csv"
-psql_path = "/run/current-system/sw/bin/psql"
 socket_dir = "/run/postgresql"
 dbname = "cexplorer"
 role = "metsuke_ro"

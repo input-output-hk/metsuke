@@ -41,6 +41,7 @@ fields we decoded.
   absent from the protocol parameters, and it differs between the network we
   record fixtures on and the one we serve. A hand-written copy would disagree
   with the network silently, in the direction that weakens the wait above.
-- A Postgres client brings an async runtime into a server that had none.
+- ~~A Postgres client brings an async runtime into a server that had none.~~
+  Superseded by ADR 0009, which took the client and the runtime.
 - Colocation is a deployment constraint, not a protocol one: a separate host
   reaching db-sync over some authenticated transport would serve equally.

@@ -63,25 +63,23 @@ impl<'de> Deserialize<'de> for AbsolutePath {
 }
 
 /// Where each half of the gate comes from: the applications export, and the
-/// db-sync holding the registered codes. No password field — see `Psql`.
+/// db-sync holding the registered codes. No password field — see `Chain`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ApplicationsConfig {
     pub applications_csv: AbsolutePath,
-    /// Which binary reads the database is not the operator's shell's to decide.
-    /// `Command` resolves a bare name against the environment it inherits, and
-    /// the `env_clear` in `Psql` does not stop it, so the refusal has to be
-    /// here.
-    pub psql_path: AbsolutePath,
-    /// `psql --host` reads a value as a socket directory only when it starts
-    /// with `/`; anything else it resolves as a hostname and connects to over
-    /// the network.
+    /// A directory and not a host, because the connection is the unix socket
+    /// ADR 0008 fixes: anything reachable over the network would need TLS and
+    /// a threat model this deployment does not have.
     pub socket_dir: AbsolutePath,
     pub dbname: String,
     /// Read-only, and nothing here can widen it: the query is fixed at compile
     /// time.
     pub role: String,
-    /// Reaches Postgres as `statement_timeout`.
+    /// Bounds one chain read twice over: it reaches Postgres as
+    /// `statement_timeout` and is also how long the connect may take, so a
+    /// db-sync that is down costs it once and a query that hangs costs it
+    /// again.
     pub query_timeout_secs: NonZeroU64,
 }
 
@@ -92,18 +90,17 @@ pub struct ApplicationsConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CalidusConfig {
-    /// Why the path and not a bare name: `ApplicationsConfig::psql_path`.
-    pub psql_path: AbsolutePath,
     /// Why a directory and not a host: `ApplicationsConfig::socket_dir`.
     pub socket_dir: AbsolutePath,
     pub dbname: String,
     /// Read-only, and nothing here can widen it: the query is fixed at compile
     /// time.
     pub role: String,
-    /// A `.pgpass` reaching psql as `PGPASSFILE`. The path is config, the
-    /// password is whatever systemd's `LoadCredential` put there.
+    /// A file holding the role's password and nothing else. The path is
+    /// config, the password is whatever systemd's `LoadCredential` put there,
+    /// so no password reaches the environment (metsuke-4zo.50).
     pub password_file: AbsolutePath,
-    /// Reaches Postgres as `statement_timeout`.
+    /// What it bounds: `ApplicationsConfig::query_timeout_secs`.
     pub query_timeout_secs: NonZeroU64,
     /// The network's Shelley genesis, which is the only place k is written
     /// (ADR 0008).

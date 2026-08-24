@@ -4,9 +4,7 @@
 //! The subcommands are the exception: they run once against the same config
 //! and exit, zero only if what they were asked to check holds.
 
-use metsuke_server::applications::{
-    ApplicationsCsvError, ChainError, Excluded, Gate, Psql, gate, read_codes,
-};
+use metsuke_server::applications::{ApplicationsCsvError, Chain, Excluded, Gate, gate, read_codes};
 use metsuke_server::archive::{FilesystemArchive, List, Store};
 use metsuke_server::authority::{ColdKey, ColdKeyOrCalidus};
 use metsuke_server::calidus::CalidusKeys;
@@ -16,6 +14,7 @@ use metsuke_server::config::{
     ServerConfig,
 };
 use metsuke_server::counters::{CounterError, CounterStore};
+use metsuke_server::db::DbError;
 use metsuke_server::dbsync::{DbSync, GenesisError, security_parameter};
 use metsuke_server::http;
 use metsuke_server::intake::Intake;
@@ -63,7 +62,7 @@ enum Fatal {
         source: ApplicationsCsvError,
     },
     #[error("cannot read the registered application codes: {0}")]
-    Chain(#[from] ChainError),
+    Chain(#[from] DbError),
     #[error("no pool both applied and registered its code, so the allowlist would accept nobody")]
     NobodyMatched,
     #[error("cannot audit the archive: {0}")]
@@ -181,7 +180,7 @@ fn generate_allowlist(config: &ApplicationsConfig) -> Result<(), Fatal> {
         source,
     })?;
     let applied = read_codes(&text).map_err(|source| Fatal::ReadApplications { path, source })?;
-    let found = gate(applied, Psql::new(config).registered_codes()?);
+    let found = gate(applied, Chain::new(config).registered_codes()?);
     print!("{}", found.to_toml());
     report_gate(&found)
 }
@@ -216,7 +215,7 @@ fn report_gate(found: &Gate) -> Result<(), Fatal> {
             found.unreadable
         );
     }
-    match found.allowed.is_empty() {
+    match found.allowlists_nobody() {
         true => Err(Fatal::NobodyMatched),
         false => Ok(()),
     }

@@ -8,11 +8,11 @@ use metsuke_wire::envelope::{PoolId, PoolIdError};
 use serde::{Deserialize, Serialize};
 
 use crate::config::ApplicationsConfig;
-use crate::psql::{PsqlError, Query, Rows};
+use crate::db::{Connection, DbError, Parameters, column};
 
 /// Where a pool registration carries its application code: CIP-20 fixes the
 /// label, the key inside it is the rewards program's own.
-const METADATA_LABEL: u64 = 674;
+const METADATA_LABEL: i64 = 674;
 const METADATA_KEY: &str = "musashinet_incentives_application_code";
 
 /// The code an operator puts in both halves of the gate. Constrained to an
@@ -68,18 +68,6 @@ impl<'de> Deserialize<'de> for ApplicationCode {
 /// One code per pool, which is what both halves of the gate are.
 pub type Codes = BTreeMap<PoolId, ApplicationCode>;
 
-#[derive(Debug, thiserror::Error)]
-pub enum ChainError {
-    #[error(transparent)]
-    Query(#[from] PsqlError),
-    #[error("cannot read what {psql} printed: {source}")]
-    Unreadable {
-        psql: String,
-        #[source]
-        source: ApplicationsCsvError,
-    },
-}
-
 /// Every live pool's application code, from its current registration alone: an
 /// earlier update's code is one the operator has already replaced, and counting
 /// it would hold a corrected typo against them forever.
@@ -90,12 +78,12 @@ pub enum ChainError {
 /// once per certificate.
 const QUERY: &str = "\
 SELECT DISTINCT ph.view AS pool_id,
-       tm.json ->> :'key' AS application_code
+       tm.json ->> $1::text AS application_code
 FROM pool_hash ph
 JOIN pool_update pu ON pu.hash_id = ph.id
 JOIN tx_metadata tm ON tm.tx_id = pu.registered_tx_id
-WHERE tm.key = :label
-  AND tm.json ? :'key'
+WHERE tm.key = $2::bigint
+  AND tm.json ? $1::text
   AND pu.registered_tx_id = (
         SELECT MAX(registered_tx_id) FROM pool_update WHERE hash_id = ph.id)
   AND NOT EXISTS (
@@ -104,38 +92,34 @@ WHERE tm.key = :label
         WHERE pr.hash_id = ph.id
           AND pr.announced_tx_id > pu.registered_tx_id)";
 
-/// The chain half, read by running the shipped query through `psql`.
-pub struct Psql<'a> {
+/// The chain half, read by running the shipped query against the db-sync the
+/// config names.
+pub struct Chain<'a> {
     config: &'a ApplicationsConfig,
 }
 
-impl<'a> Psql<'a> {
+impl<'a> Chain<'a> {
     pub fn new(config: &'a ApplicationsConfig) -> Self {
-        Psql { config }
+        Chain { config }
     }
 
-    pub fn registered_codes(&self) -> Result<Registered, ChainError> {
+    pub fn registered_codes(&self) -> Result<Registered, DbError> {
         // No password: the connection is a peer-authenticated unix socket,
         // which is a deployment choice, not something the protocol fixes.
-        let csv = Query {
-            psql_path: self.config.psql_path.as_path(),
+        let bound: &Parameters<'_> = &[&METADATA_KEY, &METADATA_LABEL];
+        let rows = Connection {
             socket_dir: self.config.socket_dir.as_path(),
             dbname: &self.config.dbname,
             role: &self.config.role,
             query_timeout_secs: self.config.query_timeout_secs.get(),
             password_file: None,
-            variables: &[
-                ("key", METADATA_KEY.to_string()),
-                ("label", METADATA_LABEL.to_string()),
-            ],
-            rows: Rows::WithHeader,
-            text: QUERY,
         }
-        .run()?;
-        read_registered(&csv).map_err(|source| ChainError::Unreadable {
-            psql: self.config.psql_path.as_path().display().to_string(),
-            source,
-        })
+        .query(QUERY, bound)?;
+        let read = rows
+            .iter()
+            .map(|row| Ok((column(row, "pool_id")?, column(row, "application_code")?)))
+            .collect::<Result<Vec<_>, DbError>>()?;
+        Ok(read_registered(read))
     }
 }
 
@@ -198,27 +182,28 @@ pub struct Registered {
     pub contradicted: BTreeSet<PoolId>,
 }
 
-/// The registered half. Nothing here is the program's to fix: any pool operator
-/// on the chain can register the label under any value, so a row that does not
-/// read is dropped rather than refused — it matches no application either way,
-/// and failing on it would let a stranger's transaction stop every onboarding.
+/// The registered half, as the query answers it: a pool's bech32 view against
+/// the value it put under the key, which is JSON and so may be absent or be
+/// anything at all.
 ///
-/// A missing column is still fatal: the query names its own, so their absence
-/// is this file disagreeing with itself.
-pub fn read_registered(text: &str) -> Result<Registered, ApplicationsCsvError> {
-    let (mut reader, columns) = open(text)?;
+/// Nothing here is the program's to fix: any pool operator on the chain can
+/// register the label under any value, so a row that does not read is dropped
+/// rather than refused — it matches no application either way, and failing on
+/// it would let a stranger's transaction stop every onboarding.
+pub fn read_registered(rows: impl IntoIterator<Item = (String, Option<String>)>) -> Registered {
     let mut codes = Codes::new();
     let mut unreadable = 0;
     // Dropped after the pass, not during it: the row that contradicts comes
     // second, so the first is already in.
     let mut contradicted = BTreeSet::new();
-    for (row, record) in numbered(&mut reader) {
-        let read = record
-            .map_err(ApplicationsCsvError::from)
-            .and_then(|record| columns.parse(&record, row));
+    for (pool_id, code) in rows {
+        let read = PoolId::from_bech32(pool_id.trim()).ok().zip(
+            code.as_deref()
+                .and_then(|code| ApplicationCode::parse(code).ok()),
+        );
         match read {
-            Err(_) => unreadable += 1,
-            Ok((pool_id, code)) => match codes.insert(pool_id, code.clone()) {
+            None => unreadable += 1,
+            Some((pool_id, code)) => match codes.insert(pool_id, code.clone()) {
                 Some(first) if first != code => {
                     contradicted.insert(pool_id);
                 }
@@ -229,11 +214,11 @@ pub fn read_registered(text: &str) -> Result<Registered, ApplicationsCsvError> {
     for pool_id in &contradicted {
         codes.remove(pool_id);
     }
-    Ok(Registered {
+    Registered {
         codes,
         unreadable,
         contradicted,
-    })
+    }
 }
 
 /// Where the two columns sit in a header that may carry others.
@@ -314,6 +299,13 @@ pub struct Gate {
 }
 
 impl Gate {
+    /// An allowlist nobody is on stops every upload, so it is a refusal rather
+    /// than an artifact to emit. It prints exactly like a program nobody
+    /// joined, which is why the caller's exit code has to separate the two.
+    pub fn allowlists_nobody(&self) -> bool {
+        self.allowed.is_empty()
+    }
+
     /// The pairs as a TOML document of their own, ordered by pool id. No
     /// `[ingest.allowlist]` header: these bytes are that key's value, and where
     /// it is spliced in is the Nix module's business, not this file's.

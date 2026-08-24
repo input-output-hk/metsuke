@@ -18,6 +18,7 @@ Each is an accepted decision; read the ADR before working near it.
 - Client and server versions are independent; the update nudge is embedded at server build — docs/adr/0006
 - The agent touches only the loopback Prometheus endpoint: no socket, no journal, no groups — docs/adr/0007
 - Calidus registrations are witness-checked in the server against raw db-sync metadata, never taken from an indexer — docs/adr/0008
+- The server reads db-sync over the Postgres wire protocol with bound parameters, not through `psql` — docs/adr/0009
 
 ## Conventions
 

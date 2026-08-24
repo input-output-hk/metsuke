@@ -115,7 +115,7 @@ const NONZERO_FIELDS: [&str; 11] = [
 
 /// The rest, where only absence is a mistake. Together with `NONZERO_FIELDS`
 /// this is every field the server reads, so a new one joins exactly one list.
-const OTHER_FIELDS: [&str; 14] = [
+const OTHER_FIELDS: [&str; 13] = [
     "listen",
     "counters_path",
     "bucket",
@@ -124,7 +124,6 @@ const OTHER_FIELDS: [&str; 14] = [
     "put_retries",
     "allowlist",
     "applications_csv",
-    "psql_path",
     "socket_dir",
     "dbname",
     "role",
@@ -148,7 +147,6 @@ fn every_field_is_required() {
 #[test]
 fn a_path_that_is_not_absolute_is_refused() {
     for field in [
-        "psql_path",
         "socket_dir",
         "applications_csv",
         "password_file",

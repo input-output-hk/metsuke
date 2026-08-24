@@ -20,9 +20,12 @@ scripts/record-calidus-fixtures.sh, which also says which key signs what.
 | `other-pool-nonce-1` | `other_key` | `calidus_key` | 1 |
 
 `on-chain-nonce-1-key-a` is `nonce-1-key-a` submitted to the devnet and read
-back out of db-sync; `query.csv` is what
-crates/metsuke-server/src/registrations.sql printed once it was k blocks deep.
-What each proves is asserted in tests/calidus.rs and tests/dbsync.rs.
+back out of db-sync. What it proves is asserted in tests/calidus.rs.
+
+Nothing here records the shipped query's own answer: the server binds its
+parameters over the Postgres wire protocol (ADR 0009), so a `psql` recording
+would not be an answer the server asked for. The recorder runs the query
+against the devnet instead, and fails if it finds no registration.
 
 `crafted/scope-mismatch` scopes `test_key`'s pool and is witnessed by
 `other_key`, with `other_key`'s hash in the COSE protected header.

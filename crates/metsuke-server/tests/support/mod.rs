@@ -15,7 +15,7 @@ use metsuke_server::applications::ApplicationCode;
 use metsuke_server::archive::{ArchiveError, List, Store, StoredSubmission};
 use metsuke_server::authority::{ColdKeyOrCalidus, Signed};
 use metsuke_server::calidus::{CalidusKeys, Directory, DirectoryError};
-use metsuke_server::config::{AbsolutePath, ApplicationsConfig, CalidusConfig, IngestConfig};
+use metsuke_server::config::{AbsolutePath, CalidusConfig, IngestConfig};
 use metsuke_server::counters::CounterStore;
 use metsuke_wire::envelope::{
     self, Envelope, PoolId, SCHEMA_VERSION, Sample, Signature, SigningKey, VerifyingKey,
@@ -203,25 +203,10 @@ pub fn example_s3_archive(endpoint: &str, put_retries: u32) -> String {
     body.join("\n")
 }
 
-/// The gate's config pointed at a `psql` a test placed, with the connection
-/// values the assertions name. These tests drive the registered half, so the
-/// applications path is a placeholder nothing opens.
-pub fn applications_config(psql_path: &Path, socket_dir: &Path) -> ApplicationsConfig {
-    ApplicationsConfig {
-        applications_csv: absolute("/nonexistent/applications.csv"),
-        psql_path: absolute(psql_path),
-        socket_dir: absolute(socket_dir),
-        dbname: "cexplorer".to_string(),
-        role: "metsuke_ro".to_string(),
-        query_timeout_secs: nonzero_u64(7),
-    }
-}
-
-/// The Calidus half's config pointed at a `psql` a test placed, with the
-/// connection values the assertions name.
-pub fn calidus_config(psql_path: &Path, socket_dir: &Path, genesis: &Path) -> CalidusConfig {
+/// The Calidus half's config pointed at a socket directory a test owns, with
+/// the connection values the assertions name.
+pub fn calidus_config(socket_dir: &Path, genesis: &Path) -> CalidusConfig {
     CalidusConfig {
-        psql_path: absolute(psql_path),
         socket_dir: absolute(socket_dir),
         dbname: "cexplorer".to_string(),
         role: "metsuke_ro".to_string(),
@@ -238,7 +223,7 @@ pub const TEST_SECURITY_PARAMETER: u32 = 6;
 
 /// A Shelley genesis holding the one field the server reads, and the
 /// `[calidus]` section naming it. The file is written because `serve` reads it
-/// before it binds; the `psql` it names is never run by a cold-key upload.
+/// before it binds; the db-sync it names is never reached by a cold-key upload.
 pub fn calidus_toml(dir: &Path) -> String {
     let genesis = dir.join("shelley-genesis.json");
     std::fs::write(
@@ -249,7 +234,6 @@ pub fn calidus_toml(dir: &Path) -> String {
     format!(
         r#"
 [calidus]
-psql_path = "{psql}"
 socket_dir = "{dir}"
 dbname = "cexplorer"
 role = "metsuke_ro"
@@ -258,7 +242,6 @@ query_timeout_secs = 7
 shelley_genesis_path = "{genesis}"
 resolution_ttl_secs = {TEST_TTL_SECS}
 "#,
-        psql = fake_psql().display(),
         dir = dir.display(),
         genesis = genesis.display(),
     )
@@ -268,33 +251,10 @@ pub fn absolute(path: impl Into<PathBuf>) -> AbsolutePath {
     AbsolutePath::new(path.into()).expect("a test path is absolute")
 }
 
-/// The `psql` every test runs, and what it does: tests/support/fake-psql.sh.
-pub fn fake_psql() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/fake-psql.sh")
-}
-
-/// What the double prints back for a query against `socket_dir`. Whether the
-/// CSV describes a real answer is the caller's to say: the Calidus half hands
-/// it a recording, the allowlist half a hand-written one (ticket
-/// metsuke-4zo.52).
-pub fn psql_answers(socket_dir: &Path, csv: &str) {
-    std::fs::write(socket_dir.join("answer.csv"), csv).unwrap();
-}
-
-/// What the double says on stderr instead of answering, exiting nonzero as a
-/// psql that could not run the query does.
-pub fn psql_fails(socket_dir: &Path, stderr: &str) {
-    std::fs::write(socket_dir.join("failure"), stderr).unwrap();
-}
-
-/// The arguments and environment the double was handed, one per line.
-pub fn recorded_argv(socket_dir: &Path) -> PathBuf {
-    socket_dir.join("argv")
-}
-
-/// The script the double was piped, which is where the query goes.
-pub fn recorded_script(socket_dir: &Path) -> PathBuf {
-    socket_dir.join("argv.sql")
+/// The password file `calidus_config` names, so a test reaches the connection
+/// attempt rather than stopping at the unreadable file before it.
+pub fn write_password(socket_dir: &Path) {
+    std::fs::write(socket_dir.join("pgpass"), "hunter2\n").unwrap();
 }
 
 /// An archive that fails whichever half the caller under test uses, standing
@@ -337,14 +297,6 @@ pub fn registration(name: &str) -> Vec<u8> {
 /// A blob assembled out of real signatures to be one no tool produces.
 pub fn crafted(name: &str) -> Vec<u8> {
     fixture("crafted", name)
-}
-
-/// What the shipped query printed on a devnet holding one registration.
-pub fn query_csv() -> String {
-    std::fs::read_to_string(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/calidus/recordings/query.csv"),
-    )
-    .expect("reading the recorded query answer")
 }
 
 fn fixture(kind: &str, name: &str) -> Vec<u8> {

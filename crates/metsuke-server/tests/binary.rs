@@ -231,15 +231,14 @@ fn a_missing_config_exits_nonzero_naming_the_path() {
     );
 }
 
-/// A config naming an `[applications]` section, the applications the caller
-/// wrote, and a `psql` printing `registered`. The archive and the counter
-/// database are named but never created, which is what
+/// A config naming an `[applications]` section and the applications the caller
+/// wrote. The registered half is not answered: `socket_dir` is the empty
+/// temporary directory, so the query fails to connect. The archive and the
+/// counter database are named but never created, which is what
 /// `generate_allowlist_opens_neither_store` reads.
-fn allowlist_config(dir: &std::path::Path, applied: &str, registered: &str) -> std::path::PathBuf {
+fn allowlist_config(dir: &std::path::Path, applied: &str) -> std::path::PathBuf {
     let applications_csv = dir.join("applications.csv");
     std::fs::write(&applications_csv, applied).unwrap();
-    support::psql_answers(dir, registered);
-    let psql = support::fake_psql();
     let config = dir.join("server.toml");
     std::fs::write(
         &config,
@@ -259,7 +258,6 @@ fn allowlist_config(dir: &std::path::Path, applied: &str, registered: &str) -> s
 
             [applications]
             applications_csv = "{applications_csv}"
-            psql_path = "{psql}"
             socket_dir = "{socket_dir}"
             dbname = "cexplorer"
             role = "metsuke_ro"
@@ -270,7 +268,6 @@ fn allowlist_config(dir: &std::path::Path, applied: &str, registered: &str) -> s
             root = dir.join("archive").display(),
             allowlist = allowlist_toml(&[pool_of(&test_key())]),
             applications_csv = applications_csv.display(),
-            psql = psql.display(),
             socket_dir = dir.display(),
         ),
     )
@@ -288,66 +285,47 @@ fn generate_allowlist(config: &std::path::Path) -> std::process::Output {
         .unwrap()
 }
 
-/// Acceptance: stdout is the pairs and nothing else, and the pool that applied
-/// without registering its code is absent from them and named on stderr.
+/// A db-sync that could not be reached has not said the pools registered
+/// nothing: emitting an empty allowlist from that would stop every upload, so
+/// the command exits nonzero with stdout untouched.
+///
+/// The pairs themselves are not asserted here. Answering the wire protocol
+/// takes a Postgres (ADR 0009), so what stdout carries is `gate` and
+/// `Gate::to_toml`'s to prove: tests/applications.rs.
 #[test]
-fn generate_allowlist_writes_the_pairs_to_stdout_and_its_summary_to_stderr() {
+fn generate_allowlist_refuses_a_db_sync_it_cannot_reach() {
     let dir = tempfile::tempdir().unwrap();
     let onboarded = pool_of(&test_key());
-    let applied_only = pool_of(&other_key());
     let config = allowlist_config(
         dir.path(),
-        &format!("pool_id,application_code\n{onboarded},MUSA-0001\n{applied_only},MUSA-0002\n"),
         &format!("pool_id,application_code\n{onboarded},MUSA-0001\n"),
-    );
-
-    let output = generate_allowlist(&config);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(output.status.success(), "{stderr}");
-    assert_eq!(stdout, format!("{onboarded} = \"MUSA-0001\"\n"));
-    assert!(
-        stderr.contains("1 pools allowlisted, 1 applicants excluded"),
-        "{stderr}"
-    );
-    assert!(
-        stderr.contains(&format!("excluded {applied_only}")),
-        "{stderr}"
-    );
-}
-
-/// An allowlist nobody is on stops every upload, and it prints exactly like a
-/// program nobody joined. The exit code is what separates the two.
-#[test]
-fn generate_allowlist_refuses_when_the_two_halves_share_nobody() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = allowlist_config(
-        dir.path(),
-        &format!(
-            "pool_id,application_code\n{},MUSA-0001\n",
-            pool_of(&test_key())
-        ),
-        "pool_id,application_code\n",
     );
 
     let output = generate_allowlist(&config);
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("accept nobody"), "{stderr}");
+    assert!(stderr.contains("cexplorer"), "{stderr}");
 }
 
 /// Both stores are named in the config, so what proves `Command::GenerateAllowlist`
 /// never reaches them is that neither exists afterwards.
+///
+/// The path this walks is the one that gives up at the db-sync, which is as far
+/// as the suite gets without a Postgres (ADR 0009). Both stores are opened
+/// after the gate runs, so the run that emits pairs stays unproven here.
 #[test]
-fn generate_allowlist_opens_neither_store() {
+fn generate_allowlist_opens_neither_store_before_giving_up_on_the_chain() {
     let dir = tempfile::tempdir().unwrap();
     let pool = pool_of(&test_key());
-    let row = format!("pool_id,application_code\n{pool},MUSA-0001\n");
-    let config = allowlist_config(dir.path(), &row, &row);
+    let config = allowlist_config(
+        dir.path(),
+        &format!("pool_id,application_code\n{pool},MUSA-0001\n"),
+    );
 
     let output = generate_allowlist(&config);
-    assert!(output.status.success(), "{:?}", output.stderr);
+
+    assert!(!output.status.success());
     assert!(!dir.path().join("archive").exists());
     assert!(!dir.path().join("counters.sqlite").exists());
 }
@@ -355,7 +333,7 @@ fn generate_allowlist_opens_neither_store() {
 #[test]
 fn generate_allowlist_without_an_applications_section_names_it() {
     let dir = tempfile::tempdir().unwrap();
-    let config = allowlist_config(dir.path(), "pool_id,application_code\n", "");
+    let config = allowlist_config(dir.path(), "pool_id,application_code\n");
     let without = std::fs::read_to_string(&config)
         .unwrap()
         .split_once("[applications]")

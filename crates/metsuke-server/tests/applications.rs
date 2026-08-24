@@ -2,7 +2,7 @@
 //! and that what the command emits is the config the server reads.
 
 use metsuke_server::applications::{
-    ApplicationCode, Codes, Excluded, Psql, Registered, gate, read_codes, read_registered,
+    ApplicationCode, Codes, Excluded, Registered, gate, read_codes, read_registered,
 };
 use metsuke_server::config::ServerConfig;
 use metsuke_wire::envelope::PoolId;
@@ -11,8 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod support;
 use support::{
-    allowlist_toml, applications_config, calidus_key, example_config, other_key, pool_of,
-    rotated_calidus_key, test_key,
+    allowlist_toml, calidus_key, example_config, other_key, pool_of, rotated_calidus_key, test_key,
 };
 
 fn code(text: &str) -> ApplicationCode {
@@ -161,17 +160,24 @@ fn a_pool_id_that_is_not_bech32_is_refused_naming_its_row() {
     assert!(error.contains("row 2"), "got: {error}");
 }
 
+/// The query's answer as `read_registered` takes it: a pool's bech32 view, and
+/// the JSON value under the key, which `->>` renders as NULL where it is no
+/// string.
+fn registered_rows(rows: &[(&str, Option<&str>)]) -> Vec<(String, Option<String>)> {
+    rows.iter()
+        .map(|(pool_id, code)| (pool_id.to_string(), code.map(str::to_string)))
+        .collect()
+}
+
 #[test]
 fn a_registered_row_that_does_not_read_is_counted_not_fatal() {
     let pool = pool_of(&test_key());
     let stranger = pool_of(&other_key());
-    let found = read_registered(&format!(
-        "pool_id,application_code\n\
-         {pool},MUSA-0001\n\
-         {stranger},hello world\n\
-         not-a-pool-id,MUSA-0002\n"
-    ))
-    .unwrap();
+    let found = read_registered(registered_rows(&[
+        (&pool.to_string(), Some("MUSA-0001")),
+        (&stranger.to_string(), Some("hello world")),
+        ("not-a-pool-id", Some("MUSA-0002")),
+    ]));
     assert_eq!(
         found,
         Registered {
@@ -186,13 +192,11 @@ fn a_registered_row_that_does_not_read_is_counted_not_fatal() {
 fn a_pool_the_registered_half_gives_two_codes_names_neither() {
     let pool = pool_of(&test_key());
     let other = pool_of(&other_key());
-    let found = read_registered(&format!(
-        "pool_id,application_code\n\
-         {pool},MUSA-0001\n\
-         {pool},MUSA-0002\n\
-         {other},MUSA-0003\n"
-    ))
-    .unwrap();
+    let found = read_registered(registered_rows(&[
+        (&pool.to_string(), Some("MUSA-0001")),
+        (&pool.to_string(), Some("MUSA-0002")),
+        (&other.to_string(), Some("MUSA-0003")),
+    ]));
     assert_eq!(
         found,
         Registered {
@@ -207,10 +211,10 @@ fn a_pool_the_registered_half_gives_two_codes_names_neither() {
 #[test]
 fn the_same_registered_row_twice_still_names_its_code() {
     let pool = pool_of(&test_key());
-    let found = read_registered(&format!(
-        "pool_id,application_code\n{pool},MUSA-0001\n{pool},MUSA-0001\n"
-    ))
-    .unwrap();
+    let found = read_registered(registered_rows(&[
+        (&pool.to_string(), Some("MUSA-0001")),
+        (&pool.to_string(), Some("MUSA-0001")),
+    ]));
     assert_eq!(
         found,
         Registered {
@@ -221,12 +225,25 @@ fn the_same_registered_row_twice_still_names_its_code() {
     );
 }
 
+/// The label holds whatever the operator posted, so the key may carry an object
+/// or an array, which `->>` hands back as NULL. That is a stranger's row to
+/// count, not an answer to fail on.
 #[test]
-fn a_registered_half_without_the_columns_is_still_fatal() {
-    let error = read_registered("pool,code\npool1abc,MUSA-0001\n")
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("application_code"), "got: {error}");
+fn a_registered_row_whose_code_is_no_string_is_counted_not_fatal() {
+    let pool = pool_of(&test_key());
+    let other = pool_of(&other_key());
+    let found = read_registered(registered_rows(&[
+        (&pool.to_string(), None),
+        (&other.to_string(), Some("MUSA-0001")),
+    ]));
+    assert_eq!(
+        found,
+        Registered {
+            codes: codes(&[(other, "MUSA-0001")]),
+            unreadable: 1,
+            contradicted: BTreeSet::new(),
+        }
+    );
 }
 
 #[test]
@@ -254,6 +271,38 @@ fn a_code_outside_the_identifier_alphabet_is_refused() {
             "{text:?} must not parse"
         );
     }
+}
+
+/// The refusal `generate-allowlist` exits nonzero on. Both halves naming pools
+/// is not enough: a gate that matched none of them emits an empty document,
+/// which reads as a program nobody joined and would stop every upload.
+#[test]
+fn a_gate_that_allowlists_nobody_says_so() {
+    let applicant = pool_of(&test_key());
+    let stranger = pool_of(&other_key());
+
+    assert!(
+        gate(
+            codes(&[(applicant, "MUSA-0001")]),
+            registered(&[(stranger, "MUSA-0001")]),
+        )
+        .allowlists_nobody()
+    );
+    assert!(
+        gate(
+            codes(&[(applicant, "MUSA-0001")]),
+            registered(&[(applicant, "MUSA-0002")]),
+        )
+        .allowlists_nobody(),
+        "a mismatched code allowlists nobody either"
+    );
+    assert!(
+        !gate(
+            codes(&[(applicant, "MUSA-0001")]),
+            registered(&[(applicant, "MUSA-0001")]),
+        )
+        .allowlists_nobody()
+    );
 }
 
 /// Acceptance: what the command writes is the value the server's own parser
@@ -311,86 +360,4 @@ fn the_emitted_pairs_do_not_depend_on_the_order_the_rows_arrive_in() {
         gate(codes(&backwards), registered(&backwards)).to_toml()
     );
     assert_eq!(emitted.lines().count(), 4);
-}
-
-/// What the command runs: the query, the connection the config names, and the
-/// timeout as `PGOPTIONS`.
-#[test]
-fn psql_is_run_against_the_configured_database_and_its_csv_is_read() {
-    let pool = pool_of(&test_key());
-    let dir = tempfile::tempdir().unwrap();
-    support::psql_answers(
-        dir.path(),
-        &format!("pool_id,application_code\n{pool},MUSA-0001\n"),
-    );
-
-    let config = applications_config(&support::fake_psql(), dir.path());
-    let found = Psql::new(&config).registered_codes().unwrap();
-    assert_eq!(
-        found,
-        Registered {
-            codes: codes(&[(pool, "MUSA-0001")]),
-            unreadable: 0,
-            contradicted: BTreeSet::new(),
-        }
-    );
-
-    // One argument per line, as the double writes them.
-    let argv = std::fs::read_to_string(support::recorded_argv(dir.path())).unwrap();
-    let after = |flag: &str| {
-        let mut lines = argv.lines().skip_while(|line| *line != flag);
-        lines.next();
-        lines.next().unwrap_or_default().to_string()
-    };
-    assert!(argv.lines().any(|line| line == "--csv"), "got: {argv}");
-    assert_eq!(after("--dbname"), "cexplorer");
-    assert_eq!(after("--username"), "metsuke_ro");
-    assert_eq!(after("--host"), dir.path().display().to_string());
-    assert!(
-        argv.contains("key=musashinet_incentives_application_code"),
-        "the metadata key is bound as a variable, not spliced: {argv}"
-    );
-    assert_eq!(
-        argv.lines().next(),
-        Some("PGOPTIONS=-c statement_timeout=7s")
-    );
-
-    // The metadata key and label are the query's variables, so it goes in as a
-    // script: tests/fixtures/psql.
-    let script = std::fs::read_to_string(support::recorded_script(dir.path())).unwrap();
-    assert!(
-        script.contains(":'key'") && script.contains(":label"),
-        "got: {script}"
-    );
-    assert!(
-        !script.contains("musashinet_incentives_application_code"),
-        "got: {script}"
-    );
-}
-
-/// A database that refused the query has not said the pool did not register,
-/// and emitting an allowlist from what it managed to print would drop pools.
-#[test]
-fn a_psql_that_fails_is_an_error_carrying_what_it_said() {
-    let dir = tempfile::tempdir().unwrap();
-    support::psql_fails(dir.path(), "FATAL: role does not exist");
-
-    let config = applications_config(&support::fake_psql(), dir.path());
-    let error = Psql::new(&config)
-        .registered_codes()
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("role does not exist"), "got: {error}");
-}
-
-#[test]
-fn a_psql_that_cannot_be_run_names_the_path() {
-    let dir = tempfile::tempdir().unwrap();
-    let missing = dir.path().join("no-psql-here");
-    let config = applications_config(&missing, dir.path());
-    let error = Psql::new(&config)
-        .registered_codes()
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("no-psql-here"), "got: {error}");
 }
