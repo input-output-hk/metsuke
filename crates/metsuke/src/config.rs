@@ -34,8 +34,7 @@ pub struct Config {
     #[serde(default = "default_sntp_timeout_secs")]
     pub sntp_timeout_secs: u64,
     /// The SQLite spool (ADR 0004). The default lives under the systemd
-    /// StateDirectory the hardened unit (ticket metsuke-4zo.12) will
-    /// configure.
+    /// StateDirectory the shipped units create (nix/agent-module.nix).
     #[serde(default = "default_spool_path")]
     pub spool_path: PathBuf,
     /// Spool size cap (semantics: `spool::SpoolConfig`).

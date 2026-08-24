@@ -1,0 +1,58 @@
+# Example hardened unit for a host that is not NixOS. Generated:
+# edit nix/unit.nix, then `nix build .#metsuke-unit` and commit
+# what it wrote here.
+#
+# Copy to /etc/systemd/system/metsuke.service, with the binary at
+# /usr/local/bin/metsuke and the configuration at
+# /etc/metsuke/config.toml.
+#
+# Optional, and what the NixOS module does: keep the signing key
+# unreadable to the service user by loading it as a credential. Add
+#   LoadCredential=signing-key:/etc/metsuke/pool.skey
+# append
+#   --signing-key ${CREDENTIALS_DIRECTORY}/signing-key
+# to ExecStart, and leave signing_key out of config.toml.
+
+[Unit]
+Description=metsuke telemetry agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/local/bin/metsuke --config /etc/metsuke/config.toml
+Restart=always
+RestartSec=30
+AmbientCapabilities=
+CapabilityBoundingSet=
+DynamicUser=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProcSubset=pid
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET
+RestrictAddressFamilies=AF_INET6
+RestrictAddressFamilies=AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+StateDirectory=metsuke
+SupplementaryGroups=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallFilter=~@resources
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

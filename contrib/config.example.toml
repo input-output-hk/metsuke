@@ -12,9 +12,8 @@ metrics_url = "http://127.0.0.1:12798/metrics"
 upload_url = "https://metsuke.example.org/v1/submit"
 
 # Path to the signing key (cardano-cli TextEnvelope: pool.skey or
-# pool.calidus.skey). The --signing-key flag overrides this; with systemd
-# LoadCredential, leave it unset and pass
-# --signing-key "${CREDENTIALS_DIRECTORY}/signing-key".
+# pool.calidus.skey). The --signing-key flag overrides this: with systemd, leave
+# this unset and pass the key as a credential — see contrib/metsuke.service.
 # signing_key = "/etc/metsuke/pool.skey"
 
 # Cadences: sampling and uploading are independent.

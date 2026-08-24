@@ -27,17 +27,53 @@
   };
 
   outputs =
-    inputs@{ flake-parts, ... }:
-    flake-parts.lib.mkFlake { inherit inputs; } {
+    inputs@{ self, flake-parts, ... }:
+    let
+      inherit (inputs.nixpkgs) lib;
       systems = [
         "x86_64-linux"
         "aarch64-linux"
       ];
+    in
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      inherit systems;
 
       imports = [
         inputs.treefmt-nix.flakeModule
         inputs.git-hooks.flakeModule
       ];
+
+      # A hydraJob, not a check: runNixOSTest wants /dev/kvm, and `nix flake
+      # check` has to stay runnable wherever the crates build. The end-to-end
+      # test (ticket metsuke-4zo.14) lands beside it for the same reason.
+      flake.hydraJobs.units = lib.genAttrs systems (
+        system:
+        import ./nix/unit-test.nix {
+          pkgs = inputs.nixpkgs.legacyPackages.${system};
+          agentModule = self.nixosModules.metsuke;
+          serverModule = self.nixosModules.metsuke-server;
+          metrics = ./crates/metsuke/tests/fixtures/recordings/leios-node.prom;
+          contribUnit = ./contrib/metsuke.service;
+          agent = self.packages.${system}.metsuke;
+        }
+      );
+
+      flake.nixosModules = {
+        metsuke =
+          { lib, pkgs, ... }:
+          {
+            imports = [ ./nix/agent-module.nix ];
+            services.metsuke.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.metsuke;
+          };
+        metsuke-server =
+          { lib, pkgs, ... }:
+          {
+            imports = [ ./nix/server-module.nix ];
+            services.metsuke-server.package =
+              lib.mkDefault
+                self.packages.${pkgs.stdenv.hostPlatform.system}.metsuke-server;
+          };
+      };
 
       perSystem =
         {
@@ -123,19 +159,108 @@
                 cargoExtraArgs = "--package ${crate}";
               }
             );
+
+          agentSrc = crateSrc [
+            ./crates/metsuke-wire
+            ./crates/metsuke
+          ];
+
+          agentArgs = binaryArgs // {
+            src = agentSrc;
+            cargoExtraArgs = "--package metsuke";
+          };
+
+          # The agent as one file an operator drops on a host that is not
+          # NixOS. Cross rather than the native toolchain even for this
+          # system's own architecture: musl is a different libc, so both
+          # targets are the same code path.
+          staticAgent =
+            crossPkgs:
+            let
+              crossCrane = inputs.crane.mkLib crossPkgs;
+              # This toolchain has to compile the dependencies again, so the
+              # native artifacts come out.
+              staticArgs = removeAttrs agentArgs [ "cargoArtifacts" ] // {
+                # nixpkgs links its musl targets dynamically, so rustc's own
+                # musl default is turned off before it reaches here. Asking
+                # for it back is what leaves no interpreter in the binary.
+                CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
+              };
+            in
+            crossCrane.buildPackage (
+              staticArgs
+              // {
+                cargoArtifacts = crossCrane.buildDepsOnly staticArgs;
+              }
+            );
+
+          unit = import ./nix/unit.nix;
+
+          # One line per list element, as NixOS renders too: SystemCallFilter's
+          # leading `~` inverts the line it opens, so a joined list would deny
+          # nothing.
+          directives = pkgs.lib.generators.toKeyValue { listsAsDuplicateKeys = true; };
+
+          contribUnit = pkgs.writeText "metsuke.service" ''
+            # Example hardened unit for a host that is not NixOS. Generated:
+            # edit nix/unit.nix, then `nix build .#metsuke-unit` and commit
+            # what it wrote here.
+            #
+            # Copy to /etc/systemd/system/metsuke.service, with the binary at
+            # /usr/local/bin/metsuke and the configuration at
+            # /etc/metsuke/config.toml.
+            #
+            # Optional, and what the NixOS module does: keep the signing key
+            # unreadable to the service user by loading it as a credential. Add
+            #   LoadCredential=signing-key:/etc/metsuke/pool.skey
+            # append
+            #   --signing-key ''${CREDENTIALS_DIRECTORY}/signing-key
+            # to ExecStart, and leave signing_key out of config.toml.
+
+            [Unit]
+            Description=metsuke telemetry agent
+            After=network-online.target
+            Wants=network-online.target
+
+            [Service]
+            ExecStart=/usr/local/bin/metsuke --config /etc/metsuke/config.toml
+            Restart=always
+            RestartSec=${toString unit.restartSecs}
+            ${directives (
+              unit.hardening {
+                stateDirectory = "metsuke";
+                addressFamilies = unit.agentAddressFamilies;
+              }
+            )}
+            [Install]
+            WantedBy=multi-user.target
+          '';
+
+          # What "static" has to mean for the operator dropping this on a host
+          # whose libc is not ours: no interpreter to find and nothing to load.
+          # readelf reads any architecture, so one derivation covers both.
+          linksNothing =
+            agent:
+            pkgs.runCommand "${agent.name}-links-nothing"
+              {
+                nativeBuildInputs = [ pkgs.binutils ];
+              }
+              ''
+                readelf --program-headers --dynamic ${agent}/bin/metsuke > sections
+                if grep -Eq 'INTERP|NEEDED' sections; then
+                  echo "${agent}/bin/metsuke is not static:"
+                  grep -E 'INTERP|NEEDED' sections
+                  exit 1
+                fi
+                touch $out
+              '';
         in
         {
           packages = {
-            metsuke = craneLib.buildPackage (
-              binaryArgs
-              // {
-                src = crateSrc [
-                  ./crates/metsuke-wire
-                  ./crates/metsuke
-                ];
-                cargoExtraArgs = "--package metsuke";
-              }
-            );
+            metsuke = craneLib.buildPackage agentArgs;
+            metsuke-unit = contribUnit;
+            metsuke-static-x86_64-linux = staticAgent pkgs.pkgsCross.musl64;
+            metsuke-static-aarch64-linux = staticAgent pkgs.pkgsCross.aarch64-multiplatform-musl;
             metsuke-server = craneLib.buildPackage (
               binaryArgs
               // {
@@ -162,6 +287,15 @@
 
           checks = {
             inherit (config.packages) metsuke metsuke-server;
+
+            static-x86_64-linux = linksNothing config.packages.metsuke-static-x86_64-linux;
+            static-aarch64-linux = linksNothing config.packages.metsuke-static-aarch64-linux;
+
+            contrib-unit = pkgs.runCommand "contrib-unit-is-current" { } ''
+              diff -u ${./contrib/metsuke.service} ${contribUnit} \
+                || { echo "contrib/metsuke.service is stale; its header says how"; exit 1; }
+              touch $out
+            '';
 
             clippy = craneLib.cargoClippy (
               commonArgs
