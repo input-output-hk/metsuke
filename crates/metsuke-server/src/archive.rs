@@ -191,19 +191,28 @@ pub trait List {
     }
 }
 
-/// The inverse of `Store::store`, read by `verify::audit` and, once it
-/// exists, the download endpoint (ticket metsuke-4zo.10). Separate from
+/// The inverse of `Store::store`, read by `verify::audit`. Separate from
 /// `Store` because storing and reading back are different privileges — the
 /// ingest path never fetches.
 pub trait Fetch {
     fn fetch(&self, key: &str) -> Result<FetchedObject, ArchiveError>;
 }
 
+/// An object's bytes alone, which is all the download endpoint hands back: a
+/// developer verifies the signature over these, so anything but the stored
+/// bytes verbatim is unverifiable. Separate from `Fetch` because the metadata
+/// `Fetch` reconciles is what a filesystem archive cannot answer, and
+/// downloading does not need it.
+pub trait Bytes {
+    fn bytes(&self, key: &str) -> Result<Vec<u8>, ArchiveError>;
+}
+
 /// Objects as files under a root directory, keyed exactly as S3 keys them.
 ///
-/// Implements no `Fetch`: the metadata would need a sidecar, and a sidecar
-/// under the same prefix comes back from `for_each_key` as an object whose key
-/// nothing can parse.
+/// Implements `Bytes` but not `Fetch`: the metadata `Fetch` answers would need
+/// a sidecar, and a sidecar under the same prefix comes back from
+/// `for_each_key` as an object whose key nothing can parse. The bytes need no
+/// sidecar, so a download serves off either archive kind.
 pub struct FilesystemArchive {
     root: PathBuf,
 }
@@ -266,6 +275,22 @@ impl Store for FilesystemArchive {
             fs::write(&path, submission.wire_bytes)
         };
         write().map_err(|source| ArchiveError::Io { key, source })
+    }
+}
+
+impl Bytes for FilesystemArchive {
+    fn bytes(&self, key: &str) -> Result<Vec<u8>, ArchiveError> {
+        // Parsed before it is joined: a key that is not an object name is the
+        // only way a path outside the root could be reached, and `parse`
+        // admits nothing but `v1/<pool>/<date>/<file>`.
+        let name = ObjectName::parse(key).map_err(|error| ArchiveError::Fetch {
+            key: key.to_string(),
+            reason: error.to_string(),
+        })?;
+        fs::read(self.root.join(name.to_key())).map_err(|error| ArchiveError::Fetch {
+            key: key.to_string(),
+            reason: error.to_string(),
+        })
     }
 }
 

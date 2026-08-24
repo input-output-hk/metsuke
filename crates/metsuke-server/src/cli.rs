@@ -21,7 +21,7 @@ pub struct Args {
 
 #[derive(Debug, PartialEq)]
 pub enum Command {
-    /// Everything that needs the archive and the counter database opened.
+    /// Everything that needs the archive and the index opened.
     Archive(ArchiveCommand),
     /// Emit the allowlist. Its own variant rather than a third
     /// `ArchiveCommand` because it reads neither store, and an operator

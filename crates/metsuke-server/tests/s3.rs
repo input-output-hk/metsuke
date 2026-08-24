@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use metsuke_server::archive::{Fetch, List, ObjectName, Store, StoredSubmission};
+use metsuke_server::archive::{Bytes, Fetch, List, ObjectName, Store, StoredSubmission};
 use metsuke_server::authority::{ColdKey, ColdKeyOrCalidus};
 use metsuke_server::calidus::CalidusKeys;
 use metsuke_server::config::S3Config;
@@ -19,8 +19,8 @@ use rusty_s3::Credentials;
 
 mod support;
 use support::{
-    MAX_DECOMPRESSED_BYTES, TEST_TTL_SECS, UnavailableDirectory, calidus_key, counter_store,
-    envelope_for, nonzero_u32, nonzero_u64, pool_of, seal, stored_submission, test_key, test_now,
+    MAX_DECOMPRESSED_BYTES, TEST_TTL_SECS, UnavailableDirectory, calidus_key, envelope_for,
+    index_store, nonzero_u32, nonzero_u64, pool_of, seal, stored_submission, test_key, test_now,
 };
 
 /// One request the fake endpoint received.
@@ -354,6 +354,48 @@ fn a_stored_object_fetches_back_and_verifies() {
     assert_eq!(envelope.pool_id, pool_of(&test_key()));
 }
 
+/// The download route reads the bucket through `Bytes`, which asks for the
+/// body and none of the metadata `Fetch` reconciles.
+#[test]
+fn an_object_downloads_as_the_bytes_that_were_put() {
+    let endpoint = FakeS3::start(Vec::new());
+    let (wire_bytes, signature) = submission(COUNTER);
+    let submission = stored(COUNTER, signature, &wire_bytes);
+    let archive = endpoint.archive(1);
+    archive.store(&submission).unwrap();
+
+    assert_eq!(
+        archive.bytes(&submission.object_key()).unwrap(),
+        wire_bytes,
+        "a developer verifies the signature over exactly these bytes"
+    );
+}
+
+/// The guard `Bytes for S3Archive` states: nothing but a v1 object key is
+/// signed into a URL, so a key a client invented never reaches the bucket at
+/// all.
+#[test]
+fn bytes_for_a_key_that_is_not_an_object_name_never_reaches_the_bucket() {
+    let endpoint = FakeS3::start(Vec::new());
+    let archive = endpoint.archive(1);
+
+    let error = archive
+        .bytes("v1/../../etc/passwd")
+        .unwrap_err()
+        .to_string();
+
+    assert!(
+        error.contains("is not a v1 archive object key"),
+        "the guard must be what refused it, got: {error}"
+    );
+    let urls: Vec<String> = endpoint
+        .requests()
+        .iter()
+        .map(|seen| seen.url.clone())
+        .collect();
+    assert!(urls.is_empty(), "the key was signed and sent: {urls:?}");
+}
+
 /// What an operator runs over the whole bucket: every object fetched and
 /// re-verified, and anything that did not named.
 #[test]
@@ -549,18 +591,15 @@ fn a_bucket_listing_seeds_the_rebuild() {
     let listed = listed_keys();
     let endpoint = FakeS3::start(vec![(200, listing(&listed, None))]);
     let dir = tempfile::tempdir().unwrap();
-    let mut counters = counter_store(dir.path());
-    let summary = rebuild(&endpoint.archive(1), &mut counters, EmptyArchive::Refuse).unwrap();
+    let mut index = index_store(dir.path());
+    let summary = rebuild(&endpoint.archive(1), &mut index, EmptyArchive::Refuse).unwrap();
 
     assert_eq!(summary.objects, listed.len());
     let highest = listed
         .iter()
         .map(|key| ObjectName::parse(key).unwrap().counter)
         .max();
-    assert_eq!(
-        counters.last_counter(pool_of(&test_key())).unwrap(),
-        highest
-    );
+    assert_eq!(index.last_counter(pool_of(&test_key())).unwrap(), highest);
 }
 
 /// An endpoint that stays truncated forever, stopped by `list_max_pages`.

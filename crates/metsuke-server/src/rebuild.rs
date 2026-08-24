@@ -8,7 +8,7 @@ use metsuke_wire::envelope::PoolId;
 
 use crate::archive::{ArchiveError, List, ObjectName, ObjectNameError};
 use crate::cli::ALLOW_EMPTY;
-use crate::counters::{CounterError, CounterStore, Reservation};
+use crate::index::{Index, IndexError, Reservation};
 
 /// What a listing with no objects in it means. A mistyped or unmounted
 /// `archive.root` and a bucket that has never been written to list the same
@@ -45,7 +45,7 @@ pub enum RebuildError {
     #[error(transparent)]
     ObjectName(#[from] ObjectNameError),
     #[error(transparent)]
-    Counters(#[from] CounterError),
+    Counters(#[from] IndexError),
     #[error(
         "{archive} listed no objects, so every replay counter would stay unseeded \
          (pass {ALLOW_EMPTY} if that archive really is empty)"
@@ -57,7 +57,7 @@ pub enum RebuildError {
 /// `reserve` (see `SeededPool::seeded`).
 pub fn rebuild(
     archive: &impl List,
-    counters: &mut CounterStore,
+    index: &mut Index,
     empty: EmptyArchive,
 ) -> Result<RebuiltIndex, RebuildError> {
     let mut objects = 0;
@@ -65,6 +65,9 @@ pub fn rebuild(
     archive.for_each_key(|key| -> Result<(), RebuildError> {
         objects += 1;
         let name = ObjectName::parse(key)?;
+        // Every object becomes a row, where only the newest per pool seeds a
+        // counter: the listing serves the whole corpus.
+        index.record(&name)?;
         newest
             .entry(name.pool_id)
             .and_modify(|held| {
@@ -84,7 +87,7 @@ pub fn rebuild(
     newest.sort_by_key(|name| name.pool_id.to_bech32());
     let mut pools = Vec::with_capacity(newest.len());
     for name in newest {
-        let seeded = match counters.reserve(name.pool_id, name.counter, name.timestamp)? {
+        let seeded = match index.reserve(name.pool_id, name.counter, name.timestamp)? {
             Reservation::Reserved(reserved) => {
                 reserved.commit()?;
                 true

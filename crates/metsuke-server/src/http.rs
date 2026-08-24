@@ -1,8 +1,9 @@
-//! The HTTP surface: one POST route, its headers decoded into an
-//! `authority::Signed`, and the status the intake's answer implies. TLS
-//! belongs to the reverse proxy in front of this (endpoint-protection.md,
-//! Transport), as does any IP-keyed limit (same doc, cost asymmetry and abuse
-//! handling) — this layer knows only pool ids.
+//! The HTTP surface: the POST route submissions arrive on, whose headers
+//! decode into an `authority::Signed`, and the two GET routes a developer
+//! pulls the archive back out through (`developer`). TLS belongs to the
+//! reverse proxy in front of this (endpoint-protection.md, Transport), as does
+//! any IP-keyed limit (same doc, cost asymmetry and abuse handling) — this
+//! layer knows only pool ids and one developer credential.
 //!
 //! What the proxy must also do: buffer each request body in full before
 //! forwarding it. `serve` reads bodies on the accepting thread and tiny_http
@@ -20,12 +21,23 @@ use metsuke_wire::journal::{ERR, WARNING};
 use time::OffsetDateTime;
 use tiny_http::{Header, Method, Request, Response, Server};
 
-use crate::archive::Store;
+use crate::archive::{Bytes, Store};
 use crate::authority::{Authority, Signed};
+use crate::developer::{self, Developer, Filters, Unauthorized};
+use crate::index::IndexError;
 use crate::intake::{IngestError, Intake, Rejection};
 
-/// The one route this server answers.
+/// Where submissions arrive.
 pub const SUBMIT_PATH: &str = "/v1/submit";
+
+/// The developer routes: one page of the index, and one object's bytes.
+pub const SUBMISSIONS_PATH: &str = "/v1/submissions";
+pub const OBJECT_PATH: &str = "/v1/object";
+
+/// The query field naming the object a download wants. A field rather than a
+/// path segment, because an object key holds `/` and would otherwise have to
+/// be reassembled from the route.
+pub const KEY_FIELD: &str = "key";
 
 /// The identity a request claims. Holding one means the three ADR-0001
 /// headers were present and well formed; whether the signature verifies is
@@ -123,39 +135,175 @@ pub fn status_for(error: &IngestError) -> u16 {
 /// error once, so a second `recv` would block on an empty queue forever —
 /// logging and continuing would leave a process that looks healthy to systemd
 /// and accepts nothing. Failing out is what turns it back into a restart.
-pub fn serve<A: Store, K: Authority>(
+pub fn serve<A: Store + Bytes, K: Authority>(
     server: &Server,
     intake: &mut Intake<A, K>,
+    developer: &Developer,
 ) -> Result<std::convert::Infallible, std::io::Error> {
     loop {
         let mut request = server.recv()?;
-        let answer = route(intake, &mut request);
+        let answer = route(intake, developer, &mut request);
         respond(request, answer);
     }
 }
 
 /// What the server writes back. `claimed` is the pool the headers named, if
 /// they got that far: without it a log line cannot say whose uploads are not
-/// landing.
+/// landing. `headers` carries what a status needs beside the body, which so
+/// far is the 401's challenge.
 struct Answer {
     status: u16,
     content_type: &'static str,
     body: Vec<u8>,
     claimed: Option<PoolId>,
+    headers: Vec<(&'static str, String)>,
 }
 
-fn route<A: Store, K: Authority>(intake: &mut Intake<A, K>, request: &mut Request) -> Answer {
-    if request.method() != &Method::Post {
-        return refuse(None, 405, format!("{SUBMIT_PATH} takes POST"));
-    }
-    let path = request.url().split('?').next().unwrap_or_default();
-    if path != SUBMIT_PATH {
-        return refuse(
+fn route<A: Store + Bytes, K: Authority>(
+    intake: &mut Intake<A, K>,
+    developer: &Developer,
+    request: &mut Request,
+) -> Answer {
+    let url = request.url().to_string();
+    let path = url.split('?').next().unwrap_or_default().to_string();
+    let method = request.method().clone();
+    match path.as_str() {
+        // A known route reached with the wrong method is named, because a
+        // client that guessed the method is not a client at the wrong address.
+        SUBMIT_PATH => match method {
+            Method::Post => submit(intake, request),
+            _ => refuse(None, 405, format!("{SUBMIT_PATH} takes POST")),
+        },
+        // Authentication comes before the method check: answering 405 first
+        // would confirm the route exists to a client that never presented a
+        // credential.
+        SUBMISSIONS_PATH | OBJECT_PATH => {
+            if let Err(error) = developer.authorize(authorization(request).as_deref()) {
+                return challenge(&path, &error);
+            }
+            if method != Method::Get {
+                return refuse(None, 405, format!("{path} takes GET"));
+            }
+            match path.as_str() {
+                SUBMISSIONS_PATH => listing(intake, developer, &url),
+                _ => object(intake, &url),
+            }
+        }
+        _ => refuse(
             None,
             404,
             format!("no route {path}, submissions go to {SUBMIT_PATH}"),
-        );
+        ),
     }
+}
+
+fn authorization(request: &Request) -> Option<String> {
+    request
+        .headers()
+        .iter()
+        .find(|header| header.field.equiv("authorization"))
+        .map(|header| header.value.as_str().to_string())
+}
+
+/// Everything a 401 says to the client. One string for every reason, so the
+/// body cannot tell a wrong password from a missing header.
+pub const UNAUTHORIZED_BODY: &str = "credentials required";
+
+/// The 401 both developer routes answer. Carries the challenge, so a browser
+/// or `curl -u` knows what to send, and puts the reason in the log alone.
+fn challenge(path: &str, error: &Unauthorized) -> Answer {
+    let mut answer = refuse_withholding(
+        None,
+        401,
+        UNAUTHORIZED_BODY.to_string(),
+        Some(format!("{path}: {error}")),
+    );
+    answer.headers.push((
+        "www-authenticate",
+        format!("Basic realm=\"{}\", charset=\"UTF-8\"", developer::REALM),
+    ));
+    answer
+}
+
+/// One page of the index as JSON. Bounded by `list_max_rows`, and the answer
+/// says whether the bound cut it off (`index::Listing`).
+fn listing<A: Store + Bytes, K: Authority>(
+    intake: &Intake<A, K>,
+    developer: &Developer,
+    url: &str,
+) -> Answer {
+    let filters = match Filters::parse(url) {
+        Ok(filters) => filters,
+        Err(error) => return refuse(None, 400, error.to_string()),
+    };
+    match intake
+        .index()
+        .submissions(&filters.prefix, &filters.after, developer.list_max_rows())
+    {
+        Ok(listing) => Answer {
+            status: 200,
+            content_type: "application/json",
+            body: developer::page(&listing).into_bytes(),
+            claimed: None,
+            headers: Vec::new(),
+        },
+        Err(error) => index_failed(&error),
+    }
+}
+
+/// How a failed index read is answered. A row `record` never wrote is not
+/// something a retry repairs (`index::IndexError::ObjectName`), so it earns a
+/// 500 where a database this process cannot reach earns a 503.
+fn index_failed(error: &IndexError) -> Answer {
+    let status = match error {
+        IndexError::ObjectName(_) => 500,
+        IndexError::Sqlite(_) | IndexError::Migrate(_) => 503,
+    };
+    refuse_withholding(
+        None,
+        status,
+        "the index cannot be read".to_string(),
+        Some(error.to_string()),
+    )
+}
+
+/// One object, as the bytes that were archived. Asks `index::Index::holds`
+/// before the archive.
+fn object<A: Store + Bytes, K: Authority>(intake: &Intake<A, K>, url: &str) -> Answer {
+    let key = match developer::query_value(url, KEY_FIELD) {
+        Ok(key) => key,
+        Err(error) => return refuse(None, 400, error.to_string()),
+    };
+    if key.is_empty() {
+        return refuse(None, 400, format!("name the object in ?{KEY_FIELD}="));
+    }
+    match intake.index().holds(&key) {
+        Err(error) => return index_failed(&error),
+        Ok(false) => return refuse(None, 404, "no such object".to_string()),
+        Ok(true) => (),
+    }
+    match intake.archive().bytes(&key) {
+        Ok(bytes) => Answer {
+            status: 200,
+            // RFC 8878: the body is the zstd the pool signed, so a developer
+            // decompresses it themselves.
+            content_type: "application/zstd",
+            body: bytes,
+            claimed: None,
+            headers: Vec::new(),
+        },
+        Err(error) => unavailable("the archive cannot be read", &error.to_string()),
+    }
+}
+
+/// A 503 whose body says which store failed and whose log line says how. The
+/// detail names the bucket, the endpoint or the database file, and none of
+/// that is a client's to read.
+fn unavailable(reason: &str, withheld: &str) -> Answer {
+    refuse_withholding(None, 503, reason.to_string(), Some(withheld.to_string()))
+}
+
+fn submit<A: Store, K: Authority>(intake: &mut Intake<A, K>, request: &mut Request) -> Answer {
     let headers = match SubmissionHeaders::decode(request.headers()) {
         Ok(headers) => headers,
         Err(error) => return refuse(None, 400, error.to_string()),
@@ -177,6 +325,7 @@ fn route<A: Store, K: Authority>(intake: &mut Intake<A, K>, request: &mut Reques
             content_type: "application/json",
             body: serde_json::to_vec(&ack).expect("an Ack of two strings serializes"),
             claimed,
+            headers: Vec::new(),
         },
         Err(error) => refuse_withholding(
             claimed,
@@ -255,6 +404,7 @@ fn refuse_withholding(
         content_type: "text/plain; charset=utf-8",
         body: reason.into_bytes(),
         claimed,
+        headers: Vec::new(),
     }
 }
 
@@ -269,9 +419,15 @@ fn claimant(claimed: Option<PoolId>) -> String {
 fn respond(request: Request, answer: Answer) {
     let content_type = Header::from_bytes("content-type", answer.content_type)
         .expect("a static content type is a valid header");
-    let response = Response::from_data(answer.body)
+    let mut response = Response::from_data(answer.body)
         .with_status_code(answer.status)
         .with_header(content_type);
+    for (field, value) in &answer.headers {
+        response.add_header(
+            Header::from_bytes(field.as_bytes(), value.as_bytes())
+                .expect("a header this server writes is well formed"),
+        );
+    }
     if let Err(error) = request.respond(response) {
         // tiny_http answers `Ok` for a client that merely hung up, so this is
         // a real write failure. On an accepted submission the bytes are

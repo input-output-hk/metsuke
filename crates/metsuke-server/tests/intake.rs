@@ -2,11 +2,11 @@
 //! archived object and an ACK out, and every check in the ADR-0002 chain
 //! rejecting on its own with its own reason.
 
-use metsuke_server::archive::FilesystemArchive;
+use metsuke_server::archive::{FilesystemArchive, ObjectName};
 use metsuke_server::authority::{ColdKey, ColdKeyOrCalidus, Refusal};
 use metsuke_server::calidus::{CalidusKeys, Resolution};
 use metsuke_server::config::IngestConfig;
-use metsuke_server::counters::CounterStore;
+use metsuke_server::index::Index;
 use metsuke_server::intake::{IngestError, Intake, Rejection};
 use metsuke_wire::envelope::{Envelope, PoolId, SCHEMA_VERSION, SigningKey};
 use time::OffsetDateTime;
@@ -14,7 +14,7 @@ use time::OffsetDateTime;
 mod support;
 use support::{
     CannedDirectory, FailingArchive, TEST_TTL_SECS, UnavailableDirectory, calidus_authority,
-    calidus_key, counter_store, envelope_at, envelope_for, nonzero_u32, nonzero_u64, other_key,
+    calidus_key, envelope_at, envelope_for, index_store, nonzero_u32, nonzero_u64, other_key,
     permissive_config, pool_of, registered_pool, registration, rotated_calidus_key, seal,
     stored_submission, submission, test_key, test_now,
 };
@@ -23,9 +23,9 @@ use support::{
 /// to. The directory is returned because dropping it deletes the archive.
 fn intake_with(config: IngestConfig) -> (Intake<FilesystemArchive, ColdKey>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let counters = counter_store(dir.path());
+    let index = index_store(dir.path());
     let archive = FilesystemArchive::new(&dir.path().join("archive"));
-    (Intake::new(config, counters, archive, ColdKey), dir)
+    (Intake::new(config, index, archive, ColdKey), dir)
 }
 
 fn intake_for(pools: &[PoolId]) -> (Intake<FilesystemArchive, ColdKey>, tempfile::TempDir) {
@@ -73,6 +73,40 @@ fn valid_submission_is_archived_raw_and_acked() {
         .object_key();
     let stored = std::fs::read(dir.path().join("archive").join(&key_path)).unwrap();
     assert_eq!(stored, body, "archived object must be the received bytes");
+}
+
+// The developer listing serves the index, not a bucket scan (ADR 0005), so
+// an accepted submission has to leave a row behind as well as an object.
+#[test]
+fn an_accepted_submission_is_recorded_in_the_index() {
+    let key = test_key();
+    let (mut intake, _dir) = intake_for(&[pool_of(&key)]);
+    let envelope = envelope_for(&key, 4);
+
+    submit(&mut intake, &key, &envelope).unwrap();
+
+    let listing = intake.index().submissions("", "", nonzero_u32(10)).unwrap();
+    assert_eq!(
+        listing.objects,
+        vec![ObjectName {
+            pool_id: pool_of(&key),
+            counter: envelope.counter,
+            timestamp: envelope.timestamp,
+        }]
+    );
+}
+
+// A refused submission archives nothing, so it must index nothing either: a
+// listed key the bucket does not hold is a download that cannot answer.
+#[test]
+fn a_rejected_submission_records_no_row() {
+    let key = test_key();
+    let (mut intake, _dir) = intake_for(&[pool_of(&other_key())]);
+
+    submit(&mut intake, &key, &envelope_for(&key, 1)).unwrap_err();
+
+    let listing = intake.index().submissions("", "", nonzero_u32(10)).unwrap();
+    assert!(listing.objects.is_empty(), "got: {:?}", listing.objects);
 }
 
 // A pool nobody onboarded is refused before any cryptography runs.
@@ -310,11 +344,11 @@ fn timestamp_outside_the_window_is_rejected() {
 fn archive_failure_is_not_a_rejection_and_leaves_the_counter_alone() {
     let key = test_key();
     let dir = tempfile::tempdir().unwrap();
-    let counters_path = dir.path().join("counters.sqlite");
-    let counters = CounterStore::open(&counters_path).unwrap();
+    let index_path = dir.path().join("index.sqlite");
+    let index = Index::open(&index_path).unwrap();
     let mut intake = Intake::new(
         permissive_config(&[pool_of(&key)]),
-        counters,
+        index,
         FailingArchive {
             reason: "archive is down",
         },
@@ -334,11 +368,21 @@ fn archive_failure_is_not_a_rejection_and_leaves_the_counter_alone() {
         matches!(error, IngestError::Archive(_)),
         "expected an availability error, got {error:?}"
     );
-    let recorded = CounterStore::open(&counters_path)
-        .unwrap()
-        .last_counter(pool_of(&key))
-        .unwrap();
-    assert_eq!(recorded, None, "an unstored batch must not spend a counter");
+    let reopened = Index::open(&index_path).unwrap();
+    assert_eq!(
+        reopened.last_counter(pool_of(&key)).unwrap(),
+        None,
+        "an unstored batch must not spend a counter"
+    );
+    // A row for an object the bucket does not hold would be a listed key whose
+    // download cannot answer.
+    assert!(
+        reopened
+            .submissions("", "", nonzero_u32(10))
+            .unwrap()
+            .objects
+            .is_empty()
+    );
 }
 
 // The object key is what makes the bucket browsable by pool and day
@@ -370,11 +414,11 @@ fn calidus_intake(
     tempfile::TempDir,
 ) {
     let dir = tempfile::tempdir().unwrap();
-    let counters = counter_store(dir.path());
+    let index = index_store(dir.path());
     let archive = FilesystemArchive::new(&dir.path().join("archive"));
     let intake = Intake::new(
         permissive_config(pools),
-        counters,
+        index,
         archive,
         calidus_authority(directory),
     );
@@ -473,10 +517,10 @@ fn a_rotated_calidus_key_is_accepted_once_the_resolution_ages_out() {
 fn a_directory_that_cannot_answer_is_not_a_rejection() {
     let pool = pool_of(&test_key());
     let dir = tempfile::tempdir().unwrap();
-    let counters = counter_store(dir.path());
+    let index = index_store(dir.path());
     let mut intake = Intake::new(
         permissive_config(&[pool]),
-        counters,
+        index,
         FilesystemArchive::new(&dir.path().join("archive")),
         ColdKeyOrCalidus::new(CalidusKeys::new(
             UnavailableDirectory {

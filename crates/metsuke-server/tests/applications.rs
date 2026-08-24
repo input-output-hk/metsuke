@@ -11,7 +11,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod support;
 use support::{
-    allowlist_toml, calidus_key, example_config, other_key, pool_of, rotated_calidus_key, test_key,
+    allowlist, allowlist_toml, calidus_key, example_config, other_key, pool_of,
+    rotated_calidus_key, test_key,
 };
 
 fn code(text: &str) -> ApplicationCode {
@@ -321,7 +322,10 @@ fn the_emitted_pairs_load_as_the_servers_allowlist() {
     let spliced = format!(
         "{example}\n[ingest.allowlist]\n{emitted}",
         example = example_config().replace(
-            &format!("allowlist = {}\n", allowlist_toml(&[pool_of(&test_key())])),
+            &format!(
+                "allowlist = {}\n",
+                allowlist_toml(&allowlist(&[pool_of(&test_key())]))
+            ),
             "",
         ),
     );

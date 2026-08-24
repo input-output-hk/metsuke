@@ -3,13 +3,13 @@
 //! reading it back must be one bijection, and a key that is not one must say
 //! so rather than parse into a plausible wrong pool.
 
-use metsuke_server::archive::{FilesystemArchive, List, ObjectName};
+use metsuke_server::archive::{Bytes, FilesystemArchive, List, ObjectName, Store};
 use metsuke_wire::envelope::{PoolId, SigningKey};
 use proptest::prelude::*;
 use time::{OffsetDateTime, UtcOffset};
 
 mod support;
-use support::{pool_of, test_key};
+use support::{envelope_for, pool_of, seal, stored_submission, test_key, test_now};
 
 fn name_at(pool_id: PoolId, counter: u64, unix: i64) -> ObjectName {
     ObjectName {
@@ -125,6 +125,60 @@ fn the_filesystem_archive_lists_what_it_stored() {
     let mut listed = archive.keys().unwrap();
     listed.sort();
     assert_eq!(listed, written);
+}
+
+/// What the download route answers with, and why it must be unchanged:
+/// `archive::Bytes`.
+#[test]
+fn an_object_reads_back_as_the_bytes_that_were_stored() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = FilesystemArchive::new(dir.path());
+    let key = test_key();
+    let body = b"the compressed, signed body";
+    let stored = stored_submission(
+        &key,
+        3,
+        test_now(),
+        seal(&key, &envelope_for(&key, 3)).1,
+        body,
+    );
+    archive.store(&stored).unwrap();
+
+    assert_eq!(archive.bytes(&stored.object_key()).unwrap(), body);
+}
+
+/// A key the archive does not hold is an error naming it, not an empty body a
+/// developer would take for an empty submission.
+#[test]
+fn bytes_for_a_key_the_archive_does_not_hold_names_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = FilesystemArchive::new(dir.path());
+    let missing = name_at(pool_of(&test_key()), 1, 1_755_000_000).to_key();
+
+    let error = archive.bytes(&missing).unwrap_err().to_string();
+
+    assert!(error.contains(&missing), "got: {error}");
+}
+
+/// The guard `Bytes for FilesystemArchive` states: a key is parsed before it
+/// is joined to the root. `v1/../../secret` has the four segments a key has
+/// and would read a file outside the archive.
+#[test]
+fn bytes_for_a_key_that_climbs_out_of_the_root_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("archive");
+    // The schema folder a live archive always has: path resolution walks every
+    // component, so `..` only climbs out of a directory that exists.
+    std::fs::create_dir_all(root.join(metsuke_server::archive::KEY_PREFIX)).unwrap();
+    std::fs::write(dir.path().join("secret"), b"not the archive's").unwrap();
+    let archive = FilesystemArchive::new(&root);
+
+    let error = archive.bytes("v1/../../secret").unwrap_err().to_string();
+
+    assert!(
+        error.contains("is not a v1 archive object key"),
+        "the guard must be what refused it, got: {error}"
+    );
 }
 
 /// The half of `List::for_each_key` its callers rely on: a visitor that fails

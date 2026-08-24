@@ -15,8 +15,10 @@ use metsuke_server::applications::ApplicationCode;
 use metsuke_server::archive::{ArchiveError, List, Store, StoredSubmission};
 use metsuke_server::authority::{ColdKeyOrCalidus, Signed};
 use metsuke_server::calidus::{CalidusKeys, Directory, DirectoryError};
-use metsuke_server::config::{AbsolutePath, CalidusConfig, IngestConfig};
-use metsuke_server::counters::CounterStore;
+use metsuke_server::config::{
+    AbsolutePath, ApplicationsConfig, CalidusConfig, DeveloperConfig, IngestConfig,
+};
+use metsuke_server::index::Index;
 use metsuke_wire::envelope::{
     self, Envelope, PoolId, SCHEMA_VERSION, Sample, Signature, SigningKey, VerifyingKey,
 };
@@ -117,12 +119,104 @@ pub fn allowlist(allowed: &[PoolId]) -> BTreeMap<PoolId, ApplicationCode> {
 }
 
 /// The same allowlist as the inline TOML table a config file holds.
-pub fn allowlist_toml(allowed: &[PoolId]) -> String {
-    let pairs: Vec<String> = allowlist(allowed)
+pub fn allowlist_toml(allowed: &BTreeMap<PoolId, ApplicationCode>) -> String {
+    let pairs: Vec<String> = allowed
         .iter()
         .map(|(pool_id, code)| format!("{pool_id} = \"{code}\""))
         .collect();
     format!("{{ {} }}", pairs.join(", "))
+}
+
+/// The config file a spawned server reads, section by section.
+/// `server_toml` is what the suite runs on, and a test exercising one section
+/// replaces that field alone. Sections are rendered from the structs the
+/// server loads them back into, and no config field has a default, so a field
+/// added to `config.rs` and not to a renderer here stops every binary test at
+/// load rather than passing on a value nobody set.
+pub struct ServerToml {
+    pub listen: String,
+    pub index_path: PathBuf,
+    pub archive: String,
+    pub ingest: String,
+    pub calidus: String,
+    pub developer: String,
+    /// The one optional section (`ServerConfig::applications`).
+    pub applications: Option<String>,
+}
+
+/// A whole config over stores under `dir`, on a kernel-chosen port, with every
+/// limit wide enough that only the check under test can fire.
+pub fn server_toml(dir: &Path, allowed: &[PoolId]) -> ServerToml {
+    ServerToml {
+        listen: "127.0.0.1:0".to_string(),
+        index_path: dir.join("index.sqlite"),
+        archive: filesystem_archive(&dir.join("archive")),
+        ingest: ingest_toml(&permissive_config(allowed)),
+        calidus: calidus_toml(dir),
+        developer: developer_toml(dir),
+        applications: None,
+    }
+}
+
+impl ServerToml {
+    pub fn render(&self) -> String {
+        let sections = [
+            Some(format!(
+                "listen = \"{}\"\nindex_path = \"{}\"",
+                self.listen,
+                self.index_path.display()
+            )),
+            Some(self.archive.clone()),
+            Some(self.ingest.clone()),
+            Some(self.calidus.clone()),
+            Some(self.developer.clone()),
+            self.applications.clone(),
+        ];
+        sections
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Write the file and hand back its path, which is what `--config` takes.
+    pub fn write(&self, dir: &Path) -> PathBuf {
+        let path = dir.join("server.toml");
+        std::fs::write(&path, self.render()).unwrap();
+        path
+    }
+}
+
+pub fn filesystem_archive(root: &Path) -> String {
+    format!(
+        "[archive]\nkind = \"filesystem\"\nroot = \"{}\"\n",
+        root.display()
+    )
+}
+
+/// `[ingest]` as the file holds it, from the struct it loads back into. The
+/// destructure is the drift check: a field added to `IngestConfig` and not to
+/// this renderer does not compile.
+pub fn ingest_toml(config: &IngestConfig) -> String {
+    let IngestConfig {
+        allowlist,
+        max_body_bytes,
+        max_decompressed_bytes,
+        rate_limit_uploads,
+        rate_limit_window_secs,
+        max_timestamp_skew_secs,
+    } = config;
+    format!(
+        "[ingest]
+allowlist = {allowlist}
+max_body_bytes = {max_body_bytes}
+max_decompressed_bytes = {max_decompressed_bytes}
+rate_limit_uploads = {rate_limit_uploads}
+rate_limit_window_secs = {rate_limit_window_secs}
+max_timestamp_skew_secs = {max_timestamp_skew_secs}
+",
+        allowlist = allowlist_toml(allowlist),
+    )
 }
 
 /// Limits wide enough that only the check under test can fire.
@@ -147,9 +241,9 @@ pub fn nonzero_u32(value: u32) -> NonZeroU32 {
     NonZeroU32::new(value).expect("a test limit is never zero")
 }
 
-/// The counter database every test opens, under a directory it owns.
-pub fn counter_store(dir: &Path) -> CounterStore {
-    CounterStore::open(&dir.join("counters.sqlite")).unwrap()
+/// The index every test opens, under a directory it owns.
+pub fn index_store(dir: &Path) -> Index {
+    Index::open(&dir.join("index.sqlite")).unwrap()
 }
 
 /// The submission `seal` produced, as the archive is asked to store it.
@@ -180,11 +274,11 @@ pub fn example_config() -> String {
         .replace("pool1CHANGEME", &pool_of(&test_key()).to_bech32())
 }
 
-/// The example's `[archive]` body, with the endpoint and retry count a test
+/// The example's `[archive]` section, with the endpoint and retry count a test
 /// needs. Stops at the blank line, so the commented-out filesystem block below
 /// it stays out.
 pub fn example_s3_archive(endpoint: &str, put_retries: u32) -> String {
-    let body = example_config()
+    let body: Vec<String> = example_config()
         .split_once("\n[archive]\n")
         .expect("the example names an [archive] section")
         .1
@@ -199,8 +293,8 @@ pub fn example_s3_archive(endpoint: &str, put_retries: u32) -> String {
             Some(("put_retry_backoff_ms", _)) => "put_retry_backoff_ms = 10".to_string(),
             _ => line.to_string(),
         })
-        .collect::<Vec<_>>();
-    body.join("\n")
+        .collect();
+    format!("[archive]\n{}\n", body.join("\n"))
 }
 
 /// The Calidus half's config pointed at a socket directory a test owns, with
@@ -231,19 +325,107 @@ pub fn calidus_toml(dir: &Path) -> String {
         format!("{{\"securityParam\": {TEST_SECURITY_PARAMETER}}}"),
     )
     .unwrap();
+    let CalidusConfig {
+        socket_dir,
+        dbname,
+        role,
+        password_file,
+        query_timeout_secs,
+        shelley_genesis_path,
+        resolution_ttl_secs,
+    } = calidus_config(dir, &genesis);
     format!(
         r#"
 [calidus]
-socket_dir = "{dir}"
-dbname = "cexplorer"
-role = "metsuke_ro"
-password_file = "{dir}/pgpass"
-query_timeout_secs = 7
-shelley_genesis_path = "{genesis}"
-resolution_ttl_secs = {TEST_TTL_SECS}
+socket_dir = "{socket_dir}"
+dbname = "{dbname}"
+role = "{role}"
+password_file = "{password_file}"
+query_timeout_secs = {query_timeout_secs}
+shelley_genesis_path = "{shelley_genesis_path}"
+resolution_ttl_secs = {resolution_ttl_secs}
 "#,
-        dir = dir.display(),
-        genesis = genesis.display(),
+        socket_dir = socket_dir.as_path().display(),
+        password_file = password_file.as_path().display(),
+        shelley_genesis_path = shelley_genesis_path.as_path().display(),
+    )
+}
+
+/// What every test's credential file holds. One place, so the unit tests and
+/// the spawned binary authenticate as the same account.
+pub const DEVELOPER_PASSWORD: &str = "hunter2";
+
+/// The developer half over a credential file under `dir`. Writing that file is
+/// `developer_toml`'s job, because only a spawned server reads it.
+pub fn developer_config(dir: &Path) -> DeveloperConfig {
+    DeveloperConfig {
+        user: "metsuke-dev".to_string(),
+        password_file: absolute(dir.join("developer-password")),
+        list_max_rows: nonzero_u32(100),
+    }
+}
+
+/// `[developer]` as the file holds it, with the credential file written beside
+/// it: a serving process reads it at startup, so a config naming one that is
+/// not there never binds.
+pub fn developer_toml(dir: &Path) -> String {
+    developer_toml_with_rows(dir, developer_config(dir).list_max_rows.get())
+}
+
+/// The same section at a listing bound the caller chose, for a test about what
+/// a page at the bound says.
+pub fn developer_toml_with_rows(dir: &Path, list_max_rows: u32) -> String {
+    let DeveloperConfig {
+        user,
+        password_file,
+        list_max_rows,
+    } = DeveloperConfig {
+        list_max_rows: nonzero_u32(list_max_rows),
+        ..developer_config(dir)
+    };
+    std::fs::write(password_file.as_path(), DEVELOPER_PASSWORD).unwrap();
+    format!(
+        r#"
+[developer]
+user = "{user}"
+password_file = "{password_file}"
+list_max_rows = {list_max_rows}
+"#,
+        password_file = password_file.as_path().display(),
+    )
+}
+
+/// The applications half over a CSV the caller wrote. `socket_dir` is a
+/// directory holding no socket, so the chain read fails to connect.
+pub fn applications_config(applications_csv: &Path, socket_dir: &Path) -> ApplicationsConfig {
+    ApplicationsConfig {
+        applications_csv: absolute(applications_csv),
+        socket_dir: absolute(socket_dir),
+        dbname: "cexplorer".to_string(),
+        role: "metsuke_ro".to_string(),
+        query_timeout_secs: nonzero_u64(7),
+    }
+}
+
+pub fn applications_toml(config: &ApplicationsConfig) -> String {
+    let ApplicationsConfig {
+        applications_csv,
+        socket_dir,
+        dbname,
+        role,
+        query_timeout_secs,
+    } = config;
+    format!(
+        r#"
+[applications]
+applications_csv = "{applications_csv}"
+socket_dir = "{socket_dir}"
+dbname = "{dbname}"
+role = "{role}"
+query_timeout_secs = {query_timeout_secs}
+"#,
+        applications_csv = applications_csv.as_path().display(),
+        socket_dir = socket_dir.as_path().display(),
     )
 }
 

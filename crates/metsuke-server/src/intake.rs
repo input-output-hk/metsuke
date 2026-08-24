@@ -7,7 +7,7 @@ use time::OffsetDateTime;
 use crate::archive::{ArchiveError, Store, StoredSubmission};
 use crate::authority::{AuthError, Authority, Refusal, Signed, Undecided, authenticate};
 use crate::config::IngestConfig;
-use crate::counters::{CounterError, CounterStore, Reservation};
+use crate::index::{Index, IndexError, Reservation};
 use crate::ratelimit::RateLimiter;
 
 /// Why the server refused. Every variant is the client's fault and its text
@@ -53,7 +53,7 @@ pub enum IngestError {
     #[error(transparent)]
     Rejected(#[from] Rejection),
     #[error("counter state unavailable: {0}")]
-    CounterState(#[from] CounterError),
+    CounterState(#[from] IndexError),
     #[error("archive unavailable: {0}")]
     Archive(#[from] ArchiveError),
     #[error("{0}")]
@@ -77,18 +77,18 @@ impl IngestError {
 
 pub struct Intake<A: Store, K: Authority> {
     config: IngestConfig,
-    counters: CounterStore,
+    index: Index,
     limiter: RateLimiter,
     archive: A,
     authority: K,
 }
 
 impl<A: Store, K: Authority> Intake<A, K> {
-    pub fn new(config: IngestConfig, counters: CounterStore, archive: A, authority: K) -> Self {
+    pub fn new(config: IngestConfig, index: Index, archive: A, authority: K) -> Self {
         let limiter = RateLimiter::new(config.rate_limit_uploads, config.rate_limit_window_secs);
         Intake {
             config,
-            counters,
+            index,
             limiter,
             archive,
             authority,
@@ -99,6 +99,19 @@ impl<A: Store, K: Authority> Intake<A, K> {
     /// against rather than holding a second copy of it.
     pub fn max_body_bytes(&self) -> u64 {
         self.config.max_body_bytes.get()
+    }
+
+    /// The index the developer listing reads. Borrowed from here rather than
+    /// opened a second time, so a listing and an ingest write can never be two
+    /// connections racing on one file.
+    pub fn index(&self) -> &Index {
+        &self.index
+    }
+
+    /// The archive the download route fetches from. Same reason as `index`:
+    /// one handle, and this one is read-only where the ingest path stores.
+    pub fn archive(&self) -> &A {
+        &self.archive
     }
 
     /// Run one upload through the chain. `now` is the server clock,
@@ -171,7 +184,7 @@ impl<A: Store, K: Authority> Intake<A, K> {
             .into());
         }
         let reserved = match self
-            .counters
+            .index
             .reserve(envelope.pool_id, envelope.counter, now)?
         {
             Reservation::Reserved(reserved) => reserved,
@@ -183,7 +196,7 @@ impl<A: Store, K: Authority> Intake<A, K> {
                 .into());
             }
         };
-        self.archive.store(&StoredSubmission {
+        let stored = StoredSubmission {
             pool_id: envelope.pool_id,
             counter: envelope.counter,
             timestamp: envelope.timestamp,
@@ -191,7 +204,12 @@ impl<A: Store, K: Authority> Intake<A, K> {
             vkey: signed.vkey,
             signature: signed.signature,
             wire_bytes: signed.wire_bytes,
-        })?;
+        };
+        self.archive.store(&stored)?;
+        // Indexed through the reservation, which is the write already open:
+        // the row lands with the counter or with neither, so nothing is listed
+        // that a rolled-back store left out of the bucket.
+        reserved.record(&stored.name())?;
         reserved.commit()?;
         Ok(Ack {
             latest_version: crate::CLIENT_VERSION.to_string(),

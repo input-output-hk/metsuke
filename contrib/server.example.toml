@@ -4,7 +4,7 @@
 # (crates/metsuke-server/tests/config.rs), so what it shows parses.
 
 listen = "127.0.0.1:8080"
-counters_path = "/var/lib/metsuke-server/counters.sqlite"
+index_path = "/var/lib/metsuke-server/index.sqlite"
 
 # The S3 archive reads its credentials from AWS_ACCESS_KEY_ID and
 # AWS_SECRET_ACCESS_KEY in the process environment.
@@ -45,6 +45,12 @@ password_file = "/run/credentials/metsuke-server.service/pgpassword"
 query_timeout_secs = 30
 shelley_genesis_path = "/var/lib/metsuke-server/shelley-genesis.json"
 resolution_ttl_secs = 3600
+
+# The account developers pull the archive back out as.
+[developer]
+user = "metsuke-dev"
+password_file = "/run/credentials/metsuke-server.service/developerpassword"
+list_max_rows = 1000
 
 # Optional, and the only section that is.
 [applications]

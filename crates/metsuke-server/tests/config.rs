@@ -5,7 +5,7 @@
 use metsuke_server::config::{ArchiveConfig, ServerConfig};
 
 mod support;
-use support::{allowlist_toml, calidus_toml, example_config as example, pool_of, test_key};
+use support::{example_config as example, pool_of, server_toml, test_key};
 
 /// The example is the complete config every test here mutates, so a field the
 /// server grows must reach the file an operator copies from before this suite
@@ -31,35 +31,12 @@ fn the_shipped_example_config_loads() {
 #[test]
 fn a_filesystem_archive_without_an_applications_section_loads() {
     let dir = tempfile::tempdir().unwrap();
-    let text = format!(
-        r#"
-listen = "127.0.0.1:8080"
-counters_path = "/var/lib/metsuke-server/counters.sqlite"
-
-[archive]
-kind = "filesystem"
-root = "/var/lib/metsuke-server/archive"
-
-[ingest]
-allowlist = {allowlist}
-max_body_bytes = 1048576
-max_decompressed_bytes = 4194304
-rate_limit_uploads = 24
-rate_limit_window_secs = 3600
-max_timestamp_skew_secs = 300
-{calidus}
-"#,
-        allowlist = allowlist_toml(&[pool_of(&test_key())]),
-        calidus = calidus_toml(dir.path()),
-    );
+    let text = server_toml(dir.path(), &[pool_of(&test_key())]).render();
     let config = ServerConfig::from_toml(&text).unwrap();
     let ArchiveConfig::Filesystem { root } = config.archive else {
         panic!("the config named a filesystem archive");
     };
-    assert_eq!(
-        root,
-        std::path::Path::new("/var/lib/metsuke-server/archive")
-    );
+    assert_eq!(root, dir.path().join("archive"));
     assert!(config.applications.is_none());
 }
 
@@ -99,8 +76,9 @@ fn an_archive_without_a_kind_is_refused() {
 }
 
 /// The fields typed `NonZero`, so zero and absence are the same refusal.
-const NONZERO_FIELDS: [&str; 11] = [
+const NONZERO_FIELDS: [&str; 12] = [
     "query_timeout_secs",
+    "list_max_rows",
     "resolution_ttl_secs",
     "request_timeout_secs",
     "signature_validity_secs",
@@ -115,9 +93,10 @@ const NONZERO_FIELDS: [&str; 11] = [
 
 /// The rest, where only absence is a mistake. Together with `NONZERO_FIELDS`
 /// this is every field the server reads, so a new one joins exactly one list.
-const OTHER_FIELDS: [&str; 13] = [
+const OTHER_FIELDS: [&str; 14] = [
     "listen",
-    "counters_path",
+    "user",
+    "index_path",
     "bucket",
     "region",
     "endpoint",

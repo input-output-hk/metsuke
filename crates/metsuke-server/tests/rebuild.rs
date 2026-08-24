@@ -1,16 +1,17 @@
 //! Rebuilding the index (see `rebuild`). What it must reconstruct is the
 //! replay counter state, because that is the only thing a lost index would let
-//! an attacker replay past.
+//! an attacker replay past, and the submission rows the developer listing
+//! serves, because the bucket is the only place they can come back from.
 
-use metsuke_server::archive::{FilesystemArchive, ObjectName, Store};
-use metsuke_server::counters::CounterStore;
+use metsuke_server::archive::{FilesystemArchive, List, ObjectName, Store};
+use metsuke_server::index::Index;
 use metsuke_server::rebuild::{EmptyArchive, RebuildError, SeededPool, rebuild};
 use metsuke_wire::envelope::{PoolId, SigningKey};
 use time::OffsetDateTime;
 
 mod support;
 use support::{
-    FailingArchive, counter_store, envelope_for, other_key, pool_of, seal, stored_submission,
+    FailingArchive, envelope_for, index_store, other_key, pool_of, seal, stored_submission,
     test_key, test_now,
 };
 
@@ -36,13 +37,13 @@ fn archive_of(dir: &std::path::Path, objects: &[(&SigningKey, u64)]) -> Filesyst
 /// the mistake `EmptyArchive::Refuse` is for.
 fn rebuild_of(
     archive: &FilesystemArchive,
-    counters: &mut CounterStore,
+    index: &mut Index,
 ) -> Result<metsuke_server::rebuild::RebuiltIndex, RebuildError> {
-    rebuild(archive, counters, EmptyArchive::Refuse)
+    rebuild(archive, index, EmptyArchive::Refuse)
 }
 
-fn last(counters: &CounterStore, pool: PoolId) -> Option<u64> {
-    counters.last_counter(pool).unwrap()
+fn last(index: &Index, pool: PoolId) -> Option<u64> {
+    index.last_counter(pool).unwrap()
 }
 
 #[test]
@@ -53,13 +54,40 @@ fn each_pools_counter_comes_back_at_its_highest_stored_object() {
         &dir.path().join("archive"),
         &[(&one, 1), (&one, 9), (&one, 4), (&two, 3)],
     );
-    let mut counters = counter_store(dir.path());
-    let summary = rebuild_of(&archive, &mut counters).unwrap();
+    let mut index = index_store(dir.path());
+    let summary = rebuild_of(&archive, &mut index).unwrap();
 
     assert_eq!(summary.objects, 4);
-    assert_eq!(last(&counters, pool_of(&one)), Some(9));
-    assert_eq!(last(&counters, pool_of(&two)), Some(3));
+    assert_eq!(last(&index, pool_of(&one)), Some(9));
+    assert_eq!(last(&index, pool_of(&two)), Some(3));
     assert_eq!(summary.pools.len(), 2);
+}
+
+/// The counters seed from each pool's newest object, but the listing needs
+/// every object: a rebuild that recorded only the newest would leave a
+/// developer pull blind to the rest of the corpus.
+#[test]
+fn every_listed_object_becomes_a_row() {
+    let dir = tempfile::tempdir().unwrap();
+    let (one, two) = (test_key(), other_key());
+    let archive = archive_of(
+        &dir.path().join("archive"),
+        &[(&one, 1), (&one, 9), (&two, 3)],
+    );
+    let mut index = index_store(dir.path());
+
+    rebuild_of(&archive, &mut index).unwrap();
+
+    let listed: Vec<String> = index
+        .submissions("", "", support::nonzero_u32(100))
+        .unwrap()
+        .objects
+        .iter()
+        .map(ObjectName::to_key)
+        .collect();
+    let mut expected: Vec<String> = archive.keys().unwrap();
+    expected.sort();
+    assert_eq!(listed, expected);
 }
 
 #[test]
@@ -67,14 +95,14 @@ fn a_rebuild_never_lowers_a_counter_it_already_has() {
     let dir = tempfile::tempdir().unwrap();
     let key = test_key();
     let archive = archive_of(&dir.path().join("archive"), &[(&key, 2)]);
-    let mut counters = counter_store(dir.path());
-    rebuild_of(&archive, &mut counters).unwrap();
+    let mut index = index_store(dir.path());
+    rebuild_of(&archive, &mut index).unwrap();
 
     // A live server accepted a newer batch than the listing shows.
     let ahead = archive_of(&dir.path().join("ahead"), &[(&key, 20)]);
-    rebuild_of(&ahead, &mut counters).unwrap();
-    rebuild_of(&archive, &mut counters).unwrap();
-    assert_eq!(last(&counters, pool_of(&key)), Some(20));
+    rebuild_of(&ahead, &mut index).unwrap();
+    rebuild_of(&archive, &mut index).unwrap();
+    assert_eq!(last(&index, pool_of(&key)), Some(20));
 }
 
 /// The ambiguity `EmptyArchive` exists for, refused by default.
@@ -82,8 +110,8 @@ fn a_rebuild_never_lowers_a_counter_it_already_has() {
 fn an_empty_archive_refuses_the_rebuild_rather_than_seeding_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let archive = FilesystemArchive::new(&dir.path().join("not-the-root-you-meant"));
-    let mut counters = counter_store(dir.path());
-    let error = rebuild_of(&archive, &mut counters).unwrap_err().to_string();
+    let mut index = index_store(dir.path());
+    let error = rebuild_of(&archive, &mut index).unwrap_err().to_string();
     assert!(error.contains("no objects"), "got: {error}");
 }
 
@@ -92,8 +120,8 @@ fn an_empty_archive_refuses_the_rebuild_rather_than_seeding_nothing() {
 fn an_empty_archive_indexes_nothing_when_the_operator_says_it_is_empty() {
     let dir = tempfile::tempdir().unwrap();
     let archive = FilesystemArchive::new(&dir.path().join("archive"));
-    let mut counters = counter_store(dir.path());
-    let summary = rebuild(&archive, &mut counters, EmptyArchive::Accept).unwrap();
+    let mut index = index_store(dir.path());
+    let summary = rebuild(&archive, &mut index, EmptyArchive::Accept).unwrap();
     assert_eq!(summary.objects, 0);
     assert!(summary.pools.is_empty());
 }
@@ -107,8 +135,8 @@ fn an_unparseable_key_fails_the_rebuild_naming_it() {
     let root = dir.path().join("archive");
     let archive = archive_of(&root, &[(&test_key(), 1)]);
     std::fs::write(root.join("v1/stray-object"), b"?").unwrap();
-    let mut counters = counter_store(dir.path());
-    let error = rebuild_of(&archive, &mut counters).unwrap_err().to_string();
+    let mut index = index_store(dir.path());
+    let error = rebuild_of(&archive, &mut index).unwrap_err().to_string();
     assert!(error.contains("stray-object"), "got: {error}");
 }
 
@@ -117,12 +145,12 @@ fn an_unparseable_key_fails_the_rebuild_naming_it() {
 #[test]
 fn an_unreadable_archive_fails_the_rebuild() {
     let dir = tempfile::tempdir().unwrap();
-    let mut counters = counter_store(dir.path());
+    let mut index = index_store(dir.path());
     let unlistable = FailingArchive {
         reason: "the bucket said no",
     };
     for empty in [EmptyArchive::Refuse, EmptyArchive::Accept] {
-        let error = rebuild(&unlistable, &mut counters, empty)
+        let error = rebuild(&unlistable, &mut index, empty)
             .unwrap_err()
             .to_string();
         assert!(error.contains("the bucket said no"), "got: {error}");
@@ -136,8 +164,8 @@ fn the_summary_reports_each_pools_newest_object() {
     let dir = tempfile::tempdir().unwrap();
     let key = test_key();
     let archive = archive_of(&dir.path().join("archive"), &[(&key, 1), (&key, 5)]);
-    let mut counters = counter_store(dir.path());
-    let summary = rebuild_of(&archive, &mut counters).unwrap();
+    let mut index = index_store(dir.path());
+    let summary = rebuild_of(&archive, &mut index).unwrap();
     let newest: OffsetDateTime = test_now() + time::Duration::seconds(5);
     assert_eq!(
         summary.pools,
@@ -160,11 +188,11 @@ fn a_pool_the_index_is_already_ahead_of_is_reported_as_such() {
     let key = test_key();
     let ahead = archive_of(&dir.path().join("ahead"), &[(&key, 20)]);
     let behind = archive_of(&dir.path().join("behind"), &[(&key, 2)]);
-    let mut counters = counter_store(dir.path());
-    assert!(rebuild_of(&ahead, &mut counters).unwrap().pools[0].seeded);
+    let mut index = index_store(dir.path());
+    assert!(rebuild_of(&ahead, &mut index).unwrap().pools[0].seeded);
 
-    let summary = rebuild_of(&behind, &mut counters).unwrap();
+    let summary = rebuild_of(&behind, &mut index).unwrap();
     assert!(!summary.pools[0].seeded);
     assert_eq!(summary.pools[0].newest.counter, 2);
-    assert_eq!(last(&counters, pool_of(&key)), Some(20));
+    assert_eq!(last(&index, pool_of(&key)), Some(20));
 }

@@ -38,7 +38,7 @@ state.
   anyway.
 - The parser moves in-process, and the process boundary goes with it. This is
   accepted residual risk, not a wash. Under `psql`, a parser bug landed in a
-  short-lived child holding no S3 credentials, no counter database and no
+  short-lived child holding no S3 credentials, no submission index and no
   server state; now it lands in the server. What it takes to reach either is the
   same — a compromised db-sync, which is loopback, read-only and colocated —
   but the consequence is strictly worse, and no boundary replaces the one that

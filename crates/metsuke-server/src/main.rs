@@ -5,18 +5,19 @@
 //! and exit, zero only if what they were asked to check holds.
 
 use metsuke_server::applications::{ApplicationsCsvError, Chain, Excluded, Gate, gate, read_codes};
-use metsuke_server::archive::{FilesystemArchive, List, Store};
+use metsuke_server::archive::{Bytes, FilesystemArchive, List, Store};
 use metsuke_server::authority::{ColdKey, ColdKeyOrCalidus};
 use metsuke_server::calidus::CalidusKeys;
 use metsuke_server::cli::{ArchiveCommand, Args, ArgsError, Command, GENERATE_ALLOWLIST};
 use metsuke_server::config::{
-    ApplicationsConfig, ArchiveConfig, CalidusConfig, ConfigError, IngestConfig, S3Config,
-    ServerConfig,
+    ApplicationsConfig, ArchiveConfig, CalidusConfig, ConfigError, DeveloperConfig, IngestConfig,
+    S3Config, ServerConfig,
 };
-use metsuke_server::counters::{CounterError, CounterStore};
 use metsuke_server::db::DbError;
 use metsuke_server::dbsync::{DbSync, GenesisError, security_parameter};
+use metsuke_server::developer::Developer;
 use metsuke_server::http;
+use metsuke_server::index::{Index, IndexError};
 use metsuke_server::intake::Intake;
 use metsuke_server::rebuild::{EmptyArchive, RebuildError, RebuiltIndex, rebuild};
 use metsuke_server::s3::{S3Archive, S3Error};
@@ -37,8 +38,16 @@ enum Fatal {
     },
     #[error(transparent)]
     Config(#[from] ConfigError),
-    #[error("cannot open the counter database: {0}")]
-    Counters(#[from] CounterError),
+    #[error("cannot open the index: {0}")]
+    Index(#[from] IndexError),
+    #[error("cannot read the developer password {path}: {source}")]
+    DeveloperPassword {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("the developer password {path} is empty, which would authorize anyone")]
+    EmptyDeveloperPassword { path: String },
     #[error(transparent)]
     Genesis(#[from] GenesisError),
     #[error(transparent)]
@@ -98,10 +107,11 @@ fn run() -> Result<(), Fatal> {
     })?;
     let ServerConfig {
         listen,
-        counters_path,
+        index_path,
         archive,
         ingest,
         calidus,
+        developer,
         applications,
     } = ServerConfig::from_toml(&text)?;
     let command = match args.command {
@@ -110,17 +120,21 @@ fn run() -> Result<(), Fatal> {
         }
         Command::Archive(command) => command,
     };
-    let counters = CounterStore::open(&counters_path)?;
+    let index = Index::open(&index_path)?;
+    let serving = Serving {
+        listen,
+        ingest,
+        calidus,
+        developer,
+    };
     // The archive kind is matched once: pairing it with the subcommand would
     // multiply the arms by every kind this grows.
     match archive {
         ArchiveConfig::Filesystem { root } => dispatch(
             FilesystemArchive::new(&root),
             command,
-            &listen,
-            ingest,
-            calidus,
-            counters,
+            serving,
+            index,
             // A filesystem archive stores no metadata, so there is nothing to
             // re-verify an object against.
             |_, _| Err(Fatal::CannotVerifyFilesystem),
@@ -128,10 +142,8 @@ fn run() -> Result<(), Fatal> {
         ArchiveConfig::S3(config) => dispatch(
             s3_archive(&config)?,
             command,
-            &listen,
-            ingest,
-            calidus,
-            counters,
+            serving,
+            index,
             |archive, max_decompressed_bytes| {
                 report_audit(audit(
                     archive,
@@ -144,28 +156,36 @@ fn run() -> Result<(), Fatal> {
     }
 }
 
-/// Run the named subcommand against one archive. `verify_archive` is the only
-/// step that is not the same work for every kind, so it is the parameter.
-fn dispatch<A: Store + List>(
-    archive: A,
-    command: ArchiveCommand,
-    listen: &str,
+/// Everything the config says that is not about the archive or the index.
+/// Grouped because it travels through `dispatch` as one thing and only
+/// `serve` reads all of it.
+struct Serving {
+    listen: String,
     ingest: IngestConfig,
     calidus: CalidusConfig,
-    mut counters: CounterStore,
+    developer: DeveloperConfig,
+}
+
+/// Run the named subcommand against one archive. `verify_archive` is the only
+/// step that is not the same work for every kind, so it is the parameter.
+fn dispatch<A: Store + List + Bytes>(
+    archive: A,
+    command: ArchiveCommand,
+    serving: Serving,
+    mut index: Index,
     verify_archive: impl FnOnce(&A, u64) -> Result<(), Fatal>,
 ) -> Result<(), Fatal> {
     match command {
-        ArchiveCommand::Serve => serve(archive, listen, ingest, calidus, counters),
+        ArchiveCommand::Serve => serve(archive, serving, index),
         ArchiveCommand::RebuildIndex { allow_empty } => {
             let empty = match allow_empty {
                 true => EmptyArchive::Accept,
                 false => EmptyArchive::Refuse,
             };
-            report_rebuild(rebuild(&archive, &mut counters, empty)?)
+            report_rebuild(rebuild(&archive, &mut index, empty)?)
         }
         ArchiveCommand::VerifyArchive => {
-            verify_archive(&archive, ingest.max_decompressed_bytes.get())
+            verify_archive(&archive, serving.ingest.max_decompressed_bytes.get())
         }
     }
 }
@@ -266,13 +286,18 @@ fn report_rebuild(summary: RebuiltIndex) -> Result<(), Fatal> {
     Ok(())
 }
 
-fn serve<A: Store>(
-    archive: A,
-    listen: &str,
-    ingest: IngestConfig,
-    calidus: CalidusConfig,
-    counters: CounterStore,
-) -> Result<(), Fatal> {
+fn serve<A: Store + Bytes>(archive: A, serving: Serving, index: Index) -> Result<(), Fatal> {
+    let Serving {
+        listen,
+        ingest,
+        calidus,
+        developer: credentials,
+    } = serving;
+    let listen = listen.as_str();
+    // Read here rather than at load: `rebuild-index` and `verify-archive`
+    // answer no developer request, so a credential file only this path needs
+    // must not decide whether they run.
+    let developer = developer(&credentials)?;
     // Before the listener: k is what decides which registrations count, and a
     // server that cannot read it would accept uploads on an unbounded rule.
     let security_parameter = security_parameter(calidus.shelley_genesis_path.as_path())?;
@@ -294,6 +319,26 @@ fn serve<A: Store>(
         server.server_addr(),
         http::SUBMIT_PATH,
     );
-    let mut intake = Intake::new(ingest, counters, archive, authority);
-    match http::serve(&server, &mut intake)? {}
+    let mut intake = Intake::new(ingest, index, archive, authority);
+    match http::serve(&server, &mut intake, &developer)? {}
+}
+
+/// The developer account, with the password read off the file the config
+/// names. A file that is missing, unreadable or empty stops startup: the
+/// routes would otherwise be open on a credential nobody set, and `user` is
+/// public in a config an operator publishes.
+fn developer(config: &DeveloperConfig) -> Result<Developer, Fatal> {
+    let path = config.password_file.as_path();
+    let named = || path.display().to_string();
+    let password = std::fs::read_to_string(path).map_err(|source| Fatal::DeveloperPassword {
+        path: named(),
+        source,
+    })?;
+    // Trailing newline trimmed, as the Calidus password is (`db`): an editor
+    // adds one and it is not part of the secret.
+    let password = password.trim_end_matches(['\r', '\n']);
+    if password.is_empty() {
+        return Err(Fatal::EmptyDeveloperPassword { path: named() });
+    }
+    Ok(Developer::new(config, password))
 }

@@ -1,6 +1,6 @@
-//! Schema migration, shared by the agent spool and the server's counter
-//! store because both are one-file SQLite databases opened by a binary that
-//! may be older than the file.
+//! Schema migration, shared by the agent spool and the server's index
+//! because both are one-file SQLite databases opened by a binary that may be
+//! older than the file.
 
 use rusqlite::Connection;
 

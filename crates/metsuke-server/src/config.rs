@@ -18,11 +18,13 @@ use crate::applications::Codes;
 pub struct ServerConfig {
     /// `host:port` to bind, plain HTTP (what fronts it: `http`).
     pub listen: String,
-    /// The replay counter database (ADR 0002). Created if absent.
-    pub counters_path: PathBuf,
+    /// The rebuildable index: replay counters and one row per stored object
+    /// (ADR 0005). Created if absent.
+    pub index_path: PathBuf,
     pub archive: ArchiveConfig,
     pub ingest: IngestConfig,
     pub calidus: CalidusConfig,
+    pub developer: DeveloperConfig,
     /// Read by `generate-allowlist` alone, so a server that never onboards
     /// pools carries neither export path nor db-sync connection. Absent is
     /// what that server's config looks like, and the command is what refuses
@@ -109,6 +111,21 @@ pub struct CalidusConfig {
     /// What it is chosen against: ADR 0008. Seconds as a `NonZeroU32` so the
     /// cast to a signed duration cannot wrap.
     pub resolution_ttl_secs: NonZeroU32,
+}
+
+/// The one account that may pull the archive back out (ticket metsuke-4zo.10).
+/// Not optional: a serving host either has the credential or refuses to start,
+/// where an absent section would leave the routes quietly open or quietly gone.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DeveloperConfig {
+    /// The user developers authenticate as. Public, like `CalidusConfig::role`.
+    pub user: String,
+    /// Same shape and same reason as `CalidusConfig::password_file`.
+    pub password_file: AbsolutePath,
+    /// Rows one listing may answer with. What a page at the bound reports:
+    /// `index::Listing`.
+    pub list_max_rows: NonZeroU32,
 }
 
 /// Where accepted submissions go. S3 is what production runs (ADR 0005).

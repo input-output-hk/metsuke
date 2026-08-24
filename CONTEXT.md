@@ -71,6 +71,12 @@ came from whoever holds the **Pool**'s **Cold Key**, since only that key can
 sign a pool registration. Public, never a secret.
 _Avoid_: token, secret, invite code
 
+**Developer**:
+Someone working on the rewards program who reads **Submissions** back out of
+the archive. Neither an **Operator** nor a **Pool**, and authenticated as one
+shared account rather than per person.
+_Avoid_: user, consumer, analyst, client
+
 ## Relationships
 
 - A **Pool** has exactly one **Cold Key** and at most one current **Calidus Key**

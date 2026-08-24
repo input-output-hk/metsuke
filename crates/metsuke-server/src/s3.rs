@@ -15,7 +15,8 @@ use metsuke_wire::envelope::{Signature, VerifyingKey};
 use metsuke_wire::{hex, http};
 
 use crate::archive::{
-    ArchiveError, Fetch, FetchedObject, KEY_PREFIX, List, ObjectName, Store, StoredSubmission,
+    ArchiveError, Bytes, Fetch, FetchedObject, KEY_PREFIX, List, ObjectName, Store,
+    StoredSubmission,
 };
 use crate::config::S3Config;
 use metsuke_wire::journal::WARNING;
@@ -223,6 +224,28 @@ impl List for S3Archive {
             "the listing is still truncated after {} pages (list_max_pages)",
             self.list_max_pages
         )))
+    }
+}
+
+impl Bytes for S3Archive {
+    fn bytes(&self, key: &str) -> Result<Vec<u8>, ArchiveError> {
+        let refuse = |reason: String| ArchiveError::Fetch {
+            key: key.to_string(),
+            reason,
+        };
+        // Parsed before it is signed into a URL: nothing but a v1 object key
+        // reaches the bucket, whatever a client asked for.
+        ObjectName::parse(key).map_err(|error| refuse(error.to_string()))?;
+        let url = self
+            .bucket
+            .get_object(Some(&self.credentials), key)
+            .sign(self.signature_validity);
+        let mut response = answer(self.agent.get(url.as_str()).call())
+            .map_err(|failure| refuse(failure.reason))?;
+        response
+            .body_mut()
+            .read_to_vec()
+            .map_err(|error| refuse(format!("unreadable body: {error}")))
     }
 }
 
