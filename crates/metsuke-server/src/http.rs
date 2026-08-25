@@ -117,6 +117,7 @@ pub fn status_for(error: &IngestError) -> u16 {
             Rejection::RateLimited { .. } => 429,
             Rejection::UnknownPool { .. }
             | Rejection::UnauthorizedKey { .. }
+            | Rejection::TooManyRegistrations { .. }
             | Rejection::BadSignature => 403,
             Rejection::MalformedPayload { .. }
             | Rejection::UnsupportedSchema { .. }

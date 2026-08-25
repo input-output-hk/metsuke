@@ -161,6 +161,7 @@ in
                 query_timeout_secs = positive;
                 shelley_genesis_path = required types.str;
                 resolution_ttl_secs = positive;
+                max_registrations = positive;
               };
             };
           };

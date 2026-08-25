@@ -1,13 +1,13 @@
 //! Turning recorded label-867 blobs into the key a pool has registered
 //! (ADR 0008), and how long the server reuses that answer (ADR 0003).
 
-use metsuke_server::calidus::{CalidusKeys, Resolution, current};
+use metsuke_server::calidus::{CalidusKeys, Registrations, Resolution, current};
 use metsuke_server::cip151::{self, RegistrationError};
 
 mod support;
 use support::{
-    CannedDirectory, TEST_TTL_SECS, calidus_key, crafted, nonzero_u32, other_key, pool_of,
-    registered_pool, registration, rotated_calidus_key, test_now,
+    CannedDirectory, TEST_MAX_REGISTRATIONS, TEST_TTL_SECS, calidus_key, crafted, nonzero_u32,
+    other_key, pool_of, registered_pool, registration, rotated_calidus_key, test_now,
 };
 
 /// What a `Directory` hands up, run through the witness check the way
@@ -183,6 +183,69 @@ fn an_unwitnessed_row_beside_a_real_one_is_dropped_rather_than_contesting_it() {
         keys.key_for(registered_pool(), test_now()).unwrap(),
         Resolution::Key(calidus_key().verifying_key().to_bytes())
     );
+}
+
+// The off-by-one the bound exists to get right, asserted on the value the query
+// is handed rather than on what a constructor returned: a scope at exactly the
+// cap is read, and the one extra row the bound allows through is what says it
+// was exceeded. A `Directory` double cannot reach this — it fabricates the
+// verdict instead of counting.
+#[test]
+fn a_scope_at_the_cap_is_read_and_one_past_it_is_not() {
+    let rows = |count: u32| vec![registration("nonce-1-key-a"); count as usize];
+    let answering = |max: u32, count: u32| {
+        let mut asked = 0;
+        let answer = Registrations::bounded(nonzero_u32(max), |limit| {
+            asked = limit;
+            Ok::<_, ()>(rows(count))
+        })
+        .unwrap();
+        (asked, answer)
+    };
+
+    // Two caps, so neither the bound nor the comparison can be a literal that
+    // happens to suit one of them.
+    for max in [1, TEST_MAX_REGISTRATIONS] {
+        let (asked, at_cap) = answering(max, max);
+        assert_eq!(
+            asked,
+            i64::from(max) + 1,
+            "the query is asked for one row past the cap"
+        );
+        assert_eq!(at_cap, Registrations::Rows(rows(max)));
+
+        let (_, over) = answering(max, max + 1);
+        assert_eq!(over, Registrations::TooMany { max });
+    }
+}
+
+#[test]
+fn more_rows_than_the_cap_refuse_rather_than_resolve() {
+    let (mut keys, directory) = keys_for(vec![registration("nonce-1-key-a")]);
+    let pool = registered_pool();
+    directory.crowd(pool, TEST_MAX_REGISTRATIONS);
+
+    assert_eq!(
+        keys.key_for(pool, test_now()).unwrap(),
+        Resolution::TooMany {
+            max: TEST_MAX_REGISTRATIONS
+        }
+    );
+}
+
+// The rows are on chain for good, so this answer would otherwise cost a query
+// per upload for as long as the pool keeps submitting.
+#[test]
+fn a_pool_over_the_cap_is_resolved_once_per_ttl() {
+    let (mut keys, directory) = keys_for(vec![]);
+    let pool = registered_pool();
+    directory.crowd(pool, TEST_MAX_REGISTRATIONS);
+
+    keys.key_for(pool, test_now()).unwrap();
+    keys.key_for(pool, test_now() + time::Duration::seconds(1))
+        .unwrap();
+
+    assert_eq!(directory.lookups(), 1);
 }
 
 // One pool's cached answer is not another's, so a pool nobody registered does

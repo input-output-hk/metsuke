@@ -6,6 +6,7 @@ use time::OffsetDateTime;
 
 use crate::archive::{ArchiveError, Store, StoredSubmission};
 use crate::authority::{AuthError, Authority, Refusal, Signed, Undecided, authenticate};
+use crate::calidus::Resolution;
 use crate::config::IngestConfig;
 use crate::index::{Index, IndexError, Reservation};
 use crate::ratelimit::RateLimiter;
@@ -26,6 +27,12 @@ pub enum Rejection {
     },
     #[error("the presented key does not speak for pool {pool_id}")]
     UnauthorizedKey { pool_id: PoolId, refusal: Refusal },
+    /// Separate from `UnauthorizedKey` because it says nothing about the key:
+    /// the server declined to read the pool's registrations at all.
+    #[error(
+        "more than {max} Calidus registrations scope pool {pool_id}; get in touch to resolve it"
+    )]
+    TooManyRegistrations { pool_id: PoolId, max: u32 },
     #[error("signature does not verify over the body as received")]
     BadSignature,
     #[error("payload inflates past the {max} byte limit")]
@@ -143,9 +150,12 @@ impl<A: Store, K: Authority> Intake<A, K> {
             now,
         )
         .map_err(|error| match error {
-            AuthError::UnauthorizedKey { pool_id, refusal } => {
-                IngestError::from(Rejection::UnauthorizedKey { pool_id, refusal })
-            }
+            AuthError::UnauthorizedKey { pool_id, refusal } => match refusal {
+                Refusal::Chain(Resolution::TooMany { max }) => {
+                    IngestError::from(Rejection::TooManyRegistrations { pool_id, max })
+                }
+                refusal => IngestError::from(Rejection::UnauthorizedKey { pool_id, refusal }),
+            },
             AuthError::BadSignature => Rejection::BadSignature.into(),
             AuthError::OversizedPayload { max } => Rejection::OversizedPayload { max }.into(),
             AuthError::MalformedPayload { reason } => Rejection::MalformedPayload { reason }.into(),

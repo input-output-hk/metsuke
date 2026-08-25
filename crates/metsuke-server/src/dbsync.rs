@@ -2,13 +2,13 @@
 //! Leios db-sync by running the shipped query, and the security parameter that
 //! says which of them are deep enough to count (ADR 0008).
 
-use std::num::NonZeroU32;
+use std::num::NonZeroI32;
 use std::path::Path;
 
 use metsuke_wire::envelope::PoolId;
 use metsuke_wire::hex;
 
-use crate::calidus::{Directory, DirectoryError};
+use crate::calidus::{Directory, DirectoryError, Registrations};
 use crate::config::CalidusConfig;
 use crate::db::{Connection, column};
 
@@ -25,11 +25,11 @@ fn scope_of(pool_id: PoolId) -> String {
 /// The chain, over the db-sync the config names.
 pub struct DbSync {
     config: CalidusConfig,
-    security_parameter: NonZeroU32,
+    security_parameter: NonZeroI32,
 }
 
 impl DbSync {
-    pub fn new(config: CalidusConfig, security_parameter: NonZeroU32) -> Self {
+    pub fn new(config: CalidusConfig, security_parameter: NonZeroI32) -> Self {
         DbSync {
             config,
             security_parameter,
@@ -38,22 +38,24 @@ impl DbSync {
 }
 
 impl Directory for DbSync {
-    fn registrations(&self, pool_id: PoolId) -> Result<Vec<Vec<u8>>, DirectoryError> {
-        // The depth is bound as `bigint` because that is what `block_no` is;
-        // k is a `u32`, so the widening cannot lose it.
-        let k = i64::from(self.security_parameter.get());
-        Connection {
-            socket_dir: self.config.socket_dir.as_path(),
-            dbname: &self.config.dbname,
-            role: &self.config.role,
-            query_timeout_secs: self.config.query_timeout_secs.get(),
-            password_file: Some(self.config.password_file.as_path()),
-        }
-        .query(QUERY, &[&scope_of(pool_id), &k])
-        .and_then(|rows| {
-            rows.iter()
-                .map(|row| column(row, "registration"))
-                .collect::<Result<Vec<Vec<u8>>, _>>()
+    fn registrations(&self, pool_id: PoolId) -> Result<Registrations, DirectoryError> {
+        // `ToSql` is untyped; the parameter types are registrations.sql's.
+        let k = self.security_parameter.get();
+        let scope = scope_of(pool_id);
+        Registrations::bounded(self.config.max_registrations, |limit| {
+            Connection {
+                socket_dir: self.config.socket_dir.as_path(),
+                dbname: &self.config.dbname,
+                role: &self.config.role,
+                query_timeout_secs: self.config.query_timeout_secs.get(),
+                password_file: Some(self.config.password_file.as_path()),
+            }
+            .query(QUERY, &[&scope, &k, &limit])
+            .and_then(|rows| {
+                rows.iter()
+                    .map(|row| column(row, "registration"))
+                    .collect::<Result<Vec<Vec<u8>>, _>>()
+            })
         })
         .map_err(|error| DirectoryError::Unavailable {
             pool_id,
@@ -86,8 +88,9 @@ pub enum GenesisError {
 /// anything. Why the genesis file is the only source: ADR 0008 Consequences.
 ///
 /// Nonzero, because a k of zero counts a registration in the tip block and
-/// there is then no depth to wait out at all.
-pub fn security_parameter(path: &Path) -> Result<NonZeroU32, GenesisError> {
+/// there is then no depth to wait out at all. Signed and 32-bit, because that is
+/// what the query binds it as — a k past `i32::MAX` is no block count either.
+pub fn security_parameter(path: &Path) -> Result<NonZeroI32, GenesisError> {
     let named = || path.display().to_string();
     let text = std::fs::read_to_string(path).map_err(|source| GenesisError::Unreadable {
         path: named(),
@@ -103,8 +106,8 @@ pub fn security_parameter(path: &Path) -> Result<NonZeroU32, GenesisError> {
         .ok_or_else(|| GenesisError::NoSecurityParameter { path: named() })?;
     found
         .as_u64()
-        .and_then(|k| u32::try_from(k).ok())
-        .and_then(NonZeroU32::new)
+        .and_then(|k| i32::try_from(k).ok())
+        .and_then(NonZeroI32::new)
         .ok_or_else(|| GenesisError::NotABlockCount {
             path: named(),
             found: found.to_string(),

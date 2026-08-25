@@ -25,11 +25,18 @@ back out of db-sync. What it proves is asserted in tests/calidus.rs.
 Nothing here records the shipped query's own answer: the server binds its
 parameters over the Postgres wire protocol (ADR 0009), so a `psql` recording
 would not be an answer the server asked for. The recorder runs the query
-against the devnet instead, and fails if it finds no registration.
+against the devnet instead, and fails unless the devnet answers with what the
+assertions name.
+
+The query's row bound is proven there too, which is why the devnet carries
+`other_key`'s scope filled one row past a limit of the recorder's own choosing.
+The recorder waits until they all answer under a bound as wide as their count
+before it reads them under the limit, because a short answer is otherwise just as
+much what a row that has not reached depth looks like.
 
 `crafted/scope-mismatch` scopes `test_key`'s pool and is witnessed by
 `other_key`, with `other_key`'s hash in the COSE protected header.
 
-Re-recording starts with `scripts/devnet.sh up`, because the recorder wants a
-chain holding one registration and no more. It then waits out the depth, which
+Re-recording starts with `scripts/devnet.sh up`, because the recorder wants each
+scope holding the rows it expects and no more. It then waits out the depth, which
 looks like several minutes of nothing.

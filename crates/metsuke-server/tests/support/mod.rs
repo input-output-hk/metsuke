@@ -7,14 +7,14 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, HashMap};
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::{NonZeroI32, NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use metsuke_server::applications::ApplicationCode;
 use metsuke_server::archive::{ArchiveError, List, Store, StoredSubmission};
 use metsuke_server::authority::{ColdKeyOrCalidus, Signed};
-use metsuke_server::calidus::{CalidusKeys, Directory, DirectoryError};
+use metsuke_server::calidus::{CalidusKeys, Directory, DirectoryError, Registrations};
 use metsuke_server::config::{
     AbsolutePath, ApplicationsConfig, CalidusConfig, DeveloperConfig, IngestConfig,
 };
@@ -241,6 +241,10 @@ pub fn nonzero_u32(value: u32) -> NonZeroU32 {
     NonZeroU32::new(value).expect("a test limit is never zero")
 }
 
+pub fn nonzero_i32(value: i32) -> NonZeroI32 {
+    NonZeroI32::new(value).expect("a test constant is nonzero")
+}
+
 /// The index every test opens, under a directory it owns.
 pub fn index_store(dir: &Path) -> Index {
     Index::open(&dir.join("index.sqlite")).unwrap()
@@ -308,12 +312,17 @@ pub fn calidus_config(socket_dir: &Path, genesis: &Path) -> CalidusConfig {
         query_timeout_secs: nonzero_u64(11),
         shelley_genesis_path: absolute(genesis),
         resolution_ttl_secs: nonzero_u32(TEST_TTL_SECS),
+        max_registrations: nonzero_u32(TEST_MAX_REGISTRATIONS),
     }
 }
 
+/// The registration cap every test runs under. Deliberately not the value
+/// contrib/server.example.toml sets, so a test cannot pass on the two agreeing.
+pub const TEST_MAX_REGISTRATIONS: u32 = 3;
+
 /// The security parameter every test genesis carries. Not any network's k:
 /// where the real one comes from is `dbsync::security_parameter`'s to prove.
-pub const TEST_SECURITY_PARAMETER: u32 = 6;
+pub const TEST_SECURITY_PARAMETER: i32 = 6;
 
 /// A Shelley genesis holding the one field the server reads, and the
 /// `[calidus]` section naming it. The file is written because `serve` reads it
@@ -333,6 +342,7 @@ pub fn calidus_toml(dir: &Path) -> String {
         query_timeout_secs,
         shelley_genesis_path,
         resolution_ttl_secs,
+        max_registrations,
     } = calidus_config(dir, &genesis);
     format!(
         r#"
@@ -344,6 +354,7 @@ password_file = "{password_file}"
 query_timeout_secs = {query_timeout_secs}
 shelley_genesis_path = "{shelley_genesis_path}"
 resolution_ttl_secs = {resolution_ttl_secs}
+max_registrations = {max_registrations}
 "#,
         socket_dir = socket_dir.as_path().display(),
         password_file = password_file.as_path().display(),
@@ -515,6 +526,7 @@ pub struct CannedDirectory {
 #[derive(Default)]
 struct Chain {
     registrations: RefCell<HashMap<PoolId, Vec<Vec<u8>>>>,
+    crowded: RefCell<HashMap<PoolId, u32>>,
     lookups: Cell<usize>,
 }
 
@@ -535,21 +547,30 @@ impl CannedDirectory {
             .insert(pool_id, registrations);
     }
 
+    /// What a scope a stranger has filled looks like.
+    pub fn crowd(&self, pool_id: PoolId, max: u32) {
+        self.chain.crowded.borrow_mut().insert(pool_id, max);
+    }
+
     pub fn lookups(&self) -> usize {
         self.chain.lookups.get()
     }
 }
 
 impl Directory for CannedDirectory {
-    fn registrations(&self, pool_id: PoolId) -> Result<Vec<Vec<u8>>, DirectoryError> {
+    fn registrations(&self, pool_id: PoolId) -> Result<Registrations, DirectoryError> {
         self.chain.lookups.set(self.lookups() + 1);
-        Ok(self
-            .chain
-            .registrations
-            .borrow()
-            .get(&pool_id)
-            .cloned()
-            .unwrap_or_default())
+        if let Some(&max) = self.chain.crowded.borrow().get(&pool_id) {
+            return Ok(Registrations::TooMany { max });
+        }
+        Ok(Registrations::Rows(
+            self.chain
+                .registrations
+                .borrow()
+                .get(&pool_id)
+                .cloned()
+                .unwrap_or_default(),
+        ))
     }
 }
 
@@ -568,7 +589,7 @@ pub struct UnavailableDirectory {
 }
 
 impl Directory for UnavailableDirectory {
-    fn registrations(&self, pool_id: PoolId) -> Result<Vec<Vec<u8>>, DirectoryError> {
+    fn registrations(&self, pool_id: PoolId) -> Result<Registrations, DirectoryError> {
         Err(DirectoryError::Unavailable {
             pool_id,
             reason: self.reason.to_string(),

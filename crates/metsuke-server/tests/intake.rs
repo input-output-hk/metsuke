@@ -6,6 +6,7 @@ use metsuke_server::archive::{FilesystemArchive, ObjectName};
 use metsuke_server::authority::{ColdKey, ColdKeyOrCalidus, Refusal};
 use metsuke_server::calidus::{CalidusKeys, Resolution};
 use metsuke_server::config::IngestConfig;
+use metsuke_server::http::status_for;
 use metsuke_server::index::Index;
 use metsuke_server::intake::{IngestError, Intake, Rejection};
 use metsuke_wire::envelope::{Envelope, PoolId, SCHEMA_VERSION, SigningKey};
@@ -13,10 +14,10 @@ use time::OffsetDateTime;
 
 mod support;
 use support::{
-    CannedDirectory, FailingArchive, TEST_TTL_SECS, UnavailableDirectory, calidus_authority,
-    calidus_key, envelope_at, envelope_for, index_store, nonzero_u32, nonzero_u64, other_key,
-    permissive_config, pool_of, registered_pool, registration, rotated_calidus_key, seal,
-    stored_submission, submission, test_key, test_now,
+    CannedDirectory, FailingArchive, TEST_MAX_REGISTRATIONS, TEST_TTL_SECS, UnavailableDirectory,
+    calidus_authority, calidus_key, envelope_at, envelope_for, index_store, nonzero_u32,
+    nonzero_u64, other_key, permissive_config, pool_of, registered_pool, registration,
+    rotated_calidus_key, seal, stored_submission, submission, test_key, test_now,
 };
 
 /// An intake wired to a temporary directory and database, ready to submit
@@ -493,6 +494,45 @@ fn the_refused_text_does_not_name_the_chain_state_the_log_does() {
         .expect("a refused key withholds its reason");
     assert!(!sent.contains("revoked"), "got: {sent}");
     assert!(withheld.contains("revoked"), "got: {withheld}");
+}
+
+// Acceptance: a pool whose scope carries more rows than the server verifies is
+// told the bound it exceeded, rather than reading as a key that does not speak
+// for it.
+#[test]
+fn a_pool_over_the_registration_cap_is_told_the_bound() {
+    let pool = registered_pool();
+    let directory = CannedDirectory::holding(pool, vec![]);
+    directory.crowd(pool, TEST_MAX_REGISTRATIONS);
+    let (mut intake, _dir) = calidus_intake(&[pool], directory);
+
+    let error = calidus_submit(&mut intake, &calidus_key(), 1, test_now()).unwrap_err();
+
+    match rejection(error) {
+        Rejection::TooManyRegistrations { pool_id, max } => {
+            assert_eq!(pool_id, pool);
+            assert_eq!(max, TEST_MAX_REGISTRATIONS);
+        }
+        other => panic!("over the cap is its own refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_registration_cap_refusal_is_sent_rather_than_withheld() {
+    let pool = registered_pool();
+    let directory = CannedDirectory::holding(pool, vec![]);
+    directory.crowd(pool, TEST_MAX_REGISTRATIONS);
+    let (mut intake, _dir) = calidus_intake(&[pool], directory);
+
+    let error = calidus_submit(&mut intake, &calidus_key(), 1, test_now()).unwrap_err();
+
+    assert_eq!(status_for(&error), 403);
+    assert!(error.withheld().is_none(), "the bound is not a secret");
+    let sent = error.to_string();
+    assert!(
+        sent.contains(&TEST_MAX_REGISTRATIONS.to_string()),
+        "got: {sent}"
+    );
 }
 
 // Acceptance: a rotation reaches a running server once the resolution ages out,

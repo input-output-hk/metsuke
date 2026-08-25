@@ -20,16 +20,42 @@ pub enum DirectoryError {
     Unavailable { pool_id: PoolId, reason: String },
 }
 
+/// What a directory found under one pool's scope. Why the bound past which it
+/// hands up nothing is a refusal and not a truncation: ADR 0008.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Registrations {
+    Rows(Vec<Vec<u8>>),
+    TooMany { max: u32 },
+}
+
+impl Registrations {
+    /// One bounded read. `query` is handed the row bound to ask a chain for and
+    /// answers with what came back; the bound is named nowhere else, so no
+    /// caller can ask for one the answer is not then judged against.
+    pub fn bounded<E>(
+        max: NonZeroU32,
+        query: impl FnOnce(i64) -> Result<Vec<Vec<u8>>, E>,
+    ) -> Result<Registrations, E> {
+        // The smallest bound that tells a scope at the cap from one over it.
+        // Which is which: tests/calidus.rs.
+        let rows = query(i64::from(max.get()) + 1)?;
+        Ok(match rows.len() as u64 > u64::from(max.get()) {
+            true => Registrations::TooMany { max: max.get() },
+            false => Registrations::Rows(rows),
+        })
+    }
+}
+
 /// Where a pool's label-867 rows come from, as the bytes the chain carries. A
 /// directory that handed up `Registration`s would be asserting a witness it
 /// never checked, and a test double could then fabricate authority.
 pub trait Directory {
-    fn registrations(&self, pool_id: PoolId) -> Result<Vec<Vec<u8>>, DirectoryError>;
+    fn registrations(&self, pool_id: PoolId) -> Result<Registrations, DirectoryError>;
 }
 
-/// What a pool's witnessed registrations say. The three refusals are separate
-/// because each is a different thing for the operator to do, and collapsing
-/// them would make a contested rotation read as a pool that never registered.
+/// What a pool's witnessed registrations say. The refusals are separate because
+/// each is a different thing for the operator to do, and collapsing them would
+/// make a contested rotation read as a pool that never registered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolution {
     /// The registered key: witnessed, highest nonce, and a point on the curve.
@@ -48,6 +74,11 @@ pub enum Resolution {
     NotAKey {
         nonce: u64,
     },
+    /// More rows scope this pool than the server verifies, so none of them was
+    /// read. The one variant here that is not something the rows say.
+    TooMany {
+        max: u32,
+    },
 }
 
 impl std::fmt::Display for Resolution {
@@ -61,6 +92,9 @@ impl std::fmt::Display for Resolution {
             }
             Resolution::NotAKey { nonce } => {
                 write!(f, "the key registered at nonce {nonce} is not on the curve")
+            }
+            Resolution::TooMany { max } => {
+                write!(f, "more than {max} registrations scope this pool")
             }
         }
     }
@@ -120,20 +154,20 @@ impl<D: Directory> CalidusKeys<D> {
         {
             return Ok(*resolution);
         }
-        let resolution = current(&self.witnessed(pool_id)?);
+        let resolution = match self.directory.registrations(pool_id)? {
+            Registrations::TooMany { max } => Resolution::TooMany { max },
+            Registrations::Rows(rows) => current(&witnessed(pool_id, &rows)),
+        };
         self.resolved.insert(pool_id, (now, resolution));
         Ok(resolution)
     }
+}
 
-    /// The rows that are this pool's own. A row whose witness does not check is
-    /// a stranger's transaction, so it is dropped rather than reported: anyone
-    /// can post one, and naming them per pool would let a stranger fill the log.
-    fn witnessed(&self, pool_id: PoolId) -> Result<Vec<Registration>, DirectoryError> {
-        Ok(self
-            .directory
-            .registrations(pool_id)?
-            .iter()
-            .filter_map(|blob| cip151::verify(pool_id, blob).ok())
-            .collect())
-    }
+/// The rows that are this pool's own. A row whose witness does not check is a
+/// stranger's transaction, so it is dropped rather than reported: anyone can
+/// post one, and naming them per pool would let a stranger fill the log.
+fn witnessed(pool_id: PoolId, rows: &[Vec<u8>]) -> Vec<Registration> {
+    rows.iter()
+        .filter_map(|blob| cip151::verify(pool_id, blob).ok())
+        .collect()
 }

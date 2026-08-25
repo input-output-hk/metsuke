@@ -36,6 +36,25 @@ fields we decoded.
   arrives late. The price is paid by revocation, which now takes up to k plus
   the resolution lifetime to reach a running server — pick that lifetime
   against k, not against db-sync load, which is loopback and negligible.
+- How many rows scope a pool is a stranger's to decide, so the server bounds
+  what it will verify and refuses the pool past that bound rather than reading a
+  subset. Which rows a truncated read kept would settle the answer before any
+  witness ran, and a pool wrongly told it registered nothing is worse than one
+  told the server declined to look. The bound is configuration, and the refusal
+  reaches the submitter rather than only the log: it is our policy and not
+  anything the chain said.
+- The bound sits just above what a rotating pool needs, not high enough that
+  reaching it is implausible. Registration rows are free to post on the chain we
+  read, so no bound is high enough to cost an attacker anything and a generous
+  one buys only the work it permits; where the rows cost something, that cost is
+  the limit and none of this is needed. The other candidate — verifying in nonce
+  order until a witness passes — bounds nothing either, because rows above the
+  real nonce are as cheap to post as any others. The accepted consequence is
+  that a scope is cheaper to crowd than one that had to exhaust the query
+  timeout, and that it clears only when an operator raises the bound: tolerable
+  because the chain we read carries the program's own vetted participants, who
+  have a support channel, and because the pool's cold key goes on working
+  throughout.
 - k is read from the network's Shelley genesis, whose path is configuration. It
   is a genesis parameter, reachable from no `cardano-cli query` subcommand and
   absent from the protocol parameters, and it differs between the network we

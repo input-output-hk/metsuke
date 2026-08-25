@@ -110,6 +110,7 @@ let
             query_timeout_secs = 30;
             shelley_genesis_path = "${shelleyGenesis}";
             resolution_ttl_secs = 3600;
+            max_registrations = 10;
           };
           developer = {
             user = "metsuke-dev";

@@ -11,7 +11,7 @@ use metsuke_server::dbsync::{DbSync, GenesisError, security_parameter};
 
 mod support;
 use support::{
-    TEST_SECURITY_PARAMETER, calidus_config, nonzero_u32, registered_pool, write_password,
+    TEST_SECURITY_PARAMETER, calidus_config, nonzero_i32, registered_pool, write_password,
 };
 
 // A db-sync that cannot be reached has not said the pool registered nothing,
@@ -29,7 +29,7 @@ fn a_database_that_cannot_be_reached_is_unavailable_rather_than_an_empty_answer(
     // An empty directory: no postgres has ever put a socket there.
     let directory = DbSync::new(
         calidus_config(dir.path(), &genesis),
-        nonzero_u32(TEST_SECURITY_PARAMETER),
+        nonzero_i32(TEST_SECURITY_PARAMETER),
     );
 
     let DirectoryError::Unavailable { reason, .. } =
@@ -46,7 +46,7 @@ fn the_security_parameter_comes_from_the_shelley_genesis() {
     let genesis = dir.path().join("shelley-genesis.json");
     std::fs::write(&genesis, "{\"securityParam\": 108, \"epochLength\": 21600}").unwrap();
 
-    assert_eq!(security_parameter(&genesis).unwrap(), nonzero_u32(108));
+    assert_eq!(security_parameter(&genesis).unwrap(), nonzero_i32(108));
 }
 
 #[test]
@@ -78,7 +78,7 @@ fn a_security_parameter_that_is_no_block_count_names_what_it_found() {
         security_parameter(&genesis)
     };
 
-    for json in ["\"432\"", "-1", "4294967296", "0"] {
+    for json in ["\"432\"", "-1", "4294967296", "2147483648", "0"] {
         let error = written(json).unwrap_err();
         assert!(
             matches!(&error, GenesisError::NotABlockCount { found, .. } if found == json),

@@ -111,6 +111,9 @@ pub struct CalidusConfig {
     /// What it is chosen against: ADR 0008. Seconds as a `NonZeroU32` so the
     /// cast to a signed duration cannot wrap.
     pub resolution_ttl_secs: NonZeroU32,
+    /// Rows under one pool's scope the server will verify before it refuses the
+    /// pool (ADR 0008).
+    pub max_registrations: NonZeroU32,
 }
 
 /// The one account that may pull the archive back out (ticket metsuke-4zo.10).

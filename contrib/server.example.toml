@@ -45,6 +45,7 @@ password_file = "/run/credentials/metsuke-server.service/pgpassword"
 query_timeout_secs = 30
 shelley_genesis_path = "/var/lib/metsuke-server/shelley-genesis.json"
 resolution_ttl_secs = 3600
+max_registrations = 10
 
 # The account developers pull the archive back out as.
 [developer]
