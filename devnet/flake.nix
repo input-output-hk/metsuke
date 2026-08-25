@@ -1,6 +1,13 @@
 {
   description = "Local Leios devnet: node, Postgres, db-sync, and a metadata submitter";
 
+  # haskell.nix resolves cardano-node's plan by importing from a derivation, so
+  # `nix flake check` — which refuses IFD — cannot evaluate the hydraJobs below
+  # without this. Nix honours it only for a reader who has accepted this flake's
+  # config; anyone else gets "ignoring untrusted flake configuration setting",
+  # and then needs IFD allowed in their own nix.conf or the check fails.
+  nixConfig.allow-import-from-derivation = true;
+
   # Kept out of ../flake.nix on purpose. leios and db-sync are both haskell.nix
   # projects, and their transitive inputs dwarf the workspace's own lock. The
   # workspace flake stays crane-only so an ordinary `nix flake check` there does
@@ -8,6 +15,15 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-parts.url = "github:hercules-ci/flake-parts";
+
+    # The workspace flake, for the two binaries and the two NixOS modules the
+    # end-to-end job wires together. This direction and not the other: a
+    # cardano-node input in ../flake.nix would put a haskell.nix lock in front
+    # of every `nix flake check` there, which is what the note above refuses.
+    metsuke = {
+      url = "path:..";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     process-compose-flake.url = "github:Platonic-Systems/process-compose-flake";
     services-flake.url = "github:juspay/services-flake";
 
@@ -36,17 +52,44 @@
 
   outputs =
     inputs@{ flake-parts, ... }:
-    flake-parts.lib.mkFlake { inherit inputs; } {
+    let
+      inherit (inputs.nixpkgs) lib;
       systems = [ "x86_64-linux" ];
+      # The patched cardano-node the Leios prototype's own lock pins, which is
+      # what the demo devnet runs.
+      leiosPkgs = system: inputs.leios.inputs.cardano-node-leios.packages.${system};
+    in
+    flake-parts.lib.mkFlake { inherit inputs; } {
+      inherit systems;
 
       imports = [ inputs.process-compose-flake.flakeModule ];
+
+      # hydraJobs rather than checks: the pair wants a node, and `e2e` wants
+      # /dev/kvm and a bucket besides. ../flake.nix keeps `nix flake check`
+      # free of all three.
+      flake.hydraJobs =
+        let
+          jobs = lib.genAttrs systems (
+            system:
+            import ../nix/e2e-test.nix {
+              pkgs = inputs.nixpkgs.legacyPackages.${system};
+              inherit (inputs) leios;
+              inherit (leiosPkgs system) cardano-node cardano-cli;
+              agentModule = inputs.metsuke.nixosModules.metsuke;
+              serverModule = inputs.metsuke.nixosModules.metsuke-server;
+              serverPackage = inputs.metsuke.packages.${system}.metsuke-server;
+            }
+          );
+        in
+        {
+          e2e = lib.mapAttrs (_: job: job.test) jobs;
+          pool-id = lib.mapAttrs (_: job: job.poolIdRecorded) jobs;
+        };
 
       perSystem =
         { pkgs, system, ... }:
         let
-          nodePkgs = inputs.leios.inputs.cardano-node-leios.packages.${system};
-          inherit (nodePkgs) cardano-node;
-          inherit (nodePkgs) cardano-cli;
+          inherit (leiosPkgs system) cardano-node cardano-cli;
           cardano-db-sync =
             inputs.cardano-db-sync-leios.packages.${system}."cardano-db-sync:exe:cardano-db-sync";
           # db-sync self-deadlocks: chain-sync holds AccessExclusive on

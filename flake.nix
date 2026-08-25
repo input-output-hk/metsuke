@@ -45,7 +45,7 @@
 
       # A hydraJob, not a check: runNixOSTest wants /dev/kvm, and `nix flake
       # check` has to stay runnable wherever the crates build. The end-to-end
-      # test (ticket metsuke-4zo.14) lands beside it for the same reason.
+      # job is devnet/flake.nix's, which is where the node it needs is pinned.
       flake.hydraJobs.units = lib.genAttrs systems (
         system:
         import ./nix/unit-test.nix {
@@ -297,6 +297,23 @@
 
             static-x86_64-linux = linksNothing config.packages.metsuke-static-x86_64-linux;
             static-aarch64-linux = linksNothing config.packages.metsuke-static-aarch64-linux;
+
+            # Two locks name the same Leios tag: this one is what
+            # scripts/record-scrape-fixtures.sh records against, devnet's is
+            # what the devnet and the end-to-end job run. Bumping one alone
+            # would leave the fixtures describing a node no test runs.
+            leios-pin =
+              let
+                devnet = (lib.importJSON ./devnet/flake.lock).nodes.leios.locked.rev;
+                here = inputs.cardano-node-leios.rev;
+              in
+              pkgs.runCommand "leios-pins-agree" { } ''
+                [ "${here}" = "${devnet}" ] || {
+                  echo "flake.lock pins leios ${here}; devnet/flake.lock pins ${devnet}"
+                  exit 1
+                }
+                touch $out
+              '';
 
             contrib-unit = pkgs.runCommand "contrib-unit-is-current" { } ''
               diff -u ${./contrib/metsuke.service} ${contribUnit} \

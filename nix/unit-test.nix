@@ -3,7 +3,7 @@
 # none of the privileges ADR 0007 refuses. The `bare` node runs
 # contrib/metsuke.service itself, so what a host that is not NixOS copies is
 # executed and not only diffed. A submission travelling from one unit to the
-# other is not here — that is the end-to-end test, ticket metsuke-4zo.14.
+# other is not here — that is e2e-test.nix.
 {
   pkgs,
   agentModule,
