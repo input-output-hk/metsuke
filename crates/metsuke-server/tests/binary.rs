@@ -696,7 +696,10 @@ fn a_request_without_the_headers_is_refused_naming_the_first_missing_one() {
 fn another_route_and_another_method_are_refused() {
     let key = test_key();
     let server = Server::start(&[pool_of(&key)]);
-    let elsewhere = server.url.replace(metsuke_server::http::SUBMIT_PATH, "/");
+    // Not the root: that is the instructions page.
+    let elsewhere = server
+        .url
+        .replace(metsuke_server::http::SUBMIT_PATH, "/nowhere");
     let mut response = agent().post(&elsewhere).send(&b""[..]).unwrap();
     assert_eq!(response.status().as_u16(), 404);
     assert!(
@@ -735,6 +738,38 @@ fn both_developer_routes_refuse_a_request_without_credentials() {
             .unwrap_or_else(|| panic!("{path} answered no challenge: {headers:?}"));
         assert!(challenge.1.contains("Basic"), "got: {challenge:?}");
     }
+}
+
+#[test]
+fn the_instructions_page_is_served_without_credentials() {
+    let key = test_key();
+    let server = Server::start(&[pool_of(&key)]);
+    let (status, body, headers) = server.pull_as(metsuke_server::instructions::PATH, None);
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(
+        String::from_utf8_lossy(&body),
+        metsuke_server::instructions::page()
+    );
+    let content_type = headers
+        .iter()
+        .find(|(field, _)| field == "content-type")
+        .unwrap_or_else(|| panic!("no content type: {headers:?}"));
+    assert!(content_type.1.starts_with("text/html"), "{content_type:?}");
+}
+
+#[test]
+fn the_instructions_page_takes_only_get() {
+    let key = test_key();
+    let server = Server::start(&[pool_of(&key)]);
+    let posted = agent()
+        .post(format!(
+            "{}{}",
+            server.base(),
+            metsuke_server::instructions::PATH
+        ))
+        .send(&b""[..])
+        .unwrap();
+    assert_eq!(posted.status().as_u16(), 405);
 }
 
 #[test]

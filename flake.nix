@@ -98,11 +98,15 @@
             ".sh"
           ];
           cratesDir = "${toString ./crates}/";
+          # The shipped config and unit, which both crates compile in whole:
+          # the agent's config test and the server's instructions page.
+          contribDir = "${toString ./contrib}/";
           src = pkgs.lib.cleanSourceWith {
             src = ./.;
             filter =
               path: type:
               (craneLib.filterCargoSources path type)
+              || pkgs.lib.hasPrefix contribDir path
               || (
                 pkgs.lib.hasPrefix cratesDir path
                 && pkgs.lib.any (suffix: pkgs.lib.hasSuffix suffix path) extraSources
@@ -269,15 +273,18 @@
                 # against it.
                 src = pkgs.lib.fileset.toSource {
                   root = ./.;
-                  fileset =
-                    pkgs.lib.fileset.union
-                      (pkgs.lib.fileset.fromSource (crateSrc [
-                        ./crates/metsuke-wire
-                        ./crates/metsuke
-                        ./crates/metsuke-server
-                      ]))
-                      # include_str!'d, so cargo sources alone do not build.
-                      ./crates/metsuke-server/src/registrations.sql;
+                  fileset = pkgs.lib.fileset.unions [
+                    (pkgs.lib.fileset.fromSource (crateSrc [
+                      ./crates/metsuke-wire
+                      ./crates/metsuke
+                      ./crates/metsuke-server
+                    ]))
+                    # include_str!'d, so cargo sources alone do not build.
+                    ./crates/metsuke-server/src/registrations.sql
+                    # Carried whole into the instructions page.
+                    ./contrib/config.example.toml
+                    ./contrib/metsuke.service
+                  ];
                 };
                 cargoExtraArgs = "--package metsuke-server";
               }
@@ -294,6 +301,40 @@
             contrib-unit = pkgs.runCommand "contrib-unit-is-current" { } ''
               diff -u ${./contrib/metsuke.service} ${contribUnit} \
                 || { echo "contrib/metsuke.service is stale; its header says how"; exit 1; }
+              touch $out
+            '';
+
+            # The instructions page tells an operator to build these by name,
+            # and nothing in the Rust tree can see whether they still exist.
+            instructions-outputs = pkgs.runCommand "instructions-name-real-outputs" { } ''
+              page=${./crates/metsuke-server/src/instructions.rs}
+              # Each grep is asserted non-empty first: a rename that also
+              # reflowed the literal would otherwise leave a loop over nothing.
+              # `|| true`: a grep that matches nothing exits 1, and under
+              # `set -o pipefail` that would abort with an empty log instead of
+              # the message below.
+              packages=$(grep -o 'metsuke-static-[a-z0-9_-]*' $page | sort -u || true)
+              modules=$(grep -o 'nixosModules\.[a-z-]*' $page | cut -d. -f2 | sort -u || true)
+              [ -n "$packages" ] || { echo "instructions.rs offers no build to run"; exit 1; }
+              [ -n "$modules" ] || { echo "instructions.rs points at no module"; exit 1; }
+              for name in $packages; do
+                case " ${toString (builtins.attrNames config.packages)} " in
+                  *" $name "*) ;;
+                  *)
+                    echo "instructions.rs offers $name, which this flake does not build"
+                    exit 1
+                    ;;
+                esac
+              done
+              for name in $modules; do
+                case " ${toString (builtins.attrNames self.nixosModules)} " in
+                  *" $name "*) ;;
+                  *)
+                    echo "instructions.rs points at nixosModules.$name, which does not exist"
+                    exit 1
+                    ;;
+                esac
+              done
               touch $out
             '';
 

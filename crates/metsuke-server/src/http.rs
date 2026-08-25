@@ -1,9 +1,9 @@
 //! The HTTP surface: the POST route submissions arrive on, whose headers
-//! decode into an `authority::Signed`, and the two GET routes a developer
-//! pulls the archive back out through (`developer`). TLS belongs to the
-//! reverse proxy in front of this (endpoint-protection.md, Transport), as does
-//! any IP-keyed limit (same doc, cost asymmetry and abuse handling) — this
-//! layer knows only pool ids and one developer credential.
+//! decode into an `authority::Signed`, the two GET routes a developer pulls
+//! the archive back out through (`developer`), and the `instructions` page.
+//! TLS belongs to the reverse proxy in front of this (endpoint-protection.md,
+//! Transport), as does any IP-keyed limit (same doc, cost asymmetry and abuse
+//! handling) — this layer knows only pool ids and one developer credential.
 //!
 //! What the proxy must also do: buffer each request body in full before
 //! forwarding it. `serve` reads bodies on the accepting thread and tiny_http
@@ -25,6 +25,7 @@ use crate::archive::{Bytes, Store};
 use crate::authority::{Authority, Signed};
 use crate::developer::{self, Developer, Filters, Unauthorized};
 use crate::index::IndexError;
+use crate::instructions;
 use crate::intake::{IngestError, Intake, Rejection};
 
 /// Where submissions arrive.
@@ -139,10 +140,11 @@ pub fn serve<A: Store + Bytes, K: Authority>(
     server: &Server,
     intake: &mut Intake<A, K>,
     developer: &Developer,
+    page: &str,
 ) -> Result<std::convert::Infallible, std::io::Error> {
     loop {
         let mut request = server.recv()?;
-        let answer = route(intake, developer, &mut request);
+        let answer = route(intake, developer, page, &mut request);
         respond(request, answer);
     }
 }
@@ -162,12 +164,25 @@ struct Answer {
 fn route<A: Store + Bytes, K: Authority>(
     intake: &mut Intake<A, K>,
     developer: &Developer,
+    page: &str,
     request: &mut Request,
 ) -> Answer {
     let url = request.url().to_string();
     let path = url.split('?').next().unwrap_or_default().to_string();
     let method = request.method().clone();
     match path.as_str() {
+        // Unauthenticated: it is what an operator reads before they have
+        // anything to authenticate with.
+        instructions::PATH => match method {
+            Method::Get => Answer {
+                status: 200,
+                content_type: "text/html; charset=utf-8",
+                body: page.as_bytes().to_vec(),
+                claimed: None,
+                headers: Vec::new(),
+            },
+            _ => refuse(None, 405, format!("{} takes GET", instructions::PATH)),
+        },
         // A known route reached with the wrong method is named, because a
         // client that guessed the method is not a client at the wrong address.
         SUBMIT_PATH => match method {

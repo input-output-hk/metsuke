@@ -11,9 +11,10 @@ use crate::config::ApplicationsConfig;
 use crate::db::{Connection, DbError, Parameters, column};
 
 /// Where a pool registration carries its application code: CIP-20 fixes the
-/// label, the key inside it is the rewards program's own.
-const METADATA_LABEL: i64 = 674;
-const METADATA_KEY: &str = "musashinet_incentives_application_code";
+/// label, the key inside it is the rewards program's own. Public because the
+/// instructions page tells an operator to write exactly this pair.
+pub const METADATA_LABEL: i64 = 674;
+pub const METADATA_KEY: &str = "musashinet_incentives_application_code";
 
 /// The code an operator puts in both halves of the gate. Constrained to an
 /// identifier alphabet so it is a bare TOML string wherever it is emitted, and

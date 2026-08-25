@@ -14,6 +14,7 @@ pub mod dbsync;
 pub mod developer;
 pub mod http;
 pub mod index;
+pub mod instructions;
 pub mod intake;
 pub mod ratelimit;
 pub mod rebuild;

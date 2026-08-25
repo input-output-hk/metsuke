@@ -18,6 +18,7 @@ use metsuke_server::dbsync::{DbSync, GenesisError, security_parameter};
 use metsuke_server::developer::Developer;
 use metsuke_server::http;
 use metsuke_server::index::{Index, IndexError};
+use metsuke_server::instructions;
 use metsuke_server::intake::Intake;
 use metsuke_server::rebuild::{EmptyArchive, RebuildError, RebuiltIndex, rebuild};
 use metsuke_server::s3::{S3Archive, S3Error};
@@ -306,6 +307,9 @@ fn serve<A: Store + Bytes>(archive: A, serving: Serving, index: Index) -> Result
         DbSync::new(calidus, security_parameter),
         ttl_secs,
     ));
+    // Built from files compiled in, so a broken one is a build that must not
+    // reach an operator asking for it.
+    let page = instructions::page();
     let server = tiny_http::Server::http(listen).map_err(|source| Fatal::Listen {
         listen: listen.to_string(),
         reason: source.to_string(),
@@ -320,7 +324,7 @@ fn serve<A: Store + Bytes>(archive: A, serving: Serving, index: Index) -> Result
         http::SUBMIT_PATH,
     );
     let mut intake = Intake::new(ingest, index, archive, authority);
-    match http::serve(&server, &mut intake, &developer)? {}
+    match http::serve(&server, &mut intake, &developer, &page)? {}
 }
 
 /// The developer account, with the password read off the file the config
