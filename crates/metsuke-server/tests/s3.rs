@@ -6,9 +6,8 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use metsuke_server::archive::{Bytes, Fetch, Kind, List, ObjectName, Store, StoredSubmission};
+use metsuke_server::archive::{Bytes, Fetch, Kind, List, Store, StoredSubmission};
 use metsuke_server::config::S3Config;
-use metsuke_server::rebuild::{EmptyArchive, rebuild};
 use metsuke_server::s3::{META_SIGNATURE, META_VKEY, S3Archive};
 use metsuke_server::verify::{audit, verify};
 use metsuke_wire::hex;
@@ -16,8 +15,8 @@ use rusty_s3::Credentials;
 
 mod support;
 use support::{
-    MAX_HEADER_BYTES, envelope_for, index_store, nonzero_u32, nonzero_u64, object_name, pool_of,
-    seal, stored_submission, test_key, test_now,
+    MAX_HEADER_BYTES, envelope_for, nonzero_u32, nonzero_u64, object_name, pool_of, seal,
+    stored_submission, test_key, test_now,
 };
 
 /// One request the fake endpoint received.
@@ -574,25 +573,84 @@ fn listing_follows_the_continuation_token_to_the_end() {
     );
 }
 
-/// The seam ADR 0005 rests on: keys as S3 hands them back are keys the rebuild
-/// can index, with no filesystem in between.
+/// The developer listing is one upstream request: the client's filters go out
+/// as `prefix` and `start-after`, the bound as `max-keys`, and nothing here
+/// follows a continuation token.
 #[test]
-fn a_bucket_listing_rebuilds_the_index() {
+fn a_page_is_one_list_request_carrying_the_clients_filters() {
     let listed = listed_keys();
     let endpoint = FakeS3::start(vec![(200, listing(&listed, None))]);
-    let dir = tempfile::tempdir().unwrap();
-    let mut index = index_store(dir.path());
-    let summary = rebuild(&endpoint.archive(1), &mut index, EmptyArchive::Refuse).unwrap();
 
-    assert_eq!(summary.objects, listed.len());
-    let rows: Vec<String> = index
-        .submissions("", "", nonzero_u32(100))
-        .unwrap()
-        .objects
-        .iter()
-        .map(ObjectName::to_key)
-        .collect();
-    assert_eq!(rows, listed);
+    let page = endpoint
+        .archive(1)
+        .page("v1/2025-08-12/", &listed[0], nonzero_u32(50))
+        .unwrap();
+
+    assert_eq!(page.keys, listed);
+    assert!(!page.truncated);
+    let requests = endpoint.requests();
+    assert_eq!(requests.len(), 1, "one page is one request");
+    let url = &requests[0].url;
+    assert!(url.contains("prefix=v1%2F2025-08-12%2F"), "got {url}");
+    assert!(url.contains("max-keys=50"), "got {url}");
+    assert!(
+        url.contains(&format!("start-after={}", listed[0].replace('/', "%2F"))),
+        "got {url}"
+    );
+}
+
+/// `truncated` is the endpoint's own answer, not a count against the bound: a
+/// developer reading a short page as the whole archive would miss the rest.
+#[test]
+fn a_truncated_listing_is_reported_as_the_endpoint_reported_it() {
+    let listed = listed_keys();
+    let endpoint = FakeS3::start(vec![(200, listing(&listed, Some("page-two")))]);
+
+    let page = endpoint.archive(1).page("", "", nonzero_u32(1000)).unwrap();
+
+    assert_eq!(page.keys, listed);
+    assert!(page.truncated);
+    assert_eq!(
+        endpoint.requests().len(),
+        1,
+        "the next page is the client's to ask for"
+    );
+}
+
+/// The download passes the bucket's own 404 through, so a key nothing stored
+/// is told apart from a bucket that cannot be reached.
+#[test]
+fn a_key_the_bucket_does_not_hold_is_no_such_object() {
+    let missing = object_name(&test_key(), test_now(), Kind::Metrics).to_key();
+    let endpoint = FakeS3::start(vec![(404, "NoSuchKey".to_string())]);
+
+    let error = endpoint.archive(0).bytes(&missing).unwrap_err();
+
+    assert!(
+        matches!(
+            error,
+            metsuke_server::archive::ArchiveError::NoSuchObject { .. }
+        ),
+        "got: {error:?}"
+    );
+}
+
+/// Everything else the bucket answers stays an availability failure: a 503
+/// says nothing about whether the object exists.
+#[test]
+fn a_bucket_that_refuses_a_download_is_not_a_missing_object() {
+    let key = object_name(&test_key(), test_now(), Kind::Metrics).to_key();
+    let endpoint = FakeS3::start(vec![(503, "SlowDown".to_string())]);
+
+    let error = endpoint.archive(0).bytes(&key).unwrap_err();
+
+    assert!(
+        !matches!(
+            error,
+            metsuke_server::archive::ArchiveError::NoSuchObject { .. }
+        ),
+        "got: {error:?}"
+    );
 }
 
 /// An endpoint that stays truncated forever, stopped by `list_max_pages`.

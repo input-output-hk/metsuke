@@ -18,9 +18,8 @@ The client signs the request body — the exact bytes sent — with a raw Ed2551
 detached signature. The body is a zstd frame sequence: a skippable frame
 carrying the header as plaintext JSON, then the data frame the payload is
 compressed into (`envelope.rs`). One signature covers both. HTTP headers carry
-pool id, verification key, and signature. No COSE, no CBOR anywhere in the
-runtime data path. CIP-88/Calidus registration stays in existing SPO tooling;
-the server only reads its on-chain result.
+the verification key and the signature; the pool is the key's hash. No COSE, no
+CBOR anywhere in the runtime data path.
 
 ## Consequences
 
@@ -29,5 +28,5 @@ the server only reads its on-chain result.
 - The server can verify before decompressing (see ADR 2 for the check order).
 - SPOs cannot reuse wallet-produced COSE signatures; the client binary does the
   signing.
-- "Runtime data path" means the submission: reading a pool's on-chain Calidus
-  registration is CBOR and is not this path (ADR 8).
+- "Runtime data path" means the submission, which is the only path there is:
+  nothing the server does reads a chain.

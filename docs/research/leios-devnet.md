@@ -37,8 +37,7 @@ The devnet's own k is not a fact about anything. One forging node has no
 competing chain, so nothing here ever rolls back and the k-deep wait cannot be
 exercised locally at all. It is shrunk only to buy a short epoch, which is what
 puts an announced-then-effective pool retirement within one sitting. **A fixture
-recorded here carries the devnet's k, not the network's** — ADR 0008 is where the
-rule about reading k from the network's genesis lives.
+recorded here carries the devnet's k, not the network's**.
 
 The real leios genesis lives in cardano-playground under
 `docs/environments-pre/leios/`, which is also where the node config and

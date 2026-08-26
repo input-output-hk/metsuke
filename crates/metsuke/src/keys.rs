@@ -1,5 +1,5 @@
 //! Signing-key loading: the cardano-cli TextEnvelope format SPO key files
-//! already use (`pool.skey`, `pool.calidus.skey`). One accepted format keeps
+//! already use (`pool.skey`). One accepted format keeps
 //! the parsing surface small; anything else fails loudly at startup.
 
 use std::path::Path;

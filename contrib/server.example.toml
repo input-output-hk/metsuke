@@ -4,7 +4,6 @@
 # (crates/metsuke-server/tests/config.rs), so what it shows parses.
 
 listen = "127.0.0.1:8080"
-index_path = "/var/lib/metsuke-server/index.sqlite"
 
 # The S3 archive reads its credentials from AWS_ACCESS_KEY_ID and
 # AWS_SECRET_ACCESS_KEY in the process environment.
@@ -26,7 +25,7 @@ list_max_pages = 1000
 
 [ingest]
 # Change this: the pools you onboarded against the application code each came
-# in on, as `metsuke-server generate-allowlist` emits them.
+# in on, as the offline allowlist generator emits them.
 allowlist = { pool1CHANGEME = "MUSA-0000" }
 max_body_bytes = 1048576
 max_header_bytes = 4096
@@ -38,28 +37,9 @@ rate_limit_uploads = 100
 rate_limit_uploads_total = 2000
 rate_limit_window_secs = 3600
 
-# Loaded and unused (docs/adr/0003), and still required: leave it in place or
-# the server will not start.
-[calidus]
-socket_dir = "/run/postgresql"
-dbname = "cexplorer"
-role = "metsuke_ro"
-password_file = "/run/credentials/metsuke-server.service/pgpassword"
-query_timeout_secs = 30
-shelley_genesis_path = "/var/lib/metsuke-server/shelley-genesis.json"
-resolution_ttl_secs = 3600
-max_registrations = 10
-
 # The account developers pull the archive back out as.
 [developer]
 user = "metsuke-dev"
 password_file = "/run/credentials/metsuke-server.service/developerpassword"
+# One listing is one bucket request, so anything above 1000 is clamped to it.
 list_max_rows = 1000
-
-# Optional, and the only section that is.
-[applications]
-applications_csv = "/var/lib/metsuke-server/applications.csv"
-socket_dir = "/run/postgresql"
-dbname = "cexplorer"
-role = "metsuke_ro"
-query_timeout_secs = 60

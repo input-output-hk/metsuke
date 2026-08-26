@@ -16,7 +16,7 @@ use metsuke_wire::envelope::PoolId;
 pub struct Config {
     /// The pool this agent reports for, bech32 `pool1…`. Configured rather
     /// than derived from the key, and checked against it at startup
-    /// (`identity::check_pool_id`, ADR 0003).
+    /// (`identity::check_pool_id`).
     pub pool_id: PoolId,
     /// What to call this machine on every line it ships. Absent means the
     /// machine's own hostname, slugified (`identity::agent_id`); a value here

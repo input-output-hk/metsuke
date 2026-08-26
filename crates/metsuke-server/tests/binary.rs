@@ -9,7 +9,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use base64::Engine as _;
-use metsuke_server::index::Index;
 use metsuke_wire::envelope::{Ack, Envelope, HEADER_SIGNATURE, HEADER_VKEY, PoolId, SigningKey};
 use metsuke_wire::hex;
 use time::OffsetDateTime;
@@ -17,10 +16,9 @@ use time::OffsetDateTime;
 mod support;
 use metsuke_server::config::IngestConfig;
 use support::{
-    DEVELOPER_PASSWORD, ServerToml, applications_config, applications_toml, developer_config,
-    developer_toml_with_rows, envelope_at, example_s3_archive, filesystem_archive, ingest_toml,
-    nonzero_u32, nonzero_u64, object_name, other_key, permissive_config, pool_of, seal,
-    server_toml, stored_submission, test_key,
+    DEVELOPER_PASSWORD, ServerToml, developer_config, developer_toml_with_rows, envelope_at,
+    example_s3_archive, filesystem_archive, ingest_toml, nonzero_u32, nonzero_u64, object_name,
+    other_key, permissive_config, pool_of, seal, server_toml, stored_submission, test_key,
 };
 
 /// What the S3 archive reads its credentials from. Passed to every spawn, so
@@ -81,10 +79,6 @@ impl Server {
         let _ = self.child.wait();
     }
 
-    fn index_path(&self) -> std::path::PathBuf {
-        self.dir.path().join("index.sqlite")
-    }
-
     /// Run a subcommand against this server's own config, as an operator would.
     fn run(&self, command: &str) -> std::process::Output {
         self.run_with(&[command])
@@ -100,16 +94,6 @@ impl Server {
             .envs(TEST_CREDENTIALS)
             .output()
             .unwrap()
-    }
-
-    fn rebuild_index(&self) -> String {
-        let output = self.run(metsuke_server::cli::REBUILD_INDEX);
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8(output.stdout).unwrap()
     }
 
     /// POST a sealed batch with the ADR-0001 headers. Returns the status and
@@ -237,95 +221,6 @@ fn a_missing_config_exits_nonzero_naming_the_path() {
     );
 }
 
-/// A config naming an `[applications]` section and the applications the caller
-/// wrote. The registered half is not answered: `socket_dir` is the empty
-/// temporary directory, so the query fails to connect. The archive and the
-/// index are named but never created, which is what
-/// `generate_allowlist_opens_neither_store` reads.
-fn allowlist_config(dir: &std::path::Path, applied: &str) -> std::path::PathBuf {
-    let applications_csv = dir.join("applications.csv");
-    std::fs::write(&applications_csv, applied).unwrap();
-    let mut config = server_toml(dir, &[pool_of(&test_key())]);
-    config.applications = Some(applications_toml(&applications_config(
-        &applications_csv,
-        dir,
-    )));
-    config.write(dir)
-}
-
-fn generate_allowlist(config: &std::path::Path) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_metsuke-server"))
-        .args(["--config", config.to_str().unwrap()])
-        .arg(metsuke_server::cli::GENERATE_ALLOWLIST)
-        .env_remove("AWS_ACCESS_KEY_ID")
-        .env_remove("AWS_SECRET_ACCESS_KEY")
-        .output()
-        .unwrap()
-}
-
-/// A db-sync that could not be reached has not said the pools registered
-/// nothing: emitting an empty allowlist from that would stop every upload, so
-/// the command exits nonzero with stdout untouched.
-///
-/// The pairs themselves are not asserted here. Answering the wire protocol
-/// takes a Postgres (ADR 0009), so what stdout carries is `gate` and
-/// `Gate::to_toml`'s to prove: tests/applications.rs.
-#[test]
-fn generate_allowlist_refuses_a_db_sync_it_cannot_reach() {
-    let dir = tempfile::tempdir().unwrap();
-    let onboarded = pool_of(&test_key());
-    let config = allowlist_config(
-        dir.path(),
-        &format!("pool_id,application_code\n{onboarded},MUSA-0001\n"),
-    );
-
-    let output = generate_allowlist(&config);
-    assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("cexplorer"), "{stderr}");
-}
-
-/// Both stores are named in the config, so what proves `Command::GenerateAllowlist`
-/// never reaches them is that neither exists afterwards.
-///
-/// The path this walks is the one that gives up at the db-sync, which is as far
-/// as the suite gets without a Postgres (ADR 0009). Both stores are opened
-/// after the gate runs, so the run that emits pairs stays unproven here.
-#[test]
-fn generate_allowlist_opens_neither_store_before_giving_up_on_the_chain() {
-    let dir = tempfile::tempdir().unwrap();
-    let pool = pool_of(&test_key());
-    let config = allowlist_config(
-        dir.path(),
-        &format!("pool_id,application_code\n{pool},MUSA-0001\n"),
-    );
-
-    let output = generate_allowlist(&config);
-
-    assert!(!output.status.success());
-    assert!(!dir.path().join("archive").exists());
-    assert!(!dir.path().join("index.sqlite").exists());
-}
-
-#[test]
-fn generate_allowlist_without_an_applications_section_names_it() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = allowlist_config(dir.path(), "pool_id,application_code\n");
-    let without = std::fs::read_to_string(&config)
-        .unwrap()
-        .split_once("[applications]")
-        .expect("the helper writes the section")
-        .0
-        .to_string();
-    std::fs::write(&config, without).unwrap();
-
-    let output = generate_allowlist(&config);
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("[applications]"), "{stderr}");
-}
-
 #[test]
 fn an_unknown_argument_exits_nonzero_showing_the_usage() {
     let output = Command::new(env!("CARGO_BIN_EXE_metsuke-server"))
@@ -366,8 +261,10 @@ fn a_resent_batch_is_stored_again_rather_than_refused() {
     assert_eq!(server.post(&key, &envelope).0, 200);
     let (status, reason) = server.post(&key, &envelope);
     assert_eq!(status, 200, "{reason}");
-    let page = listing(&server, metsuke_server::http::SUBMISSIONS_PATH);
-    assert_eq!(page["submissions"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        listed_keys(&server, metsuke_server::http::SUBMISSIONS_PATH).len(),
+        2
+    );
 }
 
 #[test]
@@ -482,24 +379,20 @@ fn verify_archive_on_a_filesystem_archive_exits_nonzero() {
     assert!(stderr.contains("no metadata"), "{stderr}");
 }
 
-/// Two subcommands in one invocation: one would silently win, and the operator
-/// would believe the other ran.
+/// Two subcommand words in one invocation: one would silently win, and the
+/// operator would believe the other ran.
 #[test]
 fn two_subcommands_are_refused_naming_both() {
     let output = Command::new(env!("CARGO_BIN_EXE_metsuke-server"))
         .args([
-            metsuke_server::cli::REBUILD_INDEX,
+            metsuke_server::cli::VERIFY_ARCHIVE,
             metsuke_server::cli::VERIFY_ARCHIVE,
         ])
         .output()
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains(metsuke_server::cli::REBUILD_INDEX)
-            && stderr.contains(metsuke_server::cli::VERIFY_ARCHIVE),
-        "{stderr}"
-    );
+    assert!(stderr.contains("cannot both run"), "{stderr}");
 }
 
 /// An empty bucket verified nothing, so it must not exit zero: that code is
@@ -569,92 +462,22 @@ fn an_s3_archive_without_credentials_exits_nonzero_naming_them() {
     assert!(stderr.contains("AWS_ACCESS_KEY_ID"), "{stderr}");
 }
 
+/// Restarting keeps nothing but the in-memory rate-limit windows, so the
+/// listing a fresh process answers is the archive itself.
 #[test]
-fn rebuild_index_restores_the_listing_from_the_archive() {
+fn a_restarted_server_lists_what_the_archive_still_holds() {
     let key = test_key();
     let mut server = Server::start(&[pool_of(&key)]);
     assert_eq!(server.post(&key, &envelope_now(&key, 7)).0, 200);
     let stored = only_object_key(&server);
     server.stop();
-    std::fs::remove_file(server.index_path()).unwrap();
 
-    let summary = server.rebuild_index();
-    assert!(summary.contains("1 objects"), "got: {summary}");
-    let index = Index::open(&server.index_path()).unwrap();
-    let rows: Vec<String> = index
-        .submissions("", "", nonzero_u32(10))
-        .unwrap()
-        .objects
-        .iter()
-        .map(metsuke_server::archive::ObjectName::to_key)
-        .collect();
-    assert_eq!(rows, vec![stored]);
-}
+    let restarted = Server::start_with(&[pool_of(&key)], {
+        let root = server.archive_root();
+        move |config, _| config.archive = filesystem_archive(&root)
+    });
 
-/// Refused as misplaced, not as unknown: the usage text carries the flag name
-/// too, so only `ArgsError::AllowEmptyWithoutRebuild`'s own words tell the two
-/// refusals apart.
-#[test]
-fn allow_empty_without_rebuild_index_is_refused() {
-    let key = test_key();
-    let server = Server::start(&[pool_of(&key)]);
-    for args in [
-        vec![metsuke_server::cli::ALLOW_EMPTY],
-        vec![
-            metsuke_server::cli::VERIFY_ARCHIVE,
-            metsuke_server::cli::ALLOW_EMPTY,
-        ],
-    ] {
-        let output = server.run_with(&args);
-        assert!(!output.status.success(), "{args:?} must be refused");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("only means anything to"),
-            "{args:?}: {stderr}"
-        );
-    }
-}
-
-/// `rebuild::EmptyArchive` reached from the command line, both ways.
-#[test]
-fn rebuild_index_on_an_archive_with_nothing_in_it_exits_nonzero() {
-    let key = test_key();
-    let mut server = Server::start(&[pool_of(&key)]);
-    server.stop();
-
-    let output = server.run(metsuke_server::cli::REBUILD_INDEX);
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("no objects") && stderr.contains(metsuke_server::cli::ALLOW_EMPTY),
-        "{stderr}"
-    );
-    // Which archive listed nothing is the whole question the operator is being
-    // asked to answer.
-    assert!(
-        stderr.contains(server.archive_root().to_str().unwrap()),
-        "{stderr}"
-    );
-
-    // Either order, as `Args::parse` claims.
-    for args in [
-        [
-            metsuke_server::cli::REBUILD_INDEX,
-            metsuke_server::cli::ALLOW_EMPTY,
-        ],
-        [
-            metsuke_server::cli::ALLOW_EMPTY,
-            metsuke_server::cli::REBUILD_INDEX,
-        ],
-    ] {
-        let output = server.run_with(&args);
-        assert!(
-            output.status.success(),
-            "{args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        assert!(String::from_utf8_lossy(&output.stdout).contains("0 objects"));
-    }
+    assert_eq!(only_object_key(&restarted), stored);
 }
 
 #[test]
@@ -771,11 +594,11 @@ fn a_wrong_developer_password_is_refused_on_both_routes() {
     }
 }
 
-/// The listing answers from the index, filtered as the request asked. The key
+/// The listing answers off the archive, filtered as the request asked. The key
 /// is time-major, so a prefix names a day and `after` is the sync cursor: two
 /// pools upload, and one page carries all of them in receipt order.
 #[test]
-fn the_listing_answers_the_index_filtered_by_prefix_and_after() {
+fn the_listing_answers_the_archive_filtered_by_prefix_and_after() {
     let one = test_key();
     let two = other_key();
     let server = Server::start(&[pool_of(&one), pool_of(&two)]);
@@ -784,11 +607,11 @@ fn the_listing_answers_the_index_filtered_by_prefix_and_after() {
     }
 
     let whole = listing(&server, metsuke_server::http::SUBMISSIONS_PATH);
-    let keys: Vec<String> = whole["submissions"]
+    let keys: Vec<String> = whole["keys"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|submission| submission["key"].as_str().unwrap().to_string())
+        .map(|key| key.as_str().unwrap().to_string())
         .collect();
     assert_eq!(keys.len(), 3, "got: {keys:?}");
     assert_eq!(whole["truncated"], false);
@@ -798,32 +621,16 @@ fn the_listing_answers_the_index_filtered_by_prefix_and_after() {
         .rsplit_once('/')
         .map(|(folder, _)| format!("{folder}/"))
         .expect("an object key names a day folder");
-    let today = listing(
-        &server,
-        &format!(
-            "{}?prefix={}",
-            metsuke_server::http::SUBMISSIONS_PATH,
-            urlencoded(&prefix)
-        ),
+    let today = format!(
+        "{}?prefix={}",
+        metsuke_server::http::SUBMISSIONS_PATH,
+        urlencoded(&prefix)
     );
-    assert_eq!(today["submissions"].as_array().unwrap().len(), 3);
+    assert_eq!(listed_keys(&server, &today).len(), 3);
 
-    let after = listing(
-        &server,
-        &format!(
-            "{}?prefix={}&after={}",
-            metsuke_server::http::SUBMISSIONS_PATH,
-            urlencoded(&prefix),
-            urlencoded(&keys[1])
-        ),
-    );
+    let after = format!("{today}&after={}", urlencoded(&keys[1]));
     assert_eq!(
-        after["submissions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|submission| submission["key"].as_str().unwrap().to_string())
-            .collect::<Vec<_>>(),
+        listed_keys(&server, &after),
         vec![keys[2].clone()],
         "the cursor key itself is behind the page it names"
     );
@@ -842,52 +649,29 @@ fn a_listing_at_the_row_bound_is_reported_as_truncated() {
     }
 
     let page = listing(&server, metsuke_server::http::SUBMISSIONS_PATH);
-    assert_eq!(page["submissions"].as_array().unwrap().len(), 1);
+    assert_eq!(page["keys"].as_array().unwrap().len(), 1);
     assert_eq!(page["truncated"], true);
 }
 
-/// A row `record` never wrote is permanent, so the listing answers 500 rather
-/// than the 503 that invites a retry (`http::index_failed`).
+/// An archive that cannot be listed is a 503 the client may retry, and its own
+/// error names the store — which is the operator's to see, not the client's.
 #[test]
-fn a_listing_over_a_row_that_is_no_object_key_is_a_server_error() {
+fn a_listing_over_an_archive_that_will_not_answer_is_unavailable() {
     let key = test_key();
-    let server = Server::start(&[pool_of(&key)]);
-    assert_eq!(server.post(&key, &envelope_now(&key, 1)).0, 200);
-    rusqlite::Connection::open(server.index_path())
-        .unwrap()
-        .execute(
-            "INSERT INTO submissions (object_key) VALUES ('v1/not-a-key')",
-            [],
-        )
-        .unwrap();
-
-    let (status, body, _) = server.pull(metsuke_server::http::SUBMISSIONS_PATH);
-
-    assert_eq!(status, 500, "{}", String::from_utf8_lossy(&body));
-    assert!(
-        !String::from_utf8_lossy(&body).contains("not-a-key"),
-        "the row is the operator's to see, not the client's"
-    );
-}
-
-/// The other half of `http::index_failed`: a database this process cannot read
-/// may read on the next attempt, so it answers 503 where a corrupt row is 500.
-#[test]
-fn a_listing_over_an_index_that_will_not_answer_is_unavailable() {
-    let key = test_key();
-    let server = Server::start(&[pool_of(&key)]);
-    assert_eq!(server.post(&key, &envelope_now(&key, 1)).0, 200);
-    rusqlite::Connection::open(server.index_path())
-        .unwrap()
-        .execute("DROP TABLE submissions", [])
-        .unwrap();
+    let server = Server::start_with(&[pool_of(&key)], |config, dir| {
+        // A regular file where the archive expects a directory root: listing
+        // it fails, where a root that is merely absent is an empty archive.
+        let path = dir.join("archive-is-a-file");
+        std::fs::write(&path, b"not a directory").unwrap();
+        config.archive = filesystem_archive(&path);
+    });
 
     let (status, body, _) = server.pull(metsuke_server::http::SUBMISSIONS_PATH);
 
     assert_eq!(status, 503, "{}", String::from_utf8_lossy(&body));
     assert!(
-        !String::from_utf8_lossy(&body).contains("submissions"),
-        "the database's own error is the operator's to see, not the client's"
+        !String::from_utf8_lossy(&body).contains("archive-is-a-file"),
+        "the store's own error is the operator's to see, not the client's"
     );
 }
 
@@ -912,8 +696,8 @@ fn an_object_downloads_byte_for_byte() {
     assert_eq!(body, wire_bytes, "the download must be what was archived");
 }
 
-/// A key nothing stored is a 404 off the index, not a bucket round trip and
-/// not an empty body a developer would take for an empty submission.
+/// A key nothing stored is the archive's own 404, not an empty body a
+/// developer would take for an empty submission.
 #[test]
 fn an_object_the_archive_does_not_hold_is_not_found() {
     let key = test_key();
@@ -957,11 +741,20 @@ fn a_download_without_a_key_names_the_field() {
 /// The key of the one object the server has stored. Read off the listing
 /// because the id in it is the server's, stamped at receipt.
 fn only_object_key(server: &Server) -> String {
-    let page = listing(server, metsuke_server::http::SUBMISSIONS_PATH);
-    match page["submissions"].as_array().unwrap().as_slice() {
-        [submission] => submission["key"].as_str().unwrap().to_string(),
+    match listed_keys(server, metsuke_server::http::SUBMISSIONS_PATH).as_slice() {
+        [key] => key.clone(),
         other => panic!("expected one stored object, got {other:?}"),
     }
+}
+
+/// The keys one page of the listing carries.
+fn listed_keys(server: &Server, path: &str) -> Vec<String> {
+    listing(server, path)["keys"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|key| key.as_str().unwrap().to_string())
+        .collect()
 }
 
 /// One page of the listing, parsed. Authenticated as the configured account,

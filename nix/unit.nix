@@ -3,22 +3,17 @@
 # what the agent's share of it has to hold, and ADR 0010 is the one exception
 # it allows: a caller that says it reads the journal gets what that takes,
 # everyone else renders the same bytes as before the parameter existed.
-let
+{
+  restartSecs = 30;
+
   # AF_NETLINK is not reachability: glibc asks the kernel which addresses the
-  # host has before it resolves a name, and both units name hosts.
-  agentAddressFamilies = [
+  # host has before it resolves a name, and both units name hosts. Neither
+  # unit opens a unix socket, so neither gets AF_UNIX.
+  addressFamilies = [
     "AF_INET"
     "AF_INET6"
     "AF_NETLINK"
   ];
-in
-{
-  restartSecs = 30;
-
-  inherit agentAddressFamilies;
-  # The server reads db-sync over a colocated unix socket (ADR 0009). Nothing
-  # in crates/metsuke/src opens one, so the agent does not get AF_UNIX.
-  serverAddressFamilies = agentAddressFamilies ++ [ "AF_UNIX" ];
 
   hardening =
     {

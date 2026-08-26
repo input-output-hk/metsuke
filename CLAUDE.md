@@ -6,18 +6,19 @@ verifies and archives them to S3; `crates/metsuke-wire` is what the two agree on
 neither depends on the other. Security is the top constraint — least privilege,
 smallest attack surface.
 
+Whose a submission is is derived, never claimed — CONTEXT.md, **Cold Key**.
+The two ends that enforce it are `metsuke::identity::check_pool_id` and
+`metsuke_server::authority::Signed::pool_id`.
+
 ## Invariants
 
 Each is an accepted decision; read the ADR before working near it.
 
 - Wire signature is raw Ed25519 over the request body as sent; no COSE/CBOR on the submission path — docs/adr/0001
-- Both ends sign and verify with the key the pool id hashes from; the server derives the pool rather than being told it — docs/adr/0003
 - Client SQLite spool is the only durability layer; ACK means the S3 PUT succeeded — docs/adr/0004
-- S3 stores the raw signed bytes; server SQLite is a rebuildable index — docs/adr/0005
+- S3 stores the raw signed bytes and is the only store; the server holds no state — docs/adr/0005
 - Client and server versions are independent; the update nudge is embedded at server build — docs/adr/0006
 - The agent touches only the loopback Prometheus endpoint: no socket, no journal, no groups — docs/adr/0007
-- Calidus registrations are witness-checked in the server against raw db-sync metadata, never taken from an indexer — docs/adr/0008
-- The server reads db-sync over the Postgres wire protocol with bound parameters, not through `psql` — docs/adr/0009
 
 ## Conventions
 

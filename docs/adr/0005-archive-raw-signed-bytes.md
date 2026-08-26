@@ -1,7 +1,7 @@
-# 5. Archive stores the raw signed bytes; SQLite is a rebuildable index
+# 5. Archive stores the raw signed bytes
 
 Status: accepted (2026-08-19), amended (2026-08-20), the key and the metadata
-amended by metsuke-jfb.4
+amended by metsuke-jfb.4, the index removed by metsuke-jfb.5
 
 ## Context
 
@@ -17,15 +17,15 @@ derived from the receipt and from what the signed bytes carry, never from what a
 request claimed, is this decision's. The signature and the key that made it ride
 along as object metadata headers, so an object carries everything its own
 verification needs; nothing else does, because everything else about a batch is
-already inside the bytes. SQLite indexes the bucket with one row per stored
-object, for the endpoint that lists them, and the bucket alone is the source of
-truth.
+already inside the bytes. The bucket alone is the source of truth: the server
+keeps no index of it, and the endpoint that lists objects passes a bucket
+listing through.
 
 ## Consequences
 
 - The bucket is a self-verifying corpus: object bytes + metadata headers reproduce
   the original verification without any database.
-- The SQLite index is disposable — every row is rebuildable from a bucket
-  listing, because the key is the whole row.
+- The server is stateless — restarting it loses nothing, and a listing cannot
+  disagree with what the bucket holds because there is no second copy.
 - Consumers decompress locally; there is no server-side decompressed copy.
   Dashboard-friendly formats are a downstream concern, derived from the archive.

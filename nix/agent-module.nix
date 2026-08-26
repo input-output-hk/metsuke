@@ -54,7 +54,8 @@ in
     signingKeyFile = lib.mkOption {
       type = lib.types.path;
       description = ''
-        The cold or Calidus signing key, in cardano-cli TextEnvelope form.
+        The pool cold signing key, in cardano-cli TextEnvelope form. The agent
+        refuses to start unless it hashes to the configured pool id.
         Read by systemd as root and handed to the agent as a credential, so
         the file itself stays unreadable to the service user.
       '';
@@ -147,7 +148,7 @@ in
       }
       // unit.hardening {
         inherit stateDirectory;
-        addressFamilies = unit.agentAddressFamilies;
+        inherit (unit) addressFamilies;
         # The whole privilege delta of ADR 0010, and only for an operator who
         # asked for trace lines.
         readsTheJournal = cfg.settings.log != null;

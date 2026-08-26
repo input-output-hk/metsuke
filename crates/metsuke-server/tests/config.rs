@@ -27,9 +27,9 @@ fn the_shipped_example_config_loads() {
     );
 }
 
-/// The other archive kind, and a config leaving `[applications]` out.
+/// The other archive kind.
 #[test]
-fn a_filesystem_archive_without_an_applications_section_loads() {
+fn a_filesystem_archive_loads() {
     let dir = tempfile::tempdir().unwrap();
     let text = server_toml(dir.path(), &[pool_of(&test_key())]).render();
     let config = ServerConfig::from_toml(&text).unwrap();
@@ -37,7 +37,6 @@ fn a_filesystem_archive_without_an_applications_section_loads() {
         panic!("the config named a filesystem archive");
     };
     assert_eq!(root, dir.path().join("archive"));
-    assert!(config.applications.is_none());
 }
 
 /// `example()` with the line that sets `field` replaced by `replacement`, or
@@ -76,11 +75,9 @@ fn an_archive_without_a_kind_is_refused() {
 }
 
 /// The fields typed `NonZero`, so zero and absence are the same refusal.
-const NONZERO_FIELDS: [&str; 13] = [
-    "query_timeout_secs",
+const NONZERO_FIELDS: [&str; 10] = [
     "list_max_rows",
-    "resolution_ttl_secs",
-    "max_registrations",
+    "rate_limit_window_secs",
     "request_timeout_secs",
     "signature_validity_secs",
     "put_retry_backoff_ms",
@@ -89,26 +86,19 @@ const NONZERO_FIELDS: [&str; 13] = [
     "max_header_bytes",
     "rate_limit_uploads",
     "rate_limit_uploads_total",
-    "rate_limit_window_secs",
 ];
 
 /// The rest, where only absence is a mistake. Together with `NONZERO_FIELDS`
 /// this is every field the server reads, so a new one joins exactly one list.
-const OTHER_FIELDS: [&str; 14] = [
+const OTHER_FIELDS: [&str; 8] = [
     "listen",
     "user",
-    "index_path",
     "bucket",
     "region",
     "endpoint",
     "put_retries",
     "allowlist",
-    "applications_csv",
-    "socket_dir",
-    "dbname",
-    "role",
     "password_file",
-    "shelley_genesis_path",
 ];
 
 #[test]
@@ -126,17 +116,10 @@ fn every_field_is_required() {
 
 #[test]
 fn a_path_that_is_not_absolute_is_refused() {
-    for field in [
-        "socket_dir",
-        "applications_csv",
-        "password_file",
-        "shelley_genesis_path",
-    ] {
-        let error = ServerConfig::from_toml(&with(field, "\"relative\""))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("absolute"), "{field}, got: {error}");
-    }
+    let error = ServerConfig::from_toml(&with("password_file", "\"relative\""))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("absolute"), "got: {error}");
 }
 
 #[test]

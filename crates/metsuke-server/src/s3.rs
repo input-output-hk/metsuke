@@ -15,7 +15,7 @@ use metsuke_wire::envelope::{Signature, VerifyingKey};
 use metsuke_wire::{hex, http};
 
 use crate::archive::{
-    ArchiveError, Bytes, Fetch, FetchedObject, KEY_PREFIX, List, ObjectName, Store,
+    ArchiveError, Bytes, Fetch, FetchedObject, KEY_PREFIX, List, ObjectName, Page, Store,
     StoredSubmission,
 };
 use crate::config::S3Config;
@@ -97,15 +97,19 @@ impl S3Archive {
                 // the body limit reads the same way however often it is asked
                 // for.
                 retryable: transient(&error),
+                status: None,
             })
     }
 }
 
 /// A single failed attempt, transport error and refusal alike, with
 /// `retryable` carried through from `transient` or `http::Refusal`.
+/// `status` is the endpoint's own, and `None` where the request never got an
+/// answer to read one off.
 struct Failure {
     reason: String,
     retryable: bool,
+    status: Option<u16>,
 }
 
 fn answer(
@@ -114,6 +118,7 @@ fn answer(
     let mut response = sent.map_err(|error| Failure {
         retryable: transient(&error),
         reason: error.to_string(),
+        status: None,
     })?;
     match http::classify(&mut response) {
         Ok(()) => Ok(response),
@@ -123,6 +128,7 @@ fn answer(
                 refusal.status, refusal.reason
             ),
             retryable: refusal.retryable,
+            status: Some(refusal.status),
         }),
     }
 }
@@ -221,6 +227,38 @@ impl List for S3Archive {
             self.list_max_pages
         )))
     }
+
+    /// One ListObjectsV2, passed through: the client's prefix and cursor go
+    /// upstream as `prefix` and `start-after`, and `truncated` is the
+    /// endpoint's own answer. `max_keys` is already at or under S3's per-page
+    /// cap (`developer::Developer::list_max_rows`), so one request is one
+    /// page and nothing here paginates.
+    fn page(&self, prefix: &str, after: &str, max_keys: NonZeroU32) -> Result<Page, ArchiveError> {
+        let refuse = |reason: String| ArchiveError::List { reason };
+        let mut action = self.bucket.list_objects_v2(Some(&self.credentials));
+        // Verbatim: an object key carries the archive's own prefix, and
+        // `Filters::parse` is what keeps a client's empty prefix inside it.
+        action.with_prefix(prefix.to_string());
+        action.with_max_keys(max_keys.get() as usize);
+        if !after.is_empty() {
+            action.with_start_after(after.to_string());
+        }
+        let url = action.sign(self.signature_validity);
+        let text = self.get(&url).map_err(|failure| refuse(failure.reason))?;
+        let listing = ListObjectsV2::parse_response(&text)
+            .map_err(|error| refuse(format!("the listing does not parse: {error}")))?;
+        Ok(Page {
+            keys: listing
+                .contents
+                .into_iter()
+                .map(|object| object.key)
+                .collect(),
+            // rusty-s3 drops `IsTruncated`; the continuation token stands in
+            // for it, S3 returning one exactly when there is more after this
+            // page.
+            truncated: listing.next_continuation_token.is_some(),
+        })
+    }
 }
 
 impl Bytes for S3Archive {
@@ -236,8 +274,16 @@ impl Bytes for S3Archive {
             .bucket
             .get_object(Some(&self.credentials), key)
             .sign(self.signature_validity);
-        let mut response = answer(self.agent.get(url.as_str()).call())
-            .map_err(|failure| refuse(failure.reason))?;
+        // The bucket is the source of truth about what it holds, so its 404
+        // is the answer rather than something to pre-empt with a lookup.
+        let mut response = answer(self.agent.get(url.as_str()).call()).map_err(|failure| {
+            match failure.status {
+                Some(404) => ArchiveError::NoSuchObject {
+                    key: key.to_string(),
+                },
+                _ => refuse(failure.reason),
+            }
+        })?;
         response
             .body_mut()
             .read_to_vec()

@@ -119,7 +119,8 @@
           # recorded here is a query against production's schema owner.
           database = "cexplorer";
           owner = "cexplorer";
-          # Read-only, and the server connects as this (ADR 0008).
+          # Read-only. Nothing on the serving path reads a chain; the offline
+          # allowlist generator (metsuke-jfb.7) is what connects as this.
           reader = "metsuke_ro";
 
           socketDir = "$PWD/${workdir}/postgres";

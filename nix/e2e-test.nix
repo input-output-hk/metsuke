@@ -111,7 +111,8 @@ let
   secretAccessKey = "0011223344556677889900112233445566778899001122334455667788990011";
   rpcSecret = "5c1915fa04d0b6739675c61bf5907eb0fe3d9c69850c83820f51b4d25d13868c";
 
-  # Neither is ever presented: no db-sync answers here, and no developer asks.
+  # Never presented: no developer pulls the archive here, the test reads the
+  # bucket directly.
   password = pkgs.writeText "password" "not-a-real-secret";
 
   awsEnvironment = pkgs.writeText "aws-environment" ''
@@ -354,8 +355,8 @@ let
 
         services.metsuke = {
           enable = true;
-          # The pool's cold key, as the demo ships it: what the server's ADR-0003
-          # check resolves the pool id from.
+          # The pool's cold key, as the demo ships it: the pool id the server
+          # files under is the hash of this key.
           signingKeyFile = "${poolKeys}/cold.skey";
           restartSecs = 2;
           settings = {
@@ -379,7 +380,6 @@ let
         services.metsuke-server = {
           enable = true;
           environmentFile = awsEnvironment;
-          calidusPasswordFile = password;
           developerPasswordFile = password;
           restartSecs = 2;
           settings = {
@@ -400,17 +400,6 @@ let
               rate_limit_uploads = 240;
               rate_limit_uploads_total = 2400;
               rate_limit_window_secs = 3600;
-            };
-            calidus = {
-              # Nothing reaches db-sync here: the cold key answers ADR 0003 before
-              # any chain question is asked.
-              socket_dir = "/run/postgresql";
-              dbname = "cexplorer";
-              role = "metsuke_ro";
-              query_timeout_secs = 30;
-              shelley_genesis_path = "${devnetSrc}/config/genesis/shelley-genesis.json";
-              resolution_ttl_secs = 3600;
-              max_registrations = 10;
             };
             developer = {
               user = "metsuke-dev";

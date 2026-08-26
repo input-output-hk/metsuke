@@ -19,17 +19,17 @@ use metsuke_wire::journal::{ERR, WARNING};
 use time::OffsetDateTime;
 use tiny_http::{Header, Method, Request, Response, Server};
 
-use crate::archive::{Bytes, Store};
+use crate::archive::{ArchiveError, Bytes, List, Store};
 use crate::authority::Signed;
 use crate::developer::{self, Developer, Filters, Unauthorized};
-use crate::index::IndexError;
 use crate::instructions;
 use crate::intake::{IngestError, Intake, Rejection};
 
 /// Where submissions arrive.
 pub const SUBMIT_PATH: &str = "/v1/submit";
 
-/// The developer routes: one page of the index, and one object's bytes.
+/// The developer routes: one page of the archive listing, and one object's
+/// bytes.
 pub const SUBMISSIONS_PATH: &str = "/v1/submissions";
 pub const OBJECT_PATH: &str = "/v1/object";
 
@@ -119,19 +119,19 @@ pub fn status_for(error: &IngestError) -> u16 {
             | Rejection::UnreadableHeader(_)
             | Rejection::UnnameableKind { .. } => 400,
         },
-        IngestError::Index(_) | IngestError::Archive(_) => 503,
+        IngestError::Archive(_) => 503,
     }
 }
 
-/// Serve submissions one at a time: the intake owns a SQLite connection, and
-/// at one upload per pool per interval the loop is idle between submissions.
+/// Serve submissions one at a time: at one upload per pool per interval the
+/// loop is idle between submissions.
 ///
 /// Only returns on error, and every error it can see is terminal. tiny_http
 /// 0.12 leaves its accept thread on the first `accept` failure and queues that
 /// error once, so a second `recv` would block on an empty queue forever —
 /// logging and continuing would leave a process that looks healthy to systemd
 /// and accepts nothing. Failing out is what turns it back into a restart.
-pub fn serve<A: Store + Bytes>(
+pub fn serve<A: Store + Bytes + List>(
     server: &Server,
     intake: &mut Intake<A>,
     developer: &Developer,
@@ -156,7 +156,7 @@ struct Answer {
     headers: Vec<(&'static str, String)>,
 }
 
-fn route<A: Store + Bytes>(
+fn route<A: Store + Bytes + List>(
     intake: &mut Intake<A>,
     developer: &Developer,
     page: &str,
@@ -235,16 +235,21 @@ fn challenge(path: &str, error: &Unauthorized) -> Answer {
     answer
 }
 
-/// One page of the index as JSON. Bounded by `list_max_rows`, and the answer
-/// says whether the bound cut it off (`index::Listing`).
-fn listing<A: Store + Bytes>(intake: &Intake<A>, developer: &Developer, url: &str) -> Answer {
+/// One page of the archive listing as JSON, bounded by `list_max_rows`. The
+/// filters go upstream as they arrived and the answer says whether there is
+/// more after the last key (`archive::Page`).
+fn listing<A: Store + Bytes + List>(
+    intake: &Intake<A>,
+    developer: &Developer,
+    url: &str,
+) -> Answer {
     let filters = match Filters::parse(url) {
         Ok(filters) => filters,
         Err(error) => return refuse(None, 400, error.to_string()),
     };
     match intake
-        .index()
-        .submissions(&filters.prefix, &filters.after, developer.list_max_rows())
+        .archive()
+        .page(&filters.prefix, &filters.after, developer.list_max_rows())
     {
         Ok(listing) => Answer {
             status: 200,
@@ -253,28 +258,12 @@ fn listing<A: Store + Bytes>(intake: &Intake<A>, developer: &Developer, url: &st
             signer: None,
             headers: Vec::new(),
         },
-        Err(error) => index_failed(&error),
+        Err(error) => unavailable("the archive cannot be listed", &error.to_string()),
     }
 }
 
-/// How a failed index read is answered. A row `record` never wrote is not
-/// something a retry repairs (`index::IndexError::ObjectName`), so it earns a
-/// 500 where a database this process cannot reach earns a 503.
-fn index_failed(error: &IndexError) -> Answer {
-    let status = match error {
-        IndexError::ObjectName(_) => 500,
-        IndexError::Sqlite(_) | IndexError::Migrate(_) => 503,
-    };
-    refuse_withholding(
-        None,
-        status,
-        "the index cannot be read".to_string(),
-        Some(error.to_string()),
-    )
-}
-
-/// One object, as the bytes that were archived. Asks `index::Index::holds`
-/// before the archive.
+/// One object, as the bytes that were archived. No existence check first: the
+/// archive is the only account of what it holds, so its own 404 is the answer.
 fn object<A: Store + Bytes>(intake: &Intake<A>, url: &str) -> Answer {
     let key = match developer::query_value(url, KEY_FIELD) {
         Ok(key) => key,
@@ -282,11 +271,6 @@ fn object<A: Store + Bytes>(intake: &Intake<A>, url: &str) -> Answer {
     };
     if key.is_empty() {
         return refuse(None, 400, format!("name the object in ?{KEY_FIELD}="));
-    }
-    match intake.index().holds(&key) {
-        Err(error) => return index_failed(&error),
-        Ok(false) => return refuse(None, 404, "no such object".to_string()),
-        Ok(true) => (),
     }
     match intake.archive().bytes(&key) {
         Ok(bytes) => Answer {
@@ -298,6 +282,7 @@ fn object<A: Store + Bytes>(intake: &Intake<A>, url: &str) -> Answer {
             signer: None,
             headers: Vec::new(),
         },
+        Err(ArchiveError::NoSuchObject { .. }) => refuse(None, 404, "no such object".to_string()),
         Err(error) => unavailable("the archive cannot be read", &error.to_string()),
     }
 }

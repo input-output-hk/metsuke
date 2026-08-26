@@ -2,12 +2,12 @@
 //! archive, what a filter may ask for, and the JSON one page answers as.
 
 use base64::Engine as _;
-use metsuke_server::archive::Kind;
-use metsuke_server::developer::{Developer, Filters, page, query_value};
-use metsuke_server::index::Listing;
+use metsuke_server::archive::{KEY_PREFIX, Page};
+use metsuke_server::config::DeveloperConfig;
+use metsuke_server::developer::{Developer, Filters, LIST_MAX_ROWS_CAP, page, query_value};
 
 mod support;
-use support::{DEVELOPER_PASSWORD, developer_config, object_name, test_key, test_now};
+use support::{DEVELOPER_PASSWORD, developer_config, nonzero_u32};
 
 fn developer() -> Developer {
     let dir = tempfile::tempdir().unwrap();
@@ -89,11 +89,12 @@ fn a_prefix_and_an_after_are_read_off_the_query() {
 }
 
 /// Both filters are optional, and absent means "the whole archive from its
-/// start" rather than nothing.
+/// start" rather than nothing. The whole archive is what this server filed,
+/// so the prefix an absent one becomes is the object keys' own.
 #[test]
 fn a_query_with_no_filters_asks_for_everything() {
     let filters = Filters::parse("/v1/submissions").unwrap();
-    assert_eq!(filters.prefix, "");
+    assert_eq!(filters.prefix, KEY_PREFIX);
     assert_eq!(filters.after, "");
 }
 
@@ -121,22 +122,6 @@ fn a_filter_whose_escapes_are_not_utf8_is_refused() {
     assert!(error.contains("key"), "got: {error}");
 }
 
-/// The index matches a prefix with GLOB, so a client that sent a GLOB
-/// metacharacter would get a pattern match where it asked for a prefix. Refused
-/// naming the character rather than silently widening the answer.
-#[test]
-fn a_prefix_holding_a_glob_metacharacter_is_refused() {
-    for (prefix, character) in [("v1/*", '*'), ("v1/?", '?'), ("v1/[a-z]", '[')] {
-        let error = Filters::parse(&format!("/v1/submissions?prefix={prefix}"))
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains(&format!("{character:?}")),
-            "{prefix}: the refusal must name {character:?}, got {error}"
-        );
-    }
-}
-
 /// What `percent_decoded` does with an escape that is not two hex digits:
 /// half-written, complete but non-hex, and nothing at all.
 #[test]
@@ -147,22 +132,45 @@ fn a_malformed_escape_is_kept_literally() {
     }
 }
 
-/// The shape a developer parses. The key is what the download route takes, so
-/// it has to be in the answer.
+/// The shape a developer parses: the keys as the archive handed them over,
+/// unparsed, and whether the bound cut the page off.
 #[test]
-fn a_page_serializes_as_its_keys_and_what_they_encode() {
-    let name = object_name(&test_key(), test_now(), Kind::Logs);
-    let listing = Listing {
-        objects: vec![name.clone()],
+fn a_page_serializes_as_the_keys_the_archive_listed() {
+    let listing = Page {
+        keys: vec!["v1/2026-08-26/one.jsonl.zst".to_string()],
         truncated: true,
     };
 
     let json: serde_json::Value = serde_json::from_str(&page(&listing)).unwrap();
 
     assert_eq!(json["truncated"], true);
-    let submission = &json["submissions"][0];
-    assert_eq!(submission["key"], name.to_key());
-    assert_eq!(submission["pool_id"], name.pool_id.to_bech32());
-    assert_eq!(submission["agent_id"], name.agent_id.as_str());
-    assert_eq!(submission["kind"], "logs");
+    assert_eq!(json["keys"][0], listing.keys[0]);
+}
+
+/// One listing request is one upstream request, so a configured bound above
+/// what a page can hold is clamped rather than reporting a page as the whole
+/// archive.
+#[test]
+fn a_configured_row_bound_over_the_page_cap_is_clamped_to_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let asking_for_more = DeveloperConfig {
+        list_max_rows: nonzero_u32(LIST_MAX_ROWS_CAP.get() + 1),
+        ..developer_config(dir.path())
+    };
+
+    let developer = Developer::new(&asking_for_more, DEVELOPER_PASSWORD);
+
+    assert_eq!(developer.list_max_rows(), LIST_MAX_ROWS_CAP);
+}
+
+/// And a bound under it is the operator's to choose.
+#[test]
+fn a_configured_row_bound_under_the_page_cap_is_kept() {
+    let dir = tempfile::tempdir().unwrap();
+    let developer = Developer::new(&developer_config(dir.path()), DEVELOPER_PASSWORD);
+
+    assert_eq!(
+        developer.list_max_rows(),
+        developer_config(dir.path()).list_max_rows
+    );
 }

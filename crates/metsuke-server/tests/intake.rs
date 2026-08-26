@@ -2,10 +2,9 @@
 //! out, and each of the three checks — allowlist, key-belongs-to-pool,
 //! signature — rejecting on its own with its own reason.
 
-use metsuke_server::archive::{FilesystemArchive, Kind};
+use metsuke_server::archive::{FilesystemArchive, List, ObjectName};
 use metsuke_server::config::IngestConfig;
 use metsuke_server::http::status_for;
-use metsuke_server::index::Index;
 use metsuke_server::intake::{IngestError, Intake, Rejection};
 use metsuke_wire::envelope::{
     CONTAINER_MAGIC, ContainerError, Envelope, PoolId, SCHEMA_VERSION_LINES,
@@ -14,18 +13,16 @@ use metsuke_wire::envelope::{
 
 mod support;
 use support::{
-    FailingArchive, envelope_for, index_store, lines_envelope_at, nonzero_u32, nonzero_u64,
-    other_key, permissive_config, pool_of, seal, submission, test_agent_id, test_key, test_now,
-    trace_line,
+    FailingArchive, envelope_for, lines_envelope_at, nonzero_u32, nonzero_u64, other_key,
+    permissive_config, pool_of, seal, submission, test_agent_id, test_key, test_now, trace_line,
 };
 
-/// An intake wired to a temporary directory and database, ready to submit
-/// to. The directory is returned because dropping it deletes the archive.
+/// An intake wired to a temporary directory, ready to submit to. The
+/// directory is returned because dropping it deletes the archive.
 fn intake_with(config: IngestConfig) -> (Intake<FilesystemArchive>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let index = index_store(dir.path());
     let archive = FilesystemArchive::new(&dir.path().join("archive"));
-    (Intake::new(config, index, archive), dir)
+    (Intake::new(config, archive), dir)
 }
 
 fn intake_for(pools: &[PoolId]) -> (Intake<FilesystemArchive>, tempfile::TempDir) {
@@ -51,12 +48,16 @@ fn submit(
     )
 }
 
-/// The one key the index holds, for a test that has to name the object the
+/// Every key the archive holds, in key order.
+fn stored_keys(intake: &Intake<FilesystemArchive>) -> Vec<String> {
+    intake.archive().page("", "", nonzero_u32(10)).unwrap().keys
+}
+
+/// The one key the archive holds, for a test that has to name the object the
 /// intake stamped: the id in it is the intake's, not the test's.
 fn only_key(intake: &Intake<FilesystemArchive>) -> String {
-    let listing = intake.index().submissions("", "", nonzero_u32(10)).unwrap();
-    match listing.objects.as_slice() {
-        [name] => name.to_key(),
+    match stored_keys(intake).as_slice() {
+        [key] => key.clone(),
         other => panic!("expected one object, got {other:?}"),
     }
 }
@@ -137,24 +138,19 @@ fn valid_submission_is_archived_raw_and_acked() {
     assert_eq!(stored, body, "archived object must be the received bytes");
 }
 
-// The developer listing serves the index, not a bucket scan (ADR 0005), so
-// an accepted submission has to leave a row behind as well as an object.
+// The bucket is the only account of what was accepted (ADR 0005), and the key
+// is what says whose the object is.
 #[test]
-fn an_accepted_submission_is_recorded_in_the_index() {
+fn an_accepted_submission_is_filed_under_what_it_carries() {
     let key = test_key();
     let (mut intake, _dir) = intake_for(&[pool_of(&key)]);
 
     submit(&mut intake, &key, &envelope_for(&key, 4)).unwrap();
 
-    let listing = intake.index().submissions("", "", nonzero_u32(10)).unwrap();
-    match listing.objects.as_slice() {
-        [name] => {
-            assert_eq!(name.pool_id, pool_of(&key));
-            assert_eq!(name.agent_id, test_agent_id());
-            assert_eq!(name.kind, Kind::Metrics);
-        }
-        other => panic!("expected one row, got {other:?}"),
-    }
+    let name = ObjectName::parse(&only_key(&intake)).unwrap();
+    assert_eq!(name.pool_id, pool_of(&key));
+    assert_eq!(name.agent_id, test_agent_id());
+    assert_eq!(name.kind, metsuke_server::archive::Kind::Metrics);
 }
 
 // The object key is what makes the bucket sync-able by one cursor: the day the
@@ -191,11 +187,9 @@ fn two_agents_of_one_pool_both_land() {
     submit(&mut intake, &key, &first).unwrap();
     submit(&mut intake, &key, &second).unwrap();
 
-    let listing = intake.index().submissions("", "", nonzero_u32(10)).unwrap();
-    let mut agents: Vec<String> = listing
-        .objects
+    let mut agents: Vec<String> = stored_keys(&intake)
         .iter()
-        .map(|name| name.agent_id.to_string())
+        .map(|key| ObjectName::parse(key).unwrap().agent_id.to_string())
         .collect();
     agents.sort();
     assert_eq!(agents, vec!["other-relay", "test-relay"]);
@@ -213,7 +207,7 @@ fn unknown_pool_is_rejected() {
     );
 }
 
-// The key is what says which pool an upload is for (ADR 0003), so a key that
+// The key is what says which pool an upload is for, so a key that
 // is nobody's cold key speaks for nobody: the pool it hashes to is not on the
 // allowlist, and the refusal names that pool rather than the one the batch
 // claims.
@@ -466,14 +460,10 @@ fn a_trace_line_upload_is_accepted_and_filed_as_logs() {
 // must not come back as a rejection the operator would chase (ADR 0004 —
 // no ACK, so the client keeps the samples spooled).
 #[test]
-fn archive_failure_is_not_a_rejection_and_records_no_row() {
+fn archive_failure_is_not_a_rejection() {
     let key = test_key();
-    let dir = tempfile::tempdir().unwrap();
-    let index_path = dir.path().join("index.sqlite");
-    let index = Index::open(&index_path).unwrap();
     let mut intake = Intake::new(
         permissive_config(&[pool_of(&key)]),
-        index,
         FailingArchive {
             reason: "archive is down",
         },
@@ -493,26 +483,16 @@ fn archive_failure_is_not_a_rejection_and_records_no_row() {
         "expected an availability error, got {error:?}"
     );
     assert_eq!(status_for(&error), 503);
-    // A row for an object the bucket does not hold would be a listed key whose
-    // download cannot answer.
-    let reopened = Index::open(&index_path).unwrap();
-    assert!(
-        reopened
-            .submissions("", "", nonzero_u32(10))
-            .unwrap()
-            .objects
-            .is_empty()
-    );
 }
 
-// A refused submission archives nothing, so it must index nothing either.
+// A refused submission archives nothing.
 #[test]
-fn a_rejected_submission_records_no_row() {
+fn a_rejected_submission_stores_no_object() {
     let key = test_key();
     let (mut intake, _dir) = intake_for(&[pool_of(&other_key())]);
 
     submit(&mut intake, &key, &envelope_for(&key, 1)).unwrap_err();
 
-    let listing = intake.index().submissions("", "", nonzero_u32(10)).unwrap();
-    assert!(listing.objects.is_empty(), "got: {:?}", listing.objects);
+    let keys = stored_keys(&intake);
+    assert!(keys.is_empty(), "got: {keys:?}");
 }

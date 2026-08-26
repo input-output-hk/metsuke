@@ -12,14 +12,18 @@ use blake2::{Blake2b, Digest as _};
 use serde::Serialize;
 
 use base64::Engine as _;
-use metsuke_wire::envelope::{AgentId, PoolId};
 
+use crate::archive::{KEY_PREFIX, Page};
 use crate::config::DeveloperConfig;
-use crate::index::Listing;
 
 /// The realm a 401 names. Fixed: an operator changing it would only change
 /// what a browser's prompt says.
 pub const REALM: &str = "metsuke archive";
+
+/// Keys one ListObjectsV2 answers with, which is S3's cap and so this
+/// server's. A listing request is one upstream request, so a bound above it
+/// would report a page as the whole archive.
+pub const LIST_MAX_ROWS_CAP: std::num::NonZeroU32 = std::num::NonZeroU32::new(1000).unwrap();
 
 /// The one account developer pulls authenticate as. Holds the credential
 /// hashed, so a heap dump of a serving process does not carry the password.
@@ -55,8 +59,12 @@ impl Developer {
         }
     }
 
+    /// Keys one listing answers with, never more than one upstream page.
+    /// Clamped rather than refused at load: `LIST_MAX_ROWS_CAP` is the
+    /// protocol's, not the operator's, and a config that asks for more is
+    /// asking for the most a page can hold.
     pub fn list_max_rows(&self) -> std::num::NonZeroU32 {
-        self.list_max_rows
+        self.list_max_rows.min(LIST_MAX_ROWS_CAP)
     }
 
     /// Whether `authorization` presents this account's credential. Everything
@@ -97,28 +105,19 @@ fn basic_credential(authorization: &str) -> Result<String, Unauthorized> {
 /// The two filters a listing request may carry.
 #[derive(Debug)]
 pub struct Filters {
-    /// Matches the head of an object key, which is what makes it a
-    /// pool-and-day filter (`archive::ObjectName`).
+    /// The literal head of an object key, which is what makes it a
+    /// day-and-pool filter (`archive::ObjectName`).
     pub prefix: String,
     /// The last key of the previous page. Empty is the archive's start.
     pub after: String,
 }
 
-/// A query this layer will not act on. Both variants name the field, because
-/// that is what the client has to change.
+/// A query this layer will not act on.
 #[derive(Debug, thiserror::Error)]
 pub enum BadQuery {
-    #[error("prefix must be the literal head of an object key, and {found:?} holds {character:?}")]
-    Glob { found: String, character: char },
     #[error("{field} is not UTF-8 once its percent escapes are decoded")]
     NotUtf8 { field: &'static str },
 }
-
-/// What SQLite's GLOB reads as a pattern rather than a literal. A prefix
-/// carrying one would answer a wider set than the client asked for, so it is
-/// refused rather than escaped: no object key holds any of them
-/// (`ObjectName::to_key`), so nothing legitimate is turned away.
-const GLOB_METACHARACTERS: [char; 3] = ['*', '?', '['];
 
 /// One query field of a request URL, percent-decoded, empty when absent. The
 /// `/` an object key is made of is what a client that builds URLs properly
@@ -139,20 +138,16 @@ pub fn query_value(url: &str, field: &'static str) -> Result<String, BadQuery> {
 }
 
 impl Filters {
-    /// Read the filters off a request URL.
+    /// Read the filters off a request URL. An absent prefix becomes the
+    /// archive's own, so "everything" is every object this server filed
+    /// rather than every key in the bucket.
     pub fn parse(url: &str) -> Result<Filters, BadQuery> {
-        let prefix = query_value(url, "prefix")?;
-        if let Some(character) = prefix
-            .chars()
-            .find(|character| GLOB_METACHARACTERS.contains(character))
-        {
-            return Err(BadQuery::Glob {
-                found: prefix,
-                character,
-            });
-        }
+        let asked = query_value(url, "prefix")?;
         Ok(Filters {
-            prefix,
+            prefix: match asked.is_empty() {
+                true => KEY_PREFIX.to_string(),
+                false => asked,
+            },
             after: query_value(url, "after")?,
         })
     }
@@ -189,36 +184,20 @@ fn percent_decoded(value: &str) -> Option<String> {
     String::from_utf8(decoded).ok()
 }
 
-/// One submission as the listing reports it: the key, and what that key
-/// encodes. Nothing else is in the index to report (`index`).
+/// One page of the archive as the JSON a developer parses. Keys and nothing
+/// else: the pool, the agent and the kind are segments of the key
+/// (`archive::ObjectName`), and the server does not parse what the bucket
+/// hands it back.
 #[derive(Debug, Serialize)]
-struct SubmissionJson {
-    key: String,
-    pool_id: PoolId,
-    agent_id: AgentId,
-    kind: String,
-}
-
-#[derive(Debug, Serialize)]
-struct PageJson {
-    submissions: Vec<SubmissionJson>,
+struct PageJson<'a> {
+    keys: &'a [String],
     truncated: bool,
 }
 
-/// One page of the archive as the JSON a developer parses.
-pub fn page(listing: &Listing) -> String {
+pub fn page(listing: &Page) -> String {
     let page = PageJson {
-        submissions: listing
-            .objects
-            .iter()
-            .map(|name| SubmissionJson {
-                key: name.to_key(),
-                pool_id: name.pool_id,
-                agent_id: name.agent_id.clone(),
-                kind: name.kind.to_string(),
-            })
-            .collect(),
+        keys: &listing.keys,
         truncated: listing.truncated,
     };
-    serde_json::to_string(&page).expect("a page of keys and numbers serializes")
+    serde_json::to_string(&page).expect("a page of keys and a flag serializes")
 }

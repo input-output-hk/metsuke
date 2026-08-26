@@ -11,25 +11,16 @@ use url::Url;
 
 use crate::applications::Codes;
 
-/// The whole config file: where to listen, where the two stores live, and the
+/// The whole config file: where to listen, where the archive is, and the
 /// ingest limits under `[ingest]`.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     /// `host:port` to bind, plain HTTP (what fronts it: `http`).
     pub listen: String,
-    /// The rebuildable index: one row per stored object (ADR 0005). Created if
-    /// absent.
-    pub index_path: PathBuf,
     pub archive: ArchiveConfig,
     pub ingest: IngestConfig,
-    pub calidus: CalidusConfig,
     pub developer: DeveloperConfig,
-    /// Read by `generate-allowlist` alone, so a server that never onboards
-    /// pools carries neither export path nor db-sync connection. Absent is
-    /// what that server's config looks like, and the command is what refuses
-    /// when it is.
-    pub applications: Option<ApplicationsConfig>,
 }
 
 /// A path the config states in full. Relative would be resolved against
@@ -64,69 +55,20 @@ impl<'de> Deserialize<'de> for AbsolutePath {
     }
 }
 
-/// Where each half of the gate comes from: the applications export, and the
-/// db-sync holding the registered codes. No password field — see `Chain`.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ApplicationsConfig {
-    pub applications_csv: AbsolutePath,
-    /// A directory and not a host, because the connection is the unix socket
-    /// ADR 0008 fixes: anything reachable over the network would need TLS and
-    /// a threat model this deployment does not have.
-    pub socket_dir: AbsolutePath,
-    pub dbname: String,
-    /// Read-only, and nothing here can widen it: the query is fixed at compile
-    /// time.
-    pub role: String,
-    /// Bounds one chain read twice over: it reaches Postgres as
-    /// `statement_timeout` and is also how long the connect may take, so a
-    /// db-sync that is down costs it once and a query that hangs costs it
-    /// again.
-    pub query_timeout_secs: NonZeroU64,
-}
-
-/// The db-sync the Calidus half read registrations out of, and how long one
-/// resolution stood. Loaded and unused — ADR 0003 says why and what removes
-/// it.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CalidusConfig {
-    /// Why a directory and not a host: `ApplicationsConfig::socket_dir`.
-    pub socket_dir: AbsolutePath,
-    pub dbname: String,
-    /// Read-only, and nothing here can widen it: the query is fixed at compile
-    /// time.
-    pub role: String,
-    /// A file holding the role's password and nothing else. The path is
-    /// config, the password is whatever systemd's `LoadCredential` put there,
-    /// so no password reaches the environment (metsuke-4zo.50).
-    pub password_file: AbsolutePath,
-    /// What it bounds: `ApplicationsConfig::query_timeout_secs`.
-    pub query_timeout_secs: NonZeroU64,
-    /// The network's Shelley genesis, which is the only place k is written
-    /// (ADR 0008).
-    pub shelley_genesis_path: AbsolutePath,
-    /// How long a resolved registration stands before the server asks again.
-    /// What it is chosen against: ADR 0008. Seconds as a `NonZeroU32` so the
-    /// cast to a signed duration cannot wrap.
-    pub resolution_ttl_secs: NonZeroU32,
-    /// Rows under one pool's scope the server will verify before it refuses the
-    /// pool (ADR 0008).
-    pub max_registrations: NonZeroU32,
-}
-
 /// The one account that may pull the archive back out (ticket metsuke-4zo.10).
 /// Not optional: a serving host either has the credential or refuses to start,
 /// where an absent section would leave the routes quietly open or quietly gone.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeveloperConfig {
-    /// The user developers authenticate as. Public, like `CalidusConfig::role`.
+    /// The user developers authenticate as. Public, as this whole file is.
     pub user: String,
-    /// Same shape and same reason as `CalidusConfig::password_file`.
+    /// A file holding the account's password and nothing else. The path is
+    /// config, the password is whatever systemd's `LoadCredential` put there,
+    /// so no password reaches the environment (metsuke-4zo.50).
     pub password_file: AbsolutePath,
-    /// Rows one listing may answer with. What a page at the bound reports:
-    /// `index::Listing`.
+    /// Keys one listing may answer with. A value above the upstream cap is
+    /// clamped rather than refused (`developer::Developer::list_max_rows`).
     pub list_max_rows: NonZeroU32,
 }
 
@@ -185,9 +127,9 @@ impl ServerConfig {
 #[serde(deny_unknown_fields)]
 pub struct IngestConfig {
     /// The participating pools against the application code each was onboarded
-    /// on, as `generate-allowlist` emits them. A pool outside it is rejected
-    /// before any cryptography runs; the code is what says why the pool is
-    /// here, and nothing at ingest reads it.
+    /// on, as the offline allowlist generator emits them (metsuke-jfb.7). A
+    /// pool outside it is rejected before any cryptography runs; the code is
+    /// what says why the pool is here, and nothing at ingest reads it.
     pub allowlist: Codes,
     /// Cap on the body as sent, header frame and data frame together.
     /// `intake` measures what it was handed; `http::read_body` is what refuses

@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::io;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
 use metsuke_wire::envelope::{
@@ -228,6 +229,11 @@ pub enum ArchiveError {
         #[source]
         source: io::Error,
     },
+    /// The archive answered that it holds no such key. Its own variant because
+    /// it is the one fetch failure that is the client's mistake rather than
+    /// the archive's, and the download route turns it into a 404.
+    #[error("no object {key}")]
+    NoSuchObject { key: String },
     #[error("fetching {key}: {reason}")]
     Fetch { key: String, reason: String },
     #[error("storing {key}: {reason} (after {attempts} attempts)")]
@@ -248,7 +254,18 @@ pub trait Store {
     fn store(&self, submission: &StoredSubmission<'_>) -> Result<(), ArchiveError>;
 }
 
-/// The recovery half, read by `rebuild` and `verify::audit`.
+/// One bounded page of an archive's keys, in key order.
+#[derive(Debug)]
+pub struct Page {
+    pub keys: Vec<String>,
+    /// There is more after the last key. Reported rather than implied: a
+    /// caller reading a short page as the whole archive would silently miss
+    /// everything past it.
+    pub truncated: bool,
+}
+
+/// The read-back half, listed by `verify::audit` and paged by the developer
+/// route.
 pub trait List {
     /// Where this archive is, for a message about its listing. An operator
     /// told a listing came back empty has to tell a mistyped location from a
@@ -266,6 +283,15 @@ pub trait List {
         &self,
         visit: impl FnMut(&str) -> Result<(), E>,
     ) -> Result<(), E>;
+
+    /// The keys starting with `prefix` that sort after `after`, in key order,
+    /// at most `max_keys` of them. Both filters read the key, which is what
+    /// makes them a day-and-pool filter and a page cursor at once: an empty
+    /// `prefix` is the whole archive and an empty `after` its start.
+    ///
+    /// One page, never more: the bound is the client's, and a caller that
+    /// wants the next page passes the last key back as `after`.
+    fn page(&self, prefix: &str, after: &str, max_keys: NonZeroU32) -> Result<Page, ArchiveError>;
 
     /// The whole listing at once, for a caller that needs the keys after the
     /// listing is closed.
@@ -375,9 +401,14 @@ impl Bytes for FilesystemArchive {
             key: key.to_string(),
             reason: error.to_string(),
         })?;
-        fs::read(self.root.join(name.to_key())).map_err(|error| ArchiveError::Fetch {
-            key: key.to_string(),
-            reason: error.to_string(),
+        fs::read(self.root.join(name.to_key())).map_err(|error| match error.kind() {
+            io::ErrorKind::NotFound => ArchiveError::NoSuchObject {
+                key: key.to_string(),
+            },
+            _ => ArchiveError::Fetch {
+                key: key.to_string(),
+                reason: error.to_string(),
+            },
         })
     }
 }
@@ -404,4 +435,26 @@ impl List for FilesystemArchive {
         }
         self.walk(Path::new(""), &mut visit)
     }
+
+    /// The whole tree walked and sorted per request. A filesystem archive is
+    /// the single-host deployment, where the corpus is small enough that the
+    /// sort costs less than a second index to keep true.
+    fn page(&self, prefix: &str, after: &str, max_keys: NonZeroU32) -> Result<Page, ArchiveError> {
+        let mut keys = Vec::new();
+        self.for_each_key(|key| -> Result<(), ArchiveError> {
+            if key.starts_with(prefix) && key > after {
+                keys.push(key.to_string());
+            }
+            Ok(())
+        })?;
+        keys.sort();
+        Ok(bounded(keys, max_keys))
+    }
+}
+
+/// Cut a page down to the bound, saying whether the bound cut it.
+fn bounded(mut keys: Vec<String>, max_keys: NonZeroU32) -> Page {
+    let truncated = keys.len() > max_keys.get() as usize;
+    keys.truncate(max_keys.get() as usize);
+    Page { keys, truncated }
 }

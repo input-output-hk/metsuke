@@ -5,20 +5,16 @@
 //! needs reads as dead code in the others.
 #![allow(dead_code)]
 
-use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap};
-use std::num::{NonZeroI32, NonZeroU32, NonZeroU64};
+use std::collections::BTreeMap;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 
 use metsuke_server::applications::ApplicationCode;
-use metsuke_server::archive::{ArchiveError, Kind, List, ObjectName, Store, StoredSubmission};
-use metsuke_server::authority::Signed;
-use metsuke_server::calidus::{Directory, DirectoryError, Registrations};
-use metsuke_server::config::{
-    AbsolutePath, ApplicationsConfig, CalidusConfig, DeveloperConfig, IngestConfig,
+use metsuke_server::archive::{
+    ArchiveError, Kind, List, ObjectName, Page, Store, StoredSubmission,
 };
-use metsuke_server::index::Index;
+use metsuke_server::authority::Signed;
+use metsuke_server::config::{AbsolutePath, DeveloperConfig, IngestConfig};
 use metsuke_wire::envelope::{
     self, AgentId, Envelope, Payload, PayloadLine, PoolId, Provenance, Sample, Signature,
     SigningKey, TraceLine, VerifyingKey,
@@ -43,18 +39,6 @@ pub fn trace_line(line: &str) -> TraceLine {
 /// A second key, for the pool that did not sign.
 pub fn other_key() -> SigningKey {
     SigningKey::from_bytes(&[9u8; 32])
-}
-
-/// A hot key an SPO would register as their pool's Calidus key: it hashes to
-/// no pool, so only the directory can make it speak for one.
-pub fn calidus_key() -> SigningKey {
-    SigningKey::from_bytes(&[3u8; 32])
-}
-
-/// What the pool rotates to, for a test that must tell a fetched answer from a
-/// cached one.
-pub fn rotated_calidus_key() -> SigningKey {
-    SigningKey::from_bytes(&[5u8; 32])
 }
 
 pub fn pool_of(key: &SigningKey) -> PoolId {
@@ -190,48 +174,31 @@ pub fn allowlist_toml(allowed: &BTreeMap<PoolId, ApplicationCode>) -> String {
 /// load rather than passing on a value nobody set.
 pub struct ServerToml {
     pub listen: String,
-    pub index_path: PathBuf,
     pub archive: String,
     pub ingest: String,
-    pub calidus: String,
     pub developer: String,
-    /// The one optional section (`ServerConfig::applications`).
-    pub applications: Option<String>,
 }
 
-/// A whole config over stores under `dir`, on a kernel-chosen port, with every
-/// limit wide enough that only the check under test can fire.
+/// A whole config over an archive under `dir`, on a kernel-chosen port, with
+/// every limit wide enough that only the check under test can fire.
 pub fn server_toml(dir: &Path, allowed: &[PoolId]) -> ServerToml {
     ServerToml {
         listen: "127.0.0.1:0".to_string(),
-        index_path: dir.join("index.sqlite"),
         archive: filesystem_archive(&dir.join("archive")),
         ingest: ingest_toml(&permissive_config(allowed)),
-        calidus: calidus_toml(dir),
         developer: developer_toml(dir),
-        applications: None,
     }
 }
 
 impl ServerToml {
     pub fn render(&self) -> String {
-        let sections = [
-            Some(format!(
-                "listen = \"{}\"\nindex_path = \"{}\"",
-                self.listen,
-                self.index_path.display()
-            )),
-            Some(self.archive.clone()),
-            Some(self.ingest.clone()),
-            Some(self.calidus.clone()),
-            Some(self.developer.clone()),
-            self.applications.clone(),
-        ];
-        sections
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join("\n")
+        [
+            format!("listen = \"{}\"", self.listen),
+            self.archive.clone(),
+            self.ingest.clone(),
+            self.developer.clone(),
+        ]
+        .join("\n")
     }
 
     /// Write the file and hand back its path, which is what `--config` takes.
@@ -296,15 +263,6 @@ pub fn nonzero_u32(value: u32) -> NonZeroU32 {
     NonZeroU32::new(value).expect("a test limit is never zero")
 }
 
-pub fn nonzero_i32(value: i32) -> NonZeroI32 {
-    NonZeroI32::new(value).expect("a test constant is nonzero")
-}
-
-/// The index every test opens, under a directory it owns.
-pub fn index_store(dir: &Path) -> Index {
-    Index::open(&dir.join("index.sqlite")).unwrap()
-}
-
 /// The submission `seal` produced, as the archive is asked to store it. The
 /// name is stamped here, so a test that has to know the key holds it.
 pub fn stored_submission<'a>(
@@ -358,67 +316,6 @@ pub fn example_s3_archive(endpoint: &str, put_retries: u32) -> String {
     format!("[archive]\n{}\n", body.join("\n"))
 }
 
-/// The Calidus half's config pointed at a socket directory a test owns, with
-/// the connection values the assertions name.
-pub fn calidus_config(socket_dir: &Path, genesis: &Path) -> CalidusConfig {
-    CalidusConfig {
-        socket_dir: absolute(socket_dir),
-        dbname: "cexplorer".to_string(),
-        role: "metsuke_ro".to_string(),
-        password_file: absolute(socket_dir.join("pgpass")),
-        query_timeout_secs: nonzero_u64(11),
-        shelley_genesis_path: absolute(genesis),
-        resolution_ttl_secs: nonzero_u32(TEST_TTL_SECS),
-        max_registrations: nonzero_u32(TEST_MAX_REGISTRATIONS),
-    }
-}
-
-/// The registration cap every test runs under. Deliberately not the value
-/// contrib/server.example.toml sets, so a test cannot pass on the two agreeing.
-pub const TEST_MAX_REGISTRATIONS: u32 = 3;
-
-/// The security parameter every test genesis carries. Not any network's k:
-/// where the real one comes from is `dbsync::security_parameter`'s to prove.
-pub const TEST_SECURITY_PARAMETER: i32 = 6;
-
-/// A Shelley genesis holding the one field the server reads, and the
-/// `[calidus]` section naming it. The file is written because `serve` reads it
-/// before it binds; the db-sync it names is never reached by a cold-key upload.
-pub fn calidus_toml(dir: &Path) -> String {
-    let genesis = dir.join("shelley-genesis.json");
-    std::fs::write(
-        &genesis,
-        format!("{{\"securityParam\": {TEST_SECURITY_PARAMETER}}}"),
-    )
-    .unwrap();
-    let CalidusConfig {
-        socket_dir,
-        dbname,
-        role,
-        password_file,
-        query_timeout_secs,
-        shelley_genesis_path,
-        resolution_ttl_secs,
-        max_registrations,
-    } = calidus_config(dir, &genesis);
-    format!(
-        r#"
-[calidus]
-socket_dir = "{socket_dir}"
-dbname = "{dbname}"
-role = "{role}"
-password_file = "{password_file}"
-query_timeout_secs = {query_timeout_secs}
-shelley_genesis_path = "{shelley_genesis_path}"
-resolution_ttl_secs = {resolution_ttl_secs}
-max_registrations = {max_registrations}
-"#,
-        socket_dir = socket_dir.as_path().display(),
-        password_file = password_file.as_path().display(),
-        shelley_genesis_path = shelley_genesis_path.as_path().display(),
-    )
-}
-
 /// What every test's credential file holds. One place, so the unit tests and
 /// the spawned binary authenticate as the same account.
 pub const DEVELOPER_PASSWORD: &str = "hunter2";
@@ -463,48 +360,8 @@ list_max_rows = {list_max_rows}
     )
 }
 
-/// The applications half over a CSV the caller wrote. `socket_dir` is a
-/// directory holding no socket, so the chain read fails to connect.
-pub fn applications_config(applications_csv: &Path, socket_dir: &Path) -> ApplicationsConfig {
-    ApplicationsConfig {
-        applications_csv: absolute(applications_csv),
-        socket_dir: absolute(socket_dir),
-        dbname: "cexplorer".to_string(),
-        role: "metsuke_ro".to_string(),
-        query_timeout_secs: nonzero_u64(7),
-    }
-}
-
-pub fn applications_toml(config: &ApplicationsConfig) -> String {
-    let ApplicationsConfig {
-        applications_csv,
-        socket_dir,
-        dbname,
-        role,
-        query_timeout_secs,
-    } = config;
-    format!(
-        r#"
-[applications]
-applications_csv = "{applications_csv}"
-socket_dir = "{socket_dir}"
-dbname = "{dbname}"
-role = "{role}"
-query_timeout_secs = {query_timeout_secs}
-"#,
-        applications_csv = applications_csv.as_path().display(),
-        socket_dir = socket_dir.as_path().display(),
-    )
-}
-
 pub fn absolute(path: impl Into<PathBuf>) -> AbsolutePath {
     AbsolutePath::new(path.into()).expect("a test path is absolute")
-}
-
-/// The password file `calidus_config` names, so a test reaches the connection
-/// attempt rather than stopping at the unreadable file before it.
-pub fn write_password(socket_dir: &Path) {
-    std::fs::write(socket_dir.join("pgpass"), "hunter2\n").unwrap();
 }
 
 /// An archive that fails whichever half the caller under test uses, standing
@@ -536,103 +393,13 @@ impl List for FailingArchive {
         }
         .into())
     }
-}
 
-/// One recorded label-867 blob, as db-sync hands it back. Which registration
-/// each name is: tests/fixtures/calidus/README.md.
-pub fn registration(name: &str) -> Vec<u8> {
-    fixture("recordings", name)
-}
-
-/// A blob assembled out of real signatures to be one no tool produces.
-pub fn crafted(name: &str) -> Vec<u8> {
-    fixture("crafted", name)
-}
-
-fn fixture(kind: &str, name: &str) -> Vec<u8> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/calidus")
-        .join(kind)
-        .join(format!("{name}.hex"));
-    let hex = std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
-    decode_hex(hex.trim())
-}
-
-fn decode_hex(text: &str) -> Vec<u8> {
-    metsuke_wire::hex::decode_bytes(text).expect("a fixture is pairs of hex digits")
-}
-
-/// The pool every recorded registration scopes: the recorder signs their
-/// witnesses with the suite's own `test_key`.
-pub fn registered_pool() -> PoolId {
-    pool_of(&test_key())
-}
-
-/// A Calidus directory serving the blobs a test put in it, counting what it was
-/// asked. The count is the assertion behind the resolution TTL: an answer that
-/// did not increment it never reached db-sync.
-///
-/// Shared rather than owned, so a test still holds it after the authority
-/// under test took it.
-#[derive(Clone)]
-pub struct CannedDirectory {
-    chain: Rc<Chain>,
-}
-
-#[derive(Default)]
-struct Chain {
-    registrations: RefCell<HashMap<PoolId, Vec<Vec<u8>>>>,
-    crowded: RefCell<HashMap<PoolId, u32>>,
-    lookups: Cell<usize>,
-}
-
-impl CannedDirectory {
-    pub fn holding(pool_id: PoolId, registrations: Vec<Vec<u8>>) -> Self {
-        let directory = CannedDirectory {
-            chain: Rc::new(Chain::default()),
-        };
-        directory.rotate(pool_id, registrations);
-        directory
-    }
-
-    /// What the chain says from now on, as a re-registration would leave it.
-    pub fn rotate(&self, pool_id: PoolId, registrations: Vec<Vec<u8>>) {
-        self.chain
-            .registrations
-            .borrow_mut()
-            .insert(pool_id, registrations);
-    }
-
-    /// What a scope a stranger has filled looks like.
-    pub fn crowd(&self, pool_id: PoolId, max: u32) {
-        self.chain.crowded.borrow_mut().insert(pool_id, max);
-    }
-
-    pub fn lookups(&self) -> usize {
-        self.chain.lookups.get()
+    fn page(&self, _: &str, _: &str, _: NonZeroU32) -> Result<Page, ArchiveError> {
+        Err(ArchiveError::List {
+            reason: self.reason.to_string(),
+        })
     }
 }
-
-impl Directory for CannedDirectory {
-    fn registrations(&self, pool_id: PoolId) -> Result<Registrations, DirectoryError> {
-        self.chain.lookups.set(self.lookups() + 1);
-        if let Some(&max) = self.chain.crowded.borrow().get(&pool_id) {
-            return Ok(Registrations::TooMany { max });
-        }
-        Ok(Registrations::Rows(
-            self.chain
-                .registrations
-                .borrow()
-                .get(&pool_id)
-                .cloned()
-                .unwrap_or_default(),
-        ))
-    }
-}
-
-/// How long a test's resolutions stand.
-pub const TEST_TTL_SECS: u32 = 60;
 
 /// The opening two bytes of a TLS record: content type 22 (handshake), then
 /// the legacy record version's major byte (RFC 8446 §5.1).

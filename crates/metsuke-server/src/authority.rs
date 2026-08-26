@@ -1,5 +1,5 @@
 //! Who a submission is from. One answer, derived and not claimed: the pool is
-//! the blake2b-224 hash of the key that signed (ADR 0003), so nothing on the
+//! the blake2b-224 hash of the key that signed, so nothing on the
 //! wire has to be believed and nothing has to be looked up.
 
 use metsuke_wire::envelope::{PoolId, Signature, VerifyingKey};

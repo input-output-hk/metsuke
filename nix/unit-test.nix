@@ -33,8 +33,6 @@ let
       cborHex = "5820${pkgs.lib.strings.replicate 32 "07"}";
     }
   );
-  # The server reads k out of this and nothing else out of the file.
-  shelleyGenesis = pkgs.writeText "shelley-genesis.json" (builtins.toJSON { securityParam = 108; });
   password = pkgs.writeText "password" "not-a-real-secret";
 
   # Named where both the config and the assertions can reach it.
@@ -76,21 +74,14 @@ let
     {
       imports = [ serverModule ];
 
-      environment.etc = {
-        "metsuke-server/calidus-password" = {
-          source = password;
-          mode = "0400";
-        };
-        "metsuke-server/developer-password" = {
-          source = password;
-          mode = "0400";
-        };
+      environment.etc."metsuke-server/developer-password" = {
+        source = password;
+        mode = "0400";
       };
 
       services.metsuke-server = {
         enable = true;
         inherit environmentFile;
-        calidusPasswordFile = "/etc/metsuke-server/calidus-password";
         developerPasswordFile = "/etc/metsuke-server/developer-password";
         settings = {
           inherit archive;
@@ -106,15 +97,6 @@ let
             rate_limit_uploads = 24;
             rate_limit_uploads_total = 240;
             rate_limit_window_secs = 3600;
-          };
-          calidus = {
-            socket_dir = "/run/postgresql";
-            dbname = "cexplorer";
-            role = "metsuke_ro";
-            query_timeout_secs = 30;
-            shelley_genesis_path = "${shelleyGenesis}";
-            resolution_ttl_secs = 3600;
-            max_registrations = 10;
           };
           developer = {
             user = "metsuke-dev";
@@ -320,8 +302,8 @@ pkgs.testers.runNixOSTest {
 
     with subtest("the agent holds nothing ADR 0007 refuses"):
         confined(pool, "metsuke.service", "/var/lib/metsuke")
-        # It reached the endpoint above without AF_UNIX, which is what the
-        # server needs for db-sync (ADR 0009) and the agent does not.
+        # It reached the endpoint above over TCP alone: neither unit opens a
+        # unix socket, so neither is granted AF_UNIX.
         pool.fail("systemctl cat metsuke.service | grep -q 'AF_UNIX'")
 
     with subtest("collecting trace lines adds the journal group and nothing else"):

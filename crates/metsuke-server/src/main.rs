@@ -1,23 +1,18 @@
 //! The ingest binary: startup fails loudly, then one loop serves submissions
 //! until something it cannot serve through stops it. Both exit nonzero, so
 //! systemd restarts rather than supervising a process that accepts nothing.
-//! The subcommands are the exception: they run once against the same config
-//! and exit, zero only if what they were asked to check holds.
+//! The subcommand is the exception: it runs once against the same config and
+//! exits, zero only if what it was asked to check holds.
 
-use metsuke_server::applications::{ApplicationsCsvError, Chain, Excluded, Gate, gate, read_codes};
 use metsuke_server::archive::{Bytes, FilesystemArchive, List, Store};
-use metsuke_server::cli::{ArchiveCommand, Args, ArgsError, Command, GENERATE_ALLOWLIST};
+use metsuke_server::cli::{Args, ArgsError, Command};
 use metsuke_server::config::{
-    ApplicationsConfig, ArchiveConfig, ConfigError, DeveloperConfig, IngestConfig, S3Config,
-    ServerConfig,
+    ArchiveConfig, ConfigError, DeveloperConfig, IngestConfig, S3Config, ServerConfig,
 };
-use metsuke_server::db::DbError;
 use metsuke_server::developer::Developer;
 use metsuke_server::http;
-use metsuke_server::index::{Index, IndexError};
 use metsuke_server::instructions;
 use metsuke_server::intake::Intake;
-use metsuke_server::rebuild::{EmptyArchive, RebuildError, RebuiltIndex, rebuild};
 use metsuke_server::s3::{S3Archive, S3Error};
 use metsuke_server::verify::{Audit, AuditError, audit};
 use metsuke_wire::journal::{ERR, INFO};
@@ -35,8 +30,6 @@ enum Fatal {
     },
     #[error(transparent)]
     Config(#[from] ConfigError),
-    #[error("cannot open the index: {0}")]
-    Index(#[from] IndexError),
     #[error("cannot read the developer password {path}: {source}")]
     DeveloperPassword {
         path: String,
@@ -49,26 +42,6 @@ enum Fatal {
     S3(#[from] S3Error),
     #[error("the S3 archive needs AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in the environment")]
     MissingCredentials,
-    #[error("cannot rebuild the index: {0}")]
-    Rebuild(#[from] RebuildError),
-    #[error("{GENERATE_ALLOWLIST} needs an [applications] section in the config")]
-    NoApplications,
-    #[error("cannot open the applications {path}: {source}")]
-    OpenApplications {
-        path: String,
-        #[source]
-        source: std::io::Error,
-    },
-    #[error("cannot read the applications {path}: {source}")]
-    ReadApplications {
-        path: String,
-        #[source]
-        source: ApplicationsCsvError,
-    },
-    #[error("cannot read the registered application codes: {0}")]
-    Chain(#[from] DbError),
-    #[error("no pool both applied and registered its code, so the allowlist would accept nobody")]
-    NobodyMatched,
     #[error("cannot audit the archive: {0}")]
     Audit(#[from] AuditError),
     #[error("a filesystem archive stores no metadata to re-verify against")]
@@ -102,22 +75,10 @@ fn run() -> Result<(), Fatal> {
     })?;
     let ServerConfig {
         listen,
-        index_path,
         archive,
         ingest,
-        // Loaded to prove the section is there and parses; nothing on the
-        // accepted path resolves a key through it any more.
-        calidus: _,
         developer,
-        applications,
     } = ServerConfig::from_toml(&text)?;
-    let command = match args.command {
-        Command::GenerateAllowlist => {
-            return generate_allowlist(applications.as_ref().ok_or(Fatal::NoApplications)?);
-        }
-        Command::Archive(command) => command,
-    };
-    let index = Index::open(&index_path)?;
     let serving = Serving {
         listen,
         ingest,
@@ -128,26 +89,24 @@ fn run() -> Result<(), Fatal> {
     match archive {
         ArchiveConfig::Filesystem { root } => dispatch(
             FilesystemArchive::new(&root),
-            command,
+            args.command,
             serving,
-            index,
             // A filesystem archive stores no metadata, so there is nothing to
             // re-verify an object against.
             |_, _| Err(Fatal::CannotVerifyFilesystem),
         ),
         ArchiveConfig::S3(config) => dispatch(
             s3_archive(&config)?,
-            command,
+            args.command,
             serving,
-            index,
             |archive, max_header_bytes| report_audit(audit(archive, max_header_bytes)?),
         ),
     }
 }
 
-/// Everything the config says that is not about the archive or the index.
-/// Grouped because it travels through `dispatch` as one thing and only
-/// `serve` reads all of it.
+/// Everything the config says that is not about the archive. Grouped because
+/// it travels through `dispatch` as one thing and only `serve` reads all of
+/// it.
 struct Serving {
     listen: String,
     ingest: IngestConfig,
@@ -158,74 +117,13 @@ struct Serving {
 /// step that is not the same work for every kind, so it is the parameter.
 fn dispatch<A: Store + List + Bytes>(
     archive: A,
-    command: ArchiveCommand,
+    command: Command,
     serving: Serving,
-    mut index: Index,
     verify_archive: impl FnOnce(&A, u64) -> Result<(), Fatal>,
 ) -> Result<(), Fatal> {
     match command {
-        ArchiveCommand::Serve => serve(archive, serving, index),
-        ArchiveCommand::RebuildIndex { allow_empty } => {
-            let empty = match allow_empty {
-                true => EmptyArchive::Accept,
-                false => EmptyArchive::Refuse,
-            };
-            report_rebuild(rebuild(&archive, &mut index, empty)?)
-        }
-        ArchiveCommand::VerifyArchive => {
-            verify_archive(&archive, serving.ingest.max_header_bytes.get())
-        }
-    }
-}
-
-/// The pairs on stdout, the summary on stderr: stdout is the artifact another
-/// config reads, so anything meant for the operator has to stay out of it.
-fn generate_allowlist(config: &ApplicationsConfig) -> Result<(), Fatal> {
-    let applications = config.applications_csv.as_path();
-    let path = applications.display().to_string();
-    let text = std::fs::read_to_string(applications).map_err(|source| Fatal::OpenApplications {
-        path: path.clone(),
-        source,
-    })?;
-    let applied = read_codes(&text).map_err(|source| Fatal::ReadApplications { path, source })?;
-    let found = gate(applied, Chain::new(config).registered_codes()?);
-    print!("{}", found.to_toml());
-    report_gate(&found)
-}
-
-fn report_gate(found: &Gate) -> Result<(), Fatal> {
-    eprintln!(
-        "{} pools allowlisted, {} applicants excluded",
-        found.allowed.len(),
-        found.excluded.len()
-    );
-    for (pool_id, why) in &found.excluded {
-        let reason = match why {
-            Excluded::NotRegistered => "applied, but registered no application code".to_string(),
-            Excluded::CodeMismatch { registered } => {
-                format!("applied with a code that is not its registered {registered}")
-            }
-            Excluded::ContradictoryCodes => {
-                "applied, and has more than one code registered".to_string()
-            }
-        };
-        eprintln!("excluded {pool_id}: {reason}");
-    }
-    if found.did_not_apply > 0 {
-        eprintln!(
-            "{} pools have a registered code and never applied",
-            found.did_not_apply
-        );
-    }
-    if found.unreadable > 0 {
-        eprintln!(
-            "{} registered rows are not a pool and a code",
-            found.unreadable
-        );
-    }
-    match found.allowlists_nobody() {
-        true => Err(Fatal::NobodyMatched),
-        false => Ok(()),
+        Command::Serve => serve(archive, serving),
+        Command::VerifyArchive => verify_archive(&archive, serving.ingest.max_header_bytes.get()),
     }
 }
 
@@ -250,23 +148,16 @@ fn s3_archive(config: &S3Config) -> Result<S3Archive, Fatal> {
     Ok(S3Archive::new(config, credentials)?)
 }
 
-/// The rebuild's findings on stdout: it is the command's output, not a log
-/// line.
-fn report_rebuild(summary: RebuiltIndex) -> Result<(), Fatal> {
-    println!("rebuilt the index from {} objects", summary.objects);
-    Ok(())
-}
-
-fn serve<A: Store + Bytes>(archive: A, serving: Serving, index: Index) -> Result<(), Fatal> {
+fn serve<A: Store + Bytes + List>(archive: A, serving: Serving) -> Result<(), Fatal> {
     let Serving {
         listen,
         ingest,
         developer: credentials,
     } = serving;
     let listen = listen.as_str();
-    // Read here rather than at load: `rebuild-index` and `verify-archive`
-    // answer no developer request, so a credential file only this path needs
-    // must not decide whether they run.
+    // Read here rather than at load: `verify-archive` answers no developer
+    // request, so a credential file only this path needs must not decide
+    // whether it runs.
     let developer = developer(&credentials)?;
     // Built from files compiled in, so a broken one is a build that must not
     // reach an operator asking for it.
@@ -284,7 +175,7 @@ fn serve<A: Store + Bytes>(archive: A, serving: Serving, index: Index) -> Result
         server.server_addr(),
         http::SUBMIT_PATH,
     );
-    let mut intake = Intake::new(ingest, index, archive);
+    let mut intake = Intake::new(ingest, archive);
     match http::serve(&server, &mut intake, &developer, &page)? {}
 }
 
@@ -299,8 +190,8 @@ fn developer(config: &DeveloperConfig) -> Result<Developer, Fatal> {
         path: named(),
         source,
     })?;
-    // Trailing newline trimmed, as the Calidus password is (`db`): an editor
-    // adds one and it is not part of the secret.
+    // Trailing newline trimmed: an editor adds one and it is not part of the
+    // secret.
     let password = password.trim_end_matches(['\r', '\n']);
     if password.is_empty() {
         return Err(Fatal::EmptyDeveloperPassword { path: named() });

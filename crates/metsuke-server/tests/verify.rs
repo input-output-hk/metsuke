@@ -43,8 +43,8 @@ fn an_object_as_stored_verifies_to_the_header_it_holds() {
 }
 
 /// The check that makes the archive an authenticated record rather than a pile
-/// of blobs: the pool it is filed under is the pool the signing key derives to
-/// (ADR 0003), so an object another key signed is misfiled wherever it sits.
+/// of blobs: the pool it is filed under is the pool the signing key derives
+/// to, so an object another key signed is misfiled wherever it sits.
 #[test]
 fn an_object_signed_by_another_key_does_not_verify() {
     let stranger = other_key();

@@ -84,21 +84,17 @@
         }:
         let
           craneLib = inputs.crane.mkLib pkgs;
-          # Cargo sources, the shipped SQL, the fixtures and the test doubles:
-          # the scrape bodies, the trace recordings and the SQL are compiled in
-          # with include_str!, the CIP-151 recordings and the psql double are
-          # run at test time.
+          # Cargo sources and the fixtures: the scrape bodies and the trace
+          # recordings are compiled in with include_str!, the submission
+          # recordings are read at test time.
           #
           # Under crates/ alone, because this filter is not gitignore-aware: a
-          # devnet run leaves .hex and .csv files in the working tree, and
-          # matching those by suffix anywhere would re-hash every derivation.
+          # devnet run leaves .hex files in the working tree, and matching
+          # those by suffix anywhere would re-hash every derivation.
           extraSources = [
             ".prom"
             ".log"
-            ".sql"
             ".hex"
-            ".csv"
-            ".sh"
           ];
           cratesDir = "${toString ./crates}/";
           # The shipped config and unit, which both crates compile in whole:
@@ -236,7 +232,7 @@
             ${directives (
               unit.hardening {
                 stateDirectory = "metsuke";
-                addressFamilies = unit.agentAddressFamilies;
+                inherit (unit) addressFamilies;
               }
             )}
             [Install]
@@ -282,9 +278,8 @@
                       ./crates/metsuke
                       ./crates/metsuke-server
                     ]))
+                    # Carried whole into the instructions page, and
                     # include_str!'d, so cargo sources alone do not build.
-                    ./crates/metsuke-server/src/registrations.sql
-                    # Carried whole into the instructions page.
                     ./contrib/config.example.toml
                     ./contrib/metsuke.service
                   ];

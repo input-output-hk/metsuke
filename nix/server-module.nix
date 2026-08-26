@@ -16,7 +16,6 @@ let
   # The config has to name the paths LoadCredential wrote to, so both halves
   # are derived from this one list and `unitName`.
   credentials = {
-    calidus-password = cfg.calidusPasswordFile;
     developer-password = cfg.developerPasswordFile;
   };
   # Written out rather than $CREDENTIALS_DIRECTORY: this lands in a TOML file,
@@ -64,11 +63,7 @@ let
     { inherit kind; } // archive.${kind};
 
   configFile = toml.generate "metsuke-server-config.toml" (
-    # `applications` absent is a shape the server reads; `applications = null`
-    # is not.
-    lib.filterAttrs (_: value: value != null) (
-      cfg.settings // { archive = taggedArchive cfg.settings.archive; }
-    )
+    cfg.settings // { archive = taggedArchive cfg.settings.archive; }
   );
 in
 {
@@ -80,18 +75,12 @@ in
       description = "The server to run.";
     };
 
-    calidusPasswordFile = lib.mkOption {
-      type = lib.types.path;
-      description = ''
-        The password for the db-sync read-only role, alone in a file. Read by
-        systemd as root, so the deployed secret stays unreadable to the
-        service user.
-      '';
-    };
-
     developerPasswordFile = lib.mkOption {
       type = lib.types.path;
-      description = "The developer account's password, alone in a file. Delivered like `calidusPasswordFile`.";
+      description = ''
+        The developer account's password, alone in a file. Read by systemd as
+        root, so the deployed secret stays unreadable to the service user.
+      '';
     };
 
     environmentFile = lib.mkOption {
@@ -115,17 +104,12 @@ in
       description = ''
         The server's configuration file, one option per field of
         `crates/metsuke-server/src/config.rs`, which owns what each value
-        means. Only the three options defaulted below have one; every other
-        field is set here or evaluation fails naming it.
+        means. Only the option defaulted below has one; every other field is
+        set here or evaluation fails naming it.
       '';
       type = types.submodule {
         options = {
           listen = required types.str;
-          index_path = mkOption {
-            type = types.str;
-            default = "${writable}/index.sqlite";
-            description = "Nix's own default: the Rust field has none. Under the directory systemd creates.";
-          };
 
           archive = mkOption {
             type = archiveType;
@@ -136,32 +120,13 @@ in
               options = {
                 allowlist = mkOption {
                   type = types.attrsOf types.str;
-                  description = "As `generate-allowlist` emits them.";
+                  description = "As the offline allowlist generator emits them.";
                 };
                 max_body_bytes = positive;
                 max_header_bytes = positive;
                 rate_limit_uploads = positive;
                 rate_limit_uploads_total = positive;
                 rate_limit_window_secs = positive;
-              };
-            };
-          };
-
-          calidus = mkOption {
-            type = types.submodule {
-              options = {
-                socket_dir = required types.str;
-                dbname = required types.str;
-                role = required types.str;
-                password_file = mkOption {
-                  type = types.str;
-                  default = credentialPath "calidus-password";
-                  description = "Defaults to where `calidusPasswordFile` is loaded to.";
-                };
-                query_timeout_secs = positive;
-                shelley_genesis_path = required types.str;
-                resolution_ttl_secs = positive;
-                max_registrations = positive;
               };
             };
           };
@@ -178,26 +143,6 @@ in
                 list_max_rows = positive;
               };
             };
-          };
-
-          applications = mkOption {
-            default = null;
-            description = ''
-              Read by `generate-allowlist` alone. Null is what a server that
-              never onboards pools looks like, and the command is what refuses
-              when it is.
-            '';
-            type = types.nullOr (
-              types.submodule {
-                options = {
-                  applications_csv = required types.str;
-                  socket_dir = required types.str;
-                  dbname = required types.str;
-                  role = required types.str;
-                  query_timeout_secs = positive;
-                };
-              }
-            );
           };
         };
       };
@@ -226,7 +171,7 @@ in
       }
       // unit.hardening {
         inherit stateDirectory;
-        addressFamilies = unit.serverAddressFamilies;
+        inherit (unit) addressFamilies;
       };
     };
 
@@ -234,10 +179,6 @@ in
       {
         assertion = !(cfg.settings.archive ? s3) || cfg.environmentFile != null;
         message = "services.metsuke-server.environmentFile is required by an S3 archive: that is where the server reads AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY from.";
-      }
-      {
-        assertion = lib.hasPrefix "${writable}/" cfg.settings.index_path;
-        message = "services.metsuke-server.settings.index_path has to be under ${writable}: the unit may write nothing else.";
       }
       {
         assertion =

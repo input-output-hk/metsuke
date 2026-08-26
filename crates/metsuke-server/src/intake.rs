@@ -12,7 +12,6 @@ use time::OffsetDateTime;
 use crate::archive::{ArchiveError, Kind, ObjectName, Store, StoredSubmission};
 use crate::authority::Signed;
 use crate::config::IngestConfig;
-use crate::index::{Index, IndexError};
 use crate::ratelimit::{Charged, RateLimiter};
 
 /// Why the server refused. Every variant is the client's fault and its text
@@ -56,21 +55,18 @@ pub enum Rejection {
 pub enum IngestError {
     #[error(transparent)]
     Rejected(#[from] Rejection),
-    #[error("index unavailable: {0}")]
-    Index(#[from] IndexError),
     #[error("archive unavailable: {0}")]
     Archive(#[from] ArchiveError),
 }
 
 pub struct Intake<A: Store> {
     config: IngestConfig,
-    index: Index,
     limiter: RateLimiter,
     archive: A,
 }
 
 impl<A: Store> Intake<A> {
-    pub fn new(config: IngestConfig, index: Index, archive: A) -> Self {
+    pub fn new(config: IngestConfig, archive: A) -> Self {
         let limiter = RateLimiter::new(
             config.rate_limit_uploads,
             config.rate_limit_uploads_total,
@@ -78,7 +74,6 @@ impl<A: Store> Intake<A> {
         );
         Intake {
             config,
-            index,
             limiter,
             archive,
         }
@@ -90,15 +85,8 @@ impl<A: Store> Intake<A> {
         self.config.max_body_bytes.get()
     }
 
-    /// The index the developer listing reads. Borrowed from here rather than
-    /// opened a second time, so a listing and an ingest write can never be two
-    /// connections racing on one file.
-    pub fn index(&self) -> &Index {
-        &self.index
-    }
-
-    /// The archive the download route fetches from. Same reason as `index`:
-    /// one handle, and this one is read-only where the ingest path stores.
+    /// The archive the developer routes read. One handle rather than a second
+    /// one built beside it, and read-only where the ingest path stores.
     pub fn archive(&self) -> &A {
         &self.archive
     }
@@ -170,9 +158,6 @@ impl<A: Store> Intake<A> {
             wire_bytes: signed.wire_bytes,
         };
         self.archive.store(&stored)?;
-        // Recorded after the store, so nothing is listed that a failed PUT left
-        // out of the bucket.
-        self.index.record(&stored.name)?;
         Ok(Ack {
             latest_version: crate::CLIENT_VERSION.to_string(),
         })
