@@ -3,12 +3,13 @@
 //! `and`).
 //!
 //! A line is parsed as a JSON object and only `ns` and `sev` are read off it.
-//! Parsing decides; it does not produce what goes on the wire.
+//! That parse is what a selected line is from here on (`envelope::TraceLine`).
 
-use std::borrow::Cow;
 use std::str::FromStr;
 
 use serde::Deserialize;
+
+use metsuke_wire::envelope::TraceLine;
 
 /// cardano-node's severity ladder, spelled and ordered as the node writes it.
 /// Provenance: docs/research/cardano-node-11-tracing.md.
@@ -106,52 +107,36 @@ impl SelectConfig {
 /// tracing system is up, so a line carrying neither field is a normal thing to
 /// meet once per node start and is skipped like any other unwanted line.
 #[derive(Debug, PartialEq)]
-pub enum Selection<'a> {
-    Ship(&'a str),
+pub enum Selection {
+    Ship(TraceLine),
     Skip,
 }
 
-/// A value read out of the line, copied only when the line does not spell it
-/// literally. It carries the borrow on its own type because `#[serde(borrow)]`
-/// does not reach through an `Option`: on `Option<Cow<'a, str>>` the attribute
-/// is accepted and every value still arrives owned.
-#[derive(Deserialize)]
-#[serde(transparent)]
-struct Read<'a>(#[serde(borrow)] Cow<'a, str>);
-
-/// The keys as the node spells them, read off the object's own top level so a
-/// `data` payload carrying either is not a candidate.
-#[derive(Deserialize)]
-struct Keys<'a> {
-    #[serde(borrow)]
-    ns: Option<Read<'a>>,
-    #[serde(borrow)]
-    sev: Option<Read<'a>>,
-}
-
-/// What one line declares, of the two fields a rule reads. Every line the
-/// parse refuses lands in one bucket, declaring neither: not an object, `ns`
-/// not a string, cut short mid-object.
+/// What one line declares, of the two fields a rule reads, off the object's own
+/// top level so a `data` payload carrying either is not a candidate.
 #[derive(Debug, Default, PartialEq)]
 pub struct Fields<'a> {
-    pub namespace: Option<Cow<'a, str>>,
+    pub namespace: Option<&'a str>,
     pub severity: Option<Severity>,
 }
 
 impl<'a> Fields<'a> {
-    pub fn of(line: &'a str) -> Fields<'a> {
-        let Ok(keys) = serde_json::from_str::<Keys<'a>>(line) else {
-            return Fields::default();
-        };
+    pub fn of(line: &'a TraceLine) -> Fields<'a> {
+        let read = |key| line.get(key).and_then(serde_json::Value::as_str);
         Fields {
-            namespace: keys.ns.map(|Read(ns)| ns),
-            severity: keys.sev.and_then(|Read(name)| name.parse().ok()),
+            namespace: read("ns"),
+            severity: read("sev").and_then(|name| name.parse().ok()),
         }
     }
 }
 
-pub fn select<'a>(config: &SelectConfig, line: &'a str) -> Selection<'a> {
-    let fields = Fields::of(line);
+/// A line the parse refuses (`envelope::TraceLineError`) declares neither
+/// field.
+pub fn select(config: &SelectConfig, line: &str) -> Selection {
+    let Ok(line) = TraceLine::parse(line) else {
+        return Selection::Skip;
+    };
+    let fields = Fields::of(&line);
     let kept = fields
         .severity
         .is_some_and(|severity| severity >= config.min_severity)

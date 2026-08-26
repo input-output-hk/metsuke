@@ -20,14 +20,24 @@ use metsuke_server::config::{
 };
 use metsuke_server::index::Index;
 use metsuke_wire::envelope::{
-    self, Envelope, Limits, Payload, PoolId, SCHEMA_VERSION_SAMPLES, Sample, Signature, SigningKey,
-    VerifyingKey,
+    self, AgentId, Envelope, Limits, Payload, PoolId, SCHEMA_VERSION_SAMPLES, Sample, Signature,
+    SigningKey, TraceLine, VerifyingKey,
 };
 use time::OffsetDateTime;
 
 /// The all-sevens test seed, matching the agent suite.
 pub fn test_key() -> SigningKey {
     SigningKey::from_bytes(&[7u8; 32])
+}
+
+/// The machine every test submission says it came from.
+pub fn test_agent_id() -> AgentId {
+    AgentId::parse("test-relay").expect("a fixed name is a slug")
+}
+
+/// A trace line as the wire holds one: the node's object, parsed.
+pub fn trace_line(line: &str) -> TraceLine {
+    TraceLine::parse(line).unwrap_or_else(|error| panic!("{line:.60}: {error}"))
 }
 
 /// A second key, for the pool that did not sign.
@@ -102,7 +112,7 @@ pub fn lines_envelope_at(
     key: &SigningKey,
     counter: u64,
     now: OffsetDateTime,
-    lines: Vec<String>,
+    lines: Vec<TraceLine>,
 ) -> Envelope {
     envelope_carrying(key, counter, now, Payload::Lines { lines })
 }
@@ -115,6 +125,7 @@ pub fn envelope_carrying(
 ) -> Envelope {
     Envelope::new(
         pool_of(key),
+        test_agent_id(),
         metsuke_server::CLIENT_VERSION.to_string(),
         counter,
         now,

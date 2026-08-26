@@ -39,6 +39,81 @@ pub struct Ack {
     pub latest_version: String,
 }
 
+/// Which machine reported a batch: lowercase ASCII alphanumerics in
+/// dash-separated runs. Two constructors, because the two callers want
+/// different things from a name — `slugify` turns any hostname into an id, so a
+/// host called `Relay_1` reports instead of refusing to start, and `parse`
+/// takes only the form `slugify` emits, so an id read off the wire is an id
+/// something made (`slugify_folds_a_hostname_into_an_agent_id`,
+/// `parse_refuses_what_slugify_would_never_emit`).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AgentId(String);
+
+#[derive(Debug, thiserror::Error)]
+pub enum AgentIdError {
+    #[error("{name:?} holds no letter or digit to name an agent by")]
+    Nameless { name: String },
+    #[error("agent id {found:?} is not dash-separated runs of a-z and 0-9")]
+    NotASlug { found: String },
+}
+
+impl AgentId {
+    /// Only a name with nothing alphanumeric in it leaves no id to make.
+    pub fn slugify(name: &str) -> Result<AgentId, AgentIdError> {
+        let dashed: String = name
+            .chars()
+            .map(|character| match character.to_ascii_lowercase() {
+                lowered if lowered.is_ascii_alphanumeric() => lowered,
+                _ => '-',
+            })
+            .collect();
+        let slug = dashed
+            .split('-')
+            .filter(|run| !run.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        match slug.is_empty() {
+            true => Err(AgentIdError::Nameless {
+                name: name.to_string(),
+            }),
+            false => Ok(AgentId(slug)),
+        }
+    }
+
+    /// The strict reader: `slugify` itself, required to have folded nothing.
+    pub fn parse(text: &str) -> Result<AgentId, AgentIdError> {
+        match AgentId::slugify(text) {
+            Ok(slug) if slug.0 == text => Ok(slug),
+            _ => Err(AgentIdError::NotASlug {
+                found: text.to_string(),
+            }),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for AgentId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl Serialize for AgentId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for AgentId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        AgentId::parse(&text).map_err(serde::de::Error::custom)
+    }
+}
+
 /// A pool id: the blake2b-224 hash of the pool's cold verification key,
 /// bech32 `pool1…` on the wire. The only constructors validate, so a held
 /// `PoolId` is always a real 28-byte hash.
@@ -114,12 +189,75 @@ impl<'de> Deserialize<'de> for PoolId {
     }
 }
 
+/// The one key a payload line reserves for metsuke's own fields; why one key
+/// rather than a flat merge is ADR 0010.
+pub const PROVENANCE_KEY: &str = "metsuke";
+
+/// What every payload line carries under `PROVENANCE_KEY`: which pool and
+/// machine wrote the line, in which batch, and when that batch was sealed. The
+/// same four values the header states, so a line read out of the archive on its
+/// own still says where it came from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Provenance {
+    pub pool_id: PoolId,
+    pub agent_id: AgentId,
+    pub counter: u64,
+    #[serde(with = "time::serde::rfc3339")]
+    pub timestamp: OffsetDateTime,
+}
+
+/// One trace line as the JSON object the node wrote, with `PROVENANCE_KEY`
+/// absent: a held `TraceLine` is a line the sealing path can stamp without
+/// overwriting anything the node said.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TraceLine(serde_json::Map<String, serde_json::Value>);
+
+#[derive(Debug, thiserror::Error)]
+pub enum TraceLineError {
+    #[error("not one whole JSON object: {0}")]
+    NotAnObject(#[from] serde_json::Error),
+    #[error("declares the reserved {PROVENANCE_KEY:?} key")]
+    ReservedKey,
+}
+
+impl TraceLine {
+    pub fn parse(line: &str) -> Result<TraceLine, TraceLineError> {
+        TraceLine::of(serde_json::from_str(line)?)
+    }
+
+    fn of(object: serde_json::Map<String, serde_json::Value>) -> Result<TraceLine, TraceLineError> {
+        match object.contains_key(PROVENANCE_KEY) {
+            true => Err(TraceLineError::ReservedKey),
+            false => Ok(TraceLine(object)),
+        }
+    }
+
+    /// What the line reads back as, and what it is measured and spooled as:
+    /// the object, compact, on one line.
+    pub fn to_line(&self) -> String {
+        // Every value came out of a parse, so there is no non-finite float and
+        // no non-string key for the writer to refuse.
+        serde_json::to_string(&self.0).expect("a parsed JSON object re-renders")
+    }
+
+    /// One of the line's own top-level fields, for the rules that read it.
+    pub fn get(&self, key: &str) -> Option<&serde_json::Value> {
+        self.0.get(key)
+    }
+}
+
+impl Serialize for TraceLine {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
+
 /// What one batch carries, and therefore which schema version it is. A
 /// version names a payload shape, so an envelope never states the two apart.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Payload {
     Samples { samples: Vec<Sample> },
-    Lines { lines: Vec<String> },
+    Lines { lines: Vec<TraceLine> },
 }
 
 impl Payload {
@@ -131,8 +269,9 @@ impl Payload {
     }
 }
 
-/// One signed upload batch. The replay `counter` and `timestamp` live in the
-/// header frame, inside the signed bytes (ADR 0002).
+/// One signed upload batch. The `counter` and `timestamp` live in the header
+/// frame, inside the signed bytes (ADR 0002), and on every payload line beside
+/// them (`Provenance`).
 ///
 /// `schema_version` and `payload` are private and only `new` sets them: an
 /// envelope in hand always declares the version its payload has.
@@ -140,8 +279,10 @@ impl Payload {
 pub struct Envelope {
     schema_version: u32,
     pub pool_id: PoolId,
+    /// Which of this pool's machines sealed the batch.
+    pub agent_id: AgentId,
     pub agent_version: String,
-    /// Per-pool monotonic replay counter.
+    /// Per-agent monotonic counter; what a gap in it means is ADR 0002.
     pub counter: u64,
     /// Batch creation time, RFC 3339 UTC.
     pub timestamp: OffsetDateTime,
@@ -155,6 +296,7 @@ pub struct Envelope {
 struct Header {
     schema_version: u32,
     pool_id: PoolId,
+    agent_id: AgentId,
     agent_version: String,
     counter: u64,
     #[serde(with = "time::serde::rfc3339")]
@@ -180,6 +322,7 @@ impl Schema {
 impl Envelope {
     pub fn new(
         pool_id: PoolId,
+        agent_id: AgentId,
         agent_version: String,
         counter: u64,
         timestamp: OffsetDateTime,
@@ -188,6 +331,7 @@ impl Envelope {
         Envelope {
             schema_version: payload.schema_version(),
             pool_id,
+            agent_id,
             agent_version,
             counter,
             timestamp,
@@ -201,6 +345,35 @@ impl Envelope {
 
     pub fn payload(&self) -> &Payload {
         &self.payload
+    }
+
+    /// What every line of this batch is stamped with (`Header::provenance`).
+    pub fn provenance(&self) -> Provenance {
+        Header::of(self).provenance()
+    }
+}
+
+impl Header {
+    fn of(envelope: &Envelope) -> Header {
+        Header {
+            schema_version: envelope.schema_version,
+            pool_id: envelope.pool_id,
+            agent_id: envelope.agent_id.clone(),
+            agent_version: envelope.agent_version.clone(),
+            counter: envelope.counter,
+            timestamp: envelope.timestamp,
+        }
+    }
+
+    /// The only place a `Provenance` is made, so `open` checking a line against
+    /// the header checks it against what `seal` stamped.
+    fn provenance(&self) -> Provenance {
+        Provenance {
+            pool_id: self.pool_id,
+            agent_id: self.agent_id.clone(),
+            counter: self.counter,
+            timestamp: self.timestamp,
+        }
     }
 }
 
@@ -238,10 +411,6 @@ pub enum SealError {
     Json(#[from] serde_json::Error),
     #[error("zstd compression failed: {0}")]
     Compress(#[source] std::io::Error),
-    /// The newline is what terminates one trace line, so a line holding one
-    /// would open as two under a valid signature.
-    #[error("trace line {index} holds a newline")]
-    LineHoldsNewline { index: usize },
     /// The skippable frame states its length in a u32, so a header past that
     /// has no frame to travel in.
     #[error("header is {found} bytes, past what a skippable frame can declare")]
@@ -278,6 +447,19 @@ pub enum OpenError {
     /// line the sender did not finish writing.
     #[error("payload's last line has no terminating newline")]
     UnterminatedLine,
+    /// Every line states the batch it travelled in. A line stating another one
+    /// is a payload assembled from two of them, and a reader taking provenance
+    /// off the line rather than the header would never notice.
+    #[error("payload line {index} does not carry this batch's provenance")]
+    LineProvenance { index: usize },
+    /// Named by index, because serde's own position is inside the one line it
+    /// was handed and says "line 1" for every one of them.
+    #[error("payload line {index} does not read as this schema's shape: {source}")]
+    LineShape {
+        index: usize,
+        #[source]
+        source: serde_json::Error,
+    },
     #[error(
         "envelope schema version {found}, this build speaks \
          v{SCHEMA_VERSION_SAMPLES} and v{SCHEMA_VERSION_LINES}"
@@ -329,38 +511,70 @@ pub fn split(bytes: &[u8], max_header_bytes: u64) -> Result<Frames<'_>, Containe
 /// The header frame's content, uncompressed. The agent budgets a batch against
 /// this length rather than against a second account of the header's fields.
 pub fn header_json(envelope: &Envelope) -> Result<Vec<u8>, SealError> {
-    Ok(serde_json::to_vec(&Header {
-        schema_version: envelope.schema_version,
-        pool_id: envelope.pool_id,
-        agent_version: envelope.agent_version.clone(),
-        counter: envelope.counter,
-        timestamp: envelope.timestamp,
-    })?)
+    Ok(serde_json::to_vec(&Header::of(envelope))?)
 }
 
-/// The data frame's content before compression: one JSON object per sample, or
-/// one trace line as the node emitted it, each terminated by a newline. What
-/// the server's `max_decompressed_bytes` bounds, and what `zstd -d` emits.
+/// One payload line as it goes on the wire: the sample's or the node's own
+/// object, plus this batch's provenance under the one reserved key. The field
+/// name spells `PROVENANCE_KEY`'s value a second time because `serde(rename)`
+/// takes a literal; the tests assert against the constant, so a change to
+/// either alone fails `every_payload_line_carries_the_batch_s_provenance`.
+#[derive(Serialize)]
+struct Stamped<'a, T: Serialize> {
+    #[serde(flatten)]
+    line: &'a T,
+    metsuke: &'a serde_json::value::RawValue,
+}
+
+/// The same line coming back: the provenance it declares, and everything else
+/// it holds as whatever the schema says that is.
+#[derive(Deserialize)]
+struct Unstamped<T> {
+    #[serde(flatten)]
+    line: T,
+    metsuke: Provenance,
+}
+
+/// The data frame's content before compression: one JSON object per payload
+/// line, each stamped with the batch's provenance and terminated by a newline.
+/// What the server's `max_decompressed_bytes` bounds, and what `zstd -d` emits.
+/// Both payload shapes make the same line here; ADR 0010 says why.
 pub fn payload_lines(envelope: &Envelope) -> Result<Vec<u8>, SealError> {
+    // Rendered once and spliced into every line: the four values are the whole
+    // batch's, and bech32 and RFC 3339 are not free to write per row.
+    let metsuke = &serde_json::value::to_raw_value(&envelope.provenance())?;
     let mut body = Vec::new();
     match &envelope.payload {
         Payload::Samples { samples } => {
             for sample in samples {
-                serde_json::to_writer(&mut body, sample)?;
+                serde_json::to_writer(
+                    &mut body,
+                    &Stamped {
+                        line: sample,
+                        metsuke,
+                    },
+                )?;
                 body.push(b'\n');
             }
         }
         Payload::Lines { lines } => {
-            for (index, line) in lines.iter().enumerate() {
-                if line.contains('\n') {
-                    return Err(SealError::LineHoldsNewline { index });
-                }
-                body.extend_from_slice(line.as_bytes());
+            for line in lines {
+                serde_json::to_writer(&mut body, &Stamped { line, metsuke })?;
                 body.push(b'\n');
             }
         }
     }
     Ok(body)
+}
+
+/// What stamping costs one payload line: the reserved key, the four
+/// punctuation bytes around it, and the provenance object. An upper bound by
+/// one byte for a line with no fields of its own, which neither a sample nor a
+/// selected trace line is.
+pub fn provenance_bytes(envelope: &Envelope) -> Result<u64, SealError> {
+    // `,"metsuke":` — the comma, the two quotes and the colon.
+    let framing = (PROVENANCE_KEY.len() + 4) as u64;
+    Ok(framing + serde_json::to_vec(&envelope.provenance())?.len() as u64)
 }
 
 /// Serialize, compress, and sign an envelope. Returns the wire bytes exactly
@@ -427,26 +641,50 @@ pub fn open(
         None if body.is_empty() => Vec::new(),
         None => return Err(OpenError::UnterminatedLine),
     };
+    let stamp = header.provenance();
     let payload = match schema {
         Schema::Samples => Payload::Samples {
-            samples: lines
-                .iter()
-                .map(|line| serde_json::from_str(line))
-                .collect::<Result<_, _>>()?,
+            samples: unstamp(&lines, &stamp)?,
         },
         Schema::Lines => Payload::Lines {
-            lines: lines.into_iter().map(str::to_string).collect(),
+            lines: unstamp::<serde_json::Map<String, serde_json::Value>>(&lines, &stamp)?
+                .into_iter()
+                .map(TraceLine)
+                .collect(),
         },
     };
     // Through `new`, so what comes out declares the version its payload has
     // rather than the one the header claimed.
     Ok(Envelope::new(
         header.pool_id,
+        header.agent_id,
         header.agent_version,
         header.counter,
         header.timestamp,
         payload,
     ))
+}
+
+/// Read each payload line as its schema's shape, checking that it declares the
+/// provenance the header does. The reserved key is consumed here, so a map this
+/// hands back cannot hold it and a `TraceLine` built from one keeps its
+/// invariant.
+fn unstamp<T: serde::de::DeserializeOwned>(
+    lines: &[&str],
+    stamp: &Provenance,
+) -> Result<Vec<T>, OpenError> {
+    lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let unstamped: Unstamped<T> = serde_json::from_str(line)
+                .map_err(|source| OpenError::LineShape { index, source })?;
+            match &unstamped.metsuke == stamp {
+                true => Ok(unstamped.line),
+                false => Err(OpenError::LineProvenance { index }),
+            }
+        })
+        .collect()
 }
 
 /// Decompress one data frame, stopping one byte past the ceiling.

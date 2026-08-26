@@ -15,9 +15,15 @@ use metsuke_wire::envelope::PoolId;
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// The pool this agent reports for, bech32 `pool1…` (why it is
-    /// configured rather than derived: `delivery::Delivery`).
+    /// The pool this agent reports for, bech32 `pool1…`. Configured rather
+    /// than derived from the key, and checked against it at startup
+    /// (`identity::check_pool_id`, ADR 0003).
     pub pool_id: PoolId,
+    /// What to call this machine on every line it ships. Absent means the
+    /// machine's own hostname, slugified (`identity::agent_id`); a value here
+    /// is slugified the same way.
+    #[serde(default)]
+    pub agent_id: Option<String>,
     /// The node's PrometheusSimple endpoint.
     pub metrics_url: MetricsUrl,
     /// The metsuke-server submission endpoint.

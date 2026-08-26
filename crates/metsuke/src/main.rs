@@ -8,6 +8,7 @@ use metsuke::agent::Agent;
 use metsuke::cli::{Args, ArgsError};
 use metsuke::config::{Config, ConfigError, LogConfig};
 use metsuke::delivery::Delivery;
+use metsuke::identity::{self, IdentityError};
 use metsuke::keys::{self, KeyError};
 use metsuke::logselect::{OutsideRoots, SelectConfig};
 use metsuke::logsource::JournalConfig;
@@ -34,6 +35,8 @@ enum StartupError {
     Config(#[from] ConfigError),
     #[error(transparent)]
     Key(#[from] KeyError),
+    #[error(transparent)]
+    Identity(#[from] IdentityError),
     #[error("cannot open spool: {0}")]
     Spool(#[from] SpoolError),
     #[error("[log] selection rules: {0}")]
@@ -60,6 +63,8 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
     let config = Config::from_toml(&text)?;
     let key =
         keys::resolve_signing_key(args.signing_key.as_deref(), config.signing_key.as_deref())?;
+    identity::check_pool_id(config.pool_id, &key.verifying_key())?;
+    let agent_id = identity::agent_id(config.agent_id.as_deref())?;
     let busy_timeout = Duration::from_secs(config.spool_busy_timeout_secs);
     let spool = Spool::open(&SpoolConfig {
         path: config.spool_path.clone(),
@@ -67,6 +72,12 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         busy_timeout,
     })?;
     let vkey = key.verifying_key();
+    eprintln!(
+        "{INFO}metsuke {} on {agent_id} sampling {} for {}",
+        env!("CARGO_PKG_VERSION"),
+        config.metrics_url,
+        config.pool_id,
+    );
     let mut agent = Agent::new(
         SamplerConfig {
             scrape: ScrapeConfig {
@@ -83,6 +94,7 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
             spool,
             key,
             config.pool_id,
+            agent_id,
             config.compression_level,
             config.upload_batch_max_bytes,
         ),
@@ -92,12 +104,6 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
             timeout: Duration::from_secs(config.upload_timeout_secs),
         },
         vkey,
-    );
-    eprintln!(
-        "{INFO}metsuke {} sampling {} for {}",
-        env!("CARGO_PKG_VERSION"),
-        config.metrics_url,
-        config.pool_id,
     );
     if let Some(log) = &config.log {
         start_trace_collection(log, &config.spool_path, busy_timeout)?;
@@ -186,11 +192,18 @@ fn upload_tick(agent: &mut Agent, schedule: &mut Schedule, config: &ScheduleConf
     let attempted = agent.upload_once();
     // After the attempt, because taking the batch is what drops them.
     let uncarriable = agent.take_uncarriable_report();
-    if uncarriable.rows > 0 {
+    if uncarriable.oversized > 0 {
         eprintln!(
             "{WARNING}dropped {} rows no batch could ever carry, the largest {} bytes: \
              raise upload_batch_max_bytes past it, plus the envelope's framing",
-            uncarriable.rows, uncarriable.largest_bytes,
+            uncarriable.oversized, uncarriable.largest_bytes,
+        );
+    }
+    if let Some(reason) = &uncarriable.unreadable_reason {
+        eprintln!(
+            "{WARNING}dropped {} spooled rows this build cannot read, the last of them {reason}: \
+             a row the spool holds and the uploader refuses is a bug worth reporting",
+            uncarriable.unreadable,
         );
     }
     let outcome = match attempted {

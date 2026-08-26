@@ -6,6 +6,7 @@
 
 use std::time::Duration;
 
+use metsuke_wire::envelope::TraceLine;
 use metsuke_wire::journal::{ERR, WARNING};
 
 use crate::logselect::{SelectConfig, Selection, select};
@@ -90,7 +91,7 @@ pub fn drain(
         let Selection::Ship(line) = select(selection, &line) else {
             continue;
         };
-        match push_waiting_out_contention(spool, line) {
+        match push_waiting_out_contention(spool, &line) {
             Ok(0) => {}
             Ok(count) => {
                 // The first one immediately, so an operator learns the cap is
@@ -121,7 +122,7 @@ pub fn drain(
 /// Append one line, retrying while SQLite answers busy. The retry is the whole
 /// difference between the two failures: a spool the upload loop happens to hold
 /// costs this line a wait, and one that cannot be written at all is returned.
-fn push_waiting_out_contention(spool: &mut LogSpool, line: &str) -> Result<u64, SpoolError> {
+fn push_waiting_out_contention(spool: &mut LogSpool, line: &TraceLine) -> Result<u64, SpoolError> {
     let mut left = BUSY_RETRIES;
     loop {
         match spool.push(line) {

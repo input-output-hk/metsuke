@@ -172,7 +172,9 @@ pub fn authenticate(
             | envelope::OpenError::Decompress(_)
             | envelope::OpenError::Json(_)
             | envelope::OpenError::NotUtf8
-            | envelope::OpenError::UnterminatedLine) => AuthError::MalformedPayload {
+            | envelope::OpenError::UnterminatedLine
+            | envelope::OpenError::LineProvenance { .. }
+            | envelope::OpenError::LineShape { .. }) => AuthError::MalformedPayload {
                 reason: error.to_string(),
             },
         }

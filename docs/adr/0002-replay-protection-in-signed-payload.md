@@ -1,6 +1,6 @@
 # 2. Replay protection inside the signed payload, verify before decompress
 
-Status: accepted (2026-08-19)
+Status: accepted (2026-08-19), the counter's meaning amended by metsuke-jfb.3
 
 ## Context
 
@@ -12,9 +12,10 @@ unauthenticated bytes ever reach the decompressor.
 
 ## Decision
 
-A per-pool monotonic counter and a timestamp live inside the signed JSON payload,
-covered by the same signature as the data. Counter state (`pool_id →
-last_counter, last_seen`) lives in server SQLite.
+A monotonic counter and a timestamp live inside the signed JSON payload, covered
+by the same signature as the data. The counter belongs to one agent, so a gap in
+it is a batch the archive never got (`envelope::Envelope::counter`).
+Counter state lives in server SQLite.
 
 Three things the ingest path must hold, whatever checks it grows:
 

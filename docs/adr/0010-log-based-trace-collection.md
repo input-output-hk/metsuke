@@ -28,9 +28,12 @@ the block producer's write path, where a stalled reader is the node's problem.
 The agent follows the node's journal with `journalctl --follow`, selects lines
 by namespace prefix or severity floor — both configuration, matched as *or*,
 since "every Leios event" and "every error, warning and notice" are two
-independent asks — and ships what it selects verbatim. It parses the line as a
-JSON object and reads `ns` and `sev` off its top level and nothing else; a line
-the parse refuses declares neither field, so no rule reaches it. It does
+independent asks — and ships every field of what it selects. It parses the line
+as a JSON object and reads `ns` and `sev` off its top level and nothing else; a
+line the parse refuses declares neither field, so no rule reaches it. That parse
+is also what travels: a selected line is the object from here on, so the spool
+and the wire hold it re-rendered rather than as the node's own bytes, and
+nothing downstream parses it a second time. It does
 not know what a Leios trace means and computes nothing from one. One more
 namespace is therefore an edit to a config file rather than a release, bounded
 by a `namespace_roots` ceiling the host sets: the agent can read every unit's
@@ -45,12 +48,17 @@ a unit holding the group without the second cannot start journalctl at all.
 
 Selected lines land in the existing spool under their own byte cap and upload
 as schema v2 envelopes on the same signed path as samples (ADR 0001, 0002,
-0005). They are the data frame's lines, appended raw, so a trace line is signed
-and archived as the node's own bytes rather than as a JSON string of them. The
-framing therefore costs a line one byte, which is what the agent's batch budget
-and the server's decompress limit both count it as. One envelope
-carries one kind of payload, and only the upload loop seals, so the two streams
-share a pool's replay counter without coordinating.
+0005). They are the data frame's lines, each the node's object with the batch's
+provenance added under the one reserved `metsuke` key, so a trace line and a
+metrics line have the same shape and one query over the archive reads both. One
+reserved key rather than the provenance fields merged into the line's top level:
+what a node writes there is the node version's to name, so a merge would need a
+rule about which names metsuke may take, and one reserved key is a constraint
+statable in a sentence. A line therefore costs more than its own bytes, which is
+what the agent's batch budget and the server's decompress limit both count it as
+(`spool::RowBudget`). One envelope carries one kind of payload, and only the
+upload loop seals, so the two streams share an agent's counter without
+coordinating.
 
 Pipe mode is not built. It is a second implementation behind the same line
 source, and its own decision.
@@ -86,12 +94,18 @@ source, and its own decision.
   reads back. What a Leios round's traces look like is owned by the recordings
   under crates/metsuke/tests/fixtures, replayed through a real journal in the
   unit test and through the selection and spool in `cargo test`.
-- Selecting costs a JSON parse of every line the node writes, wanted or not.
-  That is deliberate: reading the fields as substrings needed a rule about
-  which occurrence in the line is the record's own, and that rule is a claim
-  about the node's key order that nothing enforces. Nobody has measured what
-  the parse costs on a real block producer; a prefilter ahead of it is a local
-  change if it turns out to matter.
+- Selecting costs a JSON parse of every line the node writes, wanted or not,
+  and now the parsed object as well. That is deliberate: reading the fields as
+  substrings needed a rule about which occurrence in the line is the record's
+  own, and that rule is a claim about the node's key order that nothing
+  enforces. Nobody has measured what the parse costs on a real block producer; a
+  prefilter ahead of it is a local change if it turns out to matter.
+- A shipped line is the node's fields, not the node's bytes: keys arrive sorted,
+  escapes are rewritten, and a number is re-rendered as the parser read it.
+  Nothing compares the re-rendering against the node's own text, so what the
+  archive holds is what this build's JSON parser and writer agree the line
+  meant. The refusals are the bound: `TraceLine::parse` takes only one whole
+  object, and a line naming `metsuke` is not one.
 - An upload tick now costs two envelopes where it cost one, and the trace
   stream's volume is not the sampler's. The shipped caps are starting numbers,
   not measured ones: the volume behind them was a flood-driven burst on a

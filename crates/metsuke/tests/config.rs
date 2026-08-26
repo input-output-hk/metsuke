@@ -42,6 +42,7 @@ fn minimal_config_parses_with_shipped_defaults() {
         "https://metsuke.example.org/v1/submit"
     );
     assert_eq!(config.signing_key, None);
+    assert_eq!(config.agent_id, None);
     assert_eq!(config.sample_interval_secs, 300);
     assert_eq!(config.upload_interval_secs, 3600);
     assert_eq!(config.sntp_servers, vec!["time.cloudflare.com:123"]);

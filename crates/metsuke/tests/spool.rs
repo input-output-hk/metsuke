@@ -3,14 +3,36 @@
 
 use std::time::Duration;
 
-use metsuke::spool::{LogSpool, LogSpoolConfig, Spool, SpoolConfig, UncarriableReport};
-use metsuke_wire::envelope::Sample;
+use metsuke::spool::{LogSpool, LogSpoolConfig, RowBudget, Spool, SpoolConfig, UncarriableReport};
+use metsuke_wire::envelope::{Sample, TraceLine};
 use proptest::prelude::*;
 use time::OffsetDateTime;
+
+mod support;
+use support::trace_line;
 
 /// Wide enough that `outstanding` returns everything spooled: the byte budget
 /// is the caller's, and a test about durability is not a test about it.
 const WHOLE_SPOOL: u64 = 64 * 1024 * 1024;
+
+/// A stand-in for what stamping one row costs. Any number does: what is under
+/// test is that the budget counts it, not what `envelope::provenance_bytes`
+/// returns.
+const STAMP: u64 = 40;
+
+/// A budget with no per-row stamp, for the tests that are about the rows rather
+/// than about what a batch adds to each of them.
+fn unstamped(max_bytes: u64) -> RowBudget {
+    RowBudget {
+        max_bytes,
+        per_row_bytes: 0,
+    }
+}
+
+/// Wide enough to offer everything spooled.
+fn whole_spool() -> RowBudget {
+    unstamped(WHOLE_SPOOL)
+}
 
 /// Nothing here has a second connection to contend with, so a write that has
 /// to wait is a bug in the test rather than the lock wait being too short.
@@ -30,9 +52,7 @@ fn sample_at(unix_secs: i64) -> Sample {
     }
 }
 
-/// What one row costs against a cap or a budget: its own bytes plus the one
-/// the framing spends separating it from the row before it (`spool` says why
-/// the column holds that).
+/// What one row costs this file, as `spool::push_capped` stores it.
 fn row_bytes(text: &str) -> u64 {
     text.len() as u64 + 1
 }
@@ -41,6 +61,11 @@ fn row_bytes(text: &str) -> u64 {
 /// count without any test naming the serializer's byte count.
 fn sample_bytes() -> u64 {
     row_bytes(&serde_json::to_string(&sample_at(1)).unwrap())
+}
+
+/// The same for one trace line, which the spool holds as the object's own text.
+fn line_bytes(line: &TraceLine) -> u64 {
+    row_bytes(&line.to_line())
 }
 
 fn temp_config(dir: &tempfile::TempDir, max_bytes: u64) -> SpoolConfig {
@@ -71,7 +96,7 @@ fn undelivered_rows_survive_restart() {
         }
     }
     let mut reopened = Spool::open(&config).unwrap();
-    let rows = reopened.outstanding(WHOLE_SPOOL).unwrap();
+    let rows = reopened.outstanding(whole_spool()).unwrap();
     let offered: Vec<_> = rows.into_iter().map(|row| row.sample).collect();
     assert_eq!(offered, samples);
 }
@@ -83,9 +108,9 @@ fn ack_deletes_only_the_acked_rows() {
     for secs in 1..=3 {
         spool.push(&sample_at(secs)).unwrap();
     }
-    let rows = spool.outstanding(WHOLE_SPOOL).unwrap();
+    let rows = spool.outstanding(whole_spool()).unwrap();
     spool.ack(&[rows[0].id, rows[1].id]).unwrap();
-    let remaining = spool.outstanding(WHOLE_SPOOL).unwrap();
+    let remaining = spool.outstanding(whole_spool()).unwrap();
     assert_eq!(remaining, vec![rows[2].clone()]);
 }
 
@@ -98,7 +123,7 @@ fn size_cap_drops_oldest_on_push() {
         spool.push(&sample_at(secs)).unwrap();
     }
     let offered: Vec<_> = spool
-        .outstanding(WHOLE_SPOOL)
+        .outstanding(whole_spool())
         .unwrap()
         .into_iter()
         .map(|row| row.sample)
@@ -121,7 +146,7 @@ fn the_cap_counts_bytes_rather_than_rows() {
     for _ in 0..5 {
         spool.push(&long).unwrap();
     }
-    assert_eq!(spool.outstanding(WHOLE_SPOOL).unwrap().len(), 2);
+    assert_eq!(spool.outstanding(whole_spool()).unwrap().len(), 2);
 }
 
 // Data the agent threw away has an account: silence would leave an operator
@@ -145,12 +170,38 @@ fn outstanding_stops_before_exceeding_the_byte_budget() {
         spool.push(&sample_at(secs)).unwrap();
     }
     let offered: Vec<_> = spool
-        .outstanding(2 * sample_bytes())
+        .outstanding(unstamped(2 * sample_bytes()))
         .unwrap()
         .into_iter()
         .map(|row| row.sample)
         .collect();
     assert_eq!(offered, [sample_at(1), sample_at(2)]);
+}
+
+// A row's cost in a sealed payload is its own bytes plus what stamping it
+// costs, so a budget that admits two unstamped rows admits fewer stamped ones.
+// Counting only the column would seal a body over the server's limit.
+#[test]
+fn the_budget_counts_what_stamping_a_row_costs() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut spool = Spool::open(&temp_config(&dir, WHOLE_SPOOL)).unwrap();
+    for secs in 1..=5 {
+        spool.push(&sample_at(secs)).unwrap();
+    }
+    let offered = spool
+        .outstanding(RowBudget {
+            max_bytes: 2 * (sample_bytes() + STAMP),
+            per_row_bytes: STAMP,
+        })
+        .unwrap();
+    assert_eq!(offered.len(), 2);
+    let one_row_short = spool
+        .outstanding(RowBudget {
+            max_bytes: 2 * sample_bytes() + STAMP,
+            per_row_bytes: STAMP,
+        })
+        .unwrap();
+    assert_eq!(one_row_short.len(), 1);
 }
 
 #[test]
@@ -160,17 +211,27 @@ fn outstanding_drops_the_head_row_over_budget_and_leaves_the_rest() {
     spool.push(&sample_at(1)).unwrap();
     spool.push(&sample_at(2)).unwrap();
 
-    assert!(spool.outstanding(1).unwrap().is_empty());
+    assert!(
+        spool
+            .outstanding(RowBudget {
+                max_bytes: 1,
+                per_row_bytes: STAMP,
+            })
+            .unwrap()
+            .is_empty()
+    );
     let report = spool.take_uncarriable_report();
-    assert_eq!(report.rows, 1);
-    assert_eq!(report.largest_bytes, sample_bytes());
+    assert_eq!(report.oversized, 1);
+    // The budget the row had to clear, not the size of its text: what the
+    // operator is asked to raise is measured the same way.
+    assert_eq!(report.largest_bytes, sample_bytes() + STAMP);
     assert_eq!(
         spool.take_uncarriable_report(),
         UncarriableReport::default()
     );
 
     let surviving: Vec<_> = spool
-        .outstanding(WHOLE_SPOOL)
+        .outstanding(whole_spool())
         .unwrap()
         .into_iter()
         .map(|row| row.sample)
@@ -183,21 +244,61 @@ fn an_uncarriable_row_does_not_stall_the_rows_behind_it() {
     let dir = tempfile::tempdir().unwrap();
     let mut spool = Spool::open(&temp_config(&dir, WHOLE_SPOOL)).unwrap();
     let mut lines = LogSpool::open(&temp_log_config(&dir, WHOLE_SPOOL)).unwrap();
-    let carriable = "a short line";
-    let oversized = "x".repeat(4 * row_bytes(carriable) as usize);
+    let carriable = trace_line(r#"{"ns":"Consensus.Leios"}"#);
+    let oversized = trace_line(&format!(
+        r#"{{"ns":"{}"}}"#,
+        "x".repeat(4 * line_bytes(&carriable) as usize)
+    ));
     lines.push(&oversized).unwrap();
-    lines.push(carriable).unwrap();
+    lines.push(&carriable).unwrap();
 
-    let offered = spool.outstanding_lines(2 * row_bytes(carriable)).unwrap();
+    let offered = spool
+        .outstanding_lines(unstamped(2 * line_bytes(&carriable)))
+        .unwrap();
 
     assert_eq!(
-        offered
-            .iter()
-            .map(|row| row.line.as_str())
-            .collect::<Vec<_>>(),
-        [carriable]
+        offered.iter().map(|row| &row.line).collect::<Vec<_>>(),
+        [&carriable]
     );
-    assert_eq!(spool.take_uncarriable_report().rows, 1);
+    assert_eq!(spool.take_uncarriable_report().oversized, 1);
+}
+
+// A row this build cannot read back is what an older binary or a foreign writer
+// left in the file. It goes the way the over-budget head row does
+// (`spool::Spool::readable`).
+#[test]
+fn an_unreadable_row_is_dropped_rather_than_failing_the_tick() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut spool = Spool::open(&temp_config(&dir, WHOLE_SPOOL)).unwrap();
+    let readable = trace_line(r#"{"ns":"Consensus.Leios"}"#);
+    {
+        let mut lines = LogSpool::open(&temp_log_config(&dir, WHOLE_SPOOL)).unwrap();
+        lines.push(&readable).unwrap();
+    }
+    let foreign = "not one whole JSON object";
+    let file = rusqlite::Connection::open(dir.path().join("spool.sqlite")).unwrap();
+    file.execute(
+        "INSERT INTO log_lines (line, bytes) VALUES (?1, ?2)",
+        rusqlite::params![foreign, row_bytes(foreign) as i64],
+    )
+    .unwrap();
+
+    let offered = spool.outstanding_lines(whole_spool()).unwrap();
+
+    assert_eq!(
+        offered.iter().map(|row| &row.line).collect::<Vec<_>>(),
+        [&readable]
+    );
+    let report = spool.take_uncarriable_report();
+    assert_eq!(report.unreadable, 1);
+    let reason = report.unreadable_reason.unwrap();
+    assert!(reason.starts_with("log_lines row 2:"), "{reason}");
+    // Deleted rather than skipped: the next tick meets it no more.
+    assert_eq!(spool.outstanding_lines(whole_spool()).unwrap().len(), 1);
+    assert_eq!(
+        spool.take_uncarriable_report(),
+        UncarriableReport::default()
+    );
 }
 
 // A counter value handed out must never be handed out again, even across a
@@ -227,7 +328,7 @@ fn open_migrates_a_fresh_database() {
     rusqlite::Connection::open(&config.path).unwrap();
     let mut spool = Spool::open(&config).unwrap();
     spool.push(&sample_at(1)).unwrap();
-    assert_eq!(spool.outstanding(WHOLE_SPOOL).unwrap().len(), 1);
+    assert_eq!(spool.outstanding(whole_spool()).unwrap().len(), 1);
     let raw = rusqlite::Connection::open(&config.path).unwrap();
     let version: u32 = raw
         .query_row("PRAGMA user_version", [], |row| row.get(0))
@@ -266,10 +367,16 @@ fn migrating_a_v1_spool_gives_its_rows_their_byte_count() {
         }
     }
     let mut spool = Spool::open(&config).unwrap();
-    assert_eq!(spool.outstanding(WHOLE_SPOOL).unwrap().len(), 3);
+    assert_eq!(spool.outstanding(whole_spool()).unwrap().len(), 3);
     // The budget admits two of the three, which it can only do from the byte
     // counts the migration backfilled.
-    assert_eq!(spool.outstanding(2 * sample_bytes()).unwrap().len(), 2);
+    assert_eq!(
+        spool
+            .outstanding(unstamped(2 * sample_bytes()))
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 // The trace-line half is written by its own connection and read by the upload
@@ -279,19 +386,20 @@ fn trace_lines_written_by_one_connection_are_read_by_the_other() {
     let dir = tempfile::tempdir().unwrap();
     let mut lines = LogSpool::open(&temp_log_config(&dir, WHOLE_SPOOL)).unwrap();
     let mut spool = Spool::open(&temp_config(&dir, WHOLE_SPOOL)).unwrap();
-    for line in ["first", "second"] {
+    let written: Vec<TraceLine> = [r#"{"ns":"first"}"#, r#"{"ns":"second"}"#]
+        .into_iter()
+        .map(trace_line)
+        .collect();
+    for line in &written {
         lines.push(line).unwrap();
     }
-    let outstanding = spool.outstanding_lines(WHOLE_SPOOL).unwrap();
+    let outstanding = spool.outstanding_lines(whole_spool()).unwrap();
     assert_eq!(
-        outstanding
-            .iter()
-            .map(|row| row.line.as_str())
-            .collect::<Vec<_>>(),
-        ["first", "second"]
+        outstanding.iter().map(|row| &row.line).collect::<Vec<_>>(),
+        written.iter().collect::<Vec<_>>()
     );
     spool.ack_lines(&[outstanding[0].id]).unwrap();
-    let remaining = spool.outstanding_lines(WHOLE_SPOOL).unwrap();
+    let remaining = spool.outstanding_lines(whole_spool()).unwrap();
     assert_eq!(remaining, vec![outstanding[1].clone()]);
 }
 
@@ -319,7 +427,9 @@ fn a_reader_holding_the_file_does_not_block_a_trace_line_push() {
         .unwrap();
 
     lines
-        .push("a line written while the upload loop reads")
+        .push(&trace_line(
+            r#"{"ns":"written while the upload loop reads"}"#,
+        ))
         .unwrap();
 }
 
@@ -330,13 +440,13 @@ fn the_trace_line_cap_is_its_own() {
     let dir = tempfile::tempdir().unwrap();
     let mut spool = Spool::open(&temp_config(&dir, WHOLE_SPOOL)).unwrap();
     spool.push(&sample_at(1)).unwrap();
-    let line = |index: u32| format!("{index}: one trace line");
-    let mut lines = LogSpool::open(&temp_log_config(&dir, row_bytes(&line(0)))).unwrap();
+    let line = |index: u32| trace_line(&format!(r#"{{"ns":"line {index}"}}"#));
+    let mut lines = LogSpool::open(&temp_log_config(&dir, line_bytes(&line(0)))).unwrap();
     for index in 0..5 {
         lines.push(&line(index)).unwrap();
     }
-    assert_eq!(spool.outstanding(WHOLE_SPOOL).unwrap().len(), 1);
-    assert_eq!(spool.outstanding_lines(WHOLE_SPOOL).unwrap().len(), 1);
+    assert_eq!(spool.outstanding(whole_spool()).unwrap().len(), 1);
+    assert_eq!(spool.outstanding_lines(whole_spool()).unwrap().len(), 1);
 }
 
 proptest! {
@@ -358,18 +468,18 @@ proptest! {
                 spool.push(&sample_at(pushed)).unwrap();
                 pushed += 1;
             }
-            let rows = spool.outstanding(WHOLE_SPOOL).unwrap();
+            let rows = spool.outstanding(whole_spool()).unwrap();
             let acked: Vec<i64> = rows[..ack_pick.index(rows.len() + 1)]
                 .iter()
                 .map(|row| row.id)
                 .collect();
             spool.ack(&acked).unwrap();
-            let remaining = spool.outstanding(WHOLE_SPOOL).unwrap();
+            let remaining = spool.outstanding(whole_spool()).unwrap();
             prop_assert!(remaining.iter().all(|row| !acked.contains(&row.id)));
         }
-        let all: Vec<i64> = spool.outstanding(WHOLE_SPOOL).unwrap().iter().map(|row| row.id).collect();
+        let all: Vec<i64> = spool.outstanding(whole_spool()).unwrap().iter().map(|row| row.id).collect();
         spool.ack(&all).unwrap();
-        prop_assert!(spool.outstanding(WHOLE_SPOOL).unwrap().is_empty());
+        prop_assert!(spool.outstanding(whole_spool()).unwrap().is_empty());
         drop(spool);
         let raw = rusqlite::Connection::open(&config.path).unwrap();
         let orphans: i64 = raw
@@ -385,7 +495,7 @@ fn pushed_sample_is_outstanding() {
     let mut spool = Spool::open(&temp_config(&dir, WHOLE_SPOOL)).unwrap();
     let sample = sample_at(1_000);
     spool.push(&sample).unwrap();
-    let rows = spool.outstanding(WHOLE_SPOOL).unwrap();
+    let rows = spool.outstanding(whole_spool()).unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].sample, sample);
 }

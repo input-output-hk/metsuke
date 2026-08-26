@@ -6,19 +6,21 @@
 //!
 //! Samples and trace lines seal into separate envelopes because a schema
 //! version names one payload shape (`envelope::Payload`). Both are taken from
-//! here, on one thread, so the two never race for a replay counter.
+//! here, on one thread, so the two never race for a counter.
 
 use time::OffsetDateTime;
 
-use crate::spool::{Spool, SpoolError, UncarriableReport};
-use metsuke_wire::envelope::{self, Envelope, Payload, PoolId, Sample, SigningKey};
+use crate::spool::{RowBudget, Spool, SpoolError, UncarriableReport};
+use metsuke_wire::envelope::{self, AgentId, Envelope, Payload, PoolId, Sample, SigningKey};
 
 pub struct Delivery {
     spool: Spool,
     key: SigningKey,
-    /// From config, not derived from `key`: a Calidus key's hash is not the
-    /// pool id (ADR 0003).
+    /// Checked against `key` at startup (`identity::check_pool_id`), so what
+    /// this stamps is what that key speaks for.
     pool_id: PoolId,
+    /// Which of this pool's machines is reporting (`identity::agent_id`).
+    agent_id: AgentId,
     /// zstd level passed to `seal` (0 = zstd's default).
     compression_level: i32,
     /// Pre-compression ceiling on one envelope: its header frame plus its
@@ -64,6 +66,7 @@ impl Delivery {
         spool: Spool,
         key: SigningKey,
         pool_id: PoolId,
+        agent_id: AgentId,
         compression_level: i32,
         batch_max_bytes: u64,
     ) -> Self {
@@ -71,6 +74,7 @@ impl Delivery {
             spool,
             key,
             pool_id,
+            agent_id,
             compression_level,
             batch_max_bytes,
         }
@@ -83,7 +87,7 @@ impl Delivery {
     }
 
     /// Seal one batch of outstanding samples, drawing (and persisting) the
-    /// next replay counter. `None` when nothing is spooled. Rows stay spooled
+    /// next counter. `None` when nothing is spooled. Rows stay spooled
     /// until `ack`; a retry after a failed PUT simply takes a fresh batch.
     pub fn take_batch(
         &mut self,
@@ -116,21 +120,25 @@ impl Delivery {
             .map(Some)
     }
 
-    /// What the rows may sum to: the budget less what this envelope's header
-    /// frame spends, measured by building that frame rather than by a second
-    /// account of its fields. `u64::MAX` is the widest counter this pool can
-    /// ever draw, so the reserve never comes up short of the counter the batch
-    /// is actually stamped with.
+    /// The budget the spool takes rows against (`spool::RowBudget`), both halves
+    /// measured by building the thing rather than by a second account of its
+    /// fields. `u64::MAX` is the widest counter this agent can ever draw, so
+    /// neither reserve comes up short of the counter the batch is actually
+    /// stamped with.
     ///
     /// A budget the framing already exhausts is an error, not a zero: every
     /// row is over a zero budget, so offering one would have the spool drop the
     /// head row a tick for as long as the config stands
     /// (`spool::outstanding_rows`).
-    fn row_budget(&self, now: OffsetDateTime, empty: Payload) -> Result<u64, DeliveryError> {
-        let header = envelope::header_json(&self.envelope(u64::MAX, now, empty))?;
+    fn row_budget(&self, now: OffsetDateTime, empty: Payload) -> Result<RowBudget, DeliveryError> {
+        let envelope = self.envelope(u64::MAX, now, empty);
+        let header = envelope::header_json(&envelope)?;
         let framing = (envelope::HEADER_OFFSET + header.len()) as u64;
         match self.batch_max_bytes.checked_sub(framing) {
-            Some(budget) if budget > 0 => Ok(budget),
+            Some(max_bytes) if max_bytes > 0 => Ok(RowBudget {
+                max_bytes,
+                per_row_bytes: envelope::provenance_bytes(&envelope)?,
+            }),
             _ => Err(DeliveryError::BudgetBelowFraming {
                 batch_max_bytes: self.batch_max_bytes,
                 framing,
@@ -141,6 +149,7 @@ impl Delivery {
     fn envelope(&self, counter: u64, now: OffsetDateTime, payload: Payload) -> Envelope {
         Envelope::new(
             self.pool_id,
+            self.agent_id.clone(),
             crate::AGENT_VERSION.to_string(),
             counter,
             now,
@@ -164,8 +173,8 @@ impl Delivery {
         })
     }
 
-    /// What the last batches dropped for being larger on their own than one
-    /// batch's budget (`spool::Spool::take_uncarriable_report`).
+    /// What the last batches dropped rather than sealed
+    /// (`spool::Spool::take_uncarriable_report`).
     pub fn take_uncarriable_report(&mut self) -> UncarriableReport {
         self.spool.take_uncarriable_report()
     }

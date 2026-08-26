@@ -11,9 +11,16 @@ metrics_url = "http://127.0.0.1:12798/metrics"
 # Required: the metsuke-server submission endpoint.
 upload_url = "https://metsuke.example.org/v1/submit"
 
-# Path to the signing key (cardano-cli TextEnvelope: pool.skey or
-# pool.calidus.skey). The --signing-key flag overrides this: with systemd, leave
-# this unset and pass the key as a credential — see contrib/metsuke.service.
+# What to call this machine on every line it ships, so a pool reporting from
+# more than one host can tell them apart. Defaults to this machine's hostname,
+# folded to lowercase a-z0-9 in dash-separated runs; a value set here is folded
+# the same way.
+#   agent_id = "relay-1"
+
+# Path to the signing key (cardano-cli TextEnvelope). It has to be the cold key
+# pool_id above hashes from, or the agent refuses to start. The --signing-key
+# flag overrides this: with systemd, leave this unset and pass the key as a
+# credential — see contrib/metsuke.service.
 # signing_key = "/etc/metsuke/pool.skey"
 
 # Cadences: sampling and uploading are independent.

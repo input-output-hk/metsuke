@@ -19,7 +19,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod support;
 use metsuke_wire::hex;
-use support::{TEST_LIMITS, test_key};
+use support::{TEST_LIMITS, test_agent_id, test_key, trace_line};
 
 const RECORDED_CHAIN: &str = include_str!("fixtures/recordings/leios-node.prom");
 
@@ -65,7 +65,7 @@ fn test_agent(dir: &tempfile::TempDir, metrics: &MockServer, uploads: &MockServe
                 timeout: Duration::from_millis(50),
             },
         },
-        Delivery::new(spool, test_key(), pool_id, 0, UNBOUNDED),
+        Delivery::new(spool, test_key(), pool_id, test_agent_id(), 0, UNBOUNDED),
         UploadConfig {
             upload_url: format!("{}/v1/submit", uploads.uri()).try_into().unwrap(),
             pool_id,
@@ -155,7 +155,9 @@ async fn one_tick_uploads_both_the_samples_and_the_trace_lines() {
         .await;
     let dir = tempfile::tempdir().unwrap();
     let mut agent = test_agent(&dir, &metrics, &uploads);
-    test_log_spool(&dir).push("one trace line").unwrap();
+    test_log_spool(&dir)
+        .push(&trace_line(r#"{"ns":"one trace line"}"#))
+        .unwrap();
 
     let (first, second) = tokio::task::spawn_blocking(move || {
         agent.sample_once().unwrap();

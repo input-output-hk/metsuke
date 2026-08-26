@@ -3,7 +3,9 @@
 //! the recordings under tests/fixtures; the values live here so the recording
 //! stays the only copy of the bytes.
 
-use metsuke_wire::envelope::{Envelope, Payload, PoolId, Sample, SigningKey, seal};
+use metsuke_wire::envelope::{
+    AgentId, Envelope, Payload, PoolId, Sample, SigningKey, TraceLine, seal,
+};
 use time::OffsetDateTime;
 
 fn main() {
@@ -32,15 +34,18 @@ fn main() {
         // Two lines, so the framing between them is in the recording and not
         // only the one that terminates the payload.
         "lines" => Payload::Lines {
-            lines: vec![
-                r#"{"at":"2026-08-12T07:20:00.00Z","ns":"Leios.Announcement","sev":"Info","data":{"slot":163281005}}"#.to_string(),
-                r#"{"at":"2026-08-12T07:20:01.00Z","ns":"Leios.NotVoted","sev":"Notice","data":{"reason":"NoQuorum"}}"#.to_string(),
-            ],
+            lines: [
+                r#"{"at":"2026-08-12T07:20:00.00Z","ns":"Leios.Announcement","sev":"Info","data":{"slot":163281005}}"#,
+                r#"{"at":"2026-08-12T07:20:01.00Z","ns":"Leios.NotVoted","sev":"Notice","data":{"reason":"NoQuorum"}}"#,
+            ]
+            .map(|line| TraceLine::parse(line).expect("a recorded trace line is a JSON object"))
+            .to_vec(),
         },
         other => panic!("unknown payload shape {other:?}"),
     };
     let envelope = Envelope::new(
         PoolId::from_cold_key(&key.verifying_key()),
+        AgentId::slugify("relay-1").expect("a fixed name slugifies"),
         "0.1.0".to_string(),
         42,
         at,

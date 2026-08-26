@@ -21,7 +21,7 @@ use support::{
     calidus_authority, calidus_key, envelope_at, envelope_carrying, envelope_for, index_store,
     lines_envelope_at, nonzero_u32, nonzero_u64, other_key, permissive_config, pool_of,
     registered_pool, registration, rotated_calidus_key, seal, stored_submission, submission,
-    test_key, test_now, test_sample,
+    test_agent_id, test_key, test_now, test_sample, trace_line,
 };
 
 /// An intake wired to a temporary directory and database, ready to submit
@@ -459,6 +459,7 @@ fn header(key: &SigningKey, schema_version: u32) -> serde_json::Value {
     serde_json::json!({
         "schema_version": schema_version,
         "pool_id": pool_of(key).to_bech32(),
+        "agent_id": test_agent_id().as_str(),
         "agent_version": "0.1.0",
         "counter": 1,
         "timestamp": "2025-08-12T12:00:00Z",
@@ -472,8 +473,9 @@ fn header(key: &SigningKey, schema_version: u32) -> serde_json::Value {
 fn a_trace_line_upload_is_accepted_and_archived() {
     let key = test_key();
     let (mut intake, dir) = intake_for(&[pool_of(&key)]);
-    let lines =
-        vec![r#"{"at":"2026-08-25T18:19:41.024688522Z","ns":"x","sev":"Info"}"#.to_string()];
+    let lines = vec![trace_line(
+        r#"{"at":"2026-08-25T18:19:41.024688522Z","ns":"x","sev":"Info"}"#,
+    )];
     let envelope = lines_envelope_at(&key, 1, test_now(), lines);
     assert_eq!(envelope.schema_version(), SCHEMA_VERSION_LINES);
     let (body, signature) = seal(&key, &envelope);

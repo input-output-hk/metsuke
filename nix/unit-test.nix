@@ -20,9 +20,10 @@
 let
   metricsPort = 12798;
   listenPort = 8080;
-  # Bech32 over 28 zero bytes. Nothing here signs for it; it is the pool id
-  # both halves have to accept at load.
-  poolId = "pool1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq8a7a2d";
+  # What `signingKey` below hashes to: the agent refuses to start unless the
+  # two agree (`identity::check_pool_id`), so a wrong value here fails the test
+  # rather than travelling.
+  poolId = "pool13vscgf9dwn0jt56u965wp99ychz6avktk3pyrye326f3xctz4nm";
   # Throwaway: what is exercised is that systemd hands the file over and the
   # agent parses it, not what it signs.
   signingKey = pkgs.writeText "pool.skey" (
@@ -350,15 +351,20 @@ pkgs.testers.runNixOSTest {
             " > /tmp/spooled"
             " && grep -q '\"ns\":\"Consensus.LeiosKernel.Certified\"' /tmp/spooled"
         )
-        lines = tracing.succeed("cat /tmp/spooled").splitlines()
-        recorded = set(tracing.succeed("cat ${traces}").splitlines())
-        # Byte for byte, which is the whole promise: the developers compute
+        import json
+        lines = [json.loads(line) for line in tracing.succeed("cat /tmp/spooled").splitlines()]
+        recorded = [json.loads(line) for line in tracing.succeed("cat ${traces}").splitlines()]
+        # Field for field, which is the whole promise: the developers compute
         # their own distributions from the node's own record, and a transport
-        # that reframed a line would leave them computing from metsuke's.
-        assert set(lines) <= recorded, set(lines) - recorded
+        # that dropped or renamed a field would leave them computing from
+        # metsuke's. Not byte for byte — a spooled line is the object
+        # re-rendered (ADR 0010).
+        assert all(line in recorded for line in lines), [
+            line for line in lines if line not in recorded
+        ]
         # And the rules still filtered on the way: the recording's volume is
         # Debug lines nobody asked for.
-        assert not [line for line in lines if '"sev":"Debug"' in line], lines
+        assert not [line for line in lines if line.get("sev") == "Debug"], lines
 
     with subtest("the contrib unit runs the agent on a host that is not NixOS"):
         bare.wait_for_unit("metrics-endpoint.service")

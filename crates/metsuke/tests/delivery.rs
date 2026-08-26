@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use metsuke::delivery::Delivery;
 use metsuke::spool::{LogSpool, LogSpoolConfig, Spool, SpoolConfig};
-use metsuke_wire::envelope::{self, Payload, PoolId, Sample, SigningKey};
+use metsuke_wire::envelope::{self, Payload, PoolId, Sample, SigningKey, TraceLine};
 use time::OffsetDateTime;
 
 mod support;
-use support::TEST_LIMITS;
+use support::{TEST_LIMITS, test_agent_id, trace_line};
 
 /// Wide enough that no cap in the spool or the batch fires unless a test asks
 /// for one.
@@ -27,7 +27,7 @@ fn samples_of(envelope: &envelope::Envelope) -> &[Sample] {
     }
 }
 
-fn lines_of(envelope: &envelope::Envelope) -> &[String] {
+fn lines_of(envelope: &envelope::Envelope) -> &[TraceLine] {
     match envelope.payload() {
         Payload::Lines { lines } => lines,
         other => panic!("a trace-line batch carries lines, got {other:?}"),
@@ -67,6 +67,7 @@ fn delivery_with_batch_cap(
         spool,
         key.clone(),
         PoolId::from_cold_key(&key.verifying_key()),
+        test_agent_id(),
         0,
         batch_max_bytes,
     )
@@ -167,15 +168,19 @@ fn empty_spool_yields_no_batch() {
 }
 
 // Trace lines take the same path as samples and come out as a schema v2
-// envelope the server's own call opens, with the lines byte for byte.
+// envelope the server's own call opens, with the lines field for field.
 #[test]
 fn spooled_trace_lines_seal_as_their_own_envelope() {
     let dir = tempfile::tempdir().unwrap();
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let mut delivery = temp_delivery(&dir, &key);
     let mut lines = temp_log_spool(&dir);
-    let recorded = [r#"{"at":"2026-08-25T18:19:38.019429126Z"}"#, "second"];
-    for line in recorded {
+    let recorded = [
+        r#"{"at":"2026-08-25T18:19:38.019429126Z"}"#,
+        r#"{"ns":"Consensus.Leios","sev":"Notice"}"#,
+    ]
+    .map(trace_line);
+    for line in &recorded {
         lines.push(line).unwrap();
     }
     let batch = delivery
@@ -201,7 +206,7 @@ fn spooled_trace_lines_seal_as_their_own_envelope() {
 }
 
 // Acking a trace-line batch must not touch a spooled sample, and vice versa:
-// the two streams share one file and one counter sequence, nothing else.
+// the two streams share one file and one counter, nothing else.
 #[test]
 fn acking_one_stream_leaves_the_other_spooled() {
     let dir = tempfile::tempdir().unwrap();
@@ -209,7 +214,7 @@ fn acking_one_stream_leaves_the_other_spooled() {
     let mut delivery = temp_delivery(&dir, &key);
     let mut lines = temp_log_spool(&dir);
     delivery.push(&sample_at(1)).unwrap();
-    lines.push("one line").unwrap();
+    lines.push(&trace_line(r#"{"ns":"one line"}"#)).unwrap();
 
     let batch = delivery
         .take_line_batch(OffsetDateTime::UNIX_EPOCH)
@@ -231,18 +236,29 @@ fn acking_one_stream_leaves_the_other_spooled() {
     assert_eq!(samples_of(&opened), [sample_at(1)]);
 }
 
-/// What an envelope of `payload`'s shape costs before any row is in it: its
-/// header frame, at the widest counter a spool can hand out. The batch budget
-/// covers it, so a test that wants room for exactly two rows starts here.
-fn framing_bytes(key: &SigningKey, payload: Payload) -> u64 {
-    let empty = envelope::Envelope::new(
+/// An envelope of `payload`'s shape with nothing in it, at the widest counter a
+/// spool can hand out: what the batch budget reserves before any row is in it.
+fn empty_envelope(key: &SigningKey, payload: Payload) -> envelope::Envelope {
+    envelope::Envelope::new(
         PoolId::from_cold_key(&key.verifying_key()),
+        test_agent_id(),
         metsuke::AGENT_VERSION.to_string(),
         u64::MAX,
         OffsetDateTime::UNIX_EPOCH,
         payload,
-    );
+    )
+}
+
+/// What that envelope's header frame costs. The batch budget covers it, so a
+/// test that wants room for exactly two rows starts here.
+fn framing_bytes(key: &SigningKey, payload: Payload) -> u64 {
+    let empty = empty_envelope(key, payload);
     (envelope::HEADER_OFFSET + envelope::header_json(&empty).unwrap().len()) as u64
+}
+
+/// What stamping one row of that envelope's shape costs (`spool::RowBudget`).
+fn stamp_bytes(key: &SigningKey, payload: Payload) -> u64 {
+    envelope::provenance_bytes(&empty_envelope(key, payload)).unwrap()
 }
 
 /// The payload bytes a batch of `envelope` seals into, which is what the
@@ -257,9 +273,11 @@ fn body_bytes(envelope: &envelope::Envelope) -> u64 {
 fn a_batch_stops_at_the_configured_budget_and_the_rest_is_retaken() {
     let dir = tempfile::tempdir().unwrap();
     let key = SigningKey::from_bytes(&[7u8; 32]);
-    // A row costs its own bytes plus the one separating it from the row before
-    // it, and the framing is spent before any row is.
-    let one = serde_json::to_string(&sample_at(1)).unwrap().len() as u64 + 1;
+    // One row's full cost (`spool::RowBudget`); the framing is spent before any
+    // row is.
+    let one = serde_json::to_string(&sample_at(1)).unwrap().len() as u64
+        + 1
+        + stamp_bytes(&key, Payload::Samples { samples: vec![] });
     let cap = framing_bytes(&key, Payload::Samples { samples: vec![] }) + 2 * one;
     let mut delivery = delivery_with_batch_cap(&dir, &key, cap);
     for secs in 1..=5 {
@@ -300,13 +318,16 @@ fn no_batch_seals_a_body_past_the_budget() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
     // Enough of both streams that the budget, not the spool, is what stops the
     // batch; the trace line is a real one, escaping and all.
-    let line = r#"{"at":"2026-08-25T18:19:38.018453907Z","ns":"Consensus.LeiosPeer.Announcement","data":{"msg":"\"quoted\""},"sev":"Info"}"#;
-    let cap = framing_bytes(&key, Payload::Lines { lines: vec![] }) + 40 * line.len() as u64;
+    let line = trace_line(
+        r#"{"at":"2026-08-25T18:19:38.018453907Z","ns":"Consensus.LeiosPeer.Announcement","data":{"msg":"\"quoted\""},"sev":"Info"}"#,
+    );
+    let cap =
+        framing_bytes(&key, Payload::Lines { lines: vec![] }) + 40 * line.to_line().len() as u64;
     let mut delivery = delivery_with_batch_cap(&dir, &key, cap);
     let mut lines = temp_log_spool(&dir);
     for secs in 1..=200 {
         delivery.push(&sample_at(secs)).unwrap();
-        lines.push(line).unwrap();
+        lines.push(&line).unwrap();
     }
     let open = |batch: &metsuke::delivery::SealedBatch| {
         envelope::open(
@@ -333,12 +354,21 @@ fn no_batch_seals_a_body_past_the_budget() {
 fn a_line_larger_than_the_whole_budget_is_dropped_rather_than_sealed() {
     let dir = tempfile::tempdir().unwrap();
     let key = SigningKey::from_bytes(&[7u8; 32]);
-    let carriable = r#"{"at":"2026-08-25T18:19:38.018453907Z","ns":"Consensus.LeiosPeer.Announcement","sev":"Info"}"#;
-    let cap = framing_bytes(&key, Payload::Lines { lines: vec![] }) + 2 * carriable.len() as u64;
+    let carriable = trace_line(
+        r#"{"at":"2026-08-25T18:19:38.018453907Z","ns":"Consensus.LeiosPeer.Announcement","sev":"Info"}"#,
+    );
+    let carriable_bytes = carriable.to_line().len() as u64;
+    let cap = framing_bytes(&key, Payload::Lines { lines: vec![] })
+        + 2 * (carriable_bytes + stamp_bytes(&key, Payload::Lines { lines: vec![] }));
     let mut delivery = delivery_with_batch_cap(&dir, &key, cap);
     let mut lines = temp_log_spool(&dir);
-    lines.push(&"x".repeat(4 * carriable.len())).unwrap();
-    lines.push(carriable).unwrap();
+    lines
+        .push(&trace_line(&format!(
+            r#"{{"ns":"{}"}}"#,
+            "x".repeat(4 * carriable_bytes as usize)
+        )))
+        .unwrap();
+    lines.push(&carriable).unwrap();
 
     let batch = delivery.take_line_batch(test_now()).unwrap().unwrap();
 
@@ -349,9 +379,9 @@ fn a_line_larger_than_the_whole_budget_is_dropped_rather_than_sealed() {
         TEST_LIMITS,
     )
     .unwrap();
-    assert_eq!(lines_of(&opened), [carriable.to_string()]);
+    assert_eq!(lines_of(&opened), [carriable]);
     assert!(body_bytes(&opened) <= cap, "{}", body_bytes(&opened));
-    assert_eq!(delivery.take_uncarriable_report().rows, 1);
+    assert_eq!(delivery.take_uncarriable_report().oversized, 1);
 }
 
 // A budget the framing alone exhausts leaves no room for any row, and every
@@ -361,9 +391,11 @@ fn a_line_larger_than_the_whole_budget_is_dropped_rather_than_sealed() {
 fn a_budget_the_framing_exhausts_fails_the_tick_and_keeps_the_rows() {
     let dir = tempfile::tempdir().unwrap();
     let key = SigningKey::from_bytes(&[7u8; 32]);
-    let line = r#"{"at":"2026-08-25T18:19:38.018453907Z","ns":"Consensus.LeiosPeer.Announcement","sev":"Info"}"#;
+    let line = trace_line(
+        r#"{"at":"2026-08-25T18:19:38.018453907Z","ns":"Consensus.LeiosPeer.Announcement","sev":"Info"}"#,
+    );
     let mut lines = temp_log_spool(&dir);
-    lines.push(line).unwrap();
+    lines.push(&line).unwrap();
     let framing = framing_bytes(&key, Payload::Lines { lines: vec![] });
 
     // `framing_bytes` stamps UNIX_EPOCH, so this budget is the framing exactly
@@ -387,7 +419,7 @@ fn a_budget_the_framing_exhausts_fails_the_tick_and_keeps_the_rows() {
         TEST_LIMITS,
     )
     .unwrap();
-    assert_eq!(lines_of(&opened), [line.to_string()]);
+    assert_eq!(lines_of(&opened), [line]);
 }
 
 /// A timestamp with the subsecond digits a real batch carries: the header line

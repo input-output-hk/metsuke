@@ -17,7 +17,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod support;
 use metsuke_wire::hex;
-use support::{TEST_LIMITS, test_key};
+use support::{TEST_LIMITS, test_agent_id, test_key};
 
 const UNBOUNDED: u64 = 64 * 1024 * 1024;
 
@@ -29,7 +29,7 @@ fn sealed_test_batch(dir: &tempfile::TempDir) -> metsuke::delivery::SealedBatch 
     })
     .unwrap();
     let pool_id = PoolId::from_cold_key(&test_key().verifying_key());
-    let mut delivery = Delivery::new(spool, test_key(), pool_id, 0, UNBOUNDED);
+    let mut delivery = Delivery::new(spool, test_key(), pool_id, test_agent_id(), 0, UNBOUNDED);
     delivery
         .push(&Sample {
             sampled_at: OffsetDateTime::UNIX_EPOCH,

@@ -9,6 +9,7 @@ pub mod cli;
 pub mod config;
 pub mod delivery;
 pub mod endpoint;
+pub mod identity;
 pub mod keys;
 pub mod logselect;
 pub mod logsource;

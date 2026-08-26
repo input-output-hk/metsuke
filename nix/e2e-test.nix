@@ -35,6 +35,10 @@ let
   # shows up as a diff. `poolIdRecorded` below is what asserts they still agree.
   poolId = "pool1awyxt3egwmunup7nmd2uznqr54p2lgdt3tvrqetj8geqgfz26x9";
 
+  # The guest's hostname is its node name below, and the agent is given no
+  # agent_id, so this is the slug it stamps every line with.
+  agentId = "e2e";
+
   bucket = "metsuke";
   # `KEY_PREFIX` in crates/metsuke-server/src/archive.rs, which owns what an
   # object key looks like.
@@ -89,7 +93,7 @@ let
         # length is the u32 at offset 4, and the JSON follows at offset 8. No
         # decompressor is involved in reading it, which is the point of the
         # frame. `zstd -dcq` then skips it and emits the payload alone — for
-        # schema 2, the node's own trace lines.
+        # schema 2, the node's trace lines with their provenance.
         #
         # The offsets are `envelope::HEADER_OFFSET` restated in shell, because
         # this side of the assertion runs no metsuke code. Nothing keeps them
@@ -354,6 +358,12 @@ let
           # And it selected rather than forwarded: the node's Debug volume,
           # which nobody asked for, is not in the bucket.
           assert not [line for line in archived if line["sev"] == "Debug"], namespaces
+          # Every line says which pool and machine wrote it (metsuke-jfb.3).
+          assert all(
+              line["metsuke"]["pool_id"] == "${poolId}"
+              and line["metsuke"]["agent_id"] == "${agentId}"
+              for line in archived
+          ), archived[0]
 
       with subtest("the stored bytes verify against the key that signed them"):
           # Last, and after the units stop: this opens the server's index as

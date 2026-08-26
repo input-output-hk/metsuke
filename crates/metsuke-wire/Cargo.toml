@@ -13,7 +13,10 @@ blake2 = "0.10.6"
 ed25519-dalek = "3.0.0"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
+serde_json = { version = "1.0.151", features = [
+  "float_roundtrip",
+  "raw_value",
+] }
 thiserror = "2.0.20"
 time = { version = "0.3.55", features = ["serde-well-known"] }
 # No TLS from here: what a binary's transport needs is its own choice, and

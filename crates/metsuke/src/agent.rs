@@ -106,8 +106,7 @@ impl Agent {
 
     /// What taking a batch dropped for being uncarriable
     /// (`delivery::Delivery::take_uncarriable_report`). A separate report from
-    /// `take_dropped_report`: the remedy is a larger
-    /// `upload_batch_max_bytes`, not a faster upload.
+    /// `take_dropped_report`: neither remedy is a faster upload.
     pub fn take_uncarriable_report(&mut self) -> UncarriableReport {
         self.delivery.take_uncarriable_report()
     }

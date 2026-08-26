@@ -10,11 +10,11 @@ use metsuke::logselect::{Selection, select};
 use metsuke::logsource::{JournalConfig, JournalSource};
 use metsuke::logtail;
 use metsuke::spool::{LogSpool, LogSpoolConfig, Spool, SpoolConfig};
-use metsuke_wire::envelope::{self, Payload, PoolId, SigningKey};
+use metsuke_wire::envelope::{self, Payload, PoolId, SigningKey, TraceLine};
 use time::OffsetDateTime;
 
 mod support;
-use support::{TEST_LIMITS, recording, replaying_journalctl, shipped_rules};
+use support::{TEST_LIMITS, recording, replaying_journalctl, shipped_rules, test_agent_id};
 
 const LEIOS_RECORDING: &str = "leios-node-traces.log";
 const LEIOS_WINDOW: &str = include_str!("fixtures/recordings/leios-node-traces.log");
@@ -26,7 +26,7 @@ const NO_CONTENTION: Duration = Duration::from_secs(1);
 
 // A whole journalctl's worth of a real node's traces, through the thread body
 // the binary runs, out as the envelope the server opens: every selected line
-// and nothing else, in the order the node wrote them and byte for byte.
+// and nothing else, in the order the node wrote them and field for field.
 #[test]
 fn the_recorded_stream_reaches_a_sealed_batch_as_the_lines_the_rules_selected() {
     let dir = tempfile::tempdir().unwrap();
@@ -55,6 +55,7 @@ fn the_recorded_stream_reaches_a_sealed_batch_as_the_lines_the_rules_selected() 
         .unwrap(),
         key.clone(),
         PoolId::from_cold_key(&key.verifying_key()),
+        test_agent_id(),
         0,
         UNBOUNDED,
     );
@@ -76,7 +77,7 @@ fn the_recorded_stream_reaches_a_sealed_batch_as_the_lines_the_rules_selected() 
         );
     };
 
-    let selected: Vec<&str> = LEIOS_WINDOW
+    let selected: Vec<TraceLine> = LEIOS_WINDOW
         .lines()
         .filter_map(|line| match select(&rules, line) {
             Selection::Ship(line) => Some(line),

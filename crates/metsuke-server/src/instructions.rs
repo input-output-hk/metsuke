@@ -5,8 +5,8 @@
 //! types — and no edit here can document a default the agent does not ship.
 
 use metsuke_wire::envelope::{
-    self, Envelope, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, Payload, PoolId, Sample,
-    SigningKey,
+    self, AgentId, Envelope, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, Payload, PoolId,
+    Sample, SigningKey,
 };
 use time::OffsetDateTime;
 
@@ -82,9 +82,14 @@ whole thing. Nothing outside these fields is collected:</p>
 <p>Every sampled field may be <code>null</code>. A scrape that failed is itself
 a signal, so the batch uploads either way.</p>
 
+<p>Every line carries the header's own fields again under <code>metsuke</code>,
+so one line read out of the archive still says which pool and machine wrote it,
+in which batch and when. That is the only key metsuke claims on a line.</p>
+
 <p>If you do step 5, trace lines upload as their own batches: the same header
 with <code>schema_version</code> 2, and then the lines you selected, one per
-line and exactly as your node wrote them.</p>
+line, each the object your node wrote plus that same <code>metsuke</code>
+key.</p>
 
 <p>The signature travels beside the body in three headers:
 <code>{HEADER_POOL_ID}</code>, <code>{HEADER_VKEY}</code> and
@@ -112,11 +117,11 @@ because your cold key witnessed a
 <a href="https://cips.cardano.org/cip/CIP-0151">CIP-151</a> registration naming
 it, and the registration with the highest nonce is the one that counts.</p>
 
-<p>Either way the agent reads the key as a cardano-cli TextEnvelope file — the
-<code>pool.skey</code> or <code>pool.calidus.skey</code> you already have. If
-you would rather not put a cold key on the telemetry machine, register a
-Calidus key and use that; you can rotate it later by registering another with a
-higher nonce.</p>
+<p>The agent reads the key as a cardano-cli TextEnvelope file — the
+<code>pool.skey</code> or <code>pool.calidus.skey</code> you already have. It
+refuses to start unless the key hashes to the <code>pool_id</code> you
+configured, so today that means the cold key: a Calidus key this server would
+accept will not get the agent past startup.</p>
 
 <h2>4. Enable the node's metrics endpoint</h2>
 
@@ -135,8 +140,9 @@ else:</p>
 <p>The metrics endpoint is a periodic snapshot. It carries no per-event
 timestamps, so it cannot answer when an announcement arrived, when a block body
 and its closure were received, or when a quorum was reached. Those live in the
-node's trace stream, and the agent ships the lines you select from it verbatim:
-it does not read them, and it computes nothing from them.</p>
+node's trace stream, and the agent ships every field of the lines you select
+from it: it reads two of them to decide, and it computes nothing from any of
+them.</p>
 
 <p>Skip this step and the agent stays exactly as step 4 leaves it — metrics
 only, and no read of your journal. To turn it on, the node has to emit those
@@ -402,6 +408,7 @@ fn example_envelope() -> String {
         .expect("a fixed timestamp is in range");
     let envelope = Envelope::new(
         PoolId::from_cold_key(&key.verifying_key()),
+        AgentId::slugify("relay-1").expect("a fixed name slugifies"),
         CLIENT_VERSION.to_string(),
         42,
         at,

@@ -10,11 +10,21 @@ use std::path::{Path, PathBuf};
 
 use metsuke::config::{Config, LogConfig};
 use metsuke::logselect::SelectConfig;
-use metsuke_wire::envelope::{Limits, SigningKey};
+use metsuke_wire::envelope::{AgentId, Limits, SigningKey, TraceLine};
 
 /// The all-sevens test seed used across the suite.
 pub fn test_key() -> SigningKey {
     SigningKey::from_bytes(&[7u8; 32])
+}
+
+/// The machine name every batch in the suite is stamped with.
+pub fn test_agent_id() -> AgentId {
+    AgentId::parse("test-relay").expect("a fixed name is a slug")
+}
+
+/// A trace line as the spool and the wire hold one: the node's object, parsed.
+pub fn trace_line(line: &str) -> TraceLine {
+    TraceLine::parse(line).unwrap_or_else(|error| panic!("{line:.60}: {error}"))
 }
 
 /// Wide enough for any test batch; the real limits are server config.

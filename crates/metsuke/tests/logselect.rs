@@ -2,12 +2,11 @@
 //! windows of one node's stdout, so a rule tested here faces every trace the
 //! node emitted alongside the wanted ones (tests/fixtures/README.md).
 
-use std::borrow::Cow;
-
 use metsuke::logselect::{Fields, SelectConfig, Selection, Severity, select};
+use metsuke_wire::envelope::TraceLine;
 
 mod support;
-use support::{shipped_log_config, shipped_rules};
+use support::{shipped_log_config, shipped_rules, trace_line};
 
 const LEIOS_WINDOW: &str = include_str!("fixtures/recordings/leios-node-traces.log");
 const STARTUP_WINDOW: &str = include_str!("fixtures/recordings/leios-node-traces-startup.log");
@@ -17,6 +16,11 @@ fn line_with(window: &'static str, needle: &str) -> &'static str {
         .lines()
         .find(|line| line.contains(needle))
         .unwrap_or_else(|| panic!("the recording holds no {needle} line"))
+}
+
+/// What selecting `line` looks like when a rule keeps it.
+fn ship(line: &str) -> Selection {
+    Selection::Ship(trace_line(line))
 }
 
 // What the rewards program asked for, by the namespaces a node actually emits.
@@ -37,7 +41,7 @@ fn the_shipped_rules_ship_what_was_asked_for() {
         let line = line_with(LEIOS_WINDOW, needle);
         assert_eq!(
             select(&rules, line),
-            Selection::Ship(line),
+            ship(line),
             "the shipped rules dropped {needle}"
         );
     }
@@ -68,7 +72,7 @@ fn the_shipped_rules_drop_the_wire_level_chatter() {
 fn the_severity_rule_reaches_past_the_namespace_list() {
     let rules = SelectConfig::new(&[], vec![], Severity::Warning).unwrap();
     let warning = line_with(STARTUP_WINDOW, r#""sev":"Warning""#);
-    assert_eq!(select(&rules, warning), Selection::Ship(warning));
+    assert_eq!(select(&rules, warning), ship(warning));
     assert_eq!(
         select(&rules, line_with(LEIOS_WINDOW, r#""sev":"Info""#)),
         Selection::Skip
@@ -89,7 +93,7 @@ fn the_namespace_rule_reaches_below_the_severity_floor() {
         LEIOS_WINDOW,
         r#""ns":"LeiosNotify.Remote.Send.RequestNext""#,
     );
-    assert_eq!(select(&rules, debug), Selection::Ship(debug));
+    assert_eq!(select(&rules, debug), ship(debug));
 }
 
 // The ceiling metsuke-4zo.99 will check a server-pushed rule against. It binds
@@ -116,7 +120,8 @@ fn a_namespace_outside_the_roots_is_refused() {
 fn the_roots_do_not_bound_the_severity_rule() {
     let rules = shipped_rules();
     let warning = line_with(STARTUP_WINDOW, r#""sev":"Warning""#);
-    let namespace = Fields::of(warning).namespace.unwrap();
+    let parsed = trace_line(warning);
+    let namespace = Fields::of(&parsed).namespace.unwrap();
     assert!(
         !shipped_log_config()
             .namespace_roots
@@ -124,17 +129,17 @@ fn the_roots_do_not_bound_the_severity_rule() {
             .any(|root| namespace.starts_with(root)),
         "{namespace} is under a root, so this proves nothing"
     );
-    assert_eq!(select(&rules, warning), Selection::Ship(warning));
+    assert_eq!(select(&rules, warning), ship(warning));
 }
 
 // The node prints its whole configuration before the tracing system is up. It
 // is the only line in the recorded windows that is not a trace record, and
-// neither rule can reach it because it declares no namespace and no severity.
+// neither rule can reach it because it is not a JSON object at all.
 #[test]
 fn the_pre_tracing_configuration_dump_is_skipped() {
     let first = STARTUP_WINDOW.lines().next().unwrap();
     assert!(first.starts_with("Node configuration:"), "{first:.60}");
-    assert_eq!(Fields::of(first), Fields::default());
+    assert!(TraceLine::parse(first).is_err());
     assert_eq!(select(&shipped_rules(), first), Selection::Skip);
 }
 
@@ -144,10 +149,10 @@ fn the_pre_tracing_configuration_dump_is_skipped() {
 #[test]
 fn a_truncated_line_declares_nothing_and_is_not_selected() {
     let line = line_with(LEIOS_WINDOW, r#""ns":"Consensus.LeiosKernel.Certified""#);
-    assert_eq!(select(&shipped_rules(), line), Selection::Ship(line));
+    assert_eq!(select(&shipped_rules(), line), ship(line));
     let cut = &line[..line.rfind(',').unwrap()];
     assert!(cut.contains(r#""ns":"Consensus.LeiosKernel.Certified""#));
-    assert_eq!(Fields::of(cut), Fields::default());
+    assert!(TraceLine::parse(cut).is_err());
     assert_eq!(select(&shipped_rules(), cut), Selection::Skip);
 }
 
@@ -156,31 +161,24 @@ fn a_truncated_line_declares_nothing_and_is_not_selected() {
 // readers needed a first-occurrence and a last-occurrence rule to survive.
 #[test]
 fn a_namespace_nested_in_data_is_not_the_lines_namespace() {
-    let line = r#"{"at":"2026-08-25T18:19:56Z","ns":"Forge.Loop.AdoptedBlock","data":{"ns":"LeiosNotify.Remote.Send.RequestNext","sev":"Debug"},"sev":"Info","thread":"52","host":"alpha"}"#;
+    let line = trace_line(
+        r#"{"at":"2026-08-25T18:19:56Z","ns":"Forge.Loop.AdoptedBlock","data":{"ns":"LeiosNotify.Remote.Send.RequestNext","sev":"Debug"},"sev":"Info","thread":"52","host":"alpha"}"#,
+    );
     assert_eq!(
-        Fields::of(line),
+        Fields::of(&line),
         Fields {
-            namespace: Some("Forge.Loop.AdoptedBlock".into()),
+            namespace: Some("Forge.Loop.AdoptedBlock"),
             severity: Some(Severity::Info),
         }
     );
 }
 
-// The recorded shape reads borrowed, so the copy is not paid once per line the
-// node writes. A value the line does not spell literally still reads, copied
-// and correct; a borrowed `&str` field would refuse the whole line instead.
+// A field the line does not spell literally still reads: the rules see the
+// value, not the bytes the node escaped it into.
 #[test]
-fn reading_a_field_copies_only_what_the_line_does_not_spell_literally() {
-    let recorded = line_with(LEIOS_WINDOW, r#""ns":"Forge.Loop.AdoptedBlock""#);
-    assert!(matches!(
-        Fields::of(recorded).namespace,
-        Some(Cow::Borrowed(_))
-    ));
-
-    let escaped = r#"{"ns":"Forge\u002ELoop","sev":"Info"}"#;
-    let namespace = Fields::of(escaped).namespace;
-    assert!(matches!(&namespace, Some(Cow::Owned(_))));
-    assert_eq!(namespace.as_deref(), Some("Forge.Loop"));
+fn a_field_reads_through_its_escapes() {
+    let escaped = trace_line(r#"{"ns":"Forge\u002ELoop","sev":"Info"}"#);
+    assert_eq!(Fields::of(&escaped).namespace, Some("Forge.Loop"));
 }
 
 // Every record in the recordings declares both fields. A node that stops
@@ -193,7 +191,11 @@ fn every_recorded_record_declares_the_fields_a_rule_reads() {
     let mut records = 0;
     let mut declaring_neither = 0;
     for line in LEIOS_WINDOW.lines().chain(STARTUP_WINDOW.lines()) {
-        let fields = Fields::of(line);
+        let Ok(parsed) = TraceLine::parse(line) else {
+            declaring_neither += 1;
+            continue;
+        };
+        let fields = Fields::of(&parsed);
         if fields == Fields::default() {
             declaring_neither += 1;
             continue;
@@ -214,27 +216,33 @@ fn every_recorded_record_declares_the_fields_a_rule_reads() {
 #[test]
 fn the_shipped_rules_select_without_reaching_debug() {
     let rules = shipped_rules();
-    let shipped: Vec<&str> = LEIOS_WINDOW
+    let shipped: Vec<TraceLine> = LEIOS_WINDOW
         .lines()
-        .filter(|line| matches!(select(&rules, line), Selection::Ship(_)))
+        .filter_map(|line| match select(&rules, line) {
+            Selection::Ship(line) => Some(line),
+            Selection::Skip => None,
+        })
         .collect();
     assert!(!shipped.is_empty(), "the rules selected nothing at all");
     assert!(shipped.len() < LEIOS_WINDOW.lines().count());
-    let debug: Vec<&&str> = shipped
+    let debug: Vec<&TraceLine> = shipped
         .iter()
-        .filter(|line| line.contains(r#""sev":"Debug""#))
+        .filter(|line| Fields::of(line).severity == Some(Severity::Debug))
         .collect();
     assert!(debug.is_empty(), "{} Debug lines selected", debug.len());
 }
 
-// The line that goes to the spool is the node's own bytes, not a
-// re-serialization: metsuke does not know what a Leios trace means, and the
-// developers compute their own distributions from the raw record.
+// The line that goes to the spool is every field the node wrote, under the keys
+// it wrote them: metsuke does not know what a Leios trace means, and the
+// developers compute their own distributions from the record's own fields.
 #[test]
-fn a_shipped_line_is_the_original_bytes() {
+fn a_shipped_line_holds_every_field_the_node_wrote() {
     let line = line_with(LEIOS_WINDOW, r#""ns":"Consensus.LeiosKernel.Certified""#);
     let Selection::Ship(shipped) = select(&shipped_rules(), line) else {
         panic!("the shipped rules dropped a Certified line");
     };
-    assert!(shipped.as_ptr() == line.as_ptr() && shipped.len() == line.len());
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&shipped.to_line()).unwrap(),
+        serde_json::from_str::<serde_json::Value>(line).unwrap()
+    );
 }

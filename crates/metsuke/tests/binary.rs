@@ -4,6 +4,7 @@
 //! beats the config path, which a swapped argument pair would invert
 //! without failing any type check.
 
+use std::io::BufRead;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -18,10 +19,29 @@ use support::{TEST_LIMITS, test_key};
 
 const RECORDED_CHAIN: &str = include_str!("fixtures/recordings/leios-node.prom");
 
+/// The name the config gives this machine, and the id it folds down to
+/// (`AgentId::slugify`): what the startup line and every header must carry.
+const AGENT_NAME: &str = "Test_Relay 1";
+const AGENT_ID: &str = "test-relay-1";
+
 fn write_config(
     dir: &tempfile::TempDir,
     server_uri: &str,
     signing_key_line: &str,
+) -> std::path::PathBuf {
+    write_config_for(
+        dir,
+        server_uri,
+        signing_key_line,
+        PoolId::from_cold_key(&test_key().verifying_key()),
+    )
+}
+
+fn write_config_for(
+    dir: &tempfile::TempDir,
+    server_uri: &str,
+    signing_key_line: &str,
+    pool_id: PoolId,
 ) -> std::path::PathBuf {
     let path = dir.path().join("config.toml");
     std::fs::write(
@@ -29,6 +49,7 @@ fn write_config(
         format!(
             r#"
             pool_id = "{}"
+            agent_id = "{AGENT_NAME}"
             metrics_url = "{server_uri}/metrics"
             upload_url = "{server_uri}/v1/submit"
             sample_interval_secs = 1
@@ -37,7 +58,7 @@ fn write_config(
             spool_path = "{}"
             {signing_key_line}
             "#,
-            PoolId::from_cold_key(&test_key().verifying_key()).to_bech32(),
+            pool_id.to_bech32(),
             dir.path().join("spool.sqlite").display(),
         ),
     )
@@ -75,6 +96,32 @@ fn binary_without_a_key_anywhere_exits_nonzero_naming_the_flag() {
     );
 }
 
+// The `identity::check_pool_id` refusal reaches the exit code: a mismatch stops
+// the process rather than surfacing as a rejected upload later.
+#[test]
+fn binary_refuses_a_pool_id_the_signing_key_does_not_hash_to() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = write_test_envelope(&dir);
+    let other = PoolId::from_cold_key(
+        &metsuke_wire::envelope::SigningKey::from_bytes(&[9u8; 32]).verifying_key(),
+    );
+    let config = write_config_for(&dir, "http://127.0.0.1:9", "", other);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_metsuke"))
+        .args(["--config", config.to_str().unwrap()])
+        .args(["--signing-key", key_path.to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let mine = PoolId::from_cold_key(&test_key().verifying_key()).to_bech32();
+    assert!(
+        stderr.contains(&other.to_bech32()) && stderr.contains(&mine),
+        "startup failure must name both pool ids, got: {stderr}"
+    );
+}
+
 // The whole wiring: config + flag in, a verifiable upload out. The config's
 // signing_key points at a path that does not exist, so this passes only
 // when the flag wins the precedence — a swapped `resolve_signing_key`
@@ -107,9 +154,21 @@ async fn binary_uploads_a_batch_signed_by_the_flag_key() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_metsuke"))
         .args(["--config", config.to_str().unwrap()])
         .args(["--signing-key", key_path.to_str().unwrap()])
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
         .unwrap();
+    let mut stderr = child.stderr.take().expect("stderr was piped");
+
+    // The first thing it says is who it is, with the configured name folded
+    // into an id.
+    let mut startup = String::new();
+    std::io::BufReader::new(&mut stderr)
+        .read_line(&mut startup)
+        .unwrap();
+    assert!(
+        startup.contains(AGENT_ID),
+        "the startup line must name the resolved agent id, got: {startup}"
+    );
 
     let deadline = Instant::now() + Duration::from_secs(30);
     let post = loop {
@@ -146,6 +205,7 @@ async fn binary_uploads_a_batch_signed_by_the_flag_key() {
         opened.pool_id,
         PoolId::from_cold_key(&test_key().verifying_key())
     );
+    assert_eq!(opened.agent_id.as_str(), AGENT_ID);
     // The flag key signed it: `open` verified against the header vkey,
     // which must be the flag key's.
     assert_eq!(vkey_bytes, test_key().verifying_key().to_bytes());

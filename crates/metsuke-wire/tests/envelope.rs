@@ -3,8 +3,9 @@
 //! (ticket metsuke-jfb.1).
 
 use metsuke_wire::envelope::{
-    self, CONTAINER_MAGIC, Envelope, HEADER_OFFSET, Limits, Payload, PoolId, SCHEMA_VERSION_LINES,
-    SCHEMA_VERSION_SAMPLES, Sample, SigningKey,
+    self, AgentId, CONTAINER_MAGIC, Envelope, HEADER_OFFSET, Limits, PROVENANCE_KEY, Payload,
+    PoolId, Provenance, SCHEMA_VERSION_LINES, SCHEMA_VERSION_SAMPLES, Sample, SigningKey,
+    TraceLine,
 };
 use proptest::prelude::*;
 use time::OffsetDateTime;
@@ -72,44 +73,71 @@ fn arb_agent_version() -> impl Strategy<Value = String> {
     "(?s).{0,32}"
 }
 
+/// Through `parse`, so what the generator emits is what the strict reader
+/// accepts and the two cannot drift apart.
+fn arb_agent_id() -> impl Strategy<Value = AgentId> {
+    "[a-z0-9]{1,8}(-[a-z0-9]{1,8}){0,2}"
+        .prop_map(|slug| AgentId::parse(&slug).expect("the generator emits slugs"))
+}
+
+/// An object of string fields under keys too short to be `PROVENANCE_KEY`,
+/// which a `TraceLine` never holds:
+/// `a_line_declaring_the_reserved_key_is_refused` covers that case on its own.
+fn arb_trace_line() -> impl Strategy<Value = TraceLine> {
+    proptest::collection::hash_map("[a-z]{1,6}", "(?s).{0,16}", 0..4).prop_map(|fields| {
+        let object: serde_json::Map<String, serde_json::Value> = fields
+            .into_iter()
+            .map(|(key, value)| (key, serde_json::Value::String(value)))
+            .collect();
+        TraceLine::parse(&serde_json::Value::Object(object).to_string())
+            .expect("an object naming no reserved key")
+    })
+}
+
 fn arb_envelope() -> impl Strategy<Value = Envelope> {
     (
         arb_pool_id(),
+        arb_agent_id(),
         arb_agent_version(),
         any::<u64>(),
         arb_timestamp(),
         proptest::collection::vec(arb_sample(), 0..8),
     )
-        .prop_map(|(pool_id, agent_version, counter, timestamp, samples)| {
-            Envelope::new(
-                pool_id,
-                agent_version,
-                counter,
-                timestamp,
-                Payload::Samples { samples },
-            )
-        })
+        .prop_map(
+            |(pool_id, agent_id, agent_version, counter, timestamp, samples)| {
+                Envelope::new(
+                    pool_id,
+                    agent_id,
+                    agent_version,
+                    counter,
+                    timestamp,
+                    Payload::Samples { samples },
+                )
+            },
+        )
 }
 
 fn arb_lines_envelope() -> impl Strategy<Value = Envelope> {
     (
         arb_pool_id(),
+        arb_agent_id(),
         arb_agent_version(),
         any::<u64>(),
         arb_timestamp(),
-        // No newline: that is the framing byte, and `seal` refuses a line
-        // holding one (`a_line_holding_a_newline_is_refused`).
-        proptest::collection::vec("[^\n]*", 0..8),
+        proptest::collection::vec(arb_trace_line(), 0..8),
     )
-        .prop_map(|(pool_id, agent_version, counter, timestamp, lines)| {
-            Envelope::new(
-                pool_id,
-                agent_version,
-                counter,
-                timestamp,
-                Payload::Lines { lines },
-            )
-        })
+        .prop_map(
+            |(pool_id, agent_id, agent_version, counter, timestamp, lines)| {
+                Envelope::new(
+                    pool_id,
+                    agent_id,
+                    agent_version,
+                    counter,
+                    timestamp,
+                    Payload::Lines { lines },
+                )
+            },
+        )
 }
 
 proptest! {
@@ -138,8 +166,19 @@ proptest! {
         prop_assert!(matches!(err, envelope::OpenError::Signature(_)));
     }
 
+    // The id an agent reports under survives being made from any name at all,
+    // and comes back out of the strict reader unchanged.
+    #[test]
+    fn a_slugified_name_is_an_agent_id(name in "(?s).{0,32}") {
+        let Ok(slug) = AgentId::slugify(&name) else {
+            prop_assert!(!name.chars().any(|c| c.is_ascii_alphanumeric()));
+            return Ok(());
+        };
+        prop_assert_eq!(AgentId::parse(slug.as_str()).unwrap(), slug);
+    }
+
     // The v2 payload rides the same seal/open pair: the lines come back in
-    // order and byte for byte, however many of them there are.
+    // order and field for field, however many of them there are.
     #[test]
     fn lines_seal_open_roundtrip(
         env in arb_lines_envelope(),
@@ -171,6 +210,145 @@ proptest! {
     fn pool_id_bech32_roundtrip(pool_id in arb_pool_id()) {
         prop_assert_eq!(PoolId::from_bech32(&pool_id.to_bech32()).unwrap(), pool_id);
     }
+
+    // Both payload shapes make the same line; ADR 0010 says why that matters.
+    #[test]
+    fn every_payload_line_carries_the_batch_s_provenance(
+        samples in arb_envelope(),
+        lines in arb_lines_envelope(),
+    ) {
+        for envelope in [samples, lines] {
+            let body = envelope::payload_lines(&envelope).unwrap();
+            let stated = serde_json::to_value(envelope.provenance()).unwrap();
+            let body = String::from_utf8(body).unwrap();
+            for line in body.lines() {
+                let line: serde_json::Value = serde_json::from_str(line).unwrap();
+                prop_assert_eq!(&line[PROVENANCE_KEY], &stated);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_stamped_line_names_the_pool_the_agent_the_counter_and_the_time() {
+    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let body = envelope::payload_lines(&one_sample_envelope(&key)).unwrap();
+    let line: serde_json::Value =
+        serde_json::from_slice(body.strip_suffix(b"\n").unwrap()).unwrap();
+    let stamp = line[PROVENANCE_KEY].as_object().unwrap();
+
+    assert_eq!(
+        stamp.keys().collect::<Vec<_>>(),
+        ["agent_id", "counter", "pool_id", "timestamp"]
+    );
+    // Beside its own fields, not instead of them.
+    assert!(line["sampled_at"].is_string());
+}
+
+// A line already using metsuke's one reserved key (ADR 0010) is not a line this
+// can stamp.
+#[test]
+fn a_line_declaring_the_reserved_key_is_refused() {
+    let line = format!(r#"{{"ns":"Consensus.Leios","{PROVENANCE_KEY}":"mine"}}"#);
+    assert!(matches!(
+        TraceLine::parse(&line),
+        Err(envelope::TraceLineError::ReservedKey)
+    ));
+}
+
+#[test]
+fn a_line_that_is_not_one_whole_object_is_refused() {
+    for line in [
+        "not json",
+        "[1,2]",
+        r#""a string""#,
+        r#"{"ns":"Consensus.Leios""#,
+        r#"{"a":1}{"b":2}"#,
+    ] {
+        assert!(
+            matches!(
+                TraceLine::parse(line),
+                Err(envelope::TraceLineError::NotAnObject(_))
+            ),
+            "{line} is not one whole JSON object"
+        );
+    }
+}
+
+// `TraceLine::to_line` re-renders a parsed object without a fallible path,
+// which holds only because the parse refuses what JSON cannot write back.
+#[test]
+fn a_number_json_cannot_write_back_is_refused_at_the_parse() {
+    assert!(matches!(
+        TraceLine::parse(r#"{"slot":1e999}"#),
+        Err(envelope::TraceLineError::NotAnObject(_))
+    ));
+}
+
+#[test]
+fn open_refuses_a_line_stamped_with_another_batch() {
+    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let pool_id = PoolId::from_cold_key(&key.verifying_key());
+    let elsewhere = Provenance {
+        pool_id,
+        agent_id: AgentId::parse("other-relay").unwrap(),
+        counter: 1,
+        timestamp: OffsetDateTime::UNIX_EPOCH,
+    };
+    let line = serde_json::json!({"ns": "Consensus.Leios", PROVENANCE_KEY: elsewhere});
+    let (bytes, sig) = sealed_header(
+        &key,
+        serde_json::json!({
+            "schema_version": SCHEMA_VERSION_LINES,
+            "pool_id": pool_id.to_bech32(),
+            "agent_id": "relay-1",
+            "agent_version": "0.1.0",
+            "counter": 1,
+            "timestamp": "1970-01-01T00:00:00Z",
+        }),
+        format!("{line}\n").as_bytes(),
+    );
+    let err = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap_err();
+    assert!(
+        matches!(err, envelope::OpenError::LineProvenance { index: 0 }),
+        "expected the offending line to be named, got: {err}"
+    );
+}
+
+// A line with no provenance at all is refused by the field it does not have,
+// and by its place in the payload (`OpenError::LineShape`).
+#[test]
+fn open_refuses_an_unstamped_line() {
+    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let pool_id = PoolId::from_cold_key(&key.verifying_key());
+    let stamp = Provenance {
+        pool_id,
+        agent_id: AgentId::parse("relay-1").unwrap(),
+        counter: 1,
+        timestamp: OffsetDateTime::UNIX_EPOCH,
+    };
+    let stamped = serde_json::json!({"ns": "Consensus.Leios", PROVENANCE_KEY: stamp});
+    let (bytes, sig) = sealed_header(
+        &key,
+        serde_json::json!({
+            "schema_version": SCHEMA_VERSION_LINES,
+            "pool_id": pool_id.to_bech32(),
+            "agent_id": "relay-1",
+            "agent_version": "0.1.0",
+            "counter": 1,
+            "timestamp": "1970-01-01T00:00:00Z",
+        }),
+        format!("{stamped}\n{{\"ns\":\"Consensus.Leios\"}}\n").as_bytes(),
+    );
+    let err = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap_err();
+    assert!(
+        matches!(err, envelope::OpenError::LineShape { index: 1, .. }),
+        "expected the offending line to be named, got: {err}"
+    );
+    assert!(
+        err.to_string().contains(PROVENANCE_KEY),
+        "the refusal must name what is missing, got: {err}"
+    );
 }
 
 // Who sent a submission, and under which schema, without a key and without a
@@ -257,6 +435,7 @@ fn open_rejects_malformed_pool_id() {
         serde_json::json!({
             "schema_version": SCHEMA_VERSION_SAMPLES,
             "pool_id": "pool1notvalidbech32",
+            "agent_id": "relay-1",
             "agent_version": "0.1.0",
             "counter": 1,
             "timestamp": "1970-01-01T00:00:00Z",
@@ -277,6 +456,7 @@ fn open_names_an_unsupported_schema_version() {
         serde_json::json!({
             "schema_version": SCHEMA_VERSION_LINES + 1,
             "pool_id": PoolId::from_cold_key(&key.verifying_key()).to_bech32(),
+            "agent_id": "relay-1",
             "agent_version": "0.1.0",
             "counter": 1,
             "timestamp": "1970-01-01T00:00:00Z",
@@ -300,6 +480,7 @@ fn open_rejects_an_unterminated_last_line() {
         serde_json::json!({
             "schema_version": SCHEMA_VERSION_LINES,
             "pool_id": PoolId::from_cold_key(&key.verifying_key()).to_bech32(),
+            "agent_id": "relay-1",
             "agent_version": "0.1.0",
             "counter": 1,
             "timestamp": "1970-01-01T00:00:00Z",
@@ -368,6 +549,7 @@ fn seal_rejects_non_finite_sync_progress() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let env = Envelope::new(
         PoolId::from_cold_key(&key.verifying_key()),
+        AgentId::parse("relay-1").unwrap(),
         "0.1.0".into(),
         1,
         OffsetDateTime::UNIX_EPOCH,
@@ -385,26 +567,64 @@ fn seal_rejects_non_finite_sync_progress() {
     ));
 }
 
-// A newline inside a line is the one thing the framing cannot carry: it would
-// open as two lines under a signature that verifies, so the caller hears about
-// it rather than the archive holding a line the node never wrote.
+// The newline is what terminates a line, and a `TraceLine` is a JSON object
+// whose writer escapes every one it holds: the framing byte cannot appear
+// inside a line, so nothing has to check for it.
 #[test]
-fn a_line_holding_a_newline_is_refused() {
+fn a_line_holding_a_newline_seals_as_one_line() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let envelope = Envelope::new(
         PoolId::from_cold_key(&key.verifying_key()),
+        AgentId::parse("relay-1").unwrap(),
         "0.1.0".into(),
         1,
         OffsetDateTime::UNIX_EPOCH,
         Payload::Lines {
-            lines: vec!["first".into(), "second\nthird".into()],
+            lines: vec![TraceLine::parse("{\"msg\":\"first\\nsecond\"}").unwrap()],
         },
     );
-    let err = envelope::seal(&key, &envelope, 0).unwrap_err();
+    let (bytes, sig) = envelope::seal(&key, &envelope, 0).unwrap();
+    let opened = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap();
+    assert_eq!(opened, envelope);
+}
+
+#[test]
+fn slugify_folds_a_hostname_into_an_agent_id() {
+    for (name, slug) in [
+        ("relay-1", "relay-1"),
+        ("Relay_1", "relay-1"),
+        ("bp.example.org", "bp-example-org"),
+        ("  spaced  out  ", "spaced-out"),
+        ("Ω-node", "node"),
+    ] {
+        assert_eq!(AgentId::slugify(name).unwrap().as_str(), slug);
+    }
+}
+
+// The one name that leaves nothing to report under. Refusing it is the whole
+// exception to slugifying rather than rejecting.
+#[test]
+fn slugify_refuses_a_name_with_nothing_alphanumeric_in_it() {
+    let err = AgentId::slugify("___").unwrap_err();
     assert!(
-        matches!(err, envelope::SealError::LineHoldsNewline { index: 1 }),
-        "expected the offending line to be named, got: {err}"
+        err.to_string().contains("___"),
+        "the refusal must name what it was given, got: {err}"
     );
+}
+
+// The wire reader takes only what `slugify` emits, so an id that arrives is an
+// id something made rather than a string that travelled.
+#[test]
+fn parse_refuses_what_slugify_would_never_emit() {
+    for found in ["", "Relay-1", "relay_1", "-relay", "relay-", "a--b"] {
+        assert!(
+            matches!(
+                AgentId::parse(found),
+                Err(envelope::AgentIdError::NotASlug { .. })
+            ),
+            "{found:?} is not a slug"
+        );
+    }
 }
 
 /// The bytes this build's sealing path produced for each payload shape,
@@ -506,6 +726,7 @@ fn sealed_header(
 fn empty_samples_envelope(key: &SigningKey) -> Envelope {
     Envelope::new(
         PoolId::from_cold_key(&key.verifying_key()),
+        AgentId::parse("relay-1").unwrap(),
         "0.1.0".into(),
         1,
         OffsetDateTime::UNIX_EPOCH,
@@ -518,6 +739,7 @@ fn empty_samples_envelope(key: &SigningKey) -> Envelope {
 fn one_sample_envelope(key: &SigningKey) -> Envelope {
     Envelope::new(
         PoolId::from_cold_key(&key.verifying_key()),
+        AgentId::parse("relay-1").unwrap(),
         "0.1.0".into(),
         1,
         OffsetDateTime::UNIX_EPOCH,

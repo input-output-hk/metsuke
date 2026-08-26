@@ -79,6 +79,7 @@ in
           metrics_url = required types.str;
           upload_url = required types.str;
 
+          agent_id = shipped types.str;
           sample_interval_secs = shipped types.ints.unsigned;
           upload_interval_secs = shipped types.ints.unsigned;
           sntp_servers = shipped (types.listOf types.str);
