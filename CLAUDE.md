@@ -25,3 +25,4 @@ Each is an accepted decision; read the ADR before working near it.
 - Limits (sizes, rates, intervals) are configuration, never constants.
 - Research notes live under docs/research/.
 - $CARGO_TARGET_DIR is set, look for dependencies there.
+- Coverage is `cargo llvm-cov --workspace` in the devShell; read it as a floor — binary-spawning tests record nothing, metsuke-jfb.6 has the measurement. NixOS tests (`hydraJobs.units`, nix/e2e-test.nix) are outside it.

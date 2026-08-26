@@ -421,8 +421,15 @@
             packages = [
               pkgs.cargo-audit
               pkgs.cargo-deny
+              pkgs.cargo-llvm-cov
               config.treefmt.build.wrapper
             ];
+
+            # cargo-llvm-cov looks for these next to the rustc that built the
+            # instrumented binaries; the nixpkgs toolchain ships them apart.
+            LLVM_COV = "${pkgs.rustc.llvmPackages.llvm}/bin/llvm-cov";
+            LLVM_PROFDATA = "${pkgs.rustc.llvmPackages.llvm}/bin/llvm-profdata";
+
             shellHook = config.pre-commit.installationScript;
           };
         };
