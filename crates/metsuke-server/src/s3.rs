@@ -21,12 +21,10 @@ use crate::archive::{
 use crate::config::S3Config;
 use metsuke_wire::journal::WARNING;
 
-/// The metadata an object carries beside its bytes. These four plus the key's
-/// pool id are the whole verification input (ADR 0005).
+/// The metadata an object carries beside its bytes: the two facts that are not
+/// inside them, and the whole verification input with them (ADR 0005).
 pub const META_SIGNATURE: &str = "x-amz-meta-signature";
 pub const META_VKEY: &str = "x-amz-meta-vkey";
-pub const META_COUNTER: &str = "x-amz-meta-counter";
-pub const META_SCHEMA_VERSION: &str = "x-amz-meta-schema-version";
 
 /// `Debug` is safe to derive: `Credentials` prints its key id and withholds
 /// the secret.
@@ -158,8 +156,6 @@ impl Store for S3Archive {
                 hex::encode(&submission.signature.to_bytes()),
             ),
             (META_VKEY, hex::encode(submission.vkey.as_bytes())),
-            (META_COUNTER, submission.counter.to_string()),
-            (META_SCHEMA_VERSION, submission.schema_version.to_string()),
         ];
         let mut attempts = 0;
         loop {
@@ -270,17 +266,14 @@ impl Fetch for S3Archive {
                 .to_str()
                 .map_err(|_| format!("{header} is not text"))
         };
-        let read = || -> Result<(VerifyingKey, Signature, u32, u64), String> {
+        let read = || -> Result<(VerifyingKey, Signature), String> {
             Ok((
                 VerifyingKey::from_bytes(&unhex(metadata(META_VKEY)?, META_VKEY)?)
                     .map_err(|error| format!("{META_VKEY}: {error}"))?,
                 Signature::from_bytes(&unhex(metadata(META_SIGNATURE)?, META_SIGNATURE)?),
-                number(metadata(META_SCHEMA_VERSION)?, META_SCHEMA_VERSION)?,
-                number(metadata(META_COUNTER)?, META_COUNTER)?,
             ))
         };
-        let (vkey, signature, metadata_schema_version, metadata_counter) =
-            read().map_err(refuse)?;
+        let (vkey, signature) = read().map_err(refuse)?;
         let wire_bytes = response
             .body_mut()
             .read_to_vec()
@@ -289,20 +282,12 @@ impl Fetch for S3Archive {
             name,
             vkey,
             signature,
-            metadata_schema_version,
-            metadata_counter,
             wire_bytes,
         })
     }
 }
 
-/// Carries which metadata header was wrong into `fetch`'s reason string,
-/// alongside `number` below.
+/// Carries which metadata header was wrong into `fetch`'s reason string.
 fn unhex<const N: usize>(text: &str, header: &str) -> Result<[u8; N], String> {
     hex::decode(text).map_err(|error| format!("{header} is not hex: {error} ({text:?})"))
-}
-
-fn number<T: std::str::FromStr>(text: &str, header: &str) -> Result<T, String> {
-    text.parse()
-        .map_err(|_| format!("{header} is not a number: {text:?}"))
 }

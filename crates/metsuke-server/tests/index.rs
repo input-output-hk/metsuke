@@ -1,25 +1,22 @@
-//! Index tests. The counter half (ticket metsuke-4zo.6): the acceptance rule
-//! is "strictly greater than everything accepted for this pool", and it
-//! holds across restarts because the state is the SQLite row, not memory. The
-//! submission half (metsuke-4zo.10): what the developer listing reads.
+//! Index tests (metsuke-4zo.10): what the developer listing reads, and that a
+//! row nothing can parse fails the page rather than shortening it.
 
-use metsuke_server::archive::ObjectName;
-use metsuke_server::index::{Index, IndexError, Reservation};
-use metsuke_wire::envelope::PoolId;
+use metsuke_server::archive::{Kind, ObjectName};
+use metsuke_server::index::Index;
+use metsuke_wire::envelope::{AgentId, PoolId};
 
 mod support;
-use proptest::prelude::*;
-use std::collections::HashMap;
 use support::{index_store, nonzero_u32};
-use time::OffsetDateTime;
+use uuid::{NoContext, Timestamp, Uuid};
 
-/// An object of `pool`, keyed at `counter` seconds past the epoch so its key
-/// sorts by counter.
-fn object(pool: PoolId, counter: u64) -> ObjectName {
+/// An object of `pool` received `step` seconds past the epoch, so its key
+/// sorts by `step`.
+fn object(pool: PoolId, step: u64) -> ObjectName {
     ObjectName {
+        id: Uuid::new_v7(Timestamp::from_unix(NoContext, step, 0)),
         pool_id: pool,
-        counter,
-        timestamp: OffsetDateTime::from_unix_timestamp(counter as i64).unwrap(),
+        agent_id: AgentId::parse("test-relay").unwrap(),
+        kind: Kind::Metrics,
     }
 }
 
@@ -32,6 +29,11 @@ fn listed(index: &Index, prefix: &str, after: &str) -> Vec<String> {
         .iter()
         .map(ObjectName::to_key)
         .collect()
+}
+
+fn pool(index: u8) -> PoolId {
+    let key = metsuke_wire::envelope::SigningKey::from_bytes(&[index; 32]);
+    PoolId::from_cold_key(&key.verifying_key())
 }
 
 /// The listing is what a developer pull reads instead of scanning the bucket
@@ -47,36 +49,37 @@ fn a_recorded_object_is_listed_back() {
     assert_eq!(listed(&index, "", ""), vec![name.to_key()]);
 }
 
-/// A developer pulling one pool's submissions asks by key prefix, which is
-/// what the ADR-0005 key makes a pool-and-day filter.
+/// A developer syncing the archive asks by key prefix, which the time-major
+/// key makes a day filter.
 #[test]
 fn a_prefix_lists_only_the_keys_under_it() {
     let dir = tempfile::tempdir().unwrap();
     let index = index_store(dir.path());
-    let mine = object(pool(1), 1);
-    let theirs = object(pool(2), 1);
-    index.record(&mine).unwrap();
-    index.record(&theirs).unwrap();
+    let epoch_day = object(pool(1), 1);
+    let later_day = object(pool(1), 1_755_000_000);
+    index.record(&epoch_day).unwrap();
+    index.record(&later_day).unwrap();
 
-    let prefix = format!("v1/{}/", mine.pool_id);
-    assert_eq!(listed(&index, &prefix, ""), vec![mine.to_key()]);
+    assert_eq!(
+        listed(&index, "v1/2025-08-12/", ""),
+        vec![later_day.to_key()]
+    );
 }
 
 /// `after` is the page cursor: handing back the last key of a page must
-/// answer the next one, or a developer paging a pool's history loops.
+/// answer the next one, or a developer paging the archive loops.
 #[test]
 fn after_resumes_at_the_key_that_follows_it() {
     let dir = tempfile::tempdir().unwrap();
     let index = index_store(dir.path());
-    let pool = pool(1);
-    for counter in 1..=3 {
-        index.record(&object(pool, counter)).unwrap();
+    let names: Vec<ObjectName> = (1..=3).map(|step| object(pool(1), step)).collect();
+    for name in &names {
+        index.record(name).unwrap();
     }
 
-    let second = object(pool, 2).to_key();
     assert_eq!(
-        listed(&index, "", &second),
-        vec![object(pool, 3).to_key()],
+        listed(&index, "", &names[1].to_key()),
+        vec![names[2].to_key()],
         "the cursor key itself is behind the page it names"
     );
 }
@@ -87,9 +90,9 @@ fn after_resumes_at_the_key_that_follows_it() {
 fn a_listing_over_the_limit_is_reported_as_truncated() {
     let dir = tempfile::tempdir().unwrap();
     let index = index_store(dir.path());
-    let pool = pool(1);
-    for counter in 1..=3 {
-        index.record(&object(pool, counter)).unwrap();
+    let names: Vec<ObjectName> = (1..=3).map(|step| object(pool(1), step)).collect();
+    for name in &names {
+        index.record(name).unwrap();
     }
 
     let page = index.submissions("", "", nonzero_u32(2)).unwrap();
@@ -99,7 +102,7 @@ fn a_listing_over_the_limit_is_reported_as_truncated() {
             .iter()
             .map(ObjectName::to_key)
             .collect::<Vec<_>>(),
-        vec![object(pool, 1).to_key(), object(pool, 2).to_key()],
+        vec![names[0].to_key(), names[1].to_key()],
         "a truncated page carries the bound's worth, not one more"
     );
 
@@ -148,60 +151,6 @@ fn recording_the_same_object_twice_leaves_one_row() {
     assert_eq!(listed(&index, "", ""), vec![name.to_key()]);
 }
 
-/// Acceptance here is judged on counters alone, so the instant recorded
-/// alongside them never varies.
-fn test_now() -> OffsetDateTime {
-    OffsetDateTime::UNIX_EPOCH
-}
-
-fn pool(index: u8) -> PoolId {
-    let key = metsuke_wire::envelope::SigningKey::from_bytes(&[index; 32]);
-    PoolId::from_cold_key(&key.verifying_key())
-}
-
-/// Reserve and immediately spend the counter, as a caller does once it has
-/// stored the batch. `None` when the counter was replayed.
-fn spend(store: &mut Index, pool: PoolId, counter: u64) -> Result<Option<u64>, IndexError> {
-    match store.reserve(pool, counter, test_now())? {
-        Reservation::Reserved(reserved) => {
-            reserved.commit()?;
-            Ok(None)
-        }
-        Reservation::Replayed { last } => Ok(Some(last)),
-    }
-}
-
-// State survives the process: a store reopened on the same file still
-// refuses what it already accepted.
-#[test]
-fn accepted_counters_survive_reopening() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("index.sqlite");
-    let mut store = Index::open(&path).unwrap();
-    spend(&mut store, pool(1), 5).unwrap();
-    drop(store);
-
-    let mut store = Index::open(&path).unwrap();
-    assert_eq!(store.last_counter(pool(1)).unwrap(), Some(5));
-    assert_eq!(spend(&mut store, pool(1), 5).unwrap(), Some(5));
-    assert_eq!(spend(&mut store, pool(1), 6).unwrap(), None);
-}
-
-// A reservation the caller never commits — its batch failed to store —
-// leaves the counter unspent, so the client's retry is not a replay.
-#[test]
-fn a_dropped_reservation_leaves_the_counter_unspent() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut store = index_store(dir.path());
-    let Ok(Reservation::Reserved(reserved)) = store.reserve(pool(1), 5, test_now()) else {
-        panic!("a first counter must reserve");
-    };
-    drop(reserved);
-
-    assert_eq!(store.last_counter(pool(1)).unwrap(), None);
-    assert_eq!(spend(&mut store, pool(1), 5).unwrap(), None);
-}
-
 // A database written by a newer build is refused: running it half-understood
 // would silently drop whatever the newer schema records.
 #[test]
@@ -222,40 +171,4 @@ fn a_database_from_a_newer_build_fails_loudly() {
         error.to_string().contains("99"),
         "the error must name the version found, got {error}"
     );
-}
-
-#[test]
-fn a_pool_with_no_history_has_no_counter() {
-    let dir = tempfile::tempdir().unwrap();
-    let store = index_store(dir.path());
-    assert_eq!(store.last_counter(pool(1)).unwrap(), None);
-}
-
-proptest! {
-    // Acceptance: for any interleaving of pools and counters, a counter is
-    // accepted exactly when it is above that pool's running maximum, and
-    // the stored maximum is that maximum.
-    #[test]
-    fn acceptance_is_monotonic_per_pool(
-        submissions in proptest::collection::vec((0u8..4, 0u64..40), 0..80)
-    ) {
-        let dir = tempfile::tempdir().unwrap();
-        let mut store = index_store(dir.path());
-        let mut highest: HashMap<u8, u64> = HashMap::new();
-
-        for (index, counter) in submissions {
-            let replayed = spend(&mut store, pool(index), counter).unwrap();
-            match highest.get(&index) {
-                Some(&last) if counter <= last => prop_assert_eq!(replayed, Some(last)),
-                _ => {
-                    prop_assert_eq!(replayed, None);
-                    highest.insert(index, counter);
-                }
-            }
-        }
-
-        for (index, expected) in highest {
-            prop_assert_eq!(store.last_counter(pool(index)).unwrap(), Some(expected));
-        }
-    }
 }

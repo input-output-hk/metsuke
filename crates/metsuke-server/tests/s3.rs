@@ -6,21 +6,18 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use metsuke_server::archive::{Bytes, Fetch, List, ObjectName, Store, StoredSubmission};
-use metsuke_server::authority::{ColdKey, ColdKeyOrCalidus};
-use metsuke_server::calidus::CalidusKeys;
+use metsuke_server::archive::{Bytes, Fetch, Kind, List, ObjectName, Store, StoredSubmission};
 use metsuke_server::config::S3Config;
 use metsuke_server::rebuild::{EmptyArchive, rebuild};
-use metsuke_server::s3::{META_COUNTER, META_SCHEMA_VERSION, META_SIGNATURE, META_VKEY, S3Archive};
-use metsuke_server::verify::{AuditError, audit, verify};
-use metsuke_wire::envelope::SCHEMA_VERSION_SAMPLES;
+use metsuke_server::s3::{META_SIGNATURE, META_VKEY, S3Archive};
+use metsuke_server::verify::{audit, verify};
 use metsuke_wire::hex;
 use rusty_s3::Credentials;
 
 mod support;
 use support::{
-    TEST_LIMITS, TEST_TTL_SECS, UnavailableDirectory, calidus_key, envelope_for, envelope_of_pool,
-    index_store, nonzero_u32, nonzero_u64, pool_of, seal, stored_submission, test_key, test_now,
+    MAX_HEADER_BYTES, envelope_for, index_store, nonzero_u32, nonzero_u64, object_name, pool_of,
+    seal, stored_submission, test_key, test_now,
 };
 
 /// One request the fake endpoint received.
@@ -195,7 +192,7 @@ fn config_for(endpoint: &str, put_retries: u32) -> S3Config {
     }
 }
 
-/// The counter every test that does not care about the value uses.
+/// The sequence number every test that does not care about the value uses.
 const COUNTER: u64 = 42;
 
 /// A submission and the bytes it was sealed from, so a test can compare what
@@ -205,20 +202,21 @@ fn submission(counter: u64) -> (Vec<u8>, metsuke_wire::envelope::Signature) {
     seal(&key, &envelope_for(&key, counter))
 }
 
-/// The submission `seal`ed at `counter`, as the archive is asked to store it.
-fn stored<'a>(
-    counter: u64,
-    signature: metsuke_wire::envelope::Signature,
-    wire_bytes: &'a [u8],
-) -> StoredSubmission<'a> {
-    stored_submission(&test_key(), counter, test_now(), signature, wire_bytes)
+/// The sealed submission as the archive is asked to store it.
+fn stored(signature: metsuke_wire::envelope::Signature, wire_bytes: &[u8]) -> StoredSubmission<'_> {
+    stored_submission(
+        &test_key(),
+        object_name(&test_key(), test_now(), Kind::Metrics),
+        signature,
+        wire_bytes,
+    )
 }
 
 #[test]
 fn a_stored_object_is_put_at_its_key_with_the_body_verbatim() {
     let endpoint = FakeS3::start(vec![(200, String::new())]);
     let (wire_bytes, signature) = submission(COUNTER);
-    let submission = stored(COUNTER, signature, &wire_bytes);
+    let submission = stored(signature, &wire_bytes);
     endpoint.archive(1).store(&submission).unwrap();
 
     let requests = endpoint.requests();
@@ -241,7 +239,7 @@ fn the_metadata_headers_carry_what_re_verifying_the_object_needs() {
     let key = test_key();
     endpoint
         .archive(1)
-        .store(&stored(COUNTER, signature, &wire_bytes))
+        .store(&stored(signature, &wire_bytes))
         .unwrap();
 
     let requests = endpoint.requests();
@@ -254,11 +252,6 @@ fn the_metadata_headers_carry_what_re_verifying_the_object_needs() {
         put.header(META_VKEY),
         Some(hex::encode(key.verifying_key().as_bytes()).as_str())
     );
-    assert_eq!(put.header(META_COUNTER), Some(COUNTER.to_string().as_str()));
-    assert_eq!(
-        put.header(META_SCHEMA_VERSION),
-        Some(SCHEMA_VERSION_SAMPLES.to_string().as_str())
-    );
 }
 
 /// The metadata is only trustworthy if it is covered by the request
@@ -269,7 +262,7 @@ fn the_metadata_headers_are_signed() {
     let (wire_bytes, signature) = submission(COUNTER);
     endpoint
         .archive(1)
-        .store(&stored(COUNTER, signature, &wire_bytes))
+        .store(&stored(signature, &wire_bytes))
         .unwrap();
 
     let requests = endpoint.requests();
@@ -278,7 +271,7 @@ fn the_metadata_headers_are_signed() {
         .split('&')
         .find(|param| param.starts_with("X-Amz-SignedHeaders="))
         .expect("the URL must be presigned");
-    for header in [META_SIGNATURE, META_VKEY, META_COUNTER, META_SCHEMA_VERSION] {
+    for header in [META_SIGNATURE, META_VKEY] {
         assert!(signed.contains(header), "{header} is not in {signed}");
     }
 }
@@ -292,7 +285,7 @@ fn a_failed_put_is_retried_up_to_the_configured_count_after_the_backoff() {
     let started = std::time::Instant::now();
     endpoint
         .archive(1)
-        .store(&stored(COUNTER, signature, &wire_bytes))
+        .store(&stored(signature, &wire_bytes))
         .unwrap();
     assert_eq!(endpoint.requests().len(), 2);
     assert!(
@@ -306,7 +299,7 @@ fn a_failed_put_is_retried_up_to_the_configured_count_after_the_backoff() {
 fn a_put_that_keeps_failing_is_an_error_naming_the_key_and_the_attempts() {
     let endpoint = FakeS3::start(vec![(500, "no".to_string()), (500, "no".to_string())]);
     let (wire_bytes, signature) = submission(COUNTER);
-    let submission = stored(COUNTER, signature, &wire_bytes);
+    let submission = stored(signature, &wire_bytes);
     let error = endpoint
         .archive(1)
         .store(&submission)
@@ -327,7 +320,7 @@ fn a_refused_put_is_not_retried() {
     let (wire_bytes, signature) = submission(COUNTER);
     let error = endpoint
         .archive(1)
-        .store(&stored(COUNTER, signature, &wire_bytes))
+        .store(&stored(signature, &wire_bytes))
         .unwrap_err()
         .to_string();
     assert!(
@@ -343,15 +336,15 @@ fn a_refused_put_is_not_retried() {
 fn a_stored_object_fetches_back_and_verifies() {
     let endpoint = FakeS3::start(Vec::new());
     let (wire_bytes, signature) = submission(COUNTER);
-    let submission = stored(COUNTER, signature, &wire_bytes);
+    let submission = stored(signature, &wire_bytes);
     let archive = endpoint.archive(1);
     archive.store(&submission).unwrap();
 
     let fetched = archive.fetch(&submission.object_key()).unwrap();
     assert_eq!(fetched.wire_bytes, wire_bytes);
-    let envelope = verify(&fetched, TEST_LIMITS, &mut ColdKey, test_now()).unwrap();
-    assert_eq!(envelope.counter, submission.counter);
-    assert_eq!(envelope.pool_id, pool_of(&test_key()));
+    let header = verify(&fetched, MAX_HEADER_BYTES).unwrap();
+    assert_eq!(header.counter, COUNTER);
+    assert_eq!(header.pool_id, pool_of(&test_key()));
 }
 
 /// The download route reads the bucket through `Bytes`, which asks for the
@@ -360,7 +353,7 @@ fn a_stored_object_fetches_back_and_verifies() {
 fn an_object_downloads_as_the_bytes_that_were_put() {
     let endpoint = FakeS3::start(Vec::new());
     let (wire_bytes, signature) = submission(COUNTER);
-    let submission = stored(COUNTER, signature, &wire_bytes);
+    let submission = stored(signature, &wire_bytes);
     let archive = endpoint.archive(1);
     archive.store(&submission).unwrap();
 
@@ -406,30 +399,29 @@ fn an_audit_verifies_what_is_stored_and_names_what_is_missing() {
     let stored_keys: Vec<String> = [1u64, 2]
         .into_iter()
         .map(|counter| {
-            let envelope = envelope_for(&key, counter);
-            let (wire_bytes, signature) = seal(&key, &envelope);
-            let submission =
-                stored_submission(&key, counter, envelope.timestamp, signature, &wire_bytes);
+            let (wire_bytes, signature) = seal(&key, &envelope_for(&key, counter));
+            let submission = stored_submission(
+                &key,
+                object_name(&key, test_now(), Kind::Metrics),
+                signature,
+                &wire_bytes,
+            );
             archive.store(&submission).unwrap();
             submission.object_key()
         })
         .collect();
 
-    let found = audit(&archive, TEST_LIMITS, &mut ColdKey, test_now()).unwrap();
+    let found = audit(&archive, MAX_HEADER_BYTES).unwrap();
     assert_eq!(found.verified, 2);
     assert!(found.failures.is_empty(), "{:?}", found.failures);
 
     // A listing naming objects a bucket will not hand back: the audit reports
     // each one rather than counting what it could not read as clean.
-    let missing = ObjectName {
-        pool_id: pool_of(&key),
-        counter: 3,
-        timestamp: test_now(),
-    };
+    let missing = object_name(&key, test_now(), Kind::Metrics);
     let mut listed = stored_keys.clone();
     listed.push(missing.to_key());
     let endpoint = FakeS3::start(vec![(200, listing(&listed, None))]);
-    let found = audit(&endpoint.archive(1), TEST_LIMITS, &mut ColdKey, test_now()).unwrap();
+    let found = audit(&endpoint.archive(1), MAX_HEADER_BYTES).unwrap();
     assert_eq!(found.verified, 0);
     // Unreadable, not failed: nothing was checked, so nothing can be said
     // about these objects.
@@ -440,7 +432,7 @@ fn an_audit_verifies_what_is_stored_and_names_what_is_missing() {
 #[test]
 fn fetching_a_key_the_bucket_does_not_hold_is_an_error() {
     let endpoint = FakeS3::start(Vec::new());
-    let key = stored(COUNTER, submission(COUNTER).1, b"").object_key();
+    let key = stored(submission(COUNTER).1, b"").object_key();
     let error = endpoint.archive(1).fetch(&key).unwrap_err().to_string();
     assert!(
         error.contains(&key) && error.contains("404"),
@@ -451,7 +443,7 @@ fn fetching_a_key_the_bucket_does_not_hold_is_an_error() {
 #[test]
 fn fetching_an_object_without_its_metadata_names_the_missing_header() {
     let endpoint = FakeS3::start(vec![(200, "body".to_string())]);
-    let key = stored(COUNTER, submission(COUNTER).1, b"").object_key();
+    let key = stored(submission(COUNTER).1, b"").object_key();
     let error = endpoint.archive(1).fetch(&key).unwrap_err().to_string();
     assert!(error.contains(META_VKEY), "got: {error}");
 }
@@ -482,7 +474,7 @@ fn an_https_endpoint_is_reached_over_tls() {
     let (wire_bytes, signature) = submission(COUNTER);
     // The peer drops the connection mid-handshake, so the PUT fails either
     // way; what it saw on the wire is the assertion.
-    let _ = archive.store(&stored(COUNTER, signature, &wire_bytes));
+    let _ = archive.store(&stored(signature, &wire_bytes));
 
     let bytes = peer.join().unwrap();
     assert_eq!(
@@ -499,7 +491,7 @@ fn an_endpoint_that_is_not_listening_is_an_error() {
     // timeout.
     let archive = S3Archive::new(&config_for("http://127.0.0.1:9", 0), credentials()).unwrap();
     let (wire_bytes, signature) = submission(COUNTER);
-    let submission = stored(COUNTER, signature, &wire_bytes);
+    let submission = stored(signature, &wire_bytes);
     let error = archive.store(&submission).unwrap_err().to_string();
     assert!(error.contains(&submission.object_key()), "got: {error}");
 }
@@ -507,17 +499,21 @@ fn an_endpoint_that_is_not_listening_is_an_error() {
 /// The two objects a listing fixture holds, keyed the way the archive keys
 /// them, so what the listing returns is what `ObjectName` can read back.
 fn listed_keys() -> Vec<String> {
-    [1u64, 2]
+    let mut keys: Vec<String> = [1i64, 2]
         .into_iter()
-        .map(|counter| {
-            ObjectName {
-                pool_id: pool_of(&test_key()),
-                counter,
-                timestamp: test_now() + time::Duration::seconds(counter as i64),
-            }
+        .map(|step| {
+            object_name(
+                &test_key(),
+                test_now() + time::Duration::seconds(step),
+                Kind::Metrics,
+            )
             .to_key()
         })
-        .collect()
+        .collect();
+    // A listing comes back in key order, which two ids stamped a second apart
+    // are already in — but only the sort says so.
+    keys.sort();
+    keys
 }
 
 /// A `ListObjectsV2` answer, keys percent-encoded because the request asks for
@@ -579,9 +575,9 @@ fn listing_follows_the_continuation_token_to_the_end() {
 }
 
 /// The seam ADR 0005 rests on: keys as S3 hands them back are keys the rebuild
-/// can seed counters from, with no filesystem in between.
+/// can index, with no filesystem in between.
 #[test]
-fn a_bucket_listing_seeds_the_rebuild() {
+fn a_bucket_listing_rebuilds_the_index() {
     let listed = listed_keys();
     let endpoint = FakeS3::start(vec![(200, listing(&listed, None))]);
     let dir = tempfile::tempdir().unwrap();
@@ -589,11 +585,14 @@ fn a_bucket_listing_seeds_the_rebuild() {
     let summary = rebuild(&endpoint.archive(1), &mut index, EmptyArchive::Refuse).unwrap();
 
     assert_eq!(summary.objects, listed.len());
-    let highest = listed
+    let rows: Vec<String> = index
+        .submissions("", "", nonzero_u32(100))
+        .unwrap()
+        .objects
         .iter()
-        .map(|key| ObjectName::parse(key).unwrap().counter)
-        .max();
-    assert_eq!(index.last_counter(pool_of(&test_key())).unwrap(), highest);
+        .map(ObjectName::to_key)
+        .collect();
+    assert_eq!(rows, listed);
 }
 
 /// An endpoint that stays truncated forever, stopped by `list_max_pages`.
@@ -662,11 +661,7 @@ fn a_put_gives_up_at_the_configured_timeout() {
     let archive = S3Archive::new(&config_for(&endpoint, 0), credentials()).unwrap();
     let (wire_bytes, signature) = submission(COUNTER);
     let started = std::time::Instant::now();
-    assert!(
-        archive
-            .store(&stored(COUNTER, signature, &wire_bytes))
-            .is_err()
-    );
+    assert!(archive.store(&stored(signature, &wire_bytes)).is_err());
     let elapsed = started.elapsed();
     assert!(
         elapsed >= TIMEOUT && elapsed < TIMEOUT * 10,
@@ -676,38 +671,28 @@ fn a_put_gives_up_at_the_configured_timeout() {
     stalled.join().unwrap();
 }
 
-// A bucket holding one Calidus pool's object, audited while db-sync is down.
+/// A bucket holding an object no key in it speaks for: the pool the stored key
+/// derives to is not the pool the object is filed under, so the audit reports it
+/// rather than verifying it.
 #[test]
-fn an_audit_stops_when_the_directory_cannot_answer() {
+fn an_audit_reports_an_object_signed_by_another_pools_key() {
     let endpoint = FakeS3::start(Vec::new());
     let archive = endpoint.archive(1);
-    let hot = calidus_key();
-    let envelope = envelope_of_pool(pool_of(&test_key()), 1);
-    let (wire_bytes, signature) = seal(&hot, &envelope);
+    let stranger = support::other_key();
+    let (wire_bytes, signature) = seal(&stranger, &envelope_for(&stranger, 1));
+    let mut name = object_name(&stranger, test_now(), Kind::Metrics);
+    name.pool_id = pool_of(&test_key());
     archive
         .store(&StoredSubmission {
-            pool_id: envelope.pool_id,
-            counter: envelope.counter,
-            timestamp: envelope.timestamp,
-            schema_version: envelope.schema_version(),
-            vkey: hot.verifying_key(),
+            name,
+            vkey: stranger.verifying_key(),
             signature,
             wire_bytes: &wire_bytes,
         })
         .unwrap();
 
-    let error = audit(
-        &archive,
-        TEST_LIMITS,
-        &mut ColdKeyOrCalidus::new(CalidusKeys::new(
-            UnavailableDirectory {
-                reason: "db-sync is down",
-            },
-            nonzero_u32(TEST_TTL_SECS),
-        )),
-        test_now(),
-    )
-    .unwrap_err();
+    let found = audit(&archive, MAX_HEADER_BYTES).unwrap();
 
-    assert!(matches!(error, AuditError::Undecided(_)), "got: {error}");
+    assert_eq!(found.verified, 0);
+    assert_eq!(found.failed(), 1, "{:?}", found.failures);
 }

@@ -1,8 +1,8 @@
 //! Batch delivery: the only path from spooled rows to a sealed upload.
-//! Owning the spool and the signing key makes the ADR-0002 ordering —
-//! counter persisted before sealing, ack only for the rows that were
-//! sealed — the only expressible call sequence, and keeps SQLite row ids
-//! out of the main loop entirely.
+//! Owning the spool and the signing key makes one ordering — counter persisted
+//! before sealing, ack only for the rows that were sealed — the only
+//! expressible call sequence, and keeps SQLite row ids out of the main loop
+//! entirely.
 //!
 //! Samples and trace lines seal into separate envelopes because a schema
 //! version names one payload shape (`envelope::Payload`). Both are taken from
@@ -22,11 +22,10 @@ pub struct Delivery {
     /// zstd level passed to `seal` (0 = zstd's default).
     compression_level: i32,
     /// Pre-compression ceiling on one envelope: its header frame plus its
-    /// payload lines. The server bounds the two separately, and the payload
-    /// half is what its `max_decompressed_bytes` bounds — so a batch under this
-    /// is under that whenever the two numbers agree. It is still the agent's
-    /// own number: nothing in the wire contract lets it discover the server's,
-    /// so a batch over that is rejected at upload and stays spooled.
+    /// payload lines. The server's own ceiling is `[ingest].max_body_bytes`, on
+    /// the compressed bytes it receives. It is still the agent's own number:
+    /// nothing in the wire contract lets it discover the server's, so a batch
+    /// over that is rejected at upload and stays spooled.
     batch_max_bytes: u64,
 }
 

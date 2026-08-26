@@ -106,7 +106,6 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         ),
         UploadConfig {
             upload_url: config.upload_url.clone(),
-            pool_id: config.pool_id,
             timeout: Duration::from_secs(config.upload_timeout_secs),
         },
         vkey,

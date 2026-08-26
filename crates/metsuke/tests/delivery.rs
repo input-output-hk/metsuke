@@ -1,6 +1,6 @@
 //! Delivery seam tests (ticket metsuke-4zo.4): spool state in, sealed bytes
 //! out, ack shrinks the spool. The batch is checked by `open`ing it with the
-//! verifying key — the same call the server makes.
+//! verifying key.
 
 use std::time::Duration;
 
@@ -109,8 +109,7 @@ fn pushed_samples_seal_verify_and_ack_drains_the_spool() {
 }
 
 // A failed PUT means no ack: the retry offers the same samples again but
-// under a fresh counter — a counter value is never handed out twice
-// (ADR 0002).
+// under a fresh counter — a counter value is never handed out twice.
 #[test]
 fn unacked_batch_is_retaken_with_a_fresh_counter() {
     let dir = tempfile::tempdir().unwrap();
@@ -261,8 +260,8 @@ fn line_row_bytes(line: &TraceLine) -> u64 {
         .wire_bytes()
 }
 
-/// The payload bytes a batch of `envelope` seals into, which is what the
-/// server's `max_decompressed_bytes` bounds.
+/// The payload bytes a batch of `envelope` seals into, which is what
+/// `upload_batch_max_bytes` bounds.
 fn body_bytes(envelope: &envelope::Envelope) -> u64 {
     envelope::payload_lines(envelope).len() as u64
 }
@@ -305,11 +304,10 @@ fn a_batch_stops_at_the_configured_budget_and_the_rest_is_retaken() {
     assert_eq!(samples_of(&open(&second)), [sample_at(3), sample_at(4)]);
 }
 
-// metsuke-4zo.96: the budget bounds the body the server decompresses, framing
-// and separators included, so an operator who set `upload_batch_max_bytes` to
-// the server's `max_decompressed_bytes` is never handed a batch that server
-// refuses. It wedged before: the batch is deterministic, so the same rejected
-// batch retries until its rows are evicted.
+// metsuke-4zo.96: the budget bounds the whole sealed body, framing and
+// separators included, so a batch cannot exceed the number the operator set.
+// It wedged before: the batch is deterministic, so the same rejected batch
+// retries until its rows are evicted.
 #[test]
 fn no_batch_seals_a_body_past_the_budget() {
     let dir = tempfile::tempdir().unwrap();

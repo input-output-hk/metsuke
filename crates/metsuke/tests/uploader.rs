@@ -8,7 +8,7 @@ use metsuke::delivery::Delivery;
 use metsuke::spool::{Spool, SpoolConfig};
 use metsuke::uploader::{UploadConfig, UploadOutcome, upload};
 use metsuke_wire::envelope::{
-    self, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, Sample, Signature, VerifyingKey,
+    self, HEADER_SIGNATURE, HEADER_VKEY, PoolId, Sample, Signature, VerifyingKey,
 };
 use time::OffsetDateTime;
 use wiremock::matchers::{method, path};
@@ -51,7 +51,6 @@ fn sealed_test_batch(dir: &tempfile::TempDir) -> metsuke::delivery::SealedBatch 
 fn upload_config(base_url: &str) -> UploadConfig {
     UploadConfig {
         upload_url: format!("{base_url}/v1/submit").try_into().unwrap(),
-        pool_id: PoolId::from_cold_key(&test_key().verifying_key()),
         timeout: Duration::from_secs(5),
     }
 }
@@ -223,10 +222,9 @@ async fn acked_upload_carries_verifiable_headers_and_body() {
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
     let header = |name: &str| request.headers.get(name).unwrap().to_str().unwrap();
-    assert_eq!(
-        header(HEADER_POOL_ID),
-        PoolId::from_cold_key(&test_key().verifying_key()).to_bech32()
-    );
+    // No pool id header: the pool is the hash of the key in HEADER_VKEY, so the
+    // server derives it (metsuke-jfb.4).
+    assert!(request.headers.get("x-metsuke-pool-id").is_none());
     assert_eq!(header("content-encoding"), "zstd");
     let vkey_bytes = hex::decode::<32>(header(HEADER_VKEY)).unwrap();
     let vkey = VerifyingKey::from_bytes(&vkey_bytes).unwrap();

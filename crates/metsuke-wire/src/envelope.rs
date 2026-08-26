@@ -3,8 +3,8 @@
 //! Lines, with one raw detached Ed25519 signature over both (ADR 0001). The
 //! header is readable by seeking past eight bytes, so `split` answers "who
 //! sent this" with no key and no decompressor; `seal` and `open` are the only
-//! way to produce or consume a whole submission, which is what keeps
-//! verify-before-decompress (ADR 0002) the only expressible call sequence.
+//! way to produce or consume a whole submission, so a consumer cannot inflate a
+//! data frame whose signature it has not checked.
 
 use std::io::Read;
 
@@ -26,9 +26,10 @@ pub const CONTAINER_MAGIC: u32 = 0x184D_2A50;
 /// Where the header's JSON starts: past the magic and the u32 length beside it.
 pub const HEADER_OFFSET: usize = 8;
 
-/// Upload request headers (ADR 0001): pool id as bech32, verification key
-/// and detached signature as lowercase hex over the body bytes as sent.
-pub const HEADER_POOL_ID: &str = "x-metsuke-pool-id";
+/// Upload request headers (ADR 0001): verification key and detached signature
+/// as lowercase hex over the body bytes as sent. No pool id: the key is what
+/// the pool is derived from, so a claimed one would be a second answer to a
+/// question the key already settles.
 pub const HEADER_VKEY: &str = "x-metsuke-vkey";
 pub const HEADER_SIGNATURE: &str = "x-metsuke-signature";
 
@@ -197,8 +198,10 @@ pub const PROVENANCE_KEY: &str = "metsuke";
 /// machine wrote the line, so a line read out of the archive on its own still
 /// says where it came from.
 ///
-/// The two values an agent knows before it spools a line, and no more. Why the
-/// batch's counter and timestamp cannot be among them is ADR 0002.
+/// The two values an agent knows before it spools a line, and no more. The
+/// batch's counter and timestamp are not among them: both are drawn when a batch
+/// is sealed, and a row whose upload failed is sealed into a later one, so a line
+/// stamped with either would name a batch it did not travel in.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Provenance {
     pub pool_id: PoolId,
@@ -341,8 +344,8 @@ impl Payload {
 }
 
 /// One signed upload batch. The `counter` and `timestamp` live in the header
-/// frame, inside the signed bytes (ADR 0002), and on every payload line beside
-/// them (`Provenance`).
+/// frame, inside the signed bytes, where a consumer reads them without
+/// inflating the payload.
 ///
 /// `schema_version` and `payload` are private and only `new` sets them: an
 /// envelope in hand always declares the version its payload has.
@@ -353,7 +356,8 @@ pub struct Envelope {
     /// Which of this pool's machines sealed the batch.
     pub agent_id: AgentId,
     pub agent_version: String,
-    /// Per-agent monotonic counter; what a gap in it means is ADR 0002.
+    /// Per-agent monotonic counter: a gap in one agent's run of it is a batch
+    /// the archive never got.
     pub counter: u64,
     /// Batch creation time, RFC 3339 UTC.
     pub timestamp: OffsetDateTime,
@@ -362,16 +366,17 @@ pub struct Envelope {
 
 /// The skippable frame's content: everything about a submission that is not
 /// the payload itself. It holds no payload key, so which schema a submission
-/// declares is answerable without inflating a byte.
-#[derive(Serialize, Deserialize)]
-struct Header {
-    schema_version: u32,
-    pool_id: PoolId,
-    agent_id: AgentId,
-    agent_version: String,
-    counter: u64,
+/// declares is answerable without inflating a byte — which is what
+/// `read_header` is for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Header {
+    pub schema_version: u32,
+    pub pool_id: PoolId,
+    pub agent_id: AgentId,
+    pub agent_version: String,
+    pub counter: u64,
     #[serde(with = "time::serde::rfc3339")]
-    timestamp: OffsetDateTime,
+    pub timestamp: OffsetDateTime,
 }
 
 /// Which of this build's two schemas a declared version names.
@@ -597,6 +602,24 @@ pub struct Frames<'a> {
     pub data: &'a [u8],
 }
 
+/// Why a body's header frame is not one this crate wrote. Separate from
+/// `OpenError` because reading a header costs no key and no decompressor.
+#[derive(Debug, thiserror::Error)]
+pub enum HeaderError {
+    #[error(transparent)]
+    Container(#[from] ContainerError),
+    #[error("header frame is not a submission header: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+/// The header frame's fields, read with no key and no decompressor. What an
+/// ingest path files an object by: the payload stays compressed and unread.
+pub fn read_header(bytes: &[u8], max_header_bytes: u64) -> Result<Header, HeaderError> {
+    Ok(serde_json::from_slice(
+        split(bytes, max_header_bytes)?.header,
+    )?)
+}
+
 /// Split a submission into its frames, bounding the header at
 /// `max_header_bytes`. No key, no decompressor, and no allocation: this is
 /// what an ingest path runs before it spends anything on a body.
@@ -660,8 +683,8 @@ struct Unstamped<T> {
 }
 
 /// The data frame's content before compression: the batch's lines, each
-/// newline-terminated. What the server's `max_decompressed_bytes` bounds, and
-/// what `zstd -d` emits. Both payload shapes make the same line; ADR 0010 says
+/// newline-terminated. What `Limits::max_decompressed_bytes` bounds, and what
+/// `zstd -d` emits. Both payload shapes make the same line; ADR 0010 says
 /// why.
 ///
 /// Concatenation, because a line was stamped and rendered where it was written

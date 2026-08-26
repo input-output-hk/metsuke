@@ -1,6 +1,6 @@
 //! The agent-side trace path end to end, on the recorded stream: a journalctl
-//! stand-in replaying it, the drain that selects and spools, and the batch the
-//! server would open. What a rule keeps is tests/logselect.rs; this is that the
+//! stand-in replaying it, the drain that selects and spools, and the sealed
+//! batch opened back. What a rule keeps is tests/logselect.rs; this is that the
 //! four parts hand the same bytes along.
 
 use std::time::Duration;

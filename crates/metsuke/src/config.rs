@@ -51,9 +51,9 @@ pub struct Config {
     /// (semantics: `spool::SpoolConfig`).
     #[serde(default = "default_spool_busy_timeout_secs")]
     pub spool_busy_timeout_secs: u64,
-    /// Per-envelope payload ceiling (semantics: `delivery::Delivery`). Keep it
-    /// at or under the server's `max_decompressed_bytes`; nothing enforces
-    /// the agreement, because the two are different operators' files.
+    /// Per-envelope payload ceiling (semantics: `delivery::Delivery`). Nothing
+    /// ties it to the server's `[ingest].max_body_bytes`, because the two are
+    /// different operators' files.
     #[serde(default = "default_upload_batch_max_bytes")]
     pub upload_batch_max_bytes: u64,
     #[serde(default = "default_scrape_timeout_secs")]

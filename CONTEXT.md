@@ -50,8 +50,8 @@ their **Pool**.
 ### Reporting
 
 **Submission**:
-One report a **Pool** sends the server, signed by either its **Cold Key** or its
-**Calidus Key**.
+One report a **Pool** sends the server, signed by its **Cold Key**. Which
+**Pool** it is from is the hash of that key, never something the report claims.
 _Avoid_: upload, batch, post, payload
 
 **Allowlist**:
@@ -82,7 +82,7 @@ _Avoid_: user, consumer, analyst, client
 - A **Pool** has exactly one **Cold Key** and at most one current **Calidus Key**
 - A **Pool** may have many **Registrations**; the highest **Nonce** names the current **Calidus Key**
 - A **Registration** is authorised by exactly one **Witness** from the **Pool**'s **Cold Key**
-- A **Submission** is signed by one key, which must speak for the **Pool** it names
+- A **Submission** is signed by one key, and that key is what names its **Pool**
 - A **Pool** outside the **Allowlist** has no accepted **Submissions**, whatever key it holds
 - A **Pool** reaches the **Allowlist** only when its **Application Code** appears in both an
   **Application** and its current pool registration

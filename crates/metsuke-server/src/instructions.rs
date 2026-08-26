@@ -5,8 +5,8 @@
 //! types — and no edit here can document a default the agent does not ship.
 
 use metsuke_wire::envelope::{
-    self, AgentId, Envelope, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, Payload, PayloadLine,
-    PoolId, Provenance, Sample, SigningKey,
+    self, AgentId, Envelope, HEADER_SIGNATURE, HEADER_VKEY, Payload, PayloadLine, PoolId,
+    Provenance, Sample, SigningKey,
 };
 use time::OffsetDateTime;
 
@@ -92,10 +92,12 @@ with <code>schema_version</code> 2, and then the lines you selected, one per
 line, each the object your node wrote plus that same <code>metsuke</code>
 key.</p>
 
-<p>The signature travels beside the body in three headers:
-<code>{HEADER_POOL_ID}</code>, <code>{HEADER_VKEY}</code> and
-<code>{HEADER_SIGNATURE}</code>. Anything between your agent and this server has
-to pass all three through unchanged, or the signature will not verify.</p>
+<p>The signature travels beside the body in two headers:
+<code>{HEADER_VKEY}</code> and <code>{HEADER_SIGNATURE}</code>. Anything between
+your agent and this server has to pass both through unchanged, or the signature
+will not verify. Your pool id is not among them: it is the hash of the key in
+the first header, so this server derives it rather than taking your word for
+it.</p>
 
 <h2>2. Register your pool</h2>
 
@@ -111,18 +113,15 @@ your submissions whatever key you sign them with.</p>
 
 <h2>3. Choose a signing key</h2>
 
-<p>Submissions are signed by either your pool's cold key or a Calidus key you
-have registered for it. Which one is your policy, not ours — this server checks
-both. The cold key works because a pool id is its hash; a Calidus key works
-because your cold key witnessed a
-<a href="https://cips.cardano.org/cip/CIP-0151">CIP-151</a> registration naming
-it, and the registration with the highest nonce is the one that counts.</p>
+<p>Submissions are signed by your pool's cold key. That is the whole of it: a
+pool id is the hash of its cold verification key, so the key that signs is what
+says which pool an upload is for, and nothing else has to be looked up or
+believed.</p>
 
 <p>The agent reads the key as a cardano-cli TextEnvelope file — the
-<code>pool.skey</code> or <code>pool.calidus.skey</code> you already have. It
-refuses to start unless the key hashes to the <code>pool_id</code> you
-configured, so today that means the cold key: a Calidus key this server would
-accept will not get the agent past startup.</p>
+<code>pool.skey</code> you already have. It refuses to start unless the key
+hashes to the <code>pool_id</code> you configured, which is the same check this
+server makes on every upload.</p>
 
 <h2>4. Enable the node's metrics endpoint</h2>
 

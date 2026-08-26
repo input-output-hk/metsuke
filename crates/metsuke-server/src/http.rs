@@ -13,16 +13,14 @@
 
 use std::io::Read;
 
-use metsuke_wire::envelope::{
-    HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, PoolIdError, Signature, VerifyingKey,
-};
+use metsuke_wire::envelope::{HEADER_SIGNATURE, HEADER_VKEY, PoolId, Signature, VerifyingKey};
 use metsuke_wire::hex::{self, HexError};
 use metsuke_wire::journal::{ERR, WARNING};
 use time::OffsetDateTime;
 use tiny_http::{Header, Method, Request, Response, Server};
 
 use crate::archive::{Bytes, Store};
-use crate::authority::{Authority, Signed};
+use crate::authority::Signed;
 use crate::developer::{self, Developer, Filters, Unauthorized};
 use crate::index::IndexError;
 use crate::instructions;
@@ -40,12 +38,11 @@ pub const OBJECT_PATH: &str = "/v1/object";
 /// be reassembled from the route.
 pub const KEY_FIELD: &str = "key";
 
-/// The identity a request claims. Holding one means the three ADR-0001
-/// headers were present and well formed; whether the signature verifies is
-/// the intake's answer, not this type's.
+/// The identity a request presents. Holding one means the two ADR-0001 headers
+/// were present and well formed; whether the signature verifies is the
+/// intake's answer, not this type's.
 #[derive(Debug)]
 pub struct SubmissionHeaders {
-    pub pool_id: PoolId,
     pub vkey: VerifyingKey,
     pub signature: Signature,
 }
@@ -62,24 +59,26 @@ pub enum HeaderError {
         found: usize,
         expected: usize,
     },
-    #[error("{HEADER_POOL_ID}: {0}")]
-    PoolId(#[from] PoolIdError),
     #[error("{HEADER_VKEY} is not an Ed25519 verification key: {reason}")]
     Vkey { reason: String },
 }
 
 impl SubmissionHeaders {
     pub fn decode(headers: &[Header]) -> Result<SubmissionHeaders, HeaderError> {
-        let pool_id = PoolId::from_bech32(value(headers, HEADER_POOL_ID)?)?;
         let vkey: [u8; 32] = decode_hex(headers, HEADER_VKEY)?;
         let signature: [u8; 64] = decode_hex(headers, HEADER_SIGNATURE)?;
         Ok(SubmissionHeaders {
-            pool_id,
             vkey: VerifyingKey::from_bytes(&vkey).map_err(|error| HeaderError::Vkey {
                 reason: error.to_string(),
             })?,
             signature: Signature::from_bytes(&signature),
         })
+    }
+
+    /// Whose upload this is (`authority`). Derived, so it holds before the
+    /// signature is checked and says nothing about whether it will pass.
+    pub fn pool_id(&self) -> PoolId {
+        PoolId::from_cold_key(&self.vkey)
     }
 }
 
@@ -113,20 +112,14 @@ fn decode_hex<const N: usize>(
 pub fn status_for(error: &IngestError) -> u16 {
     match error {
         IngestError::Rejected(rejection) => match rejection {
-            Rejection::OversizedBody { .. } | Rejection::OversizedPayload { .. } => 413,
-            Rejection::RateLimited { .. } => 429,
-            Rejection::UnknownPool { .. }
-            | Rejection::UnauthorizedKey { .. }
-            | Rejection::TooManyRegistrations { .. }
-            | Rejection::BadSignature => 403,
+            Rejection::OversizedBody { .. } => 413,
+            Rejection::RateLimited { .. } | Rejection::ServerBusy { .. } => 429,
+            Rejection::UnknownPool { .. } | Rejection::BadSignature => 403,
             Rejection::NotASubmission(_)
-            | Rejection::MalformedPayload { .. }
-            | Rejection::UnsupportedSchema { .. }
-            | Rejection::PoolIdMismatch { .. }
-            | Rejection::TimestampOutOfWindow { .. }
-            | Rejection::ReplayedCounter { .. } => 400,
+            | Rejection::UnreadableHeader(_)
+            | Rejection::UnnameableKind { .. } => 400,
         },
-        IngestError::CounterState(_) | IngestError::Archive(_) | IngestError::Undecided(_) => 503,
+        IngestError::Index(_) | IngestError::Archive(_) => 503,
     }
 }
 
@@ -138,9 +131,9 @@ pub fn status_for(error: &IngestError) -> u16 {
 /// error once, so a second `recv` would block on an empty queue forever —
 /// logging and continuing would leave a process that looks healthy to systemd
 /// and accepts nothing. Failing out is what turns it back into a restart.
-pub fn serve<A: Store + Bytes, K: Authority>(
+pub fn serve<A: Store + Bytes>(
     server: &Server,
-    intake: &mut Intake<A, K>,
+    intake: &mut Intake<A>,
     developer: &Developer,
     page: &str,
 ) -> Result<std::convert::Infallible, std::io::Error> {
@@ -151,20 +144,20 @@ pub fn serve<A: Store + Bytes, K: Authority>(
     }
 }
 
-/// What the server writes back. `claimed` is the pool the headers named, if
-/// they got that far: without it a log line cannot say whose uploads are not
-/// landing. `headers` carries what a status needs beside the body, which so
-/// far is the 401's challenge.
+/// What the server writes back. `signer` is the pool the presented key derives
+/// to, where a request got that far: without it a log line cannot say whose
+/// uploads are not landing. `headers` carries what a status needs beside the
+/// body, which so far is the 401's challenge.
 struct Answer {
     status: u16,
     content_type: &'static str,
     body: Vec<u8>,
-    claimed: Option<PoolId>,
+    signer: Option<PoolId>,
     headers: Vec<(&'static str, String)>,
 }
 
-fn route<A: Store + Bytes, K: Authority>(
-    intake: &mut Intake<A, K>,
+fn route<A: Store + Bytes>(
+    intake: &mut Intake<A>,
     developer: &Developer,
     page: &str,
     request: &mut Request,
@@ -180,7 +173,7 @@ fn route<A: Store + Bytes, K: Authority>(
                 status: 200,
                 content_type: "text/html; charset=utf-8",
                 body: page.as_bytes().to_vec(),
-                claimed: None,
+                signer: None,
                 headers: Vec::new(),
             },
             _ => refuse(None, 405, format!("{} takes GET", instructions::PATH)),
@@ -244,11 +237,7 @@ fn challenge(path: &str, error: &Unauthorized) -> Answer {
 
 /// One page of the index as JSON. Bounded by `list_max_rows`, and the answer
 /// says whether the bound cut it off (`index::Listing`).
-fn listing<A: Store + Bytes, K: Authority>(
-    intake: &Intake<A, K>,
-    developer: &Developer,
-    url: &str,
-) -> Answer {
+fn listing<A: Store + Bytes>(intake: &Intake<A>, developer: &Developer, url: &str) -> Answer {
     let filters = match Filters::parse(url) {
         Ok(filters) => filters,
         Err(error) => return refuse(None, 400, error.to_string()),
@@ -261,7 +250,7 @@ fn listing<A: Store + Bytes, K: Authority>(
             status: 200,
             content_type: "application/json",
             body: developer::page(&listing).into_bytes(),
-            claimed: None,
+            signer: None,
             headers: Vec::new(),
         },
         Err(error) => index_failed(&error),
@@ -286,7 +275,7 @@ fn index_failed(error: &IndexError) -> Answer {
 
 /// One object, as the bytes that were archived. Asks `index::Index::holds`
 /// before the archive.
-fn object<A: Store + Bytes, K: Authority>(intake: &Intake<A, K>, url: &str) -> Answer {
+fn object<A: Store + Bytes>(intake: &Intake<A>, url: &str) -> Answer {
     let key = match developer::query_value(url, KEY_FIELD) {
         Ok(key) => key,
         Err(error) => return refuse(None, 400, error.to_string()),
@@ -306,7 +295,7 @@ fn object<A: Store + Bytes, K: Authority>(intake: &Intake<A, K>, url: &str) -> A
             // decompresses it themselves.
             content_type: "application/zstd",
             body: bytes,
-            claimed: None,
+            signer: None,
             headers: Vec::new(),
         },
         Err(error) => unavailable("the archive cannot be read", &error.to_string()),
@@ -320,18 +309,19 @@ fn unavailable(reason: &str, withheld: &str) -> Answer {
     refuse_withholding(None, 503, reason.to_string(), Some(withheld.to_string()))
 }
 
-fn submit<A: Store, K: Authority>(intake: &mut Intake<A, K>, request: &mut Request) -> Answer {
+fn submit<A: Store>(intake: &mut Intake<A>, request: &mut Request) -> Answer {
     let headers = match SubmissionHeaders::decode(request.headers()) {
         Ok(headers) => headers,
         Err(error) => return refuse(None, 400, error.to_string()),
     };
-    let claimed = Some(headers.pool_id);
+    // Named before the body is read, so a log line about an upload that never
+    // reached the intake still says whose it was.
+    let signer = headers.pool_id();
     let wire_bytes = match read_body(request, intake.max_body_bytes()) {
         Ok(wire_bytes) => wire_bytes,
-        Err(reason) => return refuse(claimed, reason.status, reason.text),
+        Err(reason) => return refuse(Some(signer), reason.status, reason.text),
     };
     let submission = Signed {
-        pool_id: headers.pool_id,
         vkey: headers.vkey,
         signature: headers.signature,
         wire_bytes: &wire_bytes,
@@ -341,15 +331,10 @@ fn submit<A: Store, K: Authority>(intake: &mut Intake<A, K>, request: &mut Reque
             status: 200,
             content_type: "application/json",
             body: serde_json::to_vec(&ack).expect("an Ack of two strings serializes"),
-            claimed,
+            signer: Some(signer),
             headers: Vec::new(),
         },
-        Err(error) => refuse_withholding(
-            claimed,
-            status_for(&error),
-            error.to_string(),
-            error.withheld(),
-        ),
+        Err(error) => refuse(Some(signer), status_for(&error), error.to_string()),
     }
 }
 
@@ -395,14 +380,14 @@ fn read_body(request: &mut Request, max_body_bytes: u64) -> Result<Vec<u8>, Body
 
 /// Every refusal is logged: the reason text is the only record of why a
 /// pool's uploads are not landing.
-fn refuse(claimed: Option<PoolId>, status: u16, reason: String) -> Answer {
-    refuse_withholding(claimed, status, reason, None)
+fn refuse(signer: Option<PoolId>, status: u16, reason: String) -> Answer {
+    refuse_withholding(signer, status, reason, None)
 }
 
 /// A refusal whose log line carries more than its body: `withheld` is appended
 /// to what is logged and never sent.
 fn refuse_withholding(
-    claimed: Option<PoolId>,
+    signer: Option<PoolId>,
     status: u16,
     reason: String,
     withheld: Option<String>,
@@ -412,22 +397,19 @@ fn refuse_withholding(
         Some(withheld) => format!("{reason}: {withheld}"),
         None => reason.clone(),
     };
-    eprintln!(
-        "{severity}refused {}: {status}, {logged}",
-        claimant(claimed)
-    );
+    eprintln!("{severity}refused {}: {status}, {logged}", named(signer));
     Answer {
         status,
         content_type: "text/plain; charset=utf-8",
         body: reason.into_bytes(),
-        claimed,
+        signer,
         headers: Vec::new(),
     }
 }
 
 /// How a request is named before anything it claims has been verified.
-fn claimant(claimed: Option<PoolId>) -> String {
-    match claimed {
+fn named(signer: Option<PoolId>) -> String {
+    match signer {
         Some(pool_id) => pool_id.to_bech32(),
         None => "an unidentified client".to_string(),
     }
@@ -448,11 +430,11 @@ fn respond(request: Request, answer: Answer) {
     if let Err(error) = request.respond(response) {
         // tiny_http answers `Ok` for a client that merely hung up, so this is
         // a real write failure. On an accepted submission the bytes are
-        // already archived and the counter spent, and the agent — never having
-        // seen the ack — resends into a replay rejection it cannot act on.
+        // already archived, and the agent — never having seen the ack — sends
+        // them again, so the bucket ends up holding the batch twice.
         eprintln!(
             "{ERR}could not answer {} with {}: {error}",
-            claimant(answer.claimed),
+            named(answer.signer),
             answer.status,
         );
     }

@@ -48,8 +48,8 @@ beyond the state directory. The two are one parameter in nix/unit.nix, because
 a unit holding the group without the second cannot start journalctl at all.
 
 Selected lines land in the existing spool under their own byte cap and upload
-as schema v2 envelopes on the same signed path as samples (ADR 0001, 0002,
-0005). They are the data frame's lines, each the node's object with the agent's
+as schema v2 envelopes on the same signed path as samples (ADR 0001, 0005).
+They are the data frame's lines, each the node's object with the agent's
 provenance added under the one reserved `metsuke` key, so a trace line and a
 metrics line have the same shape and one query over the archive reads both. One
 reserved key rather than the provenance fields merged into the line's top level:

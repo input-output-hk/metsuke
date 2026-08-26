@@ -12,7 +12,7 @@ use metsuke::scrape::ScrapeConfig;
 use metsuke::sntp::SntpConfig;
 use metsuke::spool::{LogSpool, LogSpoolConfig, Spool, SpoolConfig};
 use metsuke::uploader::{UploadConfig, UploadOutcome};
-use metsuke_wire::envelope::{self, PoolId, Signature, VerifyingKey};
+use metsuke_wire::envelope::{self, Signature, VerifyingKey};
 use metsuke_wire::envelope::{HEADER_SIGNATURE, HEADER_VKEY};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -47,7 +47,6 @@ fn test_log_spool(dir: &tempfile::TempDir) -> LogSpool {
 /// An agent sampling the given metrics server and uploading to the given
 /// upload server. SNTP points at a dead loopback port so the offset is null.
 fn test_agent(dir: &tempfile::TempDir, metrics: &MockServer, uploads: &MockServer) -> Agent {
-    let pool_id = PoolId::from_cold_key(&test_key().verifying_key());
     let spool = Spool::open(&SpoolConfig {
         path: spool_path(dir),
         max_bytes: UNBOUNDED,
@@ -70,7 +69,6 @@ fn test_agent(dir: &tempfile::TempDir, metrics: &MockServer, uploads: &MockServe
         Delivery::new(spool, test_key(), 0, UNBOUNDED),
         UploadConfig {
             upload_url: format!("{}/v1/submit", uploads.uri()).try_into().unwrap(),
-            pool_id,
             timeout: Duration::from_secs(5),
         },
         test_key().verifying_key(),

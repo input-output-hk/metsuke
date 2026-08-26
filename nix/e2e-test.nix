@@ -39,6 +39,12 @@ let
   # agent_id, so this is the slug it stamps every line with.
   agentId = "e2e";
 
+  # A second machine reporting for the same pool, which is the case a per-pool
+  # replay counter used to reject (metsuke-jfb.4). Named rather than slugged
+  # from a hostname, because both agents run on the one guest a loopback
+  # upload_url allows.
+  secondAgentId = "e2e-two";
+
   bucket = "metsuke";
   # `KEY_PREFIX` in crates/metsuke-server/src/archive.rs, which owns what an
   # object key looks like.
@@ -87,7 +93,7 @@ let
     mkdir -p /tmp/archive
     aws --endpoint-url http://127.0.0.1:${toString s3Port} \
       s3 sync s3://${bucket}/${keyPrefix} /tmp/archive >/dev/null
-    find /tmp/archive -name '*.json.zst' -print0 |
+    find /tmp/archive -name '*.jsonl.zst' -print0 |
       while IFS= read -r -d "" object; do
         # The header rides uncompressed in a leading skippable frame: its
         # length is the u32 at offset 4, and the JSON follows at offset 8. No
@@ -150,129 +156,162 @@ let
   test = pkgs.testers.runNixOSTest {
     name = "metsuke-e2e";
 
-    nodes.e2e = {
-      imports = [
-        agentModule
-        serverModule
-      ];
-
-      virtualisation = {
-        memorySize = 4096;
-        cores = 4;
-        # Garage refuses to start with less than a gigabyte free.
-        diskSize = 4096;
-      };
-
-      environment.systemPackages = [
-        serverPackage
-        pkgs.awscli2
-      ];
-
-      systemd.services.cardano-node = {
-        wantedBy = [ "multi-user.target" ];
-        serviceConfig = {
-          ExecStart = pkgs.lib.concatStringsSep " " [
-            "${cardano-node}/bin/cardano-node run"
-            "--config ${nodeConfig}/config.json"
-            "--topology ${nodeConfig}/topology.json"
-            "--database-path /var/lib/cardano-node/db"
-            "--socket-path /run/cardano-node/node.socket"
-            "--host-addr 127.0.0.1"
-            "--port 3001"
-          ];
-          # The Leios ledger's path in config.json is relative, so it lands here
-          # rather than in the root directory.
-          WorkingDirectory = "/var/lib/cardano-node";
-          StateDirectory = "cardano-node";
-          RuntimeDirectory = "cardano-node";
-          DynamicUser = true;
-        };
-      };
-
-      services.garage = {
-        enable = true;
-        package = pkgs.garage;
-        settings = {
-          replication_factor = 1;
-          db_engine = "sqlite";
-          rpc_bind_addr = "127.0.0.1:3901";
-          rpc_public_addr = "127.0.0.1:3901";
-          rpc_secret = rpcSecret;
-          s3_api = {
-            s3_region = region;
-            api_bind_addr = "127.0.0.1:${toString s3Port}";
-          };
-        };
-      };
-
-      services.metsuke = {
-        enable = true;
-        # The pool's cold key, as the demo ships it: what the server's ADR-0003
-        # check resolves the pool id from.
-        signingKeyFile = "${poolKeys}/cold.skey";
-        restartSecs = 2;
-        settings = {
+    nodes.e2e =
+      { config, ... }:
+      let
+        # The second agent's own config: same pool, same key, a different
+        # machine name and its own spool. Run as a plain unit rather than a
+        # second module instance — what the module renders for one agent is
+        # covered by `metsuke.service`, and this is about the server.
+        secondConfig = (pkgs.formats.toml { }).generate "metsuke-two.toml" {
           pool_id = poolId;
+          agent_id = secondAgentId;
           metrics_url = "http://127.0.0.1:${toString metricsPort}/metrics";
           upload_url = "http://127.0.0.1:${toString listenPort}/v1/submit";
           sample_interval_secs = 1;
-          # The first submissions meet a bucket that has no layout yet; this is
-          # how long the retry that follows takes (ADR 0004).
           upload_interval_secs = 5;
           upload_jitter_max_secs = 0;
-          # A name no test network can resolve would cost every sample the SNTP
-          # timeout.
           sntp_servers = [ ];
-          # The node writes its traces to the journal, so this is where the
-          # group grant and the journalctl child are exercised on real parts.
-          log.journal_unit = "cardano-node.service";
+          spool_path = "/var/lib/metsuke-two/spool.sqlite";
         };
-      };
+      in
+      {
+        imports = [
+          agentModule
+          serverModule
+        ];
 
-      services.metsuke-server = {
-        enable = true;
-        environmentFile = awsEnvironment;
-        calidusPasswordFile = password;
-        developerPasswordFile = password;
-        restartSecs = 2;
-        settings = {
-          listen = "127.0.0.1:${toString listenPort}";
-          archive.s3 = {
-            inherit bucket region;
-            endpoint = "http://127.0.0.1:${toString s3Port}";
-            request_timeout_secs = 30;
-            signature_validity_secs = 300;
-            put_retries = 1;
-            put_retry_backoff_ms = 500;
-            list_max_pages = 1000;
+        systemd.services.metsuke-two = {
+          description = "metsuke telemetry agent, second machine";
+          wantedBy = [ "multi-user.target" ];
+          serviceConfig = {
+            ExecStart = pkgs.lib.concatStringsSep " " [
+              "${config.services.metsuke.package}/bin/metsuke"
+              "--config ${secondConfig}"
+              "--signing-key ${poolKeys}/cold.skey"
+            ];
+            StateDirectory = "metsuke-two";
+            Restart = "always";
+            RestartSec = 2;
           };
-          ingest = {
-            allowlist.${poolId} = "MUSA-0000";
-            max_body_bytes = 1048576;
-            max_header_bytes = 4096;
-            max_decompressed_bytes = 4194304;
-            rate_limit_uploads = 240;
-            rate_limit_window_secs = 3600;
-            max_timestamp_skew_secs = 300;
+        };
+
+        virtualisation = {
+          memorySize = 4096;
+          cores = 4;
+          # Garage refuses to start with less than a gigabyte free.
+          diskSize = 4096;
+        };
+
+        environment.systemPackages = [
+          serverPackage
+          pkgs.awscli2
+        ];
+
+        systemd.services.cardano-node = {
+          wantedBy = [ "multi-user.target" ];
+          serviceConfig = {
+            ExecStart = pkgs.lib.concatStringsSep " " [
+              "${cardano-node}/bin/cardano-node run"
+              "--config ${nodeConfig}/config.json"
+              "--topology ${nodeConfig}/topology.json"
+              "--database-path /var/lib/cardano-node/db"
+              "--socket-path /run/cardano-node/node.socket"
+              "--host-addr 127.0.0.1"
+              "--port 3001"
+            ];
+            # The Leios ledger's path in config.json is relative, so it lands here
+            # rather than in the root directory.
+            WorkingDirectory = "/var/lib/cardano-node";
+            StateDirectory = "cardano-node";
+            RuntimeDirectory = "cardano-node";
+            DynamicUser = true;
           };
-          calidus = {
-            # Nothing reaches db-sync here: the cold key answers ADR 0003 before
-            # any chain question is asked.
-            socket_dir = "/run/postgresql";
-            dbname = "cexplorer";
-            role = "metsuke_ro";
-            query_timeout_secs = 30;
-            shelley_genesis_path = "${devnetSrc}/config/genesis/shelley-genesis.json";
-            resolution_ttl_secs = 3600;
-            max_registrations = 10;
+        };
+
+        services.garage = {
+          enable = true;
+          package = pkgs.garage;
+          settings = {
+            replication_factor = 1;
+            db_engine = "sqlite";
+            rpc_bind_addr = "127.0.0.1:3901";
+            rpc_public_addr = "127.0.0.1:3901";
+            rpc_secret = rpcSecret;
+            s3_api = {
+              s3_region = region;
+              api_bind_addr = "127.0.0.1:${toString s3Port}";
+            };
           };
-          developer = {
-            user = "metsuke-dev";
-            list_max_rows = 1000;
+        };
+
+        services.metsuke = {
+          enable = true;
+          # The pool's cold key, as the demo ships it: what the server's ADR-0003
+          # check resolves the pool id from.
+          signingKeyFile = "${poolKeys}/cold.skey";
+          restartSecs = 2;
+          settings = {
+            pool_id = poolId;
+            metrics_url = "http://127.0.0.1:${toString metricsPort}/metrics";
+            upload_url = "http://127.0.0.1:${toString listenPort}/v1/submit";
+            sample_interval_secs = 1;
+            # The first submissions meet a bucket that has no layout yet; this is
+            # how long the retry that follows takes (ADR 0004).
+            upload_interval_secs = 5;
+            upload_jitter_max_secs = 0;
+            # A name no test network can resolve would cost every sample the SNTP
+            # timeout.
+            sntp_servers = [ ];
+            # The node writes its traces to the journal, so this is where the
+            # group grant and the journalctl child are exercised on real parts.
+            log.journal_unit = "cardano-node.service";
+          };
+        };
+
+        services.metsuke-server = {
+          enable = true;
+          environmentFile = awsEnvironment;
+          calidusPasswordFile = password;
+          developerPasswordFile = password;
+          restartSecs = 2;
+          settings = {
+            listen = "127.0.0.1:${toString listenPort}";
+            archive.s3 = {
+              inherit bucket region;
+              endpoint = "http://127.0.0.1:${toString s3Port}";
+              request_timeout_secs = 30;
+              signature_validity_secs = 300;
+              put_retries = 1;
+              put_retry_backoff_ms = 500;
+              list_max_pages = 1000;
+            };
+            ingest = {
+              allowlist.${poolId} = "MUSA-0000";
+              max_body_bytes = 1048576;
+              max_header_bytes = 4096;
+              rate_limit_uploads = 240;
+              rate_limit_uploads_total = 2400;
+              rate_limit_window_secs = 3600;
+            };
+            calidus = {
+              # Nothing reaches db-sync here: the cold key answers ADR 0003 before
+              # any chain question is asked.
+              socket_dir = "/run/postgresql";
+              dbname = "cexplorer";
+              role = "metsuke_ro";
+              query_timeout_secs = 30;
+              shelley_genesis_path = "${devnetSrc}/config/genesis/shelley-genesis.json";
+              resolution_ttl_secs = 3600;
+              max_registrations = 10;
+            };
+            developer = {
+              user = "metsuke-dev";
+              list_max_rows = 1000;
+            };
           };
         };
       };
-    };
 
     testScript = ''
       import json
@@ -319,7 +358,25 @@ let
               " s3api list-objects-v2 --bucket ${bucket} --prefix ${keyPrefix}"
               " --query 'Contents[].Key' --output text"
           )
-          assert "${keyPrefix}${poolId}/" in listing, listing
+          assert "-${poolId}-${agentId}-metrics.jsonl.zst" in listing, listing
+
+      with subtest("a second machine reporting for the same pool also lands"):
+          # The motivating bug: one pool, two agents. Nothing here is keyed per
+          # pool alone, so both objects are in the bucket under their own agent
+          # id (metsuke-jfb.4).
+          e2e.wait_for_unit("metsuke-two.service")
+          e2e.wait_until_succeeds(
+              "journalctl -u metsuke-two.service | grep -q 'batch acked'",
+              timeout = timedelta(minutes = 5),
+          )
+          listing = e2e.succeed(
+              "set -a; . ${awsEnvironment}; AWS_DEFAULT_REGION=${region};"
+              " aws --endpoint-url http://127.0.0.1:${toString s3Port}"
+              " s3api list-objects-v2 --bucket ${bucket} --prefix ${keyPrefix}"
+              " --query 'Contents[].Key' --output text"
+          )
+          for agent in ["${agentId}", "${secondAgentId}"]:
+              assert f"-${poolId}-{agent}-metrics.jsonl.zst" in listing, listing
 
       with subtest("the agent reads the node's journal"):
           # The grant and the child, before any line has to have travelled

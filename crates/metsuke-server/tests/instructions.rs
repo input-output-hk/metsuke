@@ -3,7 +3,7 @@
 //! the page moved with it (`instructions` says why that is the point).
 
 use metsuke_server::instructions;
-use metsuke_wire::envelope::{self, HEADER_POOL_ID};
+use metsuke_wire::envelope::{self, HEADER_SIGNATURE, HEADER_VKEY};
 
 mod support;
 use support::{envelope_for, test_key};
@@ -59,11 +59,14 @@ fn every_v1_field_appears_on_the_page() {
     }
 }
 
-/// The headers an operator's proxy has to pass through are the same three the
+/// The headers an operator's proxy has to pass through are the same two the
 /// agent sends.
 #[test]
 fn the_page_names_the_submission_headers() {
-    assert!(instructions::page().contains(HEADER_POOL_ID));
+    let page = instructions::page();
+    for header in [HEADER_VKEY, HEADER_SIGNATURE] {
+        assert!(page.contains(header), "the page never names {header}");
+    }
 }
 
 /// Verbatim, not summarised: the copy-paste block is the shipped file, so

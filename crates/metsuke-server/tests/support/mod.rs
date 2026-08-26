@@ -12,16 +12,16 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use metsuke_server::applications::ApplicationCode;
-use metsuke_server::archive::{ArchiveError, List, Store, StoredSubmission};
-use metsuke_server::authority::{ColdKeyOrCalidus, Signed};
-use metsuke_server::calidus::{CalidusKeys, Directory, DirectoryError, Registrations};
+use metsuke_server::archive::{ArchiveError, Kind, List, ObjectName, Store, StoredSubmission};
+use metsuke_server::authority::Signed;
+use metsuke_server::calidus::{Directory, DirectoryError, Registrations};
 use metsuke_server::config::{
     AbsolutePath, ApplicationsConfig, CalidusConfig, DeveloperConfig, IngestConfig,
 };
 use metsuke_server::index::Index;
 use metsuke_wire::envelope::{
-    self, AgentId, Envelope, Limits, Payload, PayloadLine, PoolId, Provenance,
-    SCHEMA_VERSION_SAMPLES, Sample, Signature, SigningKey, TraceLine, VerifyingKey,
+    self, AgentId, Envelope, Payload, PayloadLine, PoolId, Provenance, Sample, Signature,
+    SigningKey, TraceLine, VerifyingKey,
 };
 use time::OffsetDateTime;
 
@@ -61,16 +61,9 @@ pub fn pool_of(key: &SigningKey) -> PoolId {
     PoolId::from_cold_key(&key.verifying_key())
 }
 
-/// Ceilings wide enough that no test submission reaches either. Plain numbers:
-/// `verify` and `audit` take the limits, not the config fields.
+/// A ceiling wide enough that no test submission's header reaches it. A plain
+/// number: `verify` and `audit` take the bound, not the config field.
 pub const MAX_HEADER_BYTES: u64 = 4096;
-pub const MAX_DECOMPRESSED_BYTES: u64 = 4 * 1024 * 1024;
-
-/// The two as `open` wants them.
-pub const TEST_LIMITS: Limits = Limits {
-    max_header_bytes: MAX_HEADER_BYTES,
-    max_decompressed_bytes: MAX_DECOMPRESSED_BYTES,
-};
 
 /// The clock every test judges against; envelopes are stamped with it.
 pub fn test_now() -> OffsetDateTime {
@@ -100,31 +93,6 @@ pub fn provenance_of(key: &SigningKey) -> Provenance {
         pool_id: pool_of(key),
         agent_id: test_agent_id(),
     }
-}
-
-/// An envelope naming `pool_id`, for whichever key ends up sealing it.
-///
-/// The pool a batch names and the key that signs it are separate: a Calidus
-/// submission is exactly one whose signer is not the pool's own key (ADR 0003).
-/// They cannot be separated by reassigning `Envelope::pool_id` after the fact —
-/// every line is stamped with the pool its header names, so `open` refuses a
-/// batch whose header moved out from under its lines.
-pub fn envelope_of_pool(pool_id: PoolId, counter: u64) -> Envelope {
-    let now = test_now();
-    let stamp = Provenance {
-        pool_id,
-        agent_id: test_agent_id(),
-    };
-    Envelope::new(
-        pool_id,
-        test_agent_id(),
-        metsuke_server::CLIENT_VERSION.to_string(),
-        counter,
-        now,
-        Payload::samples(vec![
-            PayloadLine::sample(&test_sample(now), &stamp).expect("a test sample stamps"),
-        ]),
-    )
 }
 
 pub fn test_sample(now: OffsetDateTime) -> Sample {
@@ -183,15 +151,9 @@ pub fn seal(key: &SigningKey, envelope: &Envelope) -> (Vec<u8>, Signature) {
     envelope::seal(key, envelope, 0).unwrap()
 }
 
-/// Assemble the headers-and-body triple the intake takes.
-pub fn submission<'a>(
-    vkey: VerifyingKey,
-    pool_id: PoolId,
-    signature: Signature,
-    wire_bytes: &'a [u8],
-) -> Signed<'a> {
+/// Assemble the headers-and-body pair the intake takes.
+pub fn submission(vkey: VerifyingKey, signature: Signature, wire_bytes: &[u8]) -> Signed<'_> {
     Signed {
-        pool_id,
         vkey,
         signature,
         wire_bytes,
@@ -295,20 +257,18 @@ pub fn ingest_toml(config: &IngestConfig) -> String {
         allowlist,
         max_body_bytes,
         max_header_bytes,
-        max_decompressed_bytes,
         rate_limit_uploads,
+        rate_limit_uploads_total,
         rate_limit_window_secs,
-        max_timestamp_skew_secs,
     } = config;
     format!(
         "[ingest]
 allowlist = {allowlist}
 max_body_bytes = {max_body_bytes}
 max_header_bytes = {max_header_bytes}
-max_decompressed_bytes = {max_decompressed_bytes}
 rate_limit_uploads = {rate_limit_uploads}
+rate_limit_uploads_total = {rate_limit_uploads_total}
 rate_limit_window_secs = {rate_limit_window_secs}
-max_timestamp_skew_secs = {max_timestamp_skew_secs}
 ",
         allowlist = allowlist_toml(allowlist),
     )
@@ -320,10 +280,9 @@ pub fn permissive_config(allowed: &[PoolId]) -> IngestConfig {
         allowlist: allowlist(allowed),
         max_body_bytes: nonzero_u64(1024 * 1024),
         max_header_bytes: nonzero_u64(MAX_HEADER_BYTES),
-        max_decompressed_bytes: nonzero_u64(MAX_DECOMPRESSED_BYTES),
         rate_limit_uploads: nonzero_u32(100),
+        rate_limit_uploads_total: nonzero_u32(1000),
         rate_limit_window_secs: nonzero_u64(3600),
-        max_timestamp_skew_secs: nonzero_u64(300),
     }
 }
 
@@ -346,23 +305,25 @@ pub fn index_store(dir: &Path) -> Index {
     Index::open(&dir.join("index.sqlite")).unwrap()
 }
 
-/// The submission `seal` produced, as the archive is asked to store it.
+/// The submission `seal` produced, as the archive is asked to store it. The
+/// name is stamped here, so a test that has to know the key holds it.
 pub fn stored_submission<'a>(
     key: &SigningKey,
-    counter: u64,
-    timestamp: OffsetDateTime,
+    name: ObjectName,
     signature: Signature,
     wire_bytes: &'a [u8],
 ) -> StoredSubmission<'a> {
     StoredSubmission {
-        pool_id: pool_of(key),
-        counter,
-        timestamp,
-        schema_version: SCHEMA_VERSION_SAMPLES,
+        name,
         vkey: key.verifying_key(),
         signature,
         wire_bytes,
     }
+}
+
+/// The name a submission from `key` received at `now` is filed under.
+pub fn object_name(key: &SigningKey, now: OffsetDateTime, kind: Kind) -> ObjectName {
+    ObjectName::stamped(now, pool_of(key), test_agent_id(), kind)
 }
 
 /// The shipped server config, with its placeholder pool id replaced. Loading
@@ -670,28 +631,8 @@ impl Directory for CannedDirectory {
     }
 }
 
-/// How long a test's resolutions stand. Inside `permissive_config`'s timestamp
-/// skew, so a test can both age a resolution out and still submit an envelope.
+/// How long a test's resolutions stand.
 pub const TEST_TTL_SECS: u32 = 60;
-
-/// The Calidus-capable authority over a directory the caller still holds.
-pub fn calidus_authority(directory: CannedDirectory) -> ColdKeyOrCalidus<CannedDirectory> {
-    ColdKeyOrCalidus::new(CalidusKeys::new(directory, nonzero_u32(TEST_TTL_SECS)))
-}
-
-/// A directory that cannot answer, standing in for a db-sync that is down.
-pub struct UnavailableDirectory {
-    pub reason: &'static str,
-}
-
-impl Directory for UnavailableDirectory {
-    fn registrations(&self, pool_id: PoolId) -> Result<Registrations, DirectoryError> {
-        Err(DirectoryError::Unavailable {
-            pool_id,
-            reason: self.reason.to_string(),
-        })
-    }
-}
 
 /// The opening two bytes of a TLS record: content type 22 (handshake), then
 /// the legacy record version's major byte (RFC 8446 §5.1).

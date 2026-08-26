@@ -10,10 +10,9 @@
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest as _};
 use serde::Serialize;
-use time::OffsetDateTime;
 
 use base64::Engine as _;
-use metsuke_wire::envelope::PoolId;
+use metsuke_wire::envelope::{AgentId, PoolId};
 
 use crate::config::DeveloperConfig;
 use crate::index::Listing;
@@ -196,9 +195,8 @@ fn percent_decoded(value: &str) -> Option<String> {
 struct SubmissionJson {
     key: String,
     pool_id: PoolId,
-    counter: u64,
-    #[serde(with = "time::serde::rfc3339")]
-    timestamp: OffsetDateTime,
+    agent_id: AgentId,
+    kind: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -216,8 +214,8 @@ pub fn page(listing: &Listing) -> String {
             .map(|name| SubmissionJson {
                 key: name.to_key(),
                 pool_id: name.pool_id,
-                counter: name.counter,
-                timestamp: name.timestamp,
+                agent_id: name.agent_id.clone(),
+                kind: name.kind.to_string(),
             })
             .collect(),
         truncated: listing.truncated,

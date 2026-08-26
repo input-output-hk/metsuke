@@ -289,9 +289,10 @@ fn a_stored_row_travels_whatever_its_fields_are() {
 }
 
 // A counter value handed out must never be handed out again, even across a
-// restart — the server rejects reuse as replay (ADR 0002).
+// restart: a gap in one agent's run of it is how a consumer sees a batch the
+// archive never got.
 #[test]
-fn replay_counter_is_monotonic_across_restart() {
+fn the_counter_is_monotonic_across_restart() {
     let dir = tempfile::tempdir().unwrap();
     let config = temp_config(&dir, WHOLE_SPOOL);
     let before_restart = {

@@ -30,14 +30,16 @@ list_max_pages = 1000
 allowlist = { pool1CHANGEME = "MUSA-0000" }
 max_body_bytes = 1048576
 max_header_bytes = 4096
-max_decompressed_bytes = 4194304
-rate_limit_uploads = 24
+# A runaway-agent backstop, not abuse control: ~16x headroom over six agents
+# uploading once an hour.
+rate_limit_uploads = 100
+# And the same for every pool together, so one leaked key cannot bill the
+# bucket for the whole allowlist's worth.
+rate_limit_uploads_total = 2000
 rate_limit_window_secs = 3600
-max_timestamp_skew_secs = 300
 
-# The db-sync the Calidus half reads registrations out of. Colocated, so the
-# socket is local. password_file holds the password alone, which is what
-# systemd's LoadCredential puts there.
+# Loaded and unused (docs/adr/0003), and still required: leave it in place or
+# the server will not start.
 [calidus]
 socket_dir = "/run/postgresql"
 dbname = "cexplorer"

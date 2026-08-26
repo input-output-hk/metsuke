@@ -15,7 +15,7 @@ fn the_shipped_example_config_loads() {
     let config = ServerConfig::from_toml(&example()).unwrap();
     assert_eq!(config.listen, "127.0.0.1:8080");
     assert!(config.ingest.allowlist.contains_key(&pool_of(&test_key())));
-    assert_eq!(config.ingest.max_timestamp_skew_secs.get(), 300);
+    assert_eq!(config.ingest.rate_limit_uploads.get(), 100);
     let ArchiveConfig::S3(s3) = config.archive else {
         panic!("the example names an S3 archive");
     };
@@ -76,7 +76,7 @@ fn an_archive_without_a_kind_is_refused() {
 }
 
 /// The fields typed `NonZero`, so zero and absence are the same refusal.
-const NONZERO_FIELDS: [&str; 14] = [
+const NONZERO_FIELDS: [&str; 13] = [
     "query_timeout_secs",
     "list_max_rows",
     "resolution_ttl_secs",
@@ -87,10 +87,9 @@ const NONZERO_FIELDS: [&str; 14] = [
     "list_max_pages",
     "max_body_bytes",
     "max_header_bytes",
-    "max_decompressed_bytes",
     "rate_limit_uploads",
+    "rate_limit_uploads_total",
     "rate_limit_window_secs",
-    "max_timestamp_skew_secs",
 ];
 
 /// The rest, where only absence is a mistake. Together with `NONZERO_FIELDS`

@@ -2,12 +2,12 @@
 //! archive, what a filter may ask for, and the JSON one page answers as.
 
 use base64::Engine as _;
-use metsuke_server::archive::ObjectName;
+use metsuke_server::archive::Kind;
 use metsuke_server::developer::{Developer, Filters, page, query_value};
 use metsuke_server::index::Listing;
 
 mod support;
-use support::{DEVELOPER_PASSWORD, developer_config, pool_of, test_key, test_now};
+use support::{DEVELOPER_PASSWORD, developer_config, object_name, test_key, test_now};
 
 fn developer() -> Developer {
     let dir = tempfile::tempdir().unwrap();
@@ -151,13 +151,9 @@ fn a_malformed_escape_is_kept_literally() {
 /// it has to be in the answer.
 #[test]
 fn a_page_serializes_as_its_keys_and_what_they_encode() {
-    let name = ObjectName {
-        pool_id: pool_of(&test_key()),
-        counter: 7,
-        timestamp: test_now(),
-    };
+    let name = object_name(&test_key(), test_now(), Kind::Logs);
     let listing = Listing {
-        objects: vec![name],
+        objects: vec![name.clone()],
         truncated: true,
     };
 
@@ -167,7 +163,6 @@ fn a_page_serializes_as_its_keys_and_what_they_encode() {
     let submission = &json["submissions"][0];
     assert_eq!(submission["key"], name.to_key());
     assert_eq!(submission["pool_id"], name.pool_id.to_bech32());
-    assert_eq!(submission["counter"], 7);
-    // RFC 3339, as the envelope stamps a timestamp (`metsuke_wire::envelope`).
-    assert_eq!(submission["timestamp"], "2025-08-12T12:00:00Z");
+    assert_eq!(submission["agent_id"], name.agent_id.as_str());
+    assert_eq!(submission["kind"], "logs");
 }

@@ -1,182 +1,33 @@
-//! Who may speak for a pool (ADR 0003), and the one check-then-open sequence
-//! both the ingest path and the archive audit run. Whether the two reach the
-//! same verdict is their `Authority`, not this sequence.
+//! Who a submission is from. One answer, derived and not claimed: the pool is
+//! the blake2b-224 hash of the key that signed (ADR 0003), so nothing on the
+//! wire has to be believed and nothing has to be looked up.
 
-use metsuke_wire::envelope::{self, Envelope, Limits, PoolId, Signature, VerifyingKey};
-use time::OffsetDateTime;
+use metsuke_wire::envelope::{PoolId, Signature, VerifyingKey};
 
-use crate::calidus::{CalidusKeys, Directory, DirectoryError, Resolution};
-
-/// An upload as it was signed: the pool it claims, the key it presents, the
-/// signature, and the bytes both are over. The ingest path builds one from the
-/// request headers, the audit from a stored object.
+/// An upload as it was signed: the key it presents, the signature, and the
+/// bytes both are over. The ingest path builds one from the request headers,
+/// the audit from a stored object.
 pub struct Signed<'a> {
-    pub pool_id: PoolId,
     pub vkey: VerifyingKey,
     pub signature: Signature,
     /// The body as sent, byte for byte as received.
     pub wire_bytes: &'a [u8],
 }
 
-/// Why the server could not tell whether a key speaks for a pool: no answer was
-/// reached, so it is not the upload's fault and is worth a retry.
-#[derive(Debug, thiserror::Error)]
-pub enum Undecided {
-    #[error(transparent)]
-    Directory(#[from] DirectoryError),
-}
-
-/// Whether a key speaks for a pool, and what said otherwise. The refusal
-/// carries the reason because the four chain answers are four different things
-/// for the operator to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Speaks {
-    For,
-    Not(Refusal),
-}
-
-/// What refused a key.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Refusal {
-    /// The key is not the pool's cold key, and this authority asked no chain.
-    NotTheColdKey,
-    /// Neither half matched, and this is what the pool's registrations said.
-    Chain(Resolution),
-}
-
-impl std::fmt::Display for Refusal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Refusal::NotTheColdKey => f.write_str("it is not the pool's cold key"),
-            Refusal::Chain(resolution) => write!(f, "{resolution}"),
-        }
+impl Signed<'_> {
+    /// Whose submission this is. The one derivation, so the pool the allowlist
+    /// is checked against, the pool the limiter charges and the pool the object
+    /// is filed under cannot come out three different pools.
+    pub fn pool_id(&self) -> PoolId {
+        PoolId::from_cold_key(&self.vkey)
     }
-}
 
-/// Whether a verification key may speak for a pool. A trait rather than a
-/// function because the Calidus half needs a directory the cold-key half has
-/// no use for.
-pub trait Authority {
-    fn speaks_for(
-        &mut self,
-        pool_id: PoolId,
-        vkey: &VerifyingKey,
-        now: OffsetDateTime,
-    ) -> Result<Speaks, Undecided>;
-}
-
-/// The cold-key half alone, which is what the archive audit runs
-/// (metsuke-4zo.49).
-pub struct ColdKey;
-
-impl Authority for ColdKey {
-    fn speaks_for(
-        &mut self,
-        pool_id: PoolId,
-        vkey: &VerifyingKey,
-        _now: OffsetDateTime,
-    ) -> Result<Speaks, Undecided> {
-        match PoolId::from_cold_key(vkey) == pool_id {
-            true => Ok(Speaks::For),
-            false => Ok(Speaks::Not(Refusal::NotTheColdKey)),
-        }
+    /// Whether the signature stands over the bytes as given. `verify_strict`
+    /// rejects signatures that only pass under malleable or mixed-order-point
+    /// interpretations.
+    pub fn verifies(&self) -> bool {
+        self.vkey
+            .verify_strict(self.wire_bytes, &self.signature)
+            .is_ok()
     }
-}
-
-/// Both halves, cold key first. Which of the two an SPO chose is not something
-/// the upload states, so both are tried.
-pub struct ColdKeyOrCalidus<D: Directory> {
-    keys: CalidusKeys<D>,
-}
-
-impl<D: Directory> ColdKeyOrCalidus<D> {
-    pub fn new(keys: CalidusKeys<D>) -> Self {
-        ColdKeyOrCalidus { keys }
-    }
-}
-
-impl<D: Directory> Authority for ColdKeyOrCalidus<D> {
-    fn speaks_for(
-        &mut self,
-        pool_id: PoolId,
-        vkey: &VerifyingKey,
-        now: OffsetDateTime,
-    ) -> Result<Speaks, Undecided> {
-        if PoolId::from_cold_key(vkey) == pool_id {
-            return Ok(Speaks::For);
-        }
-        let resolution = self.keys.key_for(pool_id, now)?;
-        match resolution {
-            Resolution::Key(registered) if registered == vkey.to_bytes() => Ok(Speaks::For),
-            _ => Ok(Speaks::Not(Refusal::Chain(resolution))),
-        }
-    }
-}
-
-/// Why an upload is not the envelope it claims to be. The ingest path and the
-/// audit report these differently, so the mapping is theirs and the
-/// distinctions are here.
-#[derive(Debug, thiserror::Error)]
-pub enum AuthError {
-    #[error("the presented key does not speak for pool {pool_id}: {refusal}")]
-    UnauthorizedKey { pool_id: PoolId, refusal: Refusal },
-    #[error("signature does not verify over the bytes as given")]
-    BadSignature,
-    #[error("payload inflates past the {max} byte limit")]
-    OversizedPayload { max: u64 },
-    #[error("payload is not an envelope: {reason}")]
-    MalformedPayload { reason: String },
-    /// Kept apart from `MalformedPayload`: the envelope is well formed and
-    /// says which schema it speaks, and that schema is one this build does
-    /// not know.
-    #[error("envelope schema version {found} is not one this build reads")]
-    UnsupportedSchemaVersion { found: u32 },
-    #[error(transparent)]
-    Undecided(#[from] Undecided),
-}
-
-/// Check the key against the pool, then open the envelope: nothing is
-/// decompressed before its signature verifies, which is the ADR-0002 invariant
-/// this order answers to.
-pub fn authenticate(
-    authority: &mut impl Authority,
-    signed: &Signed<'_>,
-    limits: Limits,
-    now: OffsetDateTime,
-) -> Result<Envelope, AuthError> {
-    if let Speaks::Not(refusal) = authority.speaks_for(signed.pool_id, &signed.vkey, now)? {
-        return Err(AuthError::UnauthorizedKey {
-            pool_id: signed.pool_id,
-            refusal,
-        });
-    }
-    envelope::open(&signed.vkey, signed.wire_bytes, &signed.signature, limits).map_err(|error| {
-        match error {
-            envelope::OpenError::Signature(_) => AuthError::BadSignature,
-            envelope::OpenError::TooLarge {
-                max_decompressed_bytes,
-            } => AuthError::OversizedPayload {
-                max: max_decompressed_bytes,
-            },
-            envelope::OpenError::UnsupportedSchemaVersion { found } => {
-                AuthError::UnsupportedSchemaVersion { found }
-            }
-            // Every remaining way to fail is a body no build of the agent
-            // wrote. Listed rather than caught by a wildcard, so a variant
-            // added to `OpenError` has to be placed here deliberately.
-            //
-            // `Container` reaches this through the audit, which opens a stored
-            // object with no ingest check ahead of it (`verify::verify`); the
-            // ingest path refuses a malformed container before `authenticate`.
-            error @ (envelope::OpenError::Container(_)
-            | envelope::OpenError::Decompress(_)
-            | envelope::OpenError::Json(_)
-            | envelope::OpenError::NotUtf8
-            | envelope::OpenError::UnterminatedLine
-            | envelope::OpenError::LineProvenance { .. }
-            | envelope::OpenError::LineStamp { .. }) => AuthError::MalformedPayload {
-                reason: error.to_string(),
-            },
-        }
-    })
 }

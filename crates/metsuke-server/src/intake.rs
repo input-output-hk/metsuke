@@ -1,17 +1,19 @@
 //! The one path an upload takes. `submit` read top to bottom is the check
-//! order; ADR 0002 fixes only what that order must satisfy.
+//! order, and there are three checks: the pool is allowlisted, the traffic is
+//! within its budget, the signature stands.
+//!
+//! Nothing here decompresses and nothing reads a payload. The header frame is
+//! plaintext inside the signed bytes, so what an object is filed under comes
+//! out of bytes the signature already covered.
 
-use metsuke_wire::envelope::{
-    Ack, ContainerError, Envelope, PoolId, SCHEMA_VERSION_LINES, SCHEMA_VERSION_SAMPLES, split,
-};
+use metsuke_wire::envelope::{Ack, ContainerError, HeaderError, PoolId, read_header};
 use time::OffsetDateTime;
 
-use crate::archive::{ArchiveError, Store, StoredSubmission};
-use crate::authority::{AuthError, Authority, Refusal, Signed, Undecided, authenticate};
-use crate::calidus::Resolution;
+use crate::archive::{ArchiveError, Kind, ObjectName, Store, StoredSubmission};
+use crate::authority::Signed;
 use crate::config::IngestConfig;
-use crate::index::{Index, IndexError, Reservation};
-use crate::ratelimit::RateLimiter;
+use crate::index::{Index, IndexError};
+use crate::ratelimit::{Charged, RateLimiter};
 
 /// Why the server refused. Every variant is the client's fault and its text
 /// is what the client logs, so each names what to change.
@@ -31,34 +33,20 @@ pub enum Rejection {
         max: u32,
         window_secs: u64,
     },
-    #[error("the presented key does not speak for pool {pool_id}")]
-    UnauthorizedKey { pool_id: PoolId, refusal: Refusal },
-    /// Separate from `UnauthorizedKey` because it says nothing about the key:
-    /// the server declined to read the pool's registrations at all.
-    #[error(
-        "more than {max} Calidus registrations scope pool {pool_id}; get in touch to resolve it"
-    )]
-    TooManyRegistrations { pool_id: PoolId, max: u32 },
+    /// Separate from `RateLimited` because it says nothing about this pool:
+    /// every pool together filled the window, and the fix is not the client's.
+    #[error("the server is over its limit of {max} uploads per {window_secs}s")]
+    ServerBusy { max: u32, window_secs: u64 },
     #[error("signature does not verify over the body as received")]
     BadSignature,
-    #[error("payload inflates past the {max} byte limit")]
-    OversizedPayload { max: u64 },
-    #[error("payload is not a valid envelope: {reason}")]
-    MalformedPayload { reason: String },
-    #[error(
-        "envelope schema version {found}, server speaks \
-         v{SCHEMA_VERSION_SAMPLES} and v{SCHEMA_VERSION_LINES}"
-    )]
-    UnsupportedSchema { found: u32 },
-    #[error("envelope is for pool {found}, submitted as {submitted}")]
-    PoolIdMismatch { submitted: PoolId, found: PoolId },
-    #[error("timestamp {timestamp} is more than {max_skew_secs}s from server time")]
-    TimestampOutOfWindow {
-        timestamp: OffsetDateTime,
-        max_skew_secs: u64,
-    },
-    #[error("counter {found} does not advance past the accepted {last}")]
-    ReplayedCounter { found: u64, last: u64 },
+    /// The signature stands, so these bytes are the pool's — and its header
+    /// frame is not one this build can read a name out of.
+    #[error("header frame does not read: {0}")]
+    UnreadableHeader(#[from] HeaderError),
+    /// Not schema gating: an accepted batch is filed under what it carries, and
+    /// a version this build has no name for has no object key to be filed at.
+    #[error("nothing here files a schema v{schema_version} batch")]
+    UnnameableKind { schema_version: u32 },
 }
 
 /// A submission the server could not process. `Rejected` is the client's
@@ -68,46 +56,31 @@ pub enum Rejection {
 pub enum IngestError {
     #[error(transparent)]
     Rejected(#[from] Rejection),
-    #[error("counter state unavailable: {0}")]
-    CounterState(#[from] IndexError),
+    #[error("index unavailable: {0}")]
+    Index(#[from] IndexError),
     #[error("archive unavailable: {0}")]
     Archive(#[from] ArchiveError),
-    #[error("{0}")]
-    Undecided(#[from] Undecided),
 }
 
-impl IngestError {
-    /// What the log line says and the answer does not. Which chain state
-    /// refused a key is a different fix per state for the operator, and every
-    /// one of them is on chain — but nothing asked for a client to learn it
-    /// from a 403.
-    pub fn withheld(&self) -> Option<String> {
-        match self {
-            IngestError::Rejected(Rejection::UnauthorizedKey { refusal, .. }) => {
-                Some(refusal.to_string())
-            }
-            _ => None,
-        }
-    }
-}
-
-pub struct Intake<A: Store, K: Authority> {
+pub struct Intake<A: Store> {
     config: IngestConfig,
     index: Index,
     limiter: RateLimiter,
     archive: A,
-    authority: K,
 }
 
-impl<A: Store, K: Authority> Intake<A, K> {
-    pub fn new(config: IngestConfig, index: Index, archive: A, authority: K) -> Self {
-        let limiter = RateLimiter::new(config.rate_limit_uploads, config.rate_limit_window_secs);
+impl<A: Store> Intake<A> {
+    pub fn new(config: IngestConfig, index: Index, archive: A) -> Self {
+        let limiter = RateLimiter::new(
+            config.rate_limit_uploads,
+            config.rate_limit_uploads_total,
+            config.rate_limit_window_secs,
+        );
         Intake {
             config,
             index,
             limiter,
             archive,
-            authority,
         }
     }
 
@@ -131,9 +104,10 @@ impl<A: Store, K: Authority> Intake<A, K> {
     }
 
     /// Run one upload through the chain. `now` is the server clock,
-    /// taken once so every check in one upload judges the same instant.
+    /// taken once so every check in one upload judges the same instant and the
+    /// object is stamped with what the limiter charged.
     pub fn submit(&mut self, signed: &Signed<'_>, now: OffsetDateTime) -> Result<Ack, IngestError> {
-        let pool_id = signed.pool_id;
+        let pool_id = signed.pool_id();
         if signed.wire_bytes.len() as u64 > self.config.max_body_bytes.get() {
             return Err(Rejection::OversizedBody {
                 found: signed.wire_bytes.len(),
@@ -144,93 +118,61 @@ impl<A: Store, K: Authority> Intake<A, K> {
         // Before the allowlist, the limiter and the key: whether these bytes
         // are a submission at all costs eight bytes to answer, and every check
         // after this one costs more.
-        split(signed.wire_bytes, self.config.max_header_bytes.get())
+        metsuke_wire::envelope::split(signed.wire_bytes, self.config.max_header_bytes.get())
             .map_err(Rejection::NotASubmission)?;
         if !self.config.allowlist.contains_key(&pool_id) {
             return Err(Rejection::UnknownPool { pool_id }.into());
         }
-        if !self.limiter.allow(pool_id, now) {
-            return Err(Rejection::RateLimited {
-                pool_id,
-                max: self.config.rate_limit_uploads.get(),
-                window_secs: self.config.rate_limit_window_secs.get(),
-            }
-            .into());
-        }
-        let envelope = authenticate(&mut self.authority, signed, self.config.limits(), now)
-            .map_err(|error| match error {
-                AuthError::UnauthorizedKey { pool_id, refusal } => match refusal {
-                    Refusal::Chain(Resolution::TooMany { max }) => {
-                        IngestError::from(Rejection::TooManyRegistrations { pool_id, max })
-                    }
-                    refusal => IngestError::from(Rejection::UnauthorizedKey { pool_id, refusal }),
-                },
-                AuthError::BadSignature => Rejection::BadSignature.into(),
-                AuthError::OversizedPayload { max } => Rejection::OversizedPayload { max }.into(),
-                AuthError::MalformedPayload { reason } => {
-                    Rejection::MalformedPayload { reason }.into()
-                }
-                AuthError::UnsupportedSchemaVersion { found } => {
-                    Rejection::UnsupportedSchema { found }.into()
-                }
-                AuthError::Undecided(error) => error.into(),
-            })?;
-        self.accept(signed, envelope, now)
-    }
-
-    /// The post-decompression half: what the signed payload itself claims
-    /// must hold before the bytes are archived.
-    fn accept(
-        &mut self,
-        signed: &Signed<'_>,
-        envelope: Envelope,
-        now: OffsetDateTime,
-    ) -> Result<Ack, IngestError> {
-        // No schema check here: `open` returns only an envelope whose version
-        // this build reads and whose payload shape agrees with it.
-        if envelope.pool_id != signed.pool_id {
-            return Err(Rejection::PoolIdMismatch {
-                submitted: signed.pool_id,
-                found: envelope.pool_id,
-            }
-            .into());
-        }
-        let skew = (now - envelope.timestamp).abs();
-        if skew > time::Duration::seconds(self.config.max_timestamp_skew_secs.get() as i64) {
-            return Err(Rejection::TimestampOutOfWindow {
-                timestamp: envelope.timestamp,
-                max_skew_secs: self.config.max_timestamp_skew_secs.get(),
-            }
-            .into());
-        }
-        let reserved = match self
-            .index
-            .reserve(envelope.pool_id, envelope.counter, now)?
-        {
-            Reservation::Reserved(reserved) => reserved,
-            Reservation::Replayed { last } => {
-                return Err(Rejection::ReplayedCounter {
-                    found: envelope.counter,
-                    last,
+        match self.limiter.charge(pool_id, now) {
+            Charged::Allowed => (),
+            Charged::PoolIsOver => {
+                return Err(Rejection::RateLimited {
+                    pool_id,
+                    max: self.config.rate_limit_uploads.get(),
+                    window_secs: self.config.rate_limit_window_secs.get(),
                 }
                 .into());
             }
-        };
+            Charged::ServerIsOver => {
+                return Err(Rejection::ServerBusy {
+                    max: self.config.rate_limit_uploads_total.get(),
+                    window_secs: self.config.rate_limit_window_secs.get(),
+                }
+                .into());
+            }
+        }
+        if !signed.verifies() {
+            return Err(Rejection::BadSignature.into());
+        }
+        self.accept(signed, pool_id, now)
+    }
+
+    /// The post-signature half: the batch is the pool's, so what it says about
+    /// itself is what the object is filed under.
+    fn accept(
+        &mut self,
+        signed: &Signed<'_>,
+        pool_id: PoolId,
+        now: OffsetDateTime,
+    ) -> Result<Ack, IngestError> {
+        let header = read_header(signed.wire_bytes, self.config.max_header_bytes.get())
+            .map_err(Rejection::UnreadableHeader)?;
+        let kind = Kind::of(header.schema_version).ok_or(Rejection::UnnameableKind {
+            schema_version: header.schema_version,
+        })?;
+        // The pool comes from the key and the agent from the header: the pool
+        // is what the allowlist admitted, and which of its machines reported is
+        // not something the server has any other account of.
         let stored = StoredSubmission {
-            pool_id: envelope.pool_id,
-            counter: envelope.counter,
-            timestamp: envelope.timestamp,
-            schema_version: envelope.schema_version(),
+            name: ObjectName::stamped(now, pool_id, header.agent_id, kind),
             vkey: signed.vkey,
             signature: signed.signature,
             wire_bytes: signed.wire_bytes,
         };
         self.archive.store(&stored)?;
-        // Indexed through the reservation, which is the write already open:
-        // the row lands with the counter or with neither, so nothing is listed
-        // that a rolled-back store left out of the bucket.
-        reserved.record(&stored.name())?;
-        reserved.commit()?;
+        // Recorded after the store, so nothing is listed that a failed PUT left
+        // out of the bucket.
+        self.index.record(&stored.name)?;
         Ok(Ack {
             latest_version: crate::CLIENT_VERSION.to_string(),
         })

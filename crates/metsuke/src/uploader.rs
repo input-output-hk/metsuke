@@ -6,14 +6,11 @@ use std::time::Duration;
 
 use crate::delivery::SealedBatch;
 use crate::endpoint::UploadUrl;
-use metsuke_wire::envelope::{
-    Ack, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, VerifyingKey,
-};
+use metsuke_wire::envelope::{Ack, HEADER_SIGNATURE, HEADER_VKEY, VerifyingKey};
 use metsuke_wire::{hex, http};
 
 pub struct UploadConfig {
     pub upload_url: UploadUrl,
-    pub pool_id: PoolId,
     /// Whole-request deadline, as bounded by `metsuke_wire::http::agent`.
     pub timeout: Duration,
 }
@@ -35,7 +32,6 @@ pub enum UploadOutcome {
 pub fn upload(config: &UploadConfig, vkey: &VerifyingKey, batch: &SealedBatch) -> UploadOutcome {
     let response = http::agent(config.timeout)
         .post(config.upload_url.as_str())
-        .header(HEADER_POOL_ID, config.pool_id.to_bech32())
         .header(HEADER_VKEY, hex::encode(vkey.as_bytes()))
         .header(HEADER_SIGNATURE, hex::encode(&batch.signature.to_bytes()))
         .header("content-encoding", "zstd")

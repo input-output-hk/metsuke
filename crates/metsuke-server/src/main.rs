@@ -6,15 +6,12 @@
 
 use metsuke_server::applications::{ApplicationsCsvError, Chain, Excluded, Gate, gate, read_codes};
 use metsuke_server::archive::{Bytes, FilesystemArchive, List, Store};
-use metsuke_server::authority::{ColdKey, ColdKeyOrCalidus};
-use metsuke_server::calidus::CalidusKeys;
 use metsuke_server::cli::{ArchiveCommand, Args, ArgsError, Command, GENERATE_ALLOWLIST};
 use metsuke_server::config::{
-    ApplicationsConfig, ArchiveConfig, CalidusConfig, ConfigError, DeveloperConfig, IngestConfig,
-    S3Config, ServerConfig,
+    ApplicationsConfig, ArchiveConfig, ConfigError, DeveloperConfig, IngestConfig, S3Config,
+    ServerConfig,
 };
 use metsuke_server::db::DbError;
-use metsuke_server::dbsync::{DbSync, GenesisError, security_parameter};
 use metsuke_server::developer::Developer;
 use metsuke_server::http;
 use metsuke_server::index::{Index, IndexError};
@@ -23,10 +20,8 @@ use metsuke_server::intake::Intake;
 use metsuke_server::rebuild::{EmptyArchive, RebuildError, RebuiltIndex, rebuild};
 use metsuke_server::s3::{S3Archive, S3Error};
 use metsuke_server::verify::{Audit, AuditError, audit};
-use metsuke_wire::envelope::Limits;
 use metsuke_wire::journal::{ERR, INFO};
 use rusty_s3::Credentials;
-use time::OffsetDateTime;
 
 #[derive(Debug, thiserror::Error)]
 enum Fatal {
@@ -50,8 +45,6 @@ enum Fatal {
     },
     #[error("the developer password {path} is empty, which would authorize anyone")]
     EmptyDeveloperPassword { path: String },
-    #[error(transparent)]
-    Genesis(#[from] GenesisError),
     #[error(transparent)]
     S3(#[from] S3Error),
     #[error("the S3 archive needs AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in the environment")]
@@ -112,7 +105,9 @@ fn run() -> Result<(), Fatal> {
         index_path,
         archive,
         ingest,
-        calidus,
+        // Loaded to prove the section is there and parses; nothing on the
+        // accepted path resolves a key through it any more.
+        calidus: _,
         developer,
         applications,
     } = ServerConfig::from_toml(&text)?;
@@ -126,7 +121,6 @@ fn run() -> Result<(), Fatal> {
     let serving = Serving {
         listen,
         ingest,
-        calidus,
         developer,
     };
     // The archive kind is matched once: pairing it with the subcommand would
@@ -146,14 +140,7 @@ fn run() -> Result<(), Fatal> {
             command,
             serving,
             index,
-            |archive, limits| {
-                report_audit(audit(
-                    archive,
-                    limits,
-                    &mut ColdKey,
-                    OffsetDateTime::now_utc(),
-                )?)
-            },
+            |archive, max_header_bytes| report_audit(audit(archive, max_header_bytes)?),
         ),
     }
 }
@@ -164,7 +151,6 @@ fn run() -> Result<(), Fatal> {
 struct Serving {
     listen: String,
     ingest: IngestConfig,
-    calidus: CalidusConfig,
     developer: DeveloperConfig,
 }
 
@@ -175,7 +161,7 @@ fn dispatch<A: Store + List + Bytes>(
     command: ArchiveCommand,
     serving: Serving,
     mut index: Index,
-    verify_archive: impl FnOnce(&A, Limits) -> Result<(), Fatal>,
+    verify_archive: impl FnOnce(&A, u64) -> Result<(), Fatal>,
 ) -> Result<(), Fatal> {
     match command {
         ArchiveCommand::Serve => serve(archive, serving, index),
@@ -186,7 +172,9 @@ fn dispatch<A: Store + List + Bytes>(
             };
             report_rebuild(rebuild(&archive, &mut index, empty)?)
         }
-        ArchiveCommand::VerifyArchive => verify_archive(&archive, serving.ingest.limits()),
+        ArchiveCommand::VerifyArchive => {
+            verify_archive(&archive, serving.ingest.max_header_bytes.get())
+        }
     }
 }
 
@@ -265,24 +253,7 @@ fn s3_archive(config: &S3Config) -> Result<S3Archive, Fatal> {
 /// The rebuild's findings on stdout: it is the command's output, not a log
 /// line.
 fn report_rebuild(summary: RebuiltIndex) -> Result<(), Fatal> {
-    println!(
-        "rebuilt the index from {} objects across {} pools",
-        summary.objects,
-        summary.pools.len()
-    );
-    for pool in &summary.pools {
-        println!(
-            "{pool_id} counter {counter} at {timestamp} ({state})",
-            pool_id = pool.newest.pool_id,
-            counter = pool.newest.counter,
-            timestamp = pool.newest.timestamp,
-            state = if pool.seeded {
-                "seeded"
-            } else {
-                "already ahead"
-            },
-        );
-    }
+    println!("rebuilt the index from {} objects", summary.objects);
     Ok(())
 }
 
@@ -290,7 +261,6 @@ fn serve<A: Store + Bytes>(archive: A, serving: Serving, index: Index) -> Result
     let Serving {
         listen,
         ingest,
-        calidus,
         developer: credentials,
     } = serving;
     let listen = listen.as_str();
@@ -298,14 +268,6 @@ fn serve<A: Store + Bytes>(archive: A, serving: Serving, index: Index) -> Result
     // answer no developer request, so a credential file only this path needs
     // must not decide whether they run.
     let developer = developer(&credentials)?;
-    // Before the listener: k is what decides which registrations count, and a
-    // server that cannot read it would accept uploads on an unbounded rule.
-    let security_parameter = security_parameter(calidus.shelley_genesis_path.as_path())?;
-    let ttl_secs = calidus.resolution_ttl_secs;
-    let authority = ColdKeyOrCalidus::new(CalidusKeys::new(
-        DbSync::new(calidus, security_parameter),
-        ttl_secs,
-    ));
     // Built from files compiled in, so a broken one is a build that must not
     // reach an operator asking for it.
     let page = instructions::page();
@@ -322,7 +284,7 @@ fn serve<A: Store + Bytes>(archive: A, serving: Serving, index: Index) -> Result
         server.server_addr(),
         http::SUBMIT_PATH,
     );
-    let mut intake = Intake::new(ingest, index, archive, authority);
+    let mut intake = Intake::new(ingest, index, archive);
     match http::serve(&server, &mut intake, &developer, &page)? {}
 }
 

@@ -10,9 +10,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use metsuke_server::index::Index;
-use metsuke_wire::envelope::{
-    Ack, Envelope, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, SigningKey,
-};
+use metsuke_wire::envelope::{Ack, Envelope, HEADER_SIGNATURE, HEADER_VKEY, PoolId, SigningKey};
 use metsuke_wire::hex;
 use time::OffsetDateTime;
 
@@ -21,8 +19,8 @@ use metsuke_server::config::IngestConfig;
 use support::{
     DEVELOPER_PASSWORD, ServerToml, applications_config, applications_toml, developer_config,
     developer_toml_with_rows, envelope_at, example_s3_archive, filesystem_archive, ingest_toml,
-    nonzero_u32, nonzero_u64, other_key, permissive_config, pool_of, seal, server_toml,
-    stored_submission, test_key,
+    nonzero_u32, nonzero_u64, object_name, other_key, permissive_config, pool_of, seal,
+    server_toml, stored_submission, test_key,
 };
 
 /// What the S3 archive reads its credentials from. Passed to every spawn, so
@@ -120,17 +118,15 @@ impl Server {
     fn post(&self, key: &SigningKey, envelope: &Envelope) -> (u16, String) {
         let (wire_bytes, signature) = seal(key, envelope);
         self.post_raw(
-            &pool_of(key).to_bech32(),
             &hex::encode(key.verifying_key().as_bytes()),
             &hex::encode(&signature.to_bytes()),
             wire_bytes,
         )
     }
 
-    fn post_raw(&self, pool_id: &str, vkey: &str, signature: &str, body: Vec<u8>) -> (u16, String) {
+    fn post_raw(&self, vkey: &str, signature: &str, body: Vec<u8>) -> (u16, String) {
         let mut response = agent()
             .post(&self.url)
-            .header(HEADER_POOL_ID, pool_id)
             .header(HEADER_VKEY, vkey)
             .header(HEADER_SIGNATURE, signature)
             .content_type("application/json")
@@ -351,15 +347,8 @@ fn a_sealed_batch_is_acked_and_archived_byte_for_byte() {
     let ack: Ack = serde_json::from_str(&body).unwrap();
     assert_eq!(ack.latest_version, metsuke_server::CLIENT_VERSION);
 
-    let (wire_bytes, signature) = seal(&key, &envelope);
-    let stored = stored_submission(
-        &key,
-        envelope.counter,
-        envelope.timestamp,
-        signature,
-        &wire_bytes,
-    );
-    let object = server.archive_root().join(stored.object_key());
+    let (wire_bytes, _) = seal(&key, &envelope);
+    let object = server.archive_root().join(only_object_key(&server));
     assert_eq!(
         std::fs::read(&object).unwrap(),
         wire_bytes,
@@ -367,17 +356,18 @@ fn a_sealed_batch_is_acked_and_archived_byte_for_byte() {
     );
 }
 
-/// The counter is what makes a resent upload detectable, and the client's own
-/// retry looks exactly like the attack.
+/// A client that resent because it never saw the ack gets both batches stored:
+/// nothing here refuses a body for having been seen before, and the ids differ.
 #[test]
-fn the_same_batch_twice_is_refused_the_second_time() {
+fn a_resent_batch_is_stored_again_rather_than_refused() {
     let key = test_key();
     let server = Server::start(&[pool_of(&key)]);
     let envelope = envelope_now(&key, 7);
     assert_eq!(server.post(&key, &envelope).0, 200);
     let (status, reason) = server.post(&key, &envelope);
-    assert_eq!(status, 400, "{reason}");
-    assert!(reason.contains("does not advance"), "got: {reason}");
+    assert_eq!(status, 200, "{reason}");
+    let page = listing(&server, metsuke_server::http::SUBMISSIONS_PATH);
+    assert_eq!(page["submissions"].as_array().unwrap().len(), 2);
 }
 
 #[test]
@@ -435,21 +425,6 @@ fn an_unwritable_archive_answers_503() {
     });
     let (status, reason) = server.post(&key, &envelope_now(&key, 1));
     assert_eq!(status, 503, "{reason}");
-}
-
-/// A counter spent on a submission the archive refused would lock the pool
-/// out of retrying it.
-#[test]
-fn a_failed_store_leaves_the_counter_unspent() {
-    let key = test_key();
-    let server = Server::start_with(&[pool_of(&key)], |config, dir| {
-        let path = dir.join("archive-is-a-file");
-        std::fs::write(&path, b"not a directory").unwrap();
-        config.archive = filesystem_archive(&path);
-    });
-    assert_eq!(server.post(&key, &envelope_now(&key, 1)).0, 503);
-    // Same counter, and the only reason it can still fail is the archive.
-    assert_eq!(server.post(&key, &envelope_now(&key, 1)).0, 503);
 }
 
 /// An S3 endpoint that refuses every request, standing in for a bucket the
@@ -595,20 +570,25 @@ fn an_s3_archive_without_credentials_exits_nonzero_naming_them() {
 }
 
 #[test]
-fn rebuild_index_restores_the_counter_state_from_the_archive() {
+fn rebuild_index_restores_the_listing_from_the_archive() {
     let key = test_key();
     let mut server = Server::start(&[pool_of(&key)]);
     assert_eq!(server.post(&key, &envelope_now(&key, 7)).0, 200);
+    let stored = only_object_key(&server);
     server.stop();
     std::fs::remove_file(server.index_path()).unwrap();
 
     let summary = server.rebuild_index();
-    assert!(
-        summary.contains("1 objects") && summary.contains(&pool_of(&key).to_bech32()),
-        "got: {summary}"
-    );
+    assert!(summary.contains("1 objects"), "got: {summary}");
     let index = Index::open(&server.index_path()).unwrap();
-    assert_eq!(index.last_counter(pool_of(&key)).unwrap(), Some(7));
+    let rows: Vec<String> = index
+        .submissions("", "", nonzero_u32(10))
+        .unwrap()
+        .objects
+        .iter()
+        .map(metsuke_server::archive::ObjectName::to_key)
+        .collect();
+    assert_eq!(rows, vec![stored]);
 }
 
 /// Refused as misplaced, not as unknown: the usage text carries the flag name
@@ -688,7 +668,7 @@ fn a_request_without_the_headers_is_refused_naming_the_first_missing_one() {
             .body_mut()
             .read_to_string()
             .unwrap()
-            .contains(HEADER_POOL_ID)
+            .contains(HEADER_VKEY)
     );
 }
 
@@ -791,9 +771,9 @@ fn a_wrong_developer_password_is_refused_on_both_routes() {
     }
 }
 
-/// The listing answers from the index, filtered as the request asked. Two
-/// pools upload; a prefix names one of them and `after` pages past its first
-/// object.
+/// The listing answers from the index, filtered as the request asked. The key
+/// is time-major, so a prefix names a day and `after` is the sync cursor: two
+/// pools upload, and one page carries all of them in receipt order.
 #[test]
 fn the_listing_answers_the_index_filtered_by_prefix_and_after() {
     let one = test_key();
@@ -804,11 +784,21 @@ fn the_listing_answers_the_index_filtered_by_prefix_and_after() {
     }
 
     let whole = listing(&server, metsuke_server::http::SUBMISSIONS_PATH);
-    assert_eq!(whole["submissions"].as_array().unwrap().len(), 3);
+    let keys: Vec<String> = whole["submissions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|submission| submission["key"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(keys.len(), 3, "got: {keys:?}");
     assert_eq!(whole["truncated"], false);
 
-    let prefix = format!("v1/{}/", pool_of(&one));
-    let mine = listing(
+    // The day the server received them, which every one of the three shares.
+    let prefix = keys[0]
+        .rsplit_once('/')
+        .map(|(folder, _)| format!("{folder}/"))
+        .expect("an object key names a day folder");
+    let today = listing(
         &server,
         &format!(
             "{}?prefix={}",
@@ -816,14 +806,7 @@ fn the_listing_answers_the_index_filtered_by_prefix_and_after() {
             urlencoded(&prefix)
         ),
     );
-    let keys: Vec<String> = mine["submissions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|submission| submission["key"].as_str().unwrap().to_string())
-        .collect();
-    assert_eq!(keys.len(), 2, "got: {keys:?}");
-    assert!(keys.iter().all(|key| key.starts_with(&prefix)), "{keys:?}");
+    assert_eq!(today["submissions"].as_array().unwrap().len(), 3);
 
     let after = listing(
         &server,
@@ -831,7 +814,7 @@ fn the_listing_answers_the_index_filtered_by_prefix_and_after() {
             "{}?prefix={}&after={}",
             metsuke_server::http::SUBMISSIONS_PATH,
             urlencoded(&prefix),
-            urlencoded(&keys[0])
+            urlencoded(&keys[1])
         ),
     );
     assert_eq!(
@@ -841,7 +824,8 @@ fn the_listing_answers_the_index_filtered_by_prefix_and_after() {
             .iter()
             .map(|submission| submission["key"].as_str().unwrap().to_string())
             .collect::<Vec<_>>(),
-        vec![keys[1].clone()]
+        vec![keys[2].clone()],
+        "the cursor key itself is behind the page it names"
     );
 }
 
@@ -915,15 +899,8 @@ fn an_object_downloads_byte_for_byte() {
     let server = Server::start(&[pool_of(&key)]);
     let envelope = envelope_now(&key, 5);
     assert_eq!(server.post(&key, &envelope).0, 200);
-    let (wire_bytes, signature) = seal(&key, &envelope);
-    let object_key = stored_submission(
-        &key,
-        envelope.counter,
-        envelope.timestamp,
-        signature,
-        &wire_bytes,
-    )
-    .object_key();
+    let (wire_bytes, _) = seal(&key, &envelope);
+    let object_key = only_object_key(&server);
 
     let (status, body, _) = server.pull(&format!(
         "{}?key={}",
@@ -943,8 +920,11 @@ fn an_object_the_archive_does_not_hold_is_not_found() {
     let server = Server::start(&[pool_of(&key)]);
     let never_stored = stored_submission(
         &key,
-        99,
-        OffsetDateTime::from_unix_timestamp(1_755_000_000).unwrap(),
+        object_name(
+            &key,
+            OffsetDateTime::from_unix_timestamp(1_755_000_000).unwrap(),
+            metsuke_server::archive::Kind::Metrics,
+        ),
         seal(&key, &envelope_now(&key, 99)).1,
         b"",
     )
@@ -972,6 +952,16 @@ fn a_download_without_a_key_names_the_field() {
         "got: {}",
         String::from_utf8_lossy(&body)
     );
+}
+
+/// The key of the one object the server has stored. Read off the listing
+/// because the id in it is the server's, stamped at receipt.
+fn only_object_key(server: &Server) -> String {
+    let page = listing(server, metsuke_server::http::SUBMISSIONS_PATH);
+    match page["submissions"].as_array().unwrap().as_slice() {
+        [submission] => submission["key"].as_str().unwrap().to_string(),
+        other => panic!("expected one stored object, got {other:?}"),
+    }
 }
 
 /// One page of the listing, parsed. Authenticated as the configured account,

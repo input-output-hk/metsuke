@@ -140,10 +140,9 @@ in
                 };
                 max_body_bytes = positive;
                 max_header_bytes = positive;
-                max_decompressed_bytes = positive;
                 rate_limit_uploads = positive;
+                rate_limit_uploads_total = positive;
                 rate_limit_window_secs = positive;
-                max_timestamp_skew_secs = positive;
               };
             };
           };

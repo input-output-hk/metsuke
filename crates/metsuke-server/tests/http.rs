@@ -3,7 +3,7 @@
 //! must name what is wrong rather than reach `submit`.
 
 use metsuke_server::http::SubmissionHeaders;
-use metsuke_wire::envelope::{HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY};
+use metsuke_wire::envelope::{HEADER_SIGNATURE, HEADER_VKEY};
 use tiny_http::Header;
 
 mod support;
@@ -14,12 +14,11 @@ fn header(field: &str, value: &str) -> Header {
     Header::from_bytes(field.as_bytes(), value.as_bytes()).unwrap()
 }
 
-/// The three headers a well-formed upload carries.
+/// The two headers a well-formed upload carries.
 fn valid_headers() -> Vec<Header> {
     let key = test_key();
     let (_, signature) = seal(&key, &support::envelope_for(&key, 1));
     vec![
-        header(HEADER_POOL_ID, &pool_of(&key).to_bech32()),
         header(HEADER_VKEY, &hex::encode(key.verifying_key().as_bytes())),
         header(HEADER_SIGNATURE, &hex::encode(&signature.to_bytes())),
     ]
@@ -43,26 +42,30 @@ fn without(field: &'static str) -> Vec<Header> {
 }
 
 #[test]
-fn valid_headers_decode_to_the_claimed_identity() {
+fn valid_headers_decode_to_the_presented_identity() {
     let key = test_key();
     let decoded = SubmissionHeaders::decode(&valid_headers()).unwrap();
-    assert_eq!(decoded.pool_id, pool_of(&key));
+    assert_eq!(
+        decoded.pool_id(),
+        pool_of(&key),
+        "the pool is derived from the key, not sent beside it"
+    );
     assert_eq!(decoded.vkey, key.verifying_key());
     let (wire_bytes, signature) = seal(&key, &support::envelope_for(&key, 1));
     assert_eq!(decoded.signature, signature);
     // Decoded well enough to verify with: the whole point of the layer.
-    metsuke_wire::envelope::open(
-        &decoded.vkey,
-        &wire_bytes,
-        &decoded.signature,
-        support::TEST_LIMITS,
-    )
-    .unwrap();
+    metsuke_wire::envelope::read_header(&wire_bytes, support::MAX_HEADER_BYTES).unwrap();
+    assert!(
+        decoded
+            .vkey
+            .verify_strict(&wire_bytes, &decoded.signature)
+            .is_ok()
+    );
 }
 
 #[test]
 fn a_missing_header_names_it() {
-    for field in [HEADER_POOL_ID, HEADER_VKEY, HEADER_SIGNATURE] {
+    for field in [HEADER_VKEY, HEADER_SIGNATURE] {
         let error = SubmissionHeaders::decode(&without(field)).unwrap_err();
         assert!(
             error.to_string().contains(field),
@@ -75,7 +78,6 @@ fn a_missing_header_names_it() {
 fn header_names_are_matched_case_insensitively() {
     let key = test_key();
     let headers = vec![
-        header(&HEADER_POOL_ID.to_uppercase(), &pool_of(&key).to_bech32()),
         header(
             &HEADER_VKEY.to_uppercase(),
             &hex::encode(key.verifying_key().as_bytes()),
@@ -86,7 +88,7 @@ fn header_names_are_matched_case_insensitively() {
         ),
     ];
     assert_eq!(
-        SubmissionHeaders::decode(&headers).unwrap().pool_id,
+        SubmissionHeaders::decode(&headers).unwrap().pool_id(),
         pool_of(&key)
     );
 }
@@ -131,12 +133,6 @@ fn uppercase_hex_decodes() {
     ))
     .unwrap();
     assert_eq!(decoded.vkey, key.verifying_key());
-}
-
-#[test]
-fn a_pool_id_that_is_not_bech32_is_refused() {
-    let error = SubmissionHeaders::decode(&with(HEADER_POOL_ID, "pool1nope")).unwrap_err();
-    assert!(error.to_string().contains(HEADER_POOL_ID), "got: {error}");
 }
 
 /// Thirty-two bytes of hex whose y coordinate is on no curve point: the one

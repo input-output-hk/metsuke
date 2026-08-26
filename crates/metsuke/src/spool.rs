@@ -311,7 +311,7 @@ impl Spool {
         std::mem::take(&mut self.uncarriable_since_report)
     }
 
-    /// The next counter (`envelope::Envelope::counter`, ADR 0002), persisted
+    /// The next counter (`envelope::Envelope::counter`), persisted
     /// before it is returned so a value handed out is never handed out again,
     /// across restarts. Both streams draw from it, so one agent's uploads share
     /// one counter.

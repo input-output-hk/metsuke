@@ -230,7 +230,7 @@ proptest! {
 
 // The stamp is what an agent knows before it spools a line, which is the pool
 // and the machine and nothing else: the batch's counter and timestamp are drawn
-// when it is sealed, so they stay in the header (ADR 0002).
+// when it is sealed, so they stay in the header.
 #[test]
 fn a_stamped_line_names_the_pool_and_the_agent() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
@@ -360,6 +360,41 @@ fn the_header_reads_back_without_a_decompressor() {
     assert_eq!(header["schema_version"], SCHEMA_VERSION_SAMPLES);
     assert_eq!(header["pool_id"], env.pool_id.to_bech32());
     assert_eq!(header["counter"], env.counter);
+}
+
+// The same read as the fields a caller acts on, which is what an ingest path
+// files an object by (`envelope::read_header`).
+#[test]
+fn read_header_answers_the_batch_s_own_account_of_itself() {
+    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let env = empty_samples_envelope(&key);
+    let (bytes, _) = envelope::seal(&key, &env, 0).unwrap();
+
+    let header = envelope::read_header(&bytes, TEST_LIMITS.max_header_bytes).unwrap();
+
+    assert_eq!(header.schema_version, SCHEMA_VERSION_SAMPLES);
+    assert_eq!(header.pool_id, env.pool_id);
+    assert_eq!(header.agent_id, env.agent_id);
+    assert_eq!(header.agent_version, env.agent_version);
+    assert_eq!(header.counter, env.counter);
+    assert_eq!(header.timestamp, env.timestamp);
+}
+
+// A header frame that is not a header is its own refusal, told apart from a
+// body that is not a container at all.
+#[test]
+fn read_header_refuses_a_frame_that_is_not_a_header() {
+    let not_a_header = container(b"{}", 2, &[]);
+    assert!(matches!(
+        envelope::read_header(&not_a_header, 4096),
+        Err(envelope::HeaderError::Json(_))
+    ));
+    assert!(matches!(
+        envelope::read_header(b"not a container", 4096),
+        Err(envelope::HeaderError::Container(
+            envelope::ContainerError::NotAContainer
+        ))
+    ));
 }
 
 #[test]

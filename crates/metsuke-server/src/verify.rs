@@ -1,121 +1,66 @@
 //! Re-verify a stored object from nothing but the object: its key, its
 //! metadata and its bytes (ADR 0005). `audit` runs it over a whole bucket.
+//!
+//! Nothing here decompresses either. What ingest filed an object under is what
+//! its signature and its header frame say, so that is what re-deriving the key
+//! checks — the payload is the consumer's to read.
 
-use metsuke_wire::envelope::{Envelope, Limits, PoolId};
-use time::OffsetDateTime;
+use metsuke_wire::envelope::{Header, read_header};
 
-use crate::archive::{ArchiveError, Fetch, FetchedObject, List, ObjectName};
-use crate::authority::{AuthError, Authority, Refusal, Signed, Undecided, authenticate};
+use crate::archive::{ArchiveError, Fetch, FetchedObject, Kind, List, ObjectName};
+use crate::authority::Signed;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyError {
-    #[error("{key}: the stored key does not speak for pool {pool_id}: {refusal}")]
-    UnauthorizedKey {
-        key: String,
-        pool_id: PoolId,
-        refusal: Refusal,
-    },
-    /// Not a finding about the object: nothing was decided about it.
-    #[error(transparent)]
-    Undecided(#[from] Undecided),
     #[error("{key}: the signature does not verify over the stored bytes")]
     BadSignature { key: String },
-    #[error("{key}: the payload is not a valid envelope: {reason}")]
-    MalformedPayload { key: String, reason: String },
-    /// A finding about the object, not about ingest policy: ADR 0005 asks an
-    /// archived object to stay verifiable, so what this build can parse is the
-    /// only bound audit applies.
-    #[error("{key}: the payload declares schema version {found}, which this build does not read")]
-    UnsupportedSchemaVersion { key: String, found: u32 },
-    #[error("{key}: the payload inflates past the {max} byte limit")]
-    OversizedPayload { key: String, max: u64 },
-    #[error("{key}: metadata says {field} is {stored}, the signed payload says {signed}")]
-    Disagrees {
-        key: String,
-        field: &'static str,
-        stored: String,
-        signed: String,
-    },
-    #[error("{key}: the payload inside belongs at {expected}")]
+    #[error("{key}: the header frame does not read: {reason}")]
+    UnreadableHeader { key: String, reason: String },
+    #[error("{key}: nothing files a schema v{schema_version} batch")]
+    UnnameableKind { key: String, schema_version: u32 },
+    #[error("{key}: the batch inside belongs at {expected}")]
     Misfiled { key: String, expected: String },
 }
 
-/// Verify one stored object, yielding the envelope it holds.
+/// Verify one stored object, yielding the header frame it carries.
 ///
-/// `authority` is ADR 0003's key check, the same one ingest ran: an object a
-/// pool's Calidus key signed verifies only against an authority that can
-/// resolve it.
-///
-/// The metadata is checked against the payload rather than trusted: a header
-/// that disagrees with the signed bytes is unsigned, so the bytes win and the
-/// disagreement is the finding.
-pub fn verify(
-    object: &FetchedObject,
-    limits: Limits,
-    authority: &mut impl Authority,
-    now: OffsetDateTime,
-) -> Result<Envelope, VerifyError> {
+/// The pool is derived from the stored key, never read off the object: an
+/// object whose bytes another key signed re-derives a different pool and is
+/// reported as misfiled.
+pub fn verify(object: &FetchedObject, max_header_bytes: u64) -> Result<Header, VerifyError> {
     let key = object.name.to_key();
-    let pool_id = object.name.pool_id;
     let signed = Signed {
-        pool_id,
         vkey: object.vkey,
         signature: object.signature,
         wire_bytes: &object.wire_bytes,
     };
-    let envelope = authenticate(authority, &signed, limits, now).map_err(|error| match error {
-        AuthError::UnauthorizedKey { pool_id, refusal } => VerifyError::UnauthorizedKey {
+    if !signed.verifies() {
+        return Err(VerifyError::BadSignature { key });
+    }
+    let header = read_header(&object.wire_bytes, max_header_bytes).map_err(|error| {
+        VerifyError::UnreadableHeader {
             key: key.clone(),
-            pool_id,
-            refusal,
-        },
-        AuthError::BadSignature => VerifyError::BadSignature { key: key.clone() },
-        AuthError::Undecided(error) => error.into(),
-        AuthError::OversizedPayload { max } => VerifyError::OversizedPayload {
-            key: key.clone(),
-            max,
-        },
-        AuthError::MalformedPayload { reason } => VerifyError::MalformedPayload {
-            key: key.clone(),
-            reason,
-        },
-        AuthError::UnsupportedSchemaVersion { found } => VerifyError::UnsupportedSchemaVersion {
-            key: key.clone(),
-            found,
-        },
+            reason: error.to_string(),
+        }
     })?;
-    // The key is `store`'s output, so re-deriving it from the payload checks
-    // the pool, the counter and the timestamp it was filed under in one go.
+    let kind = Kind::of(header.schema_version).ok_or(VerifyError::UnnameableKind {
+        key: key.clone(),
+        schema_version: header.schema_version,
+    })?;
+    // The key is `store`'s output, so re-deriving it checks the pool, the agent
+    // and the kind it was filed under in one go. The id is the key's own, being
+    // the one thing about an object that is not inside it.
     let expected = ObjectName {
-        pool_id: envelope.pool_id,
-        counter: envelope.counter,
-        timestamp: envelope.timestamp,
+        id: object.name.id,
+        pool_id: signed.pool_id(),
+        agent_id: header.agent_id.clone(),
+        kind,
     }
     .to_key();
     if expected != key {
         return Err(VerifyError::Misfiled { key, expected });
     }
-    let disagrees = |field, stored: String, signed: String| VerifyError::Disagrees {
-        key: key.clone(),
-        field,
-        stored,
-        signed,
-    };
-    if envelope.counter != object.metadata_counter {
-        return Err(disagrees(
-            "counter",
-            object.metadata_counter.to_string(),
-            envelope.counter.to_string(),
-        ));
-    }
-    if envelope.schema_version() != object.metadata_schema_version {
-        return Err(disagrees(
-            "schema_version",
-            object.metadata_schema_version.to_string(),
-            envelope.schema_version().to_string(),
-        ));
-    }
-    Ok(envelope)
+    Ok(header)
 }
 
 /// What re-verifying a whole bucket found.
@@ -153,27 +98,14 @@ impl Audit {
 pub enum AuditError {
     #[error(transparent)]
     Archive(#[from] ArchiveError),
-    #[error(transparent)]
-    Undecided(#[from] Undecided),
 }
 
 /// Fetch and re-verify every object in the archive.
 ///
 /// A listing that cannot be read stops the audit — a short listing would
-/// otherwise report a clean bucket it never looked at. So does a key check
-/// that reached no answer: every Calidus pool's objects would be reported as
-/// findings about the corpus when the finding is about the directory. One object
-/// that cannot be read or does not verify stops nothing: the point is to find
-/// all of them.
-///
-/// `now` is read once for the whole run, so one resolution stands for the whole
-/// bucket however long it takes, whatever the TTL says.
-pub fn audit(
-    archive: &(impl List + Fetch),
-    limits: Limits,
-    authority: &mut impl Authority,
-    now: OffsetDateTime,
-) -> Result<Audit, AuditError> {
+/// otherwise report a clean bucket it never looked at. One object that cannot
+/// be read or does not verify stops nothing: the point is to find all of them.
+pub fn audit(archive: &(impl List + Fetch), max_header_bytes: u64) -> Result<Audit, AuditError> {
     let mut verified = 0;
     let mut failures = Vec::new();
     // The whole listing first: fetching inside the visitor would hold the
@@ -184,9 +116,8 @@ pub fn audit(
                 key,
                 reason: error.to_string(),
             }),
-            Ok(object) => match verify(&object, limits, authority, now) {
+            Ok(object) => match verify(&object, max_header_bytes) {
                 Ok(_) => verified += 1,
-                Err(VerifyError::Undecided(error)) => return Err(error.into()),
                 Err(error) => failures.push(error.into()),
             },
         }

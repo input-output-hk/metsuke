@@ -6,7 +6,6 @@
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
 
-use metsuke_wire::envelope::Limits;
 use serde::Deserialize;
 use url::Url;
 
@@ -19,8 +18,8 @@ use crate::applications::Codes;
 pub struct ServerConfig {
     /// `host:port` to bind, plain HTTP (what fronts it: `http`).
     pub listen: String,
-    /// The rebuildable index: replay counters and one row per stored object
-    /// (ADR 0005). Created if absent.
+    /// The rebuildable index: one row per stored object (ADR 0005). Created if
+    /// absent.
     pub index_path: PathBuf,
     pub archive: ArchiveConfig,
     pub ingest: IngestConfig,
@@ -86,10 +85,9 @@ pub struct ApplicationsConfig {
     pub query_timeout_secs: NonZeroU64,
 }
 
-/// The db-sync the Calidus half reads registrations out of, and how long one
-/// resolution stands. No `[applications]`-style `Option`: every serving host
-/// must be able to answer ADR 0003's Calidus half, and a missing section would
-/// silently leave it on the cold key alone.
+/// The db-sync the Calidus half read registrations out of, and how long one
+/// resolution stood. Loaded and unused — ADR 0003 says why and what removes
+/// it.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CalidusConfig {
@@ -198,23 +196,9 @@ pub struct IngestConfig {
     /// Cap on the header frame a submission declares, checked against the
     /// declared length before any of it is read.
     pub max_header_bytes: NonZeroU64,
-    /// Ceiling the decompressor is allowed to inflate to.
-    pub max_decompressed_bytes: NonZeroU64,
     /// Uploads one pool may make per `rate_limit_window_secs`.
     pub rate_limit_uploads: NonZeroU32,
+    /// Uploads every pool together may make in the same window.
+    pub rate_limit_uploads_total: NonZeroU32,
     pub rate_limit_window_secs: NonZeroU64,
-    /// How far an envelope timestamp may sit from the server clock in
-    /// either direction. The ADR-0002 backstop for lost counter state.
-    pub max_timestamp_skew_secs: NonZeroU64,
-}
-
-impl IngestConfig {
-    /// The two bounds `envelope::open` puts on a submission. Paired because no
-    /// caller wants one of them without the other.
-    pub fn limits(&self) -> Limits {
-        Limits {
-            max_header_bytes: self.max_header_bytes.get(),
-            max_decompressed_bytes: self.max_decompressed_bytes.get(),
-        }
-    }
 }
