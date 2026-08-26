@@ -33,8 +33,13 @@ let
       default = null;
     };
 
+  set = lib.filterAttrs (_: value: value != null);
+
+  # `[log]` is a table, so its own unset fields have to be dropped before it is
+  # rendered; `lib.filterAttrs` does not descend.
   configFile = toml.generate "metsuke-config.toml" (
-    lib.filterAttrs (_: value: value != null) cfg.settings
+    set (removeAttrs cfg.settings [ "log" ])
+    // lib.optionalAttrs (cfg.settings.log != null) { log = set cfg.settings.log; }
   );
 in
 {
@@ -79,13 +84,43 @@ in
           sntp_servers = shipped (types.listOf types.str);
           sntp_timeout_secs = shipped types.ints.unsigned;
           spool_path = shipped types.str;
-          spool_max_samples = shipped types.ints.unsigned;
+          spool_max_bytes = shipped types.ints.unsigned;
+          spool_busy_timeout_secs = shipped types.ints.unsigned;
           scrape_timeout_secs = shipped types.ints.unsigned;
           scrape_max_body_bytes = shipped types.ints.unsigned;
           upload_timeout_secs = shipped types.ints.unsigned;
           upload_jitter_max_secs = shipped types.ints.unsigned;
           upload_backoff_max_secs = shipped types.ints.unsigned;
+          upload_batch_max_bytes = shipped types.ints.unsigned;
           compression_level = shipped types.int;
+
+          log = mkOption {
+            description = ''
+              Trace-line collection. Setting it opens the unit up by what
+              reading a journal takes, which is the privilege ADR 0010 is
+              about and which nix/unit.nix spells out; leaving it null leaves
+              the agent under ADR 0007's posture and starts no journalctl.
+            '';
+            default = null;
+            type = types.nullOr (
+              types.submodule {
+                options = {
+                  journal_unit = required types.str;
+                  # Not `shipped`: which journalctl exists is this module's to
+                  # know, and the hardened unit's PATH is not to be relied on.
+                  journalctl_path = mkOption {
+                    type = types.str;
+                    default = "${config.systemd.package}/bin/journalctl";
+                  };
+                  namespace_roots = shipped (types.listOf types.str);
+                  namespaces = shipped (types.listOf types.str);
+                  min_severity = shipped types.str;
+                  log_max_bytes = shipped types.ints.unsigned;
+                  respawn_backoff_secs = shipped types.ints.unsigned;
+                };
+              }
+            );
+          };
         };
       };
     };
@@ -113,6 +148,9 @@ in
       // unit.hardening {
         inherit stateDirectory;
         addressFamilies = unit.agentAddressFamilies;
+        # The whole privilege delta of ADR 0010, and only for an operator who
+        # asked for trace lines.
+        readsTheJournal = cfg.settings.log != null;
       };
     };
 

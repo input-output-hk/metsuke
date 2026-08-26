@@ -9,15 +9,16 @@ use metsuke_server::config::IngestConfig;
 use metsuke_server::http::status_for;
 use metsuke_server::index::Index;
 use metsuke_server::intake::{IngestError, Intake, Rejection};
-use metsuke_wire::envelope::{Envelope, PoolId, SCHEMA_VERSION, SigningKey};
+use metsuke_wire::envelope::{Envelope, Payload, PoolId, SCHEMA_VERSION_LINES, SigningKey};
 use time::OffsetDateTime;
 
 mod support;
 use support::{
     CannedDirectory, FailingArchive, TEST_MAX_REGISTRATIONS, TEST_TTL_SECS, UnavailableDirectory,
-    calidus_authority, calidus_key, envelope_at, envelope_for, index_store, nonzero_u32,
-    nonzero_u64, other_key, permissive_config, pool_of, registered_pool, registration,
-    rotated_calidus_key, seal, stored_submission, submission, test_key, test_now,
+    calidus_authority, calidus_key, envelope_at, envelope_carrying, envelope_for, index_store,
+    lines_envelope_at, nonzero_u32, nonzero_u64, other_key, permissive_config, pool_of,
+    registered_pool, registration, rotated_calidus_key, seal, stored_submission, submission,
+    test_key, test_now, test_sample,
 };
 
 /// An intake wired to a temporary directory and database, ready to submit
@@ -48,6 +49,21 @@ fn submit(
     let (body, signature) = seal(key, envelope);
     intake.submit(
         &submission(key.verifying_key(), envelope.pool_id, signature, &body),
+        test_now(),
+    )
+}
+
+/// A body no `Envelope` can produce, sealed the way a client would seal one.
+fn submit_json(
+    intake: &mut Intake<FilesystemArchive, ColdKey>,
+    key: &SigningKey,
+    body: serde_json::Value,
+) -> Result<metsuke_wire::envelope::Ack, IngestError> {
+    use ed25519_dalek::Signer;
+    let bytes = zstd::encode_all(body.to_string().as_bytes(), 0).unwrap();
+    let signature = key.sign(&bytes);
+    intake.submit(
+        &submission(key.verifying_key(), pool_of(key), signature, &bytes),
         test_now(),
     )
 }
@@ -223,8 +239,14 @@ fn payload_over_the_decompression_ceiling_is_rejected() {
         ..permissive_config(&[pool_of(&key)])
     };
     let (mut intake, _dir) = intake_with(config);
-    let mut envelope = envelope_for(&key, 1);
-    envelope.samples = std::iter::repeat_n(envelope.samples[0].clone(), 1000).collect();
+    let envelope = envelope_carrying(
+        &key,
+        1,
+        test_now(),
+        Payload::Samples {
+            samples: std::iter::repeat_n(test_sample(test_now()), 1000).collect(),
+        },
+    );
 
     let error = submit(&mut intake, &key, &envelope).unwrap_err();
 
@@ -304,21 +326,81 @@ fn envelope_for_another_pool_is_rejected() {
     );
 }
 
-// A future schema (ADR 0001 reserves v2 for the log-based payload) is not
-// silently parsed as v1.
+// A schema this build does not speak is not silently parsed as one it does.
+// The body is hand-built: no `Envelope` can be constructed carrying a version
+// its payload does not have, which is the point.
 #[test]
 fn unsupported_schema_version_is_rejected() {
     let key = test_key();
     let (mut intake, _dir) = intake_for(&[pool_of(&key)]);
-    let mut envelope = envelope_for(&key, 1);
-    envelope.schema_version = SCHEMA_VERSION + 1;
+    let unknown = SCHEMA_VERSION_LINES + 1;
+    let body = serde_json::json!({
+        "schema_version": unknown,
+        "pool_id": pool_of(&key).to_bech32(),
+        "agent_version": "0.1.0",
+        "counter": 1,
+        "timestamp": "2025-08-12T12:00:00Z",
+        "spans": [],
+    });
 
-    let error = submit(&mut intake, &key, &envelope).unwrap_err();
+    let error = submit_json(&mut intake, &key, body).unwrap_err();
 
     assert!(
-        matches!(rejection(error), Rejection::UnsupportedSchema { .. }),
-        "expected the schema check to reject"
+        matches!(rejection(error), Rejection::UnsupportedSchema { found } if found == unknown),
+        "expected the schema check to name the version"
     );
+}
+
+// An envelope whose declared version and payload shape disagree is neither of
+// the two schemas, so it is malformed rather than unsupported.
+#[test]
+fn a_version_contradicting_its_payload_is_malformed() {
+    let key = test_key();
+    let (mut intake, _dir) = intake_for(&[pool_of(&key)]);
+    let body = serde_json::json!({
+        "schema_version": SCHEMA_VERSION_LINES,
+        "pool_id": pool_of(&key).to_bech32(),
+        "agent_version": "0.1.0",
+        "counter": 1,
+        "timestamp": "2025-08-12T12:00:00Z",
+        "samples": [],
+    });
+
+    let error = submit_json(&mut intake, &key, body).unwrap_err();
+
+    assert!(
+        matches!(rejection(error), Rejection::MalformedPayload { .. }),
+        "expected a self-contradicting envelope to read as malformed"
+    );
+}
+
+// The trace-line schema goes through the same chain and is archived under the
+// version it declares: the developers' data arrives by the path the samples
+// already take (ADR 0005).
+#[test]
+fn a_trace_line_upload_is_accepted_and_archived() {
+    let key = test_key();
+    let (mut intake, dir) = intake_for(&[pool_of(&key)]);
+    let lines =
+        vec![r#"{"at":"2026-08-25T18:19:41.024688522Z","ns":"x","sev":"Info"}"#.to_string()];
+    let envelope = lines_envelope_at(&key, 1, test_now(), lines);
+    assert_eq!(envelope.schema_version(), SCHEMA_VERSION_LINES);
+    let (body, signature) = seal(&key, &envelope);
+
+    let ack = intake
+        .submit(
+            &submission(key.verifying_key(), envelope.pool_id, signature, &body),
+            test_now(),
+        )
+        .unwrap();
+
+    assert_eq!(ack.latest_version, metsuke_server::CLIENT_VERSION);
+    let key_path = stored_submission(&key, envelope.counter, envelope.timestamp, signature, &body)
+        .object_key();
+    let stored = std::fs::read(dir.path().join("archive").join(&key_path)).unwrap();
+    assert_eq!(stored, body, "archived object must be the received bytes");
+    let listing = intake.index().submissions("", "", nonzero_u32(10)).unwrap();
+    assert_eq!(listing.objects.len(), 1);
 }
 
 // The timestamp backstop: too far from server time in either direction.

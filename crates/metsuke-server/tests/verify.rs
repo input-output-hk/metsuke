@@ -26,7 +26,7 @@ fn object_of(signer: &SigningKey, envelope: &Envelope) -> FetchedObject {
         },
         vkey: signer.verifying_key(),
         signature,
-        metadata_schema_version: envelope.schema_version,
+        metadata_schema_version: envelope.schema_version(),
         metadata_counter: envelope.counter,
         wire_bytes,
     }

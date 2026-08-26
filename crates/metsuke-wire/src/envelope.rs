@@ -1,7 +1,7 @@
-//! Envelope schema v1 and its sealed wire form: JSON, zstd compressed, raw
-//! detached Ed25519 over the compressed bytes (ADR 0001). `seal` and `open`
-//! are the whole interface, so verify-before-decompress (ADR 0002) is the
-//! only expressible call sequence.
+//! Envelope schemas and their sealed wire form: a JSON header line, then the
+//! payload's own lines, zstd compressed, raw detached Ed25519 over the
+//! compressed bytes (ADR 0001). `seal` and `open` are the whole interface, so
+//! verify-before-decompress (ADR 0002) is the only expressible call sequence.
 
 use std::io::Read;
 
@@ -10,9 +10,10 @@ use time::OffsetDateTime;
 
 pub use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 
-/// Envelope schema version emitted by this crate. v2 (log-based schema)
-/// bumps this without breaking v1 clients.
-pub const SCHEMA_VERSION: u32 = 1;
+/// The schema versions this crate speaks, one per `Payload` variant; which one
+/// an envelope carries is `Payload::schema_version`.
+pub const SCHEMA_VERSION_SAMPLES: u32 = 1;
+pub const SCHEMA_VERSION_LINES: u32 = 2;
 
 /// Upload request headers (ADR 0001): pool id as bech32, verification key
 /// and detached signature as lowercase hex over the body bytes as sent.
@@ -102,19 +103,101 @@ impl<'de> Deserialize<'de> for PoolId {
     }
 }
 
+/// What one batch carries, and therefore which schema version it is. A
+/// version names a payload shape, so an envelope never states the two apart.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Payload {
+    Samples { samples: Vec<Sample> },
+    Lines { lines: Vec<String> },
+}
+
+impl Payload {
+    pub fn schema_version(&self) -> u32 {
+        match self {
+            Payload::Samples { .. } => SCHEMA_VERSION_SAMPLES,
+            Payload::Lines { .. } => SCHEMA_VERSION_LINES,
+        }
+    }
+}
+
 /// One signed upload batch. The replay `counter` and `timestamp` live here,
 /// inside the signed payload (ADR 0002).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `schema_version` and `payload` are private and only `new` sets them: an
+/// envelope in hand always declares the version its payload has.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Envelope {
-    pub schema_version: u32,
+    schema_version: u32,
     pub pool_id: PoolId,
     pub agent_version: String,
     /// Per-pool monotonic replay counter.
     pub counter: u64,
     /// Batch creation time, RFC 3339 UTC.
-    #[serde(with = "time::serde::rfc3339")]
     pub timestamp: OffsetDateTime,
-    pub samples: Vec<Sample>,
+    payload: Payload,
+}
+
+/// The body's first line, and the only JSON either version parses.
+///
+/// v1 carries its samples here, because that is where v1 put them and v1's
+/// bytes are frozen; v2 leaves the key out and writes its trace lines after
+/// this line instead. `serde_json` escapes every newline it meets, so a
+/// serialized header is one line whatever it holds — which is what makes a v1
+/// body, one JSON object and nothing else, a header line with no lines after
+/// it.
+#[derive(Serialize, Deserialize)]
+struct HeaderLine {
+    schema_version: u32,
+    pool_id: PoolId,
+    agent_version: String,
+    counter: u64,
+    #[serde(with = "time::serde::rfc3339")]
+    timestamp: OffsetDateTime,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    samples: Option<Vec<Sample>>,
+}
+
+/// Which of this build's two schemas a declared version names.
+enum Schema {
+    Samples,
+    Lines,
+}
+
+impl Schema {
+    fn of(version: u32) -> Result<Schema, OpenError> {
+        match version {
+            SCHEMA_VERSION_SAMPLES => Ok(Schema::Samples),
+            SCHEMA_VERSION_LINES => Ok(Schema::Lines),
+            found => Err(OpenError::UnsupportedSchemaVersion { found }),
+        }
+    }
+}
+
+impl Envelope {
+    pub fn new(
+        pool_id: PoolId,
+        agent_version: String,
+        counter: u64,
+        timestamp: OffsetDateTime,
+        payload: Payload,
+    ) -> Envelope {
+        Envelope {
+            schema_version: payload.schema_version(),
+            pool_id,
+            agent_version,
+            counter,
+            timestamp,
+            payload,
+        }
+    }
+
+    pub fn schema_version(&self) -> u32 {
+        self.schema_version
+    }
+
+    pub fn payload(&self) -> &Payload {
+        &self.payload
+    }
 }
 
 /// One scrape. Every field is nullable: a failed scrape is itself signal.
@@ -143,6 +226,10 @@ pub enum SealError {
     Json(#[from] serde_json::Error),
     #[error("zstd compression failed: {0}")]
     Compress(#[source] std::io::Error),
+    /// The newline is what separates one trace line from the next, so a line
+    /// holding one would open as two under a valid signature.
+    #[error("trace line {index} holds a newline")]
+    LineHoldsNewline { index: usize },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -155,6 +242,46 @@ pub enum OpenError {
     TooLarge { max_decompressed_bytes: u64 },
     #[error("JSON deserialization failed: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("payload is not UTF-8")]
+    NotUtf8,
+    #[error(
+        "envelope schema version {found}, this build speaks \
+         v{SCHEMA_VERSION_SAMPLES} and v{SCHEMA_VERSION_LINES}"
+    )]
+    UnsupportedSchemaVersion { found: u32 },
+    /// The header names a version whose body it does not have, so the envelope
+    /// contradicts itself and neither reading is the sender's.
+    #[error("envelope declares schema v{declared} and carries {found}")]
+    BodyContradictsVersion { declared: u32, found: &'static str },
+}
+
+/// The body `seal` compresses: the header line, then one line per trace line,
+/// as the node emitted it. Public because the agent budgets a batch against
+/// these bytes and the operator page renders them — both want what this build
+/// sends rather than a second measure of it.
+pub fn body(envelope: &Envelope) -> Result<Vec<u8>, SealError> {
+    let header = HeaderLine {
+        schema_version: envelope.schema_version,
+        pool_id: envelope.pool_id,
+        agent_version: envelope.agent_version.clone(),
+        counter: envelope.counter,
+        timestamp: envelope.timestamp,
+        samples: match &envelope.payload {
+            Payload::Samples { samples } => Some(samples.clone()),
+            Payload::Lines { .. } => None,
+        },
+    };
+    let mut body = serde_json::to_vec(&header)?;
+    if let Payload::Lines { lines } = &envelope.payload {
+        for (index, line) in lines.iter().enumerate() {
+            if line.contains('\n') {
+                return Err(SealError::LineHoldsNewline { index });
+            }
+            body.push(b'\n');
+            body.extend_from_slice(line.as_bytes());
+        }
+    }
+    Ok(body)
 }
 
 /// Serialize, compress, and sign an envelope. Returns the wire bytes exactly
@@ -165,15 +292,17 @@ pub fn seal(
     envelope: &Envelope,
     level: i32,
 ) -> Result<(Vec<u8>, Signature), SealError> {
-    for (index, sample) in envelope.samples.iter().enumerate() {
-        if let Some(value) = sample.sync_progress
-            && !value.is_finite()
-        {
-            return Err(SealError::NonFiniteSyncProgress { index, value });
+    if let Payload::Samples { samples } = &envelope.payload {
+        for (index, sample) in samples.iter().enumerate() {
+            if let Some(value) = sample.sync_progress
+                && !value.is_finite()
+            {
+                return Err(SealError::NonFiniteSyncProgress { index, value });
+            }
         }
     }
-    let json = serde_json::to_vec(envelope)?;
-    let wire_bytes = zstd::encode_all(json.as_slice(), level).map_err(SealError::Compress)?;
+    let body = body(envelope)?;
+    let wire_bytes = zstd::encode_all(body.as_slice(), level).map_err(SealError::Compress)?;
     use ed25519_dalek::Signer;
     let signature = key.sign(&wire_bytes);
     Ok((wire_bytes, signature))
@@ -200,19 +329,56 @@ pub fn open(
     // reader stops one byte past the ceiling, so nothing bigger is held.
     let mut reader = decoder.take(max_decompressed_bytes.saturating_add(1));
     let mut chunk = vec![0u8; DECOMPRESS_CHUNK_BYTES];
-    let mut json: Vec<u8> = Vec::new();
+    let mut body: Vec<u8> = Vec::new();
     loop {
         let read = reader.read(&mut chunk).map_err(OpenError::Decompress)?;
         if read == 0 {
             break;
         }
-        json.reserve_exact(read);
-        json.extend_from_slice(&chunk[..read]);
+        body.reserve_exact(read);
+        body.extend_from_slice(&chunk[..read]);
     }
-    if json.len() as u64 > max_decompressed_bytes {
+    if body.len() as u64 > max_decompressed_bytes {
         return Err(OpenError::TooLarge {
             max_decompressed_bytes,
         });
     }
-    Ok(serde_json::from_slice(&json)?)
+    let body = String::from_utf8(body).map_err(|_| OpenError::NotUtf8)?;
+    let mut split = body.split('\n');
+    let header_line = split
+        .next()
+        .expect("splitting on a separator yields at least one part");
+    let lines: Vec<String> = split.map(str::to_string).collect();
+    // The version alone first, so a version this build never spoke is named as
+    // such whatever else its header holds — a v3 that dropped a field every
+    // version so far carries would otherwise report that missing field.
+    let peek: SchemaVersionPeek = serde_json::from_str(header_line)?;
+    let schema = Schema::of(peek.schema_version)?;
+    let header: HeaderLine = serde_json::from_str(header_line)?;
+    let contradicts = |found| OpenError::BodyContradictsVersion {
+        declared: header.schema_version,
+        found,
+    };
+    let payload = match (schema, header.samples) {
+        (Schema::Samples, Some(samples)) if lines.is_empty() => Payload::Samples { samples },
+        (Schema::Samples, Some(_)) => return Err(contradicts("lines after its header")),
+        (Schema::Samples, None) => return Err(contradicts("no samples")),
+        (Schema::Lines, None) => Payload::Lines { lines },
+        (Schema::Lines, Some(_)) => return Err(contradicts("samples in its header")),
+    };
+    // Through `new`, so what comes out declares the version its payload has
+    // rather than the one the header claimed: the match above is what decides
+    // the two agree, and nothing downstream has to take that on trust.
+    Ok(Envelope::new(
+        header.pool_id,
+        header.agent_version,
+        header.counter,
+        header.timestamp,
+        payload,
+    ))
+}
+
+#[derive(Deserialize)]
+struct SchemaVersionPeek {
+    schema_version: u32,
 }

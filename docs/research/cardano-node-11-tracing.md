@@ -14,43 +14,50 @@ As of mid-2026 (post-11.0.1), the legacy iohk-monitoring backend was removed ent
 optional — legacy config keys (`mapBackends`, `hasPrometheus`, etc. from `iohk-monitoring`)
 no longer apply.
 
-Config structure (`TraceOptions*` keys), from trace-dispatcher.md and the New Tracing
-Quickstart doc:
+Config structure: the four per-facet lists the upstream docs show (`TraceOptionSeverity`,
+`TraceOptionDetail`, `TraceOptionLimiter`, `TraceOptionBackend`) are not what the Leios
+prototype's node reads. It reads one `TraceOptions` map keyed by namespace prefix, the
+empty key being the root, with `backends`, `severity`, `detail` and `maxFrequency` as
+that key's fields. The proto-devnet demo config is the worked example, and the node
+echoes the map it actually parsed back out as `Reflection.TracerConfigInfo`, so a
+config's real effect is observable rather than inferred. Namespaces carry no `Node.`
+prefix: the root is `ChainDB`, not `Node.ChainDB`. A namespace the running node has no
+tracer for is reported at startup as `Reflection.TracerConsistencyWarnings` with
+severity Warning and otherwise ignored — the demo config carries several.
 
-```yaml
-TraceOptionSeverity:
-  - ns: ""
-    severity: Notice
-  - ns: Node.ChainDB
-    severity: Info
-
-TraceOptionDetail:
-  - ns: ""
-    detail: DNormal        # DMinimal | DNormal | DDetailed | DMaximum
-
-TraceOptionLimiter:
-  - ns: Node.ChainDB.AddBlockEvent.AddedBlockToQueue
-    limiterName: AddedBlockToQueueLimiter
-    limiterFrequency: 2.0
-
-TraceOptionBackend:
-  - ns: ""
-    backends:
-      - Stdout MachineFormat   # or HumanFormatColoured / HumanFormatUncoloured
-      - EKGBackend
-      - Forwarder               # only if consuming with cardano-tracer
-```
-
-`Stdout MachineFormat` emits structured JSON per trace message to stdout (captured by
-journald under systemd). Namespaces (`ns` field) identify the message type — e.g.
-`Node.ChainDB.AddBlockEvent.AddedToCurrentChain` carries new tip data (block, slot,
-header hash) as part of its payload. No literal sample JSON blob was found in the
-crawled docs (the quickstart guide describes the schema but doesn't reproduce one), so
-the exact `at`/`ns`/`data` field shapes should be confirmed against a running node's
-stdout rather than assumed.
+`Stdout MachineFormat` emits one JSON object per line to stdout (captured by journald
+under systemd), except for the first line, which is the Haskell `show` of
+`NodeConfiguration` printed before the tracing system is up. Field shapes as observed:
+crates/metsuke/tests/fixtures/recordings/leios-node-traces*.log, recorded by
+scripts/record-trace-fixtures.sh. `data.kind` is the per-message discriminator and does
+not always match the last segment of `ns`.
 
 Fallback: if `TraceOptions` aren't fully specified, the node falls back to a hard-coded
 default in `Cardano.Node.Tracing.DefaultTraceConfig`.
+
+Severity is why an SPO cannot get the Leios events by adding a backend alone. Every
+`Consensus.LeiosKernel.*` and `Consensus.LeiosPeer.*` tracer is Info except
+`BlockPointMissing` (Warning) and `DbException` (Error) — the `MetaTrace` instances in
+`cardano-node/src/Cardano/Node/Tracing/Tracers/Consensus.hs`. Info is below the demo
+config's root threshold of Notice, so the demo's per-namespace `severity: Debug`
+overrides are the only reason any of them reach a backend at all: a 40s run with those
+four keys deleted and nothing else changed emitted zero `Consensus.Leios*` lines, and
+the same config with them emits `Consensus.LeiosKernel.Msg` at startup on an idle node.
+`Info` suffices for everything the rewards program asked for; `Debug` is only needed for
+the `LeiosNotify.Remote` / `LeiosFetch.Remote` wire-level namespaces, which nobody asked
+for and which are the loudest. `maxFrequency: 0` means no rate limit; omitting it caps
+the stream silently. Block adoption is two namespaces, not one:
+`ChainDB.AddBlockEvent.AddedToCurrentChain` is Notice and needs no override, while
+`Forge.Loop.AdoptedBlock` is Info in the recordings and needs the same override the
+Leios keys do.
+
+`cardano-node trace-documentation` is not a source for these: it emits 649 namespaces
+and no Leios one among them, because the Leios tracers have `documentFor _ = Nothing`.
+The running node and those two `MetaTrace` instances are the only enumerations.
+
+The eight severity names and their order are `SeverityS` in
+`trace-dispatcher/src/Cardano/Logging/Types.hs` (read at cardano-node 10.1.4). Only
+Debug, Info, Notice and Warning occur in the recordings.
 
 11.0.1 specific changes: `TRACE_DISPATCHER_LOGGING_HOSTNAME` env var added (parity with
 legacy `CARDANO_NODE_LOGGING_HOSTNAME`); `PrometheusSimple` backend robustness improved

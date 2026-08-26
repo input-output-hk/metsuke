@@ -24,20 +24,49 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # sntp_servers = ["time.cloudflare.com:123"]
 # sntp_timeout_secs = 5
 
-# SQLite spool: samples wait here until the server acks them. Oldest rows
-# beyond spool_max_samples are dropped.
+# SQLite spool: samples wait here until the server acks them. Oldest bytes
+# beyond spool_max_bytes are dropped. spool_busy_timeout_secs is how long one
+# write waits for the other connection, which exists only with [log] below.
 # spool_path = "/var/lib/metsuke/spool.sqlite"
-# spool_max_samples = 100000
+# spool_max_bytes = 33554432
+# spool_busy_timeout_secs = 5
 
 # Scrape limits.
 # scrape_timeout_secs = 5
 # scrape_max_body_bytes = 4194304
 
 # Upload limits: request deadline, retry jitter bound after server/network
-# failures, and the clamp on the rejection backoff.
+# failures, and the clamp on the rejection backoff. Set upload_batch_max_bytes
+# to the server's max_decompressed_bytes (contrib/server.example.toml) or
+# under; nothing checks that for you. Why the two bound the same bytes:
+# docs/adr/0010.
 # upload_timeout_secs = 60
 # upload_jitter_max_secs = 300
 # upload_backoff_max_secs = 86400
+# upload_batch_max_bytes = 4194304
 
 # zstd level for the upload body (0 = zstd's default).
 # compression_level = 0
+
+# Trace-line collection, off unless this whole section is present. It reads the
+# node's journal, which the unit has to be allowed to do — the instructions
+# page says which two directives change, and the NixOS module makes both when
+# this section is set (docs/adr/0010). The node also has to be configured to
+# write these traces at all: that step is on the instructions page too.
+#
+# journal_unit and journalctl_path have no default: name your node's unit, and
+# give journalctl's absolute path, because this unit's PATH is not one to
+# resolve a program on.
+#
+# namespaces are prefixes, min_severity is a floor spelled as cardano-node
+# spells it, and namespace_roots is this host's ceiling on namespaces — a
+# namespaces entry outside it is refused at startup. Why the ceiling bounds the
+# one rule and not the other: docs/adr/0010.
+# [log]
+# journal_unit = "cardano-node"
+# journalctl_path = "/usr/bin/journalctl"
+# namespace_roots = ["Consensus.", "ChainDB.", "Forge."]
+# namespaces = ["Consensus.Leios", "ChainDB.AddBlockEvent.AddedToCurrentChain", "Forge.Loop.AdoptedBlock"]
+# min_severity = "Notice"
+# log_max_bytes = 268435456
+# respawn_backoff_secs = 30

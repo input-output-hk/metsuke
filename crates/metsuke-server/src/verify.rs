@@ -1,7 +1,7 @@
 //! Re-verify a stored object from nothing but the object: its key, its
 //! metadata and its bytes (ADR 0005). `audit` runs it over a whole bucket.
 
-use metsuke_wire::envelope::{Envelope, PoolId, SCHEMA_VERSION};
+use metsuke_wire::envelope::{Envelope, PoolId};
 use time::OffsetDateTime;
 
 use crate::archive::{ArchiveError, Fetch, FetchedObject, List, ObjectName};
@@ -20,8 +20,13 @@ pub enum VerifyError {
     Undecided(#[from] Undecided),
     #[error("{key}: the signature does not verify over the stored bytes")]
     BadSignature { key: String },
-    #[error("{key}: the payload is not a schema v{SCHEMA_VERSION} envelope: {reason}")]
+    #[error("{key}: the payload is not a valid envelope: {reason}")]
     MalformedPayload { key: String, reason: String },
+    /// A finding about the object, not about ingest policy: ADR 0005 asks an
+    /// archived object to stay verifiable, so what this build can parse is the
+    /// only bound audit applies.
+    #[error("{key}: the payload declares schema version {found}, which this build does not read")]
+    UnsupportedSchemaVersion { key: String, found: u32 },
     #[error("{key}: the payload inflates past the {max} byte limit")]
     OversizedPayload { key: String, max: u64 },
     #[error("{key}: metadata says {field} is {stored}, the signed payload says {signed}")]
@@ -75,6 +80,12 @@ pub fn verify(
                 key: key.clone(),
                 reason,
             },
+            AuthError::UnsupportedSchemaVersion { found } => {
+                VerifyError::UnsupportedSchemaVersion {
+                    key: key.clone(),
+                    found,
+                }
+            }
         },
     )?;
     // The key is `store`'s output, so re-deriving it from the payload checks
@@ -101,11 +112,11 @@ pub fn verify(
             envelope.counter.to_string(),
         ));
     }
-    if envelope.schema_version != object.metadata_schema_version {
+    if envelope.schema_version() != object.metadata_schema_version {
         return Err(disagrees(
             "schema_version",
             object.metadata_schema_version.to_string(),
-            envelope.schema_version.to_string(),
+            envelope.schema_version().to_string(),
         ));
     }
     Ok(envelope)

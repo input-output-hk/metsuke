@@ -13,7 +13,7 @@ use metsuke_server::config::S3Config;
 use metsuke_server::rebuild::{EmptyArchive, rebuild};
 use metsuke_server::s3::{META_COUNTER, META_SCHEMA_VERSION, META_SIGNATURE, META_VKEY, S3Archive};
 use metsuke_server::verify::{AuditError, audit, verify};
-use metsuke_wire::envelope::SCHEMA_VERSION;
+use metsuke_wire::envelope::SCHEMA_VERSION_SAMPLES;
 use metsuke_wire::hex;
 use rusty_s3::Credentials;
 
@@ -257,7 +257,7 @@ fn the_metadata_headers_carry_what_re_verifying_the_object_needs() {
     assert_eq!(put.header(META_COUNTER), Some(COUNTER.to_string().as_str()));
     assert_eq!(
         put.header(META_SCHEMA_VERSION),
-        Some(SCHEMA_VERSION.to_string().as_str())
+        Some(SCHEMA_VERSION_SAMPLES.to_string().as_str())
     );
 }
 
@@ -696,7 +696,7 @@ fn an_audit_stops_when_the_directory_cannot_answer() {
             pool_id: envelope.pool_id,
             counter: envelope.counter,
             timestamp: envelope.timestamp,
-            schema_version: envelope.schema_version,
+            schema_version: envelope.schema_version(),
             vkey: hot.verifying_key(),
             signature,
             wire_bytes: &wire_bytes,

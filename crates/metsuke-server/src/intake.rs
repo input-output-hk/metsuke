@@ -1,7 +1,7 @@
 //! The one path an upload takes. `submit` read top to bottom is the check
 //! order; ADR 0002 fixes only what that order must satisfy.
 
-use metsuke_wire::envelope::{Ack, Envelope, PoolId, SCHEMA_VERSION};
+use metsuke_wire::envelope::{Ack, Envelope, PoolId, SCHEMA_VERSION_LINES, SCHEMA_VERSION_SAMPLES};
 use time::OffsetDateTime;
 
 use crate::archive::{ArchiveError, Store, StoredSubmission};
@@ -37,9 +37,12 @@ pub enum Rejection {
     BadSignature,
     #[error("payload inflates past the {max} byte limit")]
     OversizedPayload { max: u64 },
-    #[error("payload is not a schema v{SCHEMA_VERSION} envelope: {reason}")]
+    #[error("payload is not a valid envelope: {reason}")]
     MalformedPayload { reason: String },
-    #[error("envelope schema version {found}, server speaks v{SCHEMA_VERSION}")]
+    #[error(
+        "envelope schema version {found}, server speaks \
+         v{SCHEMA_VERSION_SAMPLES} and v{SCHEMA_VERSION_LINES}"
+    )]
     UnsupportedSchema { found: u32 },
     #[error("envelope is for pool {found}, submitted as {submitted}")]
     PoolIdMismatch { submitted: PoolId, found: PoolId },
@@ -159,6 +162,9 @@ impl<A: Store, K: Authority> Intake<A, K> {
             AuthError::BadSignature => Rejection::BadSignature.into(),
             AuthError::OversizedPayload { max } => Rejection::OversizedPayload { max }.into(),
             AuthError::MalformedPayload { reason } => Rejection::MalformedPayload { reason }.into(),
+            AuthError::UnsupportedSchemaVersion { found } => {
+                Rejection::UnsupportedSchema { found }.into()
+            }
             AuthError::Undecided(error) => error.into(),
         })?;
         self.accept(signed, envelope, now)
@@ -172,12 +178,8 @@ impl<A: Store, K: Authority> Intake<A, K> {
         envelope: Envelope,
         now: OffsetDateTime,
     ) -> Result<Ack, IngestError> {
-        if envelope.schema_version != SCHEMA_VERSION {
-            return Err(Rejection::UnsupportedSchema {
-                found: envelope.schema_version,
-            }
-            .into());
-        }
+        // No schema check here: `open` returns only an envelope whose version
+        // this build reads and whose payload shape agrees with it.
         if envelope.pool_id != signed.pool_id {
             return Err(Rejection::PoolIdMismatch {
                 submitted: signed.pool_id,
@@ -210,7 +212,7 @@ impl<A: Store, K: Authority> Intake<A, K> {
             pool_id: envelope.pool_id,
             counter: envelope.counter,
             timestamp: envelope.timestamp,
-            schema_version: envelope.schema_version,
+            schema_version: envelope.schema_version(),
             vkey: signed.vkey,
             signature: signed.signature,
             wire_bytes: signed.wire_bytes,

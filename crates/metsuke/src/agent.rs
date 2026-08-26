@@ -6,8 +6,9 @@
 
 use time::OffsetDateTime;
 
-use crate::delivery::{Delivery, DeliveryError};
+use crate::delivery::{Delivery, DeliveryError, SealedBatch};
 use crate::sampler::{SamplerConfig, sample};
+use crate::spool::UncarriableReport;
 use crate::uploader::{UploadConfig, UploadOutcome, upload};
 use metsuke_wire::envelope::VerifyingKey;
 
@@ -16,6 +17,11 @@ pub struct Agent {
     delivery: Delivery,
     upload: UploadConfig,
     vkey: VerifyingKey,
+    /// Rows the spool's cap dropped since the last report. Accumulated rather
+    /// than logged per row: under sustained overload the drop rate is the
+    /// spool's write rate, and one line each would be the loudest thing in the
+    /// journal.
+    dropped_since_report: u64,
 }
 
 /// Upload-tick failures, split so the log can say whether the server
@@ -44,22 +50,43 @@ impl Agent {
             delivery,
             upload,
             vkey,
+            dropped_since_report: 0,
         }
     }
 
     /// One sample tick: scrape, probe, spool.
     pub fn sample_once(&mut self) -> Result<(), DeliveryError> {
-        self.delivery.push(&sample(&self.sampler))
+        self.dropped_since_report += self.delivery.push(&sample(&self.sampler))?;
+        Ok(())
     }
 
-    /// One upload tick: seal everything outstanding, POST it, and ack the
-    /// sealed rows only on `Acked`. `None` when the spool is empty.
+    /// One upload tick: a batch of samples, then a batch of trace lines,
+    /// each sealed, POSTed and acked only on `Acked`. `None` when both
+    /// streams are empty. The last outcome is what the caller schedules on,
+    /// and a batch that was not accepted ends the tick — backing off on the
+    /// samples and then pressing on with the lines would ignore the answer.
     pub fn upload_once(&mut self) -> Result<Option<UploadOutcome>, UploadError> {
-        let Some(batch) = self
+        let now = OffsetDateTime::now_utc();
+        let taken = self
             .delivery
-            .take_batch(OffsetDateTime::now_utc())
-            .map_err(UploadError::NotAttempted)?
-        else {
+            .take_batch(now)
+            .map_err(UploadError::NotAttempted)?;
+        let samples = self.send(taken)?;
+        if matches!(samples, None | Some(UploadOutcome::Acked(_))) {
+            let taken = self
+                .delivery
+                .take_line_batch(now)
+                .map_err(UploadError::NotAttempted)?;
+            if let Some(lines) = self.send(taken)? {
+                return Ok(Some(lines));
+            }
+        }
+        Ok(samples)
+    }
+
+    /// POST one batch if there is one, acking its rows only on `Acked`.
+    fn send(&mut self, batch: Option<SealedBatch>) -> Result<Option<UploadOutcome>, UploadError> {
+        let Some(batch) = batch else {
             return Ok(None);
         };
         let outcome = upload(&self.upload, &self.vkey, &batch);
@@ -69,5 +96,19 @@ impl Agent {
                 .map_err(UploadError::AckAfterAccept)?;
         }
         Ok(Some(outcome))
+    }
+
+    /// How many rows the spool's cap dropped since this was last asked, and
+    /// zero from here until the next drop.
+    pub fn take_dropped_report(&mut self) -> u64 {
+        std::mem::take(&mut self.dropped_since_report)
+    }
+
+    /// What taking a batch dropped for being uncarriable
+    /// (`delivery::Delivery::take_uncarriable_report`). A separate report from
+    /// `take_dropped_report`: the remedy is a larger
+    /// `upload_batch_max_bytes`, not a faster upload.
+    pub fn take_uncarriable_report(&mut self) -> UncarriableReport {
+        self.delivery.take_uncarriable_report()
     }
 }

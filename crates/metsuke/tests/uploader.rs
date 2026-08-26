@@ -8,7 +8,8 @@ use metsuke::delivery::Delivery;
 use metsuke::spool::{Spool, SpoolConfig};
 use metsuke::uploader::{UploadConfig, UploadOutcome, upload};
 use metsuke_wire::envelope::{
-    self, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, Sample, Signature, VerifyingKey,
+    self, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, Payload, PoolId, Sample, Signature,
+    VerifyingKey,
 };
 use time::OffsetDateTime;
 use wiremock::matchers::{method, path};
@@ -18,17 +19,19 @@ mod support;
 use metsuke_wire::hex;
 use support::test_key;
 
-// Large enough for any test batch; the real limit is server config.
+// Large enough for any test batch; the real limits are the two configs'.
 const TEST_DECOMPRESS_LIMIT: u64 = 64 * 1024 * 1024;
+const UNBOUNDED: u64 = 64 * 1024 * 1024;
 
 fn sealed_test_batch(dir: &tempfile::TempDir) -> metsuke::delivery::SealedBatch {
     let spool = Spool::open(&SpoolConfig {
         path: dir.path().join("spool.sqlite"),
-        max_samples: 100,
+        max_bytes: UNBOUNDED,
+        busy_timeout: Duration::from_secs(1),
     })
     .unwrap();
     let pool_id = PoolId::from_cold_key(&test_key().verifying_key());
-    let mut delivery = Delivery::new(spool, test_key(), pool_id, 0);
+    let mut delivery = Delivery::new(spool, test_key(), pool_id, 0, UNBOUNDED);
     delivery
         .push(&Sample {
             sampled_at: OffsetDateTime::UNIX_EPOCH,
@@ -233,7 +236,10 @@ async fn acked_upload_carries_verifiable_headers_and_body() {
     let sig_bytes = hex::decode::<64>(header(HEADER_SIGNATURE)).unwrap();
     let signature = Signature::from_bytes(&sig_bytes);
     let opened = envelope::open(&vkey, &request.body, &signature, TEST_DECOMPRESS_LIMIT).unwrap();
-    assert_eq!(opened.samples[0].block_height, Some(5));
+    let Payload::Samples { samples } = opened.payload() else {
+        panic!("a sample batch carries samples, got {:?}", opened.payload());
+    };
+    assert_eq!(samples[0].block_height, Some(5));
     assert_eq!(
         opened.pool_id,
         PoolId::from_cold_key(&test_key().verifying_key())

@@ -20,7 +20,8 @@ use metsuke_server::config::{
 };
 use metsuke_server::index::Index;
 use metsuke_wire::envelope::{
-    self, Envelope, PoolId, SCHEMA_VERSION, Sample, Signature, SigningKey, VerifyingKey,
+    self, Envelope, Payload, PoolId, SCHEMA_VERSION_SAMPLES, Sample, Signature, SigningKey,
+    VerifyingKey,
 };
 use time::OffsetDateTime;
 
@@ -65,24 +66,53 @@ pub fn envelope_for(key: &SigningKey, counter: u64) -> Envelope {
 
 /// An envelope stamped with a caller-chosen clock.
 pub fn envelope_at(key: &SigningKey, counter: u64, now: OffsetDateTime) -> Envelope {
-    Envelope {
-        schema_version: SCHEMA_VERSION,
-        pool_id: pool_of(key),
-        agent_version: metsuke_server::CLIENT_VERSION.to_string(),
+    envelope_carrying(
+        key,
         counter,
-        timestamp: now,
-        samples: vec![Sample {
-            sampled_at: now,
-            block_height: Some(12_345),
-            slot: None,
-            slot_in_epoch: None,
-            epoch: None,
-            sync_progress: None,
-            node_version: None,
-            node_revision: None,
-            clock_offset_ms: None,
-        }],
+        now,
+        Payload::Samples {
+            samples: vec![test_sample(now)],
+        },
+    )
+}
+
+pub fn test_sample(now: OffsetDateTime) -> Sample {
+    Sample {
+        sampled_at: now,
+        block_height: Some(12_345),
+        slot: None,
+        slot_in_epoch: None,
+        epoch: None,
+        sync_progress: None,
+        node_version: None,
+        node_revision: None,
+        clock_offset_ms: None,
     }
+}
+
+/// The schema v2 envelope an agent collecting trace lines sends.
+pub fn lines_envelope_at(
+    key: &SigningKey,
+    counter: u64,
+    now: OffsetDateTime,
+    lines: Vec<String>,
+) -> Envelope {
+    envelope_carrying(key, counter, now, Payload::Lines { lines })
+}
+
+pub fn envelope_carrying(
+    key: &SigningKey,
+    counter: u64,
+    now: OffsetDateTime,
+    payload: Payload,
+) -> Envelope {
+    Envelope::new(
+        pool_of(key),
+        metsuke_server::CLIENT_VERSION.to_string(),
+        counter,
+        now,
+        payload,
+    )
 }
 
 /// The wire bytes and signature a client would send for this envelope.
@@ -262,7 +292,7 @@ pub fn stored_submission<'a>(
         pool_id: pool_of(key),
         counter,
         timestamp,
-        schema_version: SCHEMA_VERSION,
+        schema_version: SCHEMA_VERSION_SAMPLES,
         vkey: key.verifying_key(),
         signature,
         wire_bytes,

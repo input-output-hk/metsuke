@@ -5,7 +5,7 @@
 //! types — and no edit here can document a default the agent does not ship.
 
 use metsuke_wire::envelope::{
-    Envelope, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, SCHEMA_VERSION, Sample,
+    self, Envelope, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, Payload, PoolId, Sample,
     SigningKey,
 };
 use time::OffsetDateTime;
@@ -25,6 +25,21 @@ pub const CONFIG_EXAMPLE: &str = include_str!("../../../contrib/config.example.t
 /// flake's `contrib-unit` check.
 pub const UNIT: &str = include_str!("../../../contrib/metsuke.service");
 
+/// The node namespaces the trace step lowers, because the node emits them
+/// below its own root threshold and they reach no backend until it is told to.
+/// These are the node's own namespaces, which are not the agent's selection
+/// prefixes — what a node emits and what the agent keeps are two settings in
+/// two files. Why each entry: docs/research/cardano-node-11-tracing.md.
+pub const LOWERED_NAMESPACES: [&str; 3] = [
+    "Consensus.LeiosKernel",
+    "Consensus.LeiosPeer",
+    "Forge.Loop.AdoptedBlock",
+];
+
+/// The one namespace the agent selects that the node already emits at the root
+/// threshold, so no entry above lowers it.
+pub const EMITTED_AT_ROOT_SEVERITY: &str = "ChainDB.AddBlockEvent.AddedToCurrentChain";
+
 /// The page, ready to serve.
 pub fn page() -> String {
     render(CONFIG_EXAMPLE, UNIT)
@@ -32,6 +47,7 @@ pub fn page() -> String {
 
 pub fn render(config_example: &str, unit: &str) -> String {
     let metrics = MetricsEndpoint::from_config(config_example);
+    let root_severity = agent_min_severity(config_example);
     let binary = exec_start(unit, ExecStartField::Binary);
     let config_path = exec_start(unit, ExecStartField::Config);
     let flake = flake_ref();
@@ -46,15 +62,16 @@ pre {{ overflow-x: auto; background: #f4f4f4; padding: 1em }}</style>
 
 <p>metsuke is a small agent you run beside cardano-node. It reads your node's
 Prometheus metrics endpoint over loopback and uploads a signed batch to this
-server. It never opens your node socket, reads your logs, or touches any key
-beyond the one signing key you point it at.</p>
+server. It never opens your node socket and never touches a key beyond the one
+signing key you point it at. It reads your node's journal only if you turn that
+on in step 5, and then only the trace lines your own configuration selects.</p>
 
-<p>Steps 1 to 3 are decisions and on-chain work. Steps 4 to 8 are what you run
+<p>Steps 1 to 3 are decisions and on-chain work. Steps 4 to 9 are what you run
 on the machine your node is on.</p>
 
 <h2>1. What leaves your machine</h2>
 
-<p>One upload is one JSON envelope, zstd compressed, with a detached Ed25519
+<p>One upload is a JSON header line, zstd compressed, with a detached Ed25519
 signature over the compressed bytes. This is an example of the whole thing.
 Nothing outside these fields is collected:</p>
 
@@ -62,6 +79,10 @@ Nothing outside these fields is collected:</p>
 
 <p>Every sampled field may be <code>null</code>. A scrape that failed is itself
 a signal, so the batch uploads either way.</p>
+
+<p>If you do step 5, trace lines upload as their own batches: the same header
+line without <code>samples</code>, and then the lines you selected, one per
+line and exactly as your node wrote them.</p>
 
 <p>The signature travels beside the body in three headers:
 <code>{HEADER_POOL_ID}</code>, <code>{HEADER_VKEY}</code> and
@@ -107,7 +128,40 @@ else:</p>
 
 <pre>curl -s {metrics_url} | head</pre>
 
-<h2>5. Install the agent</h2>
+<h2>5. Optional: let the node's traces out</h2>
+
+<p>The metrics endpoint is a periodic snapshot. It carries no per-event
+timestamps, so it cannot answer when an announcement arrived, when a block body
+and its closure were received, or when a quorum was reached. Those live in the
+node's trace stream, and the agent ships the lines you select from it verbatim:
+it does not read them, and it computes nothing from them.</p>
+
+<p>Skip this step and the agent stays exactly as step 4 leaves it — metrics
+only, and no read of your journal. To turn it on, the node has to emit those
+traces in the first place. Replace step 4's snippet with this one, which
+carries it whole:</p>
+
+<pre>{traces}</pre>
+
+<p>Two things are added. The named namespaces — the Leios ones the rewards
+program asked about, and <code>Forge.Loop.AdoptedBlock</code> — are emitted at
+<code>Info</code>, below the node's own root threshold, so they reach no
+backend until you name them; <code>maxFrequency: 0</code> is not a typo, it
+means no rate limit, and leaving it out silently caps the stream. The root
+<code>severity</code> is the other half: it is your node's floor for everything
+else, so if yours sits above <code>{root_severity}</code> the agent sees none
+of the error, warning and notice traces the program asked for and nothing
+reports that it did not. The one namespace the agent selects that needs no
+entry is <code>{EMITTED_AT_ROOT_SEVERITY}</code>, which the node already emits
+at the root threshold.</p>
+
+<p>Restart the node. Its lines then go to the journal under its own unit, which
+is what the agent's <code>[log]</code> section in step 7 points at. That read
+costs the agent membership of the <code>systemd-journal</code> group, the one
+privilege it holds beyond scraping loopback; if you would rather it did not
+hold that, skip this step and leave <code>[log]</code> out.</p>
+
+<h2>6. Install the agent</h2>
 
 <p>The current agent is {CLIENT_VERSION}. On NixOS, add
 <code>{flake}</code> as a flake input and import its
@@ -124,7 +178,7 @@ sudo install -m 0755 result/bin/metsuke {binary}</pre>
 install script and no self-update: updating is always something you do
 deliberately.</p>
 
-<h2>6. Configure the agent</h2>
+<h2>7. Configure the agent</h2>
 
 <p>Write this to <code>{config_path}</code>; its own comments say which values
 you must set.</p>
@@ -136,18 +190,22 @@ are reading this page on. The metrics URL has to match the endpoint you opened
 in step 4, and has to be a loopback address — the agent refuses to scrape
 anything else.</p>
 
-<h2>7. Run it under systemd</h2>
+<h2>8. Run it under systemd</h2>
 
 <p>This unit runs the agent with no privileges beyond reading its own config
 and writing its spool; its own header says where to install it and how to hand
-it the signing key.</p>
+it the signing key. If you did step 5, two directives change: add
+<code>SupplementaryGroups=systemd-journal</code>, and turn
+<code>ProcSubset=pid</code> into <code>ProcSubset=all</code>. journalctl needs
+both, and they are the whole difference; the NixOS module makes them for you
+when <code>[log]</code> is set.</p>
 
 <pre>{unit}</pre>
 
 <pre>sudo systemctl daemon-reload
 sudo systemctl enable --now metsuke</pre>
 
-<h2>8. Verify</h2>
+<h2>9. Verify</h2>
 
 <p>The agent logs one line at startup naming the endpoint it scrapes and the
 pool it reports for, and one line per upload saying whether the server took the
@@ -161,11 +219,11 @@ have to wait out a cadence to find out that something is wrong. A refused
 upload logs the server's reason and the samples stay spooled — nothing is lost
 while you fix it, and they upload once it is fixed.</p>
 
-<h2>9. Staying up to date</h2>
+<h2>10. Staying up to date</h2>
 
 <p>This server was built against agent {CLIENT_VERSION}, and tells every agent
 that uploads to it which version that is. Yours logs a warning when it is
-older. To update, repeat step 5 and restart the service:</p>
+older. To update, repeat step 6 and restart the service:</p>
 
 <pre>sudo systemctl restart metsuke</pre>
 
@@ -175,6 +233,8 @@ sampled while the agent is down.</p>
         envelope = escape(&example_envelope()),
         metadata = escape(&metadata_json()),
         backend = escape(&metrics.backend_config()),
+        traces = escape(&metrics.trace_config(&root_severity)),
+        root_severity = escape(&root_severity),
         metrics_url = escape(metrics.url()),
         config = escape(config_example.trim_end()),
         unit = escape(unit.trim_end()),
@@ -191,7 +251,24 @@ fn escape(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// The node endpoint both step 4 and step 6 talk about, read once out of the
+/// The severity floor the shipped agent config sets, read out of the file that
+/// sets it. The node's root threshold has to be at or below it: everything the
+/// agent's severity rule selects has to reach a backend first, and a node whose
+/// floor is higher answers "every error, warning and notice trace" with a
+/// subset and says nothing about it (metsuke-4zo.97).
+fn agent_min_severity(config_example: &str) -> String {
+    config_example
+        .lines()
+        .find_map(|line| {
+            line.trim_start_matches("# ")
+                .strip_prefix("min_severity = ")
+        })
+        .expect("the shipped example config documents min_severity")
+        .trim_matches('"')
+        .to_string()
+}
+
+/// The node endpoint both step 4 and step 7 talk about, read once out of the
 /// example config so the two cannot name different ports.
 struct MetricsEndpoint {
     url: String,
@@ -233,6 +310,35 @@ impl MetricsEndpoint {
             r#"{{
   "TraceOptions": {{
     "": {{ "backends": ["Stdout MachineFormat", "PrometheusSimple {host} {port}"] }}
+  }}
+}}"#,
+            host = self.host,
+            port = self.port,
+        )
+    }
+
+    /// The same, plus what a node has to be told before the trace namespaces
+    /// the rewards program asked about reach a backend at all. It carries the
+    /// backends whole rather than adding to them: both live under the same
+    /// empty-string key, so an operator applying two snippets would have the
+    /// second replace the first.
+    fn trace_config(&self, root_severity: &str) -> String {
+        let lowered = LOWERED_NAMESPACES
+            .iter()
+            .map(|namespace| {
+                format!(
+                    r#",
+    "{namespace}": {{ "severity": "Info", "maxFrequency": 0 }}"#
+                )
+            })
+            .collect::<String>();
+        format!(
+            r#"{{
+  "TraceOptions": {{
+    "": {{
+      "backends": ["Stdout MachineFormat", "PrometheusSimple {host} {port}"],
+      "severity": "{root_severity}"
+    }}{lowered}
   }}
 }}"#,
             host = self.host,
@@ -284,29 +390,37 @@ fn metadata_json() -> String {
 /// every build; the digits mean nothing beyond showing the format.
 const EXAMPLE_INSTANT: i64 = 1_780_000_000;
 
-/// One upload, rendered from the wire types themselves: a field this crate can
-/// receive but the page does not name is the drift this is here to prevent.
+/// One upload's header line, rendered from the wire types themselves: a field
+/// this crate can receive but the page does not name is the drift this is here
+/// to prevent. Indented for reading — the line on the wire is one line, which
+/// is what lets a trace-line upload append to it.
 fn example_envelope() -> String {
     let key = SigningKey::from_bytes(&[0u8; 32]);
     let at = OffsetDateTime::from_unix_timestamp(EXAMPLE_INSTANT)
         .expect("a fixed timestamp is in range");
-    let envelope = Envelope {
-        schema_version: SCHEMA_VERSION,
-        pool_id: PoolId::from_cold_key(&key.verifying_key()),
-        agent_version: CLIENT_VERSION.to_string(),
-        counter: 42,
-        timestamp: at,
-        samples: vec![Sample {
-            sampled_at: at,
-            block_height: Some(12_318_442),
-            slot: Some(163_281_005),
-            slot_in_epoch: Some(281_005),
-            epoch: Some(587),
-            sync_progress: None,
-            node_version: Some("11.0.1".to_string()),
-            node_revision: Some("0e2b4b1a".to_string()),
-            clock_offset_ms: Some(-3),
-        }],
-    };
-    serde_json::to_string_pretty(&envelope).expect("an envelope of plain fields serializes")
+    let envelope = Envelope::new(
+        PoolId::from_cold_key(&key.verifying_key()),
+        CLIENT_VERSION.to_string(),
+        42,
+        at,
+        Payload::Samples {
+            samples: vec![Sample {
+                sampled_at: at,
+                block_height: Some(12_318_442),
+                slot: Some(163_281_005),
+                slot_in_epoch: Some(281_005),
+                epoch: Some(587),
+                sync_progress: None,
+                node_version: Some("11.0.1".to_string()),
+                node_revision: Some("0e2b4b1a".to_string()),
+                clock_offset_ms: Some(-3),
+            }],
+        },
+    );
+    // A samples envelope's body is its header line and nothing else, so the
+    // whole body parses back as the object the page shows.
+    let body = envelope::body(&envelope).expect("an envelope of plain fields serializes");
+    let header: serde_json::Value =
+        serde_json::from_slice(&body).expect("a header line is a JSON object");
+    serde_json::to_string_pretty(&header).expect("a parsed header re-renders")
 }

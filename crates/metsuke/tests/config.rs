@@ -3,6 +3,7 @@
 //! default to the shipped values the example config documents.
 
 use metsuke::config::Config;
+use metsuke::logselect::Severity;
 use metsuke_wire::envelope::{PoolId, SigningKey};
 
 fn test_pool_id() -> PoolId {
@@ -18,6 +19,12 @@ fn minimal_toml() -> String {
         "#,
         test_pool_id().to_bech32()
     )
+}
+
+/// A `[log]` section holding only what has no default: the two paths that
+/// describe this host and nothing about which lines to ship.
+fn minimal_log_section() -> String {
+    "[log]\njournal_unit = \"cardano-node\"\njournalctl_path = \"/usr/bin/journalctl\"".to_string()
 }
 
 // Defaults per the spec: sample every 5 minutes, upload every hour,
@@ -43,13 +50,89 @@ fn minimal_config_parses_with_shipped_defaults() {
         config.spool_path,
         std::path::PathBuf::from("/var/lib/metsuke/spool.sqlite")
     );
-    assert_eq!(config.spool_max_samples, 100_000);
+    assert_eq!(config.spool_max_bytes, 32 * 1024 * 1024);
+    assert_eq!(config.spool_busy_timeout_secs, 5);
+    assert_eq!(config.upload_batch_max_bytes, 4 * 1024 * 1024);
     assert_eq!(config.scrape_timeout_secs, 5);
     assert_eq!(config.scrape_max_body_bytes, 4 * 1024 * 1024);
     assert_eq!(config.upload_timeout_secs, 60);
     assert_eq!(config.upload_jitter_max_secs, 300);
     assert_eq!(config.upload_backoff_max_secs, 86_400);
     assert_eq!(config.compression_level, 0);
+    assert_eq!(config.log, None);
+}
+
+// ADR 0010: trace collection is what the systemd-journal grant is for, so an
+// agent nobody configured for it holds the privileges ADR 0007 allowed and
+// starts no journalctl.
+#[test]
+fn trace_collection_is_absent_until_it_is_configured() {
+    assert_eq!(Config::from_toml(&minimal_toml()).unwrap().log, None);
+}
+
+// Only the host's own two paths have no default: everything else about which
+// lines to ship is shipped configuration.
+#[test]
+fn a_log_section_naming_only_the_host_s_paths_takes_the_shipped_defaults() {
+    let toml = format!("{}\n{}\n", minimal_toml(), minimal_log_section());
+    let log = Config::from_toml(&toml).unwrap().log.unwrap();
+    assert_eq!(log.journal_unit, "cardano-node");
+    assert_eq!(log.namespace_roots, ["Consensus.", "ChainDB.", "Forge."]);
+    assert_eq!(
+        log.namespaces,
+        [
+            "Consensus.Leios",
+            "ChainDB.AddBlockEvent.AddedToCurrentChain",
+            "Forge.Loop.AdoptedBlock",
+        ]
+    );
+    assert_eq!(log.min_severity, Severity::Notice);
+    assert_eq!(log.log_max_bytes, 256 * 1024 * 1024);
+    assert_eq!(log.respawn_backoff_secs, 30);
+}
+
+// Neither path is guessable, so a section missing one has to say which.
+#[test]
+fn a_log_section_without_one_of_the_host_s_paths_fails_loudly() {
+    for missing in ["journal_unit", "journalctl_path"] {
+        let section: String = minimal_log_section()
+            .lines()
+            .filter(|line| !line.starts_with(missing))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let err = Config::from_toml(&format!("{}\n{section}\n", minimal_toml())).unwrap_err();
+        assert!(
+            err.to_string().contains(missing),
+            "error must name the missing field, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn an_unknown_log_key_fails_loudly() {
+    let toml = format!(
+        "{}\n{}\nmin_severities = \"Error\"\n",
+        minimal_toml(),
+        minimal_log_section()
+    );
+    let err = Config::from_toml(&toml).unwrap_err();
+    assert!(
+        err.to_string().contains("min_severities"),
+        "error must name the unknown field, got: {err}"
+    );
+}
+
+// The severity floor is spelled as cardano-node spells it, so an operator sets
+// the same word in both files.
+#[test]
+fn min_severity_takes_the_node_s_own_spelling() {
+    let toml = format!(
+        "{}\n{}\nmin_severity = \"Warning\"\n",
+        minimal_toml(),
+        minimal_log_section()
+    );
+    let log = Config::from_toml(&toml).unwrap().log.unwrap();
+    assert_eq!(log.min_severity, Severity::Warning);
 }
 
 // Acceptance: sample and upload cadences are independent configuration —
@@ -62,20 +145,26 @@ fn sample_and_upload_cadences_are_independent() {
     assert_eq!(config.upload_interval_secs, 3600);
 }
 
-// The example config's commented defaults must be the code's defaults:
-// uncommenting every `# key = value` line must parse and change nothing
-// (required fields aside, which the example marks with CHANGEME).
-#[test]
-fn example_config_documents_the_real_defaults() {
-    let example = include_str!("../../../contrib/config.example.toml");
-    let uncommented: String = example
+const EXAMPLE: &str = include_str!("../../../contrib/config.example.toml");
+
+/// Where the example's optional `[log]` section starts. Everything after it
+/// belongs to that table once uncommented, so a test about the top-level
+/// defaults has to stop here.
+const LOG_SECTION: &str = "# [log]";
+
+/// The example as it reads with every documented value in force: `# key =
+/// value` and `# [table]` lines lose their comment, prose keeps it.
+fn uncomment(example: &str) -> String {
+    example
         .lines()
         .map(|line| {
             line.strip_prefix("# ")
                 .filter(|rest| {
-                    rest.split_once(" = ").is_some_and(|(key, _)| {
-                        !key.is_empty() && key.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
-                    })
+                    rest.starts_with('[')
+                        || rest.split_once(" = ").is_some_and(|(key, _)| {
+                            !key.is_empty()
+                                && key.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
+                        })
                 })
                 .unwrap_or(line)
         })
@@ -83,8 +172,18 @@ fn example_config_documents_the_real_defaults() {
         .join("\n")
         .replace("pool1CHANGEME", &test_pool_id().to_bech32())
         // The signing_key line documents the flag interplay, not a default.
-        .replace("signing_key = ", "# signing_key = ");
-    let all_defaults = Config::from_toml(&uncommented).unwrap();
+        .replace("signing_key = ", "# signing_key = ")
+}
+
+// The example config's commented defaults must be the code's defaults:
+// uncommenting every `# key = value` line must parse and change nothing
+// (required fields aside, which the example marks with CHANGEME).
+#[test]
+fn example_config_documents_the_real_defaults() {
+    let (before_log, _) = EXAMPLE
+        .split_once(LOG_SECTION)
+        .expect("the example documents the optional [log] section");
+    let all_defaults = Config::from_toml(&uncomment(before_log)).unwrap();
     let minimal = Config::from_toml(&minimal_toml()).unwrap();
     assert_eq!(
         all_defaults,
@@ -94,6 +193,26 @@ fn example_config_documents_the_real_defaults() {
             ..minimal
         }
     );
+}
+
+// The same for the optional section, which the test above has to stop short
+// of: its values are the shipped ones, and only the two host paths are choices.
+#[test]
+fn the_example_log_section_documents_the_real_defaults() {
+    let documented = Config::from_toml(&uncomment(EXAMPLE))
+        .unwrap()
+        .log
+        .expect("the example documents a [log] section");
+    let shipped = Config::from_toml(&format!(
+        "{}\n[log]\njournal_unit = \"{}\"\njournalctl_path = \"{}\"\n",
+        minimal_toml(),
+        documented.journal_unit,
+        documented.journalctl_path.display(),
+    ))
+    .unwrap()
+    .log
+    .unwrap();
+    assert_eq!(documented, shipped);
 }
 
 // Every value is required or an explicit default: a config without a

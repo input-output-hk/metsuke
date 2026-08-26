@@ -58,10 +58,49 @@ let
     AWS_SECRET_ACCESS_KEY=${secretAccessKey}
   '';
 
+  # Every trace line the bucket holds, one per output line. The object is the
+  # raw signed body and nothing else (ADR 0005), so reading it back is zstd and
+  # jq: no metsuke code is on this side of the assertion, which is what lets it
+  # say the archive carries the node's lines rather than that metsuke agrees
+  # with itself. Objects that are not a trace-line envelope drop out at the
+  # schema version.
+  archivedLines = pkgs.writeShellScript "archived-trace-lines" ''
+    set -euo pipefail
+    export PATH=${
+      pkgs.lib.makeBinPath [
+        pkgs.awscli2
+        pkgs.zstd
+        pkgs.jq
+        pkgs.coreutils
+        pkgs.findutils
+      ]
+    }
+    set -a
+    . ${awsEnvironment}
+    set +a
+    export AWS_DEFAULT_REGION=${region}
+    rm -rf /tmp/archive
+    mkdir -p /tmp/archive
+    aws --endpoint-url http://127.0.0.1:${toString s3Port} \
+      s3 sync s3://${bucket}/${keyPrefix} /tmp/archive >/dev/null
+    find /tmp/archive -name '*.json.zst' -print0 |
+      while IFS= read -r -d "" object; do
+        # An envelope is a header line and then, for schema 2, the node's own
+        # trace lines. The header says which, so it is read and dropped.
+        body=$(zstd -dcq "$object")
+        if [ "$(head -1 <<<"$body" | jq -r .schema_version)" = 2 ]; then
+          tail -n +2 <<<"$body"
+        fi
+      done
+  '';
+
   # The proto-devnet demo's own configuration, with the trace backends replaced
-  # by a loopback PrometheusSimple one (ADR 0007). The genesis files are taken
-  # as they are: nothing here forges, so the node sits at the demo's own start
-  # time and serves the endpoint, which is all the agent reads.
+  # by a loopback PrometheusSimple one and the machine-readable stdout one the
+  # agent's trace collection reads back off the journal (ADR 0010). The genesis
+  # files are taken as they are: nothing here forges, so the node sits at the
+  # demo's own start time, serves the endpoint and writes its startup traces.
+  #
+  # Why a start, not a round: docs/adr/0010.
   nodeConfig =
     pkgs.runCommand "leios-node-config"
       {
@@ -78,7 +117,8 @@ let
         cp ${devnetSrc}/config/genesis/*.json $out/
         yq -o=json . ${devnetSrc}/config/config.yaml |
           jq --arg backend "PrometheusSimple 127.0.0.1 ${toString metricsPort}" \
-            '.TraceOptionNodeName = "e2e" | .TraceOptions."".backends = [$backend]' \
+            '.TraceOptionNodeName = "e2e"
+             | .TraceOptions."".backends = ["Stdout MachineFormat", $backend]' \
             >$out/config.json
         jq '.' ${devnetSrc}/config/topology.template.json >$out/topology.json
       '';
@@ -171,6 +211,9 @@ let
           # A name no test network can resolve would cost every sample the SNTP
           # timeout.
           sntp_servers = [ ];
+          # The node writes its traces to the journal, so this is where the
+          # group grant and the journalctl child are exercised on real parts.
+          log.journal_unit = "cardano-node.service";
         };
       };
 
@@ -219,6 +262,8 @@ let
     };
 
     testScript = ''
+      import json
+      from collections import Counter
       from datetime import timedelta
 
       start_all()
@@ -262,6 +307,44 @@ let
               " --query 'Contents[].Key' --output text"
           )
           assert "${keyPrefix}${poolId}/" in listing, listing
+
+      with subtest("the agent reads the node's journal"):
+          # The grant and the child, before any line has to have travelled
+          # them: a failure here and a failure below are different repairs.
+          e2e.succeed(
+              "systemctl cat metsuke.service | grep -qx 'SupplementaryGroups=systemd-journal'"
+          )
+          e2e.wait_until_succeeds(
+              "journalctl -u metsuke.service"
+              " | grep -q 'collecting trace lines from cardano-node.service'"
+          )
+          e2e.fail("journalctl -u metsuke.service | grep -q 'trace lines not collected'")
+
+      with subtest("the node's own trace lines reach the archive"):
+          # The agent follows from the journal's end, so this node's first
+          # start was already past when it attached. Restarting the node is a
+          # start it does not miss, and a start is where a node with no peers
+          # says anything the selection rules want.
+          e2e.succeed("systemctl restart cardano-node.service")
+          e2e.wait_for_open_port(${toString metricsPort}, addr = "127.0.0.1")
+          # Waiting on the Leios line waits on all of them: the tracing system
+          # names itself before consensus starts, and a batch is taken oldest
+          # first.
+          e2e.wait_until_succeeds(
+              "${archivedLines} | grep -qF 'Consensus.LeiosKernel.Msg'",
+              timeout = timedelta(minutes = 5),
+          )
+          archived = [json.loads(line) for line in e2e.succeed("${archivedLines}").splitlines()]
+          namespaces = Counter(line["ns"] for line in archived)
+          # The namespace rule, on the one Leios namespace a node with no peers
+          # reaches. Why a start, not a round: docs/adr/0010.
+          assert namespaces["Consensus.LeiosKernel.Msg"] > 0, namespaces
+          # The severity rule, which is the developers' other ask and reaches
+          # past every namespace in the list.
+          assert namespaces["Reflection.TracerConfigInfo"] > 0, namespaces
+          # And it selected rather than forwarded: the node's Debug volume,
+          # which nobody asked for, is not in the bucket.
+          assert not [line for line in archived if line["sev"] == "Debug"], namespaces
 
       with subtest("the stored bytes verify against the key that signed them"):
           # Last, and after the units stop: this opens the server's index as

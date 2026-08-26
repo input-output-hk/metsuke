@@ -53,6 +53,7 @@
           agentModule = self.nixosModules.metsuke;
           serverModule = self.nixosModules.metsuke-server;
           metrics = ./crates/metsuke/tests/fixtures/recordings/leios-node.prom;
+          traces = ./crates/metsuke/tests/fixtures/recordings/leios-node-traces.log;
           contribUnit = ./contrib/metsuke.service;
           agent = self.packages.${system}.metsuke;
         }
@@ -84,14 +85,16 @@
         let
           craneLib = inputs.crane.mkLib pkgs;
           # Cargo sources, the shipped SQL, the fixtures and the test doubles:
-          # the scrape bodies and the SQL are compiled in with include_str!,
-          # the CIP-151 recordings and the psql double are run at test time.
+          # the scrape bodies, the trace recordings and the SQL are compiled in
+          # with include_str!, the CIP-151 recordings and the psql double are
+          # run at test time.
           #
           # Under crates/ alone, because this filter is not gitignore-aware: a
           # devnet run leaves .hex and .csv files in the working tree, and
           # matching those by suffix anywhere would re-hash every derivation.
           extraSources = [
             ".prom"
+            ".log"
             ".sql"
             ".hex"
             ".csv"

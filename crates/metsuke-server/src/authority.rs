@@ -2,7 +2,7 @@
 //! both the ingest path and the archive audit run. Whether the two reach the
 //! same verdict is their `Authority`, not this sequence.
 
-use metsuke_wire::envelope::{self, Envelope, PoolId, SCHEMA_VERSION, Signature, VerifyingKey};
+use metsuke_wire::envelope::{self, Envelope, PoolId, Signature, VerifyingKey};
 use time::OffsetDateTime;
 
 use crate::calidus::{CalidusKeys, Directory, DirectoryError, Resolution};
@@ -124,8 +124,13 @@ pub enum AuthError {
     BadSignature,
     #[error("payload inflates past the {max} byte limit")]
     OversizedPayload { max: u64 },
-    #[error("payload is not a schema v{SCHEMA_VERSION} envelope: {reason}")]
+    #[error("payload is not an envelope: {reason}")]
     MalformedPayload { reason: String },
+    /// Kept apart from `MalformedPayload`: the envelope is well formed and
+    /// says which schema it speaks, and that schema is one this build does
+    /// not know.
+    #[error("envelope schema version {found} is not one this build reads")]
+    UnsupportedSchemaVersion { found: u32 },
     #[error(transparent)]
     Undecided(#[from] Undecided),
 }
@@ -162,6 +167,17 @@ pub fn authenticate(
             reason: error.to_string(),
         },
         envelope::OpenError::Json(error) => AuthError::MalformedPayload {
+            reason: error.to_string(),
+        },
+        error @ envelope::OpenError::NotUtf8 => AuthError::MalformedPayload {
+            reason: error.to_string(),
+        },
+        envelope::OpenError::UnsupportedSchemaVersion { found } => {
+            AuthError::UnsupportedSchemaVersion { found }
+        }
+        // An envelope whose declared version and body disagree is not a version
+        // this build lacks: it is one no build produced.
+        error @ envelope::OpenError::BodyContradictsVersion { .. } => AuthError::MalformedPayload {
             reason: error.to_string(),
         },
     })

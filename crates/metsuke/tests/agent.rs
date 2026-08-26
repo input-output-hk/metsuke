@@ -10,9 +10,9 @@ use metsuke::delivery::Delivery;
 use metsuke::sampler::SamplerConfig;
 use metsuke::scrape::ScrapeConfig;
 use metsuke::sntp::SntpConfig;
-use metsuke::spool::{Spool, SpoolConfig};
+use metsuke::spool::{LogSpool, LogSpoolConfig, Spool, SpoolConfig};
 use metsuke::uploader::{UploadConfig, UploadOutcome};
-use metsuke_wire::envelope::{self, PoolId, Signature, VerifyingKey};
+use metsuke_wire::envelope::{self, Payload, PoolId, Signature, VerifyingKey};
 use metsuke_wire::envelope::{HEADER_SIGNATURE, HEADER_VKEY};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -26,13 +26,34 @@ const RECORDED_CHAIN: &str = include_str!("fixtures/recordings/leios-node.prom")
 // Large enough for any test batch; the real limit is server config.
 const TEST_DECOMPRESS_LIMIT: u64 = 64 * 1024 * 1024;
 
+/// Wide enough that no spool or batch cap fires here.
+const UNBOUNDED: u64 = 64 * 1024 * 1024;
+
+const NO_CONTENTION: Duration = Duration::from_secs(1);
+
+fn spool_path(dir: &tempfile::TempDir) -> std::path::PathBuf {
+    dir.path().join("spool.sqlite")
+}
+
+/// The trace-line writer, as the binary spawns it: its own connection to the
+/// same file the upload loop reads.
+fn test_log_spool(dir: &tempfile::TempDir) -> LogSpool {
+    LogSpool::open(&LogSpoolConfig {
+        path: spool_path(dir),
+        max_bytes: UNBOUNDED,
+        busy_timeout: NO_CONTENTION,
+    })
+    .unwrap()
+}
+
 /// An agent sampling the given metrics server and uploading to the given
 /// upload server. SNTP points at a dead loopback port so the offset is null.
 fn test_agent(dir: &tempfile::TempDir, metrics: &MockServer, uploads: &MockServer) -> Agent {
     let pool_id = PoolId::from_cold_key(&test_key().verifying_key());
     let spool = Spool::open(&SpoolConfig {
-        path: dir.path().join("spool.sqlite"),
-        max_samples: 100,
+        path: spool_path(dir),
+        max_bytes: UNBOUNDED,
+        busy_timeout: NO_CONTENTION,
     })
     .unwrap();
     Agent::new(
@@ -47,7 +68,7 @@ fn test_agent(dir: &tempfile::TempDir, metrics: &MockServer, uploads: &MockServe
                 timeout: Duration::from_millis(50),
             },
         },
-        Delivery::new(spool, test_key(), pool_id, 0),
+        Delivery::new(spool, test_key(), pool_id, 0, UNBOUNDED),
         UploadConfig {
             upload_url: format!("{}/v1/submit", uploads.uri()).try_into().unwrap(),
             pool_id,
@@ -113,9 +134,76 @@ async fn sampled_metrics_upload_as_a_verified_batch_and_ack_drains_the_spool() {
     )
     .unwrap();
     // Recorded-body field values: tests/scrape.rs.
-    assert_eq!(opened.samples.len(), 1);
-    assert_eq!(opened.samples[0].block_height, Some(5));
-    assert_eq!(opened.samples[0].clock_offset_ms, None);
+    let Payload::Samples { samples } = opened.payload() else {
+        panic!("a sample tick uploads samples, got {:?}", opened.payload());
+    };
+    assert_eq!(samples.len(), 1);
+    assert_eq!(samples[0].block_height, Some(5));
+    assert_eq!(samples[0].clock_offset_ms, None);
+}
+
+// One upload tick clears both streams: an agent that shipped samples and left
+// the trace lines for the next tick would deliver them an upload interval late
+// for as long as any sample is ever spooled.
+#[tokio::test]
+async fn one_tick_uploads_both_the_samples_and_the_trace_lines() {
+    let metrics = metrics_server().await;
+    let uploads = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/submit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "latest_version": "0.1.0"
+        })))
+        .mount(&uploads)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = test_agent(&dir, &metrics, &uploads);
+    test_log_spool(&dir).push("one trace line").unwrap();
+
+    let (first, second) = tokio::task::spawn_blocking(move || {
+        agent.sample_once().unwrap();
+        let first = agent.upload_once().unwrap();
+        let second = agent.upload_once().unwrap();
+        (first, second)
+    })
+    .await
+    .unwrap();
+
+    assert!(
+        matches!(first, Some(UploadOutcome::Acked(_))),
+        "expected ack, got {first:?}"
+    );
+    assert!(second.is_none(), "both streams must have been acked");
+
+    let versions: Vec<u32> = uploads
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| {
+            let vkey =
+                hex::decode::<32>(request.headers.get(HEADER_VKEY).unwrap().to_str().unwrap())
+                    .unwrap();
+            let signature = hex::decode::<64>(
+                request
+                    .headers
+                    .get(HEADER_SIGNATURE)
+                    .unwrap()
+                    .to_str()
+                    .unwrap(),
+            )
+            .unwrap();
+            envelope::open(
+                &VerifyingKey::from_bytes(&vkey).unwrap(),
+                &request.body,
+                &Signature::from_bytes(&signature),
+                TEST_DECOMPRESS_LIMIT,
+            )
+            .unwrap()
+            .schema_version()
+        })
+        .collect();
+    assert_eq!(versions, [1, 2]);
 }
 
 // Acceptance: 5xx (and 4xx alike) leaves the spool intact — the same rows

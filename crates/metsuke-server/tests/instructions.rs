@@ -3,22 +3,23 @@
 //! the page moved with it (`instructions` says why that is the point).
 
 use metsuke_server::instructions;
-use metsuke_wire::envelope::HEADER_POOL_ID;
+use metsuke_wire::envelope::{self, HEADER_POOL_ID};
 
 mod support;
 use support::{envelope_for, test_key};
 
 /// The steps the ticket's outline fixes, in order.
-const SECTIONS: [&str; 9] = [
+const SECTIONS: [&str; 10] = [
     "1. What leaves your machine",
     "2. Register your pool",
     "3. Choose a signing key",
     "4. Enable the node's metrics endpoint",
-    "5. Install the agent",
-    "6. Configure the agent",
-    "7. Run it under systemd",
-    "8. Verify",
-    "9. Staying up to date",
+    "5. Optional: let the node's traces out",
+    "6. Install the agent",
+    "7. Configure the agent",
+    "8. Run it under systemd",
+    "9. Verify",
+    "10. Staying up to date",
 ];
 
 #[test]
@@ -34,12 +35,13 @@ fn every_outline_section_is_present_and_in_order() {
 }
 
 /// The acceptance criterion: what leaves the box is named field for field.
-/// Derived from the wire types rather than a list written here, so a v1 field
-/// added to `Sample` fails this until the page names it.
+/// Derived from the bytes the wire crate seals rather than a list written here,
+/// so a v1 field added to `Sample` fails this until the page names it.
 #[test]
 fn every_v1_field_appears_on_the_page() {
     let page = instructions::page();
-    let envelope = serde_json::to_value(envelope_for(&test_key(), 1)).unwrap();
+    let body = envelope::body(&envelope_for(&test_key(), 1)).unwrap();
+    let envelope: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let sample = envelope["samples"][0].clone();
     let fields = envelope
         .as_object()
@@ -97,6 +99,78 @@ fn the_metrics_endpoint_comes_from_the_shipped_config() {
     assert!(
         page.contains("http://127.0.0.1:19999/metrics"),
         "the check command does not follow the config's metrics_url"
+    );
+}
+
+/// metsuke-4zo.97: the node-config step pins the node's root severity, and
+/// pins it to the floor the shipped agent config sets. A node whose root sits
+/// above that floor emits nothing for the agent's severity rule to select and
+/// says nothing about it.
+#[test]
+fn the_node_root_severity_comes_from_the_agents_own_floor() {
+    // The needle is the example's own min_severity, so a stale one makes the
+    // replace a no-op and fails the assert below rather than passing.
+    let config = instructions::CONFIG_EXAMPLE
+        .replace(r#"min_severity = "Notice""#, r#"min_severity = "Alert""#);
+    let page = instructions::render(&config, instructions::UNIT);
+    assert!(
+        page.contains(r#""severity": "Alert""#),
+        "the root severity does not follow the config's min_severity"
+    );
+}
+
+/// The namespaces the shipped agent config selects, read out of the file that
+/// ships them: the example comments them out, and the value is a TOML array
+/// either way.
+fn shipped_namespaces(config_example: &str) -> Vec<String> {
+    let array = config_example
+        .lines()
+        .find_map(|line| line.trim_start_matches("# ").strip_prefix("namespaces = "))
+        .expect("the shipped example config documents namespaces");
+    let table: toml::Table = format!("namespaces = {array}")
+        .parse()
+        .expect("the documented namespaces are a TOML array");
+    table["namespaces"]
+        .as_array()
+        .expect("namespaces is an array")
+        .iter()
+        .map(|value| value.as_str().expect("a namespace is a string").to_string())
+        .collect()
+}
+
+/// Every namespace the agent is shipped selecting is one the node-config step
+/// makes the node emit. They agree by hand otherwise: an operator who follows
+/// both files and gets no lines has nothing telling them which of the two
+/// moved (metsuke-4zo.100 review).
+#[test]
+fn the_node_config_step_covers_every_namespace_the_agent_selects() {
+    let namespaces = shipped_namespaces(instructions::CONFIG_EXAMPLE);
+    assert!(!namespaces.is_empty(), "the needle found no namespaces");
+    for namespace in namespaces {
+        // Either direction: the agent selects by prefix, so its rule may sit
+        // above the node's namespace or below it.
+        let lowered = instructions::LOWERED_NAMESPACES
+            .iter()
+            .any(|key| key.starts_with(&namespace) || namespace.starts_with(key));
+        let at_root = namespace.starts_with(instructions::EMITTED_AT_ROOT_SEVERITY)
+            || instructions::EMITTED_AT_ROOT_SEVERITY.starts_with(&namespace);
+        assert!(
+            lowered || at_root,
+            "the node-config step never makes the node emit {namespace:?}"
+        );
+    }
+}
+
+/// The two node-config snippets sit under the same key, so the second has to
+/// carry the first whole or an operator applying both loses the backends.
+#[test]
+fn the_trace_step_carries_the_backend_step_whole() {
+    let config = instructions::CONFIG_EXAMPLE.replace("127.0.0.1:12798", "127.0.0.1:19999");
+    let page = instructions::render(&config, instructions::UNIT);
+    assert_eq!(
+        page.matches("PrometheusSimple 127.0.0.1 19999").count(),
+        2,
+        "the trace snippet does not repeat the backends the metrics snippet set"
     );
 }
 

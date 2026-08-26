@@ -9,6 +9,9 @@
   agentModule,
   serverModule,
   metrics,
+  # The recorded Leios trace stream, replayed into the journal on the `tracing`
+  # node below.
+  traces,
   contribUnit,
   # The binary contrib/metsuke.service names at /usr/local/bin/metsuke. The
   # module nodes take theirs from the module's own default.
@@ -152,6 +155,51 @@ pkgs.testers.runNixOSTest {
     };
   };
 
+  # The same agent with trace collection on: the one privilege ADR 0010 adds,
+  # and nothing else moved. The unit it follows writes the recorded stream, so
+  # what travels journald, journalctl, the selection rules and the spool is a
+  # real node's own bytes on a machine with no node.
+  nodes.tracing = {
+    imports = [ agentModule ];
+
+    systemd.services.metrics-endpoint = metricsEndpoint;
+
+    # Started by the test script, not at boot: the agent follows from the
+    # journal's end, so a replay that ran before it attached would be lines it
+    # never saw.
+    systemd.services.trace-replay = {
+      serviceConfig = {
+        Type = "oneshot";
+        ExecStart = "${pkgs.coreutils}/bin/cat ${traces}";
+      };
+    };
+
+    # The whole recording arrives in one burst, and journald's default burst
+    # allowance is smaller than it: the rows the spool ends up with would
+    # otherwise be however many survived the rate limiter.
+    services.journald.rateLimitBurst = 0;
+
+    environment.systemPackages = [ pkgs.sqlite ];
+
+    environment.etc."metsuke/pool.skey" = {
+      source = signingKey;
+      mode = "0400";
+    };
+
+    services.metsuke = {
+      enable = true;
+      signingKeyFile = "/etc/metsuke/pool.skey";
+      settings = {
+        pool_id = poolId;
+        metrics_url = metricsUrl;
+        upload_url = uploadUrl;
+        sample_interval_secs = 1;
+        sntp_servers = [ ];
+        log.journal_unit = "trace-replay.service";
+      };
+    };
+  };
+
   # No module: the file an operator copies, at the two paths its header names,
   # started the way its header says to start it. The key is named in the
   # configuration rather than loaded as a credential, which is the half the
@@ -216,8 +264,16 @@ pkgs.testers.runNixOSTest {
             "test 0 -lt \"$(sqlite3 -readonly /var/lib/metsuke/spool.sqlite 'select count(*) from samples')\""
         )
 
-    def confined(machine, unit, state):
-        """The privileges a unit has to lack, and the one path it may write."""
+    def confined(machine, unit, state, reads_journal = False):
+        """The privileges a unit has to lack, and the one path it may write.
+
+        `reads_journal` is ADR 0010's whole privilege delta: the group, and
+        the /proc journalctl reads the boot id out of. False is ADR 0007's
+        posture, and both directives are read back either way — a grant
+        nobody decided on and a grant that was decided and then dropped are
+        the same red.
+        """
+        groups = "systemd-journal" if reads_journal else ""
         machine.wait_for_unit(unit)
         pid = machine.succeed(f"systemctl show --property=MainPID --value {unit}").strip()
 
@@ -225,14 +281,21 @@ pkgs.testers.runNixOSTest {
             return machine.succeed(f"grep '^{name}:' /proc/{pid}/status").split(":", 1)[1].split()
 
         # No group beyond the transient one DynamicUser gives the service as
-        # its own identity: any other entry would be a grant on something
-        # that already existed.
-        assert set(field("Groups")) <= set(field("Gid")), field("Groups")
-        # And the directive that refuses one is present. DynamicUser alone
+        # its own identity, plus exactly the ones the unit asked for: any
+        # other entry would be a grant on something that already existed.
+        granted = {
+            machine.succeed(f"getent group {name} | cut -d: -f3").strip()
+            for name in groups.split()
+        }
+        assert set(field("Groups")) <= set(field("Gid")) | granted, field("Groups")
+        assert granted <= set(field("Groups")), (granted, field("Groups"))
+        # And the directive is present with that exact value. DynamicUser alone
         # already yields an empty Groups line, so the assertion above stays
         # green if SupplementaryGroups= is deleted from nix/unit.nix; only
         # reading the rendered unit catches that.
-        machine.succeed(f"systemctl cat {unit} | grep -qx 'SupplementaryGroups='")
+        machine.succeed(f"systemctl cat {unit} | grep -qx 'SupplementaryGroups={groups}'")
+        subset = "all" if reads_journal else "pid"
+        machine.succeed(f"systemctl cat {unit} | grep -qx 'ProcSubset={subset}'")
         for name in ["CapEff", "CapPrm", "CapBnd", "CapAmb"]:
             assert int(field(name)[0], 16) == 0, (name, field(name))
 
@@ -259,6 +322,42 @@ pkgs.testers.runNixOSTest {
         # It reached the endpoint above without AF_UNIX, which is what the
         # server needs for db-sync (ADR 0009) and the agent does not.
         pool.fail("systemctl cat metsuke.service | grep -q 'AF_UNIX'")
+
+    with subtest("collecting trace lines adds the journal group and nothing else"):
+        tracing.wait_for_unit("metsuke.service")
+        tracing.wait_until_succeeds(
+            "journalctl -u metsuke.service"
+            " | grep -q 'collecting trace lines from trace-replay.service'"
+        )
+        # It started journalctl and journalctl did not refuse the journal.
+        tracing.fail("journalctl -u metsuke.service | grep -q 'trace lines not collected'")
+        confined(tracing, "metsuke.service", "/var/lib/metsuke", reads_journal = True)
+
+    with subtest("what a node wrote to the journal reaches the spool unchanged"):
+        # Type=oneshot, so this returns when the whole recording has been
+        # written. What the agent has read by then is whatever it has read:
+        # only the properties below are asserted, never a count, so there is
+        # nothing here to lose a race with.
+        tracing.succeed("systemctl start trace-replay.service")
+        # Wait on a namespace the rewards program asked for by name: which
+        # rules reach it is tests/logselect.rs, and what this waits for is that
+        # a line survived journald and journalctl to be judged by them at all.
+        # The dump is inside the retry because each attempt has to read the
+        # rows the agent has written by then, not the ones it had at the first.
+        tracing.wait_until_succeeds(
+            "sqlite3 -readonly /var/lib/metsuke/spool.sqlite 'select line from log_lines'"
+            " > /tmp/spooled"
+            " && grep -q '\"ns\":\"Consensus.LeiosKernel.Certified\"' /tmp/spooled"
+        )
+        lines = tracing.succeed("cat /tmp/spooled").splitlines()
+        recorded = set(tracing.succeed("cat ${traces}").splitlines())
+        # Byte for byte, which is the whole promise: the developers compute
+        # their own distributions from the node's own record, and a transport
+        # that reframed a line would leave them computing from metsuke's.
+        assert set(lines) <= recorded, set(lines) - recorded
+        # And the rules still filtered on the way: the recording's volume is
+        # Debug lines nobody asked for.
+        assert not [line for line in lines if '"sev":"Debug"' in line], lines
 
     with subtest("the contrib unit runs the agent on a host that is not NixOS"):
         bare.wait_for_unit("metrics-endpoint.service")
