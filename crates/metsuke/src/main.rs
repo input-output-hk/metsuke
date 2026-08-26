@@ -164,17 +164,12 @@ fn start_trace_collection(
         journal_unit: log.journal_unit.clone(),
         journalctl_path: log.journalctl_path.clone(),
     };
-    let selection = SelectConfig::new(
-        &log.namespace_roots,
-        log.namespaces.clone(),
-        log.min_severity,
-    )?;
+    let selection = SelectConfig::new(&log.namespace_roots, log.namespaces.clone())?;
     let backoff = Duration::from_secs(log.respawn_backoff_secs);
     eprintln!(
-        "{INFO}collecting trace lines from {}: namespaces {}, or severity {:?} and above",
+        "{INFO}collecting trace lines from {}: namespaces {}",
         log.journal_unit,
         log.namespaces.join(", "),
-        log.min_severity,
     );
     std::thread::spawn(move || {
         let error = logtail::run(journal, selection, backoff, spool);

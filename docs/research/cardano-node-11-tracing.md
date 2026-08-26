@@ -32,6 +32,12 @@ crates/metsuke/tests/fixtures/recordings/leios-node-traces*.log, recorded by
 scripts/record-trace-fixtures.sh. `data.kind` is the per-message discriminator and does
 not always match the last segment of `ns`.
 
+The whole trace path depends on that backend and on no other `Stdout` one:
+`TraceLine::parse` takes a JSON object, so a node writing `Stdout HumanFormatColoured`
+yields lines every rule skips, with nothing reporting it. The instructions page says so at
+the step that sets backends, because that is where an operator merging into an existing
+config can end up with the wrong one.
+
 Fallback: if `TraceOptions` aren't fully specified, the node falls back to a hard-coded
 default in `Cardano.Node.Tracing.DefaultTraceConfig`.
 
@@ -43,13 +49,38 @@ config's root threshold of Notice, so the demo's per-namespace `severity: Debug`
 overrides are the only reason any of them reach a backend at all: a 40s run with those
 four keys deleted and nothing else changed emitted zero `Consensus.Leios*` lines, and
 the same config with them emits `Consensus.LeiosKernel.Msg` at startup on an idle node.
-`Info` suffices for everything the rewards program asked for; `Debug` is only needed for
-the `LeiosNotify.Remote` / `LeiosFetch.Remote` wire-level namespaces, which nobody asked
-for and which are the loudest. `maxFrequency: 0` means no rate limit; omitting it caps
-the stream silently. Block adoption is two namespaces, not one:
-`ChainDB.AddBlockEvent.AddedToCurrentChain` is Notice and needs no override, while
-`Forge.Loop.AdoptedBlock` is Info in the recordings and needs the same override the
-Leios keys do.
+As a threshold, `Info` admits every measurement the program asked for. `Debug` is only
+needed for the `LeiosNotify.Remote` / `LeiosFetch.Remote` wire-level namespaces, which
+nobody asked for and which are the loudest. `maxFrequency: 0` means no
+rate limit; omitting it caps the stream silently. Block adoption is two namespaces, not
+one: `ChainDB.AddBlockEvent.AddedToCurrentChain` is Notice, while
+`Forge.Loop.AdoptedBlock` is Info in the recordings and needs the same override the Leios
+keys do.
+
+`AddedToCurrentChain` reaches a backend under a root threshold of Notice or lower, so it
+needs no threshold override to work. The instructions page gives it an entry anyway
+(metsuke-jfb.19): a root threshold is the operator's to set, and the page has no way to
+know theirs. An explicit entry for every namespace the node must emit makes the snippet
+correct under any root, and the entry buys the limiter as well as the threshold — the
+root sets no `maxFrequency`.
+
+Two different configs are in play, and everything measured above is the first:
+
+- `demo/proto-devnet/config/config.yaml` in the ouroboros-leios repo, pinned at
+  `prototype-2026w32`. The fixture recordings and the e2e node both come from it
+  (nix/e2e-test.nix). It is a demo, not what anyone operates.
+- `book.world.dev.cardano.org/environments-pre/leios/config.json`, which is what SPOs
+  run. Root threshold Notice; `Consensus.LeiosKernel` and `Consensus.LeiosPeer` at Debug
+  with `maxFrequency: 0`; `ChainDB` and `Forge.Loop` at Info, which is what carries
+  `AddedToCurrentChain` and `AdoptedBlock`. So an operator on this config already emits
+  every namespace the agent selects. The instructions page's trace step is not a no-op
+  for them even so: merging replaces a key's whole entry, so its `"severity": "Info"`
+  raises `Consensus.LeiosKernel` and `Consensus.LeiosPeer` from Debug to Info. That
+  admits every measurement and drops the wire-level Debug chatter above, so it costs
+  nothing anyone asked for. Pasting over their `TraceOptions` rather than merging is the
+  real loss — the rate limits it sets on `LeiosNotify.Remote` and `LeiosFetch.Remote`
+  would go with it, which is why both snippets are framed as keys to merge. Nothing in
+  this repo is verified against this config; that gap is metsuke-jfb.20.
 
 `cardano-node trace-documentation` is not a source for these: it emits 649 namespaces
 and no Leios one among them, because the Leios tracers have `documentFor _ = Nothing`.

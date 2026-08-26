@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use serde::Deserialize;
 
 use crate::endpoint::{MetricsUrl, UploadUrl};
-use crate::logselect::Severity;
 use crate::sntp;
 use metsuke_wire::envelope::PoolId;
 
@@ -95,8 +94,6 @@ pub struct LogConfig {
     /// Namespace prefixes to ship (semantics: `logselect::SelectConfig`).
     #[serde(default = "default_log_namespaces")]
     pub namespaces: Vec<String>,
-    #[serde(default = "default_log_min_severity")]
-    pub min_severity: Severity,
     /// Trace-line spool cap (semantics: `spool::LogSpoolConfig`).
     #[serde(default = "default_log_max_bytes")]
     pub log_max_bytes: u64,
@@ -147,19 +144,15 @@ fn default_log_namespace_roots() -> Vec<String> {
     ]
 }
 
-/// What the rewards program asked for by name, as the namespaces a node
-/// actually emits: the Leios prefix covers the announcement, body, closure and
-/// quorum events in one rule, and block adoption sits outside it.
+/// What the rewards program asked for, as the namespaces a node actually emits.
+/// Which ask each covers, and why this list is the whole selection rule:
+/// docs/adr/0010.
 fn default_log_namespaces() -> Vec<String> {
     vec![
         "Consensus.Leios".to_string(),
         "ChainDB.AddBlockEvent.AddedToCurrentChain".to_string(),
         "Forge.Loop.AdoptedBlock".to_string(),
     ]
-}
-
-fn default_log_min_severity() -> Severity {
-    Severity::Notice
 }
 
 fn default_log_max_bytes() -> u64 {

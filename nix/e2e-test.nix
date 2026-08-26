@@ -397,9 +397,6 @@ let
           # says anything the selection rules want.
           e2e.succeed("systemctl restart cardano-node.service")
           e2e.wait_for_open_port(${toString metricsPort}, addr = "127.0.0.1")
-          # Waiting on the Leios line waits on all of them: the tracing system
-          # names itself before consensus starts, and a batch is taken oldest
-          # first.
           e2e.wait_until_succeeds(
               "${archivedLines} | grep -qF 'Consensus.LeiosKernel.Msg'",
               timeout = timedelta(minutes = 5),
@@ -409,9 +406,10 @@ let
           # The namespace rule, on the one Leios namespace a node with no peers
           # reaches. Why a start, not a round: docs/adr/0010.
           assert namespaces["Consensus.LeiosKernel.Msg"] > 0, namespaces
-          # The severity rule, which is the developers' other ask and reaches
-          # past every namespace in the list.
-          assert namespaces["Reflection.TracerConfigInfo"] > 0, namespaces
+          # Nothing outside the configured namespaces rides along, whatever
+          # severity it carries: Reflection is under no configured namespace, so
+          # severity alone selects nothing.
+          assert not [ns for ns in namespaces if ns.startswith("Reflection.")], namespaces
           # And it selected rather than forwarded: the node's Debug volume,
           # which nobody asked for, is not in the bucket.
           assert not [line for line in archived if line["sev"] == "Debug"], namespaces

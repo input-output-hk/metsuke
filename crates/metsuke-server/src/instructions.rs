@@ -25,20 +25,16 @@ pub const CONFIG_EXAMPLE: &str = include_str!("../../../contrib/config.example.t
 /// flake's `contrib-unit` check.
 pub const UNIT: &str = include_str!("../../../contrib/metsuke.service");
 
-/// The node namespaces the trace step lowers, because the node emits them
-/// below its own root threshold and they reach no backend until it is told to.
-/// These are the node's own namespaces, which are not the agent's selection
-/// prefixes — what a node emits and what the agent keeps are two settings in
-/// two files. Why each entry: docs/research/cardano-node-11-tracing.md.
-pub const LOWERED_NAMESPACES: [&str; 3] = [
+/// The node namespaces the trace step gives an explicit severity. These are the
+/// node's own namespaces, not the agent's selection prefixes: what a node emits
+/// and what the agent keeps are two settings in two files. Why each entry, and
+/// why each gets one: docs/research/cardano-node-11-tracing.md.
+pub const NAMED_NAMESPACES: [&str; 4] = [
     "Consensus.LeiosKernel",
     "Consensus.LeiosPeer",
     "Forge.Loop.AdoptedBlock",
+    "ChainDB.AddBlockEvent.AddedToCurrentChain",
 ];
-
-/// The one namespace the agent selects that the node already emits at the root
-/// threshold, so no entry above lowers it.
-pub const EMITTED_AT_ROOT_SEVERITY: &str = "ChainDB.AddBlockEvent.AddedToCurrentChain";
 
 /// The page, ready to serve.
 pub fn page() -> String {
@@ -47,7 +43,6 @@ pub fn page() -> String {
 
 pub fn render(config_example: &str, unit: &str) -> String {
     let metrics = MetricsEndpoint::from_config(config_example);
-    let root_severity = agent_min_severity(config_example);
     let binary = exec_start(unit, ExecStartField::Binary);
     let config_path = exec_start(unit, ExecStartField::Config);
     let flake = flake_ref();
@@ -125,11 +120,23 @@ server makes on every upload.</p>
 
 <h2>4. Enable the node's metrics endpoint</h2>
 
-<p>cardano-node exposes nothing to scrape until you add the backend. In your
-node configuration, bound to loopback so it is not reachable from anywhere
-else:</p>
+<p>cardano-node exposes nothing to scrape until you add the backend. Add it to
+your node configuration's <code>TraceOptions</code>, bound to loopback so it is
+not reachable from anywhere else:</p>
 
 <pre>{backend}</pre>
+
+<p>If your node configuration has no <code>TraceOptions</code> at all, paste that
+as it stands. If it has one, merge into it rather than pasting over it: the
+<code>""</code> key is your node's root entry, so keep every other key it has
+and add to its backends list.</p>
+
+<p>Both backends have to end up in that list. <code>PrometheusSimple</code> is
+the metrics endpoint. <code>Stdout MachineFormat</code> is what writes traces as
+one JSON object per line, which is the only form step 5's agent can read — so if
+your root already names a different <code>Stdout</code> backend, replace it
+rather than keeping both. Get this wrong and metrics still work, step 5 looks
+applied, and not one trace line is ever collected.</p>
 
 <p>Restart the node, then check it answers:</p>
 
@@ -141,27 +148,27 @@ else:</p>
 timestamps, so it cannot answer when an announcement arrived, when a block body
 and its closure were received, or when a quorum was reached. Those live in the
 node's trace stream, and the agent ships every field of the lines you select
-from it: it reads two of them to decide, and it computes nothing from any of
+from it: it reads one field to decide, and it computes nothing from any of
 them.</p>
 
 <p>Skip this step and the agent stays exactly as step 4 leaves it — metrics
 only, and no read of your journal. To turn it on, the node has to emit those
-traces in the first place. Replace step 4's snippet with this one, which
-carries it whole:</p>
+traces in the first place. These are the namespaces it has to emit, again as
+keys to merge into your <code>TraceOptions</code>:</p>
 
 <pre>{traces}</pre>
 
-<p>Two things are added. The named namespaces — the Leios ones the rewards
-program asked about, and <code>Forge.Loop.AdoptedBlock</code> — are emitted at
-<code>Info</code>, below the node's own root threshold, so they reach no
-backend until you name them; <code>maxFrequency: 0</code> is not a typo, it
-means no rate limit, and leaving it out silently caps the stream. The root
-<code>severity</code> is the other half: it is your node's floor for everything
-else, so if yours sits above <code>{root_severity}</code> the agent sees none
-of the error, warning and notice traces the program asked for and nothing
-reports that it did not. The one namespace the agent selects that needs no
-entry is <code>{EMITTED_AT_ROOT_SEVERITY}</code>, which the node already emits
-at the root threshold.</p>
+<p><strong>Check before you add them.</strong> Your configuration may already set
+some of these, and merging replaces a key's whole entry — so these take the
+place of whatever severity or rate limit you had on those namespaces. It may
+also set rate limits on namespaces this snippet does not name; pasting over the
+object rather than merging into it would drop those too.</p>
+
+<p>Each namespace carries its own <code>severity</code>, so your node's root
+threshold is left as you have it and nothing here depends on where you set it.
+There is no <code>""</code> key in this snippet, so it cannot disturb the root
+entry step 4 touched. <code>maxFrequency: 0</code> is not a typo, it means no
+rate limit, and leaving it out silently caps the stream.</p>
 
 <p>Restart the node. Its lines then go to the journal under its own unit, which
 is what the agent's <code>[log]</code> section in step 7 points at. That read
@@ -241,8 +248,7 @@ sampled while the agent is down.</p>
         envelope = escape(&example_envelope()),
         metadata = escape(&metadata_json()),
         backend = escape(&metrics.backend_config()),
-        traces = escape(&metrics.trace_config(&root_severity)),
-        root_severity = escape(&root_severity),
+        traces = escape(&trace_config()),
         metrics_url = escape(metrics.url()),
         config = escape(config_example.trim_end()),
         unit = escape(unit.trim_end()),
@@ -257,23 +263,6 @@ fn escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
-}
-
-/// The severity floor the shipped agent config sets, read out of the file that
-/// sets it. The node's root threshold has to be at or below it: everything the
-/// agent's severity rule selects has to reach a backend first, and a node whose
-/// floor is higher answers "every error, warning and notice trace" with a
-/// subset and says nothing about it (metsuke-4zo.97).
-fn agent_min_severity(config_example: &str) -> String {
-    config_example
-        .lines()
-        .find_map(|line| {
-            line.trim_start_matches("# ")
-                .strip_prefix("min_severity = ")
-        })
-        .expect("the shipped example config documents min_severity")
-        .trim_matches('"')
-        .to_string()
 }
 
 /// The node endpoint both step 4 and step 7 talk about, read once out of the
@@ -324,35 +313,36 @@ impl MetricsEndpoint {
             port = self.port,
         )
     }
+}
 
-    /// The same, plus what a node has to be told before the trace namespaces
-    /// the rewards program asked about reach a backend at all. It carries the
-    /// backends whole rather than adding to them: both live under the same
-    /// empty-string key, so an operator applying two snippets would have the
-    /// second replace the first.
-    fn trace_config(&self, root_severity: &str) -> String {
-        let lowered = LOWERED_NAMESPACES
-            .iter()
-            .map(|namespace| {
-                format!(
-                    r#",
-    "{namespace}": {{ "severity": "Info", "maxFrequency": 0 }}"#
-                )
-            })
-            .collect::<String>();
-        format!(
-            r#"{{
-  "TraceOptions": {{
-    "": {{
-      "backends": ["Stdout MachineFormat", "PrometheusSimple {host} {port}"],
-      "severity": "{root_severity}"
-    }}{lowered}
+/// What a node has to be told before the trace namespaces the rewards program
+/// asked about reach a backend at all. Namespace keys only: it holds no `""`
+/// entry, so merging it cannot disturb the root the backend snippet touched, and
+/// an operator who already has these namespaces configured keeps whatever else
+/// they set on them. Why it sets no root `severity`: ADR 0010.
+///
+/// Free of `MetricsEndpoint`, unlike `backend_config`: the host and port went
+/// with the root entry this no longer writes.
+fn trace_config() -> String {
+    let named = NAMED_NAMESPACES
+        .iter()
+        .map(|namespace| {
+            format!(
+                r#"
+    "{namespace}": {{ "severity": "Info", "maxFrequency": 0 }},"#
+            )
+        })
+        .collect::<String>();
+    // Each entry brings its own trailing comma, and the last one is not valid
+    // JSON. `trim_end_matches` rather than `strip_suffix` because an empty list
+    // leaves no comma to strip.
+    format!(
+        r#"{{
+  "TraceOptions": {{{}
   }}
 }}"#,
-            host = self.host,
-            port = self.port,
-        )
-    }
+        named.trim_end_matches(',')
+    )
 }
 
 /// Which path out of the shipped unit's `ExecStart` a step needs.

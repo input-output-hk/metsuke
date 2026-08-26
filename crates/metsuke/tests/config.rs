@@ -3,7 +3,6 @@
 //! default to the shipped values the example config documents.
 
 use metsuke::config::Config;
-use metsuke::logselect::Severity;
 use metsuke_wire::envelope::{PoolId, SigningKey};
 
 fn test_pool_id() -> PoolId {
@@ -87,7 +86,6 @@ fn a_log_section_naming_only_the_host_s_paths_takes_the_shipped_defaults() {
             "Forge.Loop.AdoptedBlock",
         ]
     );
-    assert_eq!(log.min_severity, Severity::Notice);
     assert_eq!(log.log_max_bytes, 256 * 1024 * 1024);
     assert_eq!(log.respawn_backoff_secs, 30);
 }
@@ -123,17 +121,21 @@ fn an_unknown_log_key_fails_loudly() {
     );
 }
 
-// The severity floor is spelled as cardano-node spells it, so an operator sets
-// the same word in both files.
+// The retired severity floor. An operator carrying it over from an earlier
+// config is told the key is gone, rather than having it read and ignored while
+// selection quietly stops honouring it.
 #[test]
-fn min_severity_takes_the_node_s_own_spelling() {
+fn the_retired_min_severity_key_fails_loudly() {
     let toml = format!(
         "{}\n{}\nmin_severity = \"Warning\"\n",
         minimal_toml(),
         minimal_log_section()
     );
-    let log = Config::from_toml(&toml).unwrap().log.unwrap();
-    assert_eq!(log.min_severity, Severity::Warning);
+    let err = Config::from_toml(&toml).unwrap_err();
+    assert!(
+        err.to_string().contains("min_severity"),
+        "error must name the retired field, got: {err}"
+    );
 }
 
 // Acceptance: sample and upload cadences are independent configuration —

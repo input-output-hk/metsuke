@@ -108,20 +108,104 @@ fn the_metrics_endpoint_comes_from_the_shipped_config() {
     );
 }
 
-/// metsuke-4zo.97: the node-config step pins the node's root severity, and
-/// pins it to the floor the shipped agent config sets. A node whose root sits
-/// above that floor emits nothing for the agent's severity rule to select and
-/// says nothing about it.
+/// Every `<pre>` block on the page, in order, with the entities `escape` wrote
+/// turned back into the characters the snippet is meant to be applied as.
+fn snippets(page: &str) -> Vec<String> {
+    page.split("<pre>")
+        .skip(1)
+        .filter_map(|rest| rest.split_once("</pre>"))
+        .map(|(block, _)| {
+            block
+                .replace("&lt;", "<")
+                .replace("&gt;", ">")
+                .replace("&amp;", "&")
+        })
+        .collect()
+}
+
+/// The node-config snippets, as the JSON an operator pastes. Parsed rather than
+/// searched, so an assertion about one key cannot read another snippet's.
+fn trace_options(page: &str) -> Vec<serde_json::Value> {
+    snippets(page)
+        .iter()
+        .filter_map(|snippet| serde_json::from_str::<serde_json::Value>(snippet).ok())
+        .filter(|value| value.get("TraceOptions").is_some())
+        .collect()
+}
+
+/// Neither node-config snippet sets a root severity. Why the page states no
+/// floor an operator has to stay under: ADR 0010.
 #[test]
-fn the_node_root_severity_comes_from_the_agents_own_floor() {
-    // The needle is the example's own min_severity, so a stale one makes the
-    // replace a no-op and fails the assert below rather than passing.
-    let config = instructions::CONFIG_EXAMPLE
-        .replace(r#"min_severity = "Notice""#, r#"min_severity = "Alert""#);
-    let page = instructions::render(&config, instructions::UNIT);
+fn no_node_config_snippet_sets_a_root_severity() {
+    let page = instructions::render(instructions::CONFIG_EXAMPLE, instructions::UNIT);
+    let snippets = trace_options(&page);
+    assert_eq!(snippets.len(), 2, "the page lost a TraceOptions snippet");
+    // Step 4's is the one with a root entry, and `backends` is what says it is
+    // still there: a dropped root indexes to Null, whose `get` answers None for
+    // every key, so the severity assert alone would pass over nothing at all.
+    let root = &snippets[0]["TraceOptions"][""];
     assert!(
-        page.contains(r#""severity": "Alert""#),
-        "the root severity does not follow the config's min_severity"
+        root.get("backends").is_some(),
+        "the backend snippet lost its root entry: {root}"
+    );
+    assert!(
+        root.get("severity").is_none(),
+        "the root TraceOptions entry sets a severity: {root}"
+    );
+    // Step 5's has no root at all (`the_trace_step_cannot_disturb_the_root_entry`),
+    // so there is no second root to check.
+    assert!(
+        snippets[1]["TraceOptions"][""].is_null(),
+        "the trace snippet grew a root entry"
+    );
+}
+
+/// Why each namespace is named rather than inheriting: ADR 0010.
+#[test]
+fn every_named_namespace_carries_its_own_severity() {
+    let page = instructions::render(instructions::CONFIG_EXAMPLE, instructions::UNIT);
+    let snippets = trace_options(&page);
+    assert_eq!(snippets.len(), 2, "the page lost a TraceOptions snippet");
+    // The second: step 5's, the namespace keys.
+    let traces = &snippets[1];
+    assert!(
+        !instructions::NAMED_NAMESPACES.is_empty(),
+        "an empty list would assert nothing below"
+    );
+    for namespace in instructions::NAMED_NAMESPACES {
+        assert_eq!(
+            traces["TraceOptions"][namespace]["severity"], "Info",
+            "{namespace} inherits the root severity"
+        );
+    }
+}
+
+/// The agent parses each trace line as a JSON object, which is what `Stdout
+/// MachineFormat` writes and no other `Stdout` backend does. The snippet has to
+/// name it, and the page has to say so in prose besides: an operator merging
+/// into a config that already names a different `Stdout` backend gets working
+/// metrics and no trace lines at all.
+#[test]
+fn the_backend_step_names_the_machine_format_backend_and_says_why() {
+    let page = instructions::render(instructions::CONFIG_EXAMPLE, instructions::UNIT);
+    let backends = trace_options(&page)[0]["TraceOptions"][""]["backends"]
+        .as_array()
+        .expect("the root entry lists backends")
+        .iter()
+        .filter_map(|value| value.as_str().map(str::to_string))
+        .collect::<Vec<String>>();
+    assert!(
+        backends
+            .iter()
+            .any(|backend| backend == "Stdout MachineFormat"),
+        "the snippet does not name the backend the agent can parse: {backends:?}"
+    );
+    // The prose, not just the snippet: the snippet alone is what an operator
+    // merging into an existing config can satisfy while still keeping a
+    // human-format backend.
+    assert!(
+        page.contains("one JSON object per line"),
+        "the page never says what MachineFormat is for"
     );
 }
 
@@ -155,28 +239,39 @@ fn the_node_config_step_covers_every_namespace_the_agent_selects() {
     for namespace in namespaces {
         // Either direction: the agent selects by prefix, so its rule may sit
         // above the node's namespace or below it.
-        let lowered = instructions::LOWERED_NAMESPACES
+        let named = instructions::NAMED_NAMESPACES
             .iter()
             .any(|key| key.starts_with(&namespace) || namespace.starts_with(key));
-        let at_root = namespace.starts_with(instructions::EMITTED_AT_ROOT_SEVERITY)
-            || instructions::EMITTED_AT_ROOT_SEVERITY.starts_with(&namespace);
         assert!(
-            lowered || at_root,
+            named,
             "the node-config step never makes the node emit {namespace:?}"
         );
     }
 }
 
-/// The two node-config snippets sit under the same key, so the second has to
-/// carry the first whole or an operator applying both loses the backends.
+/// Both snippets are keys to merge into an operator's own `TraceOptions`, and
+/// the trace one holds no `""` key at all — so applying it cannot drop the root
+/// entry, which is what carries their severity, their detail and the backends
+/// step 4 added. Why merging is the instruction: ADR 0010.
 #[test]
-fn the_trace_step_carries_the_backend_step_whole() {
-    let config = instructions::CONFIG_EXAMPLE.replace("127.0.0.1:12798", "127.0.0.1:19999");
-    let page = instructions::render(&config, instructions::UNIT);
+fn the_trace_step_cannot_disturb_the_root_entry() {
+    let page = instructions::render(instructions::CONFIG_EXAMPLE, instructions::UNIT);
+    let snippets = trace_options(&page);
+    assert_eq!(snippets.len(), 2, "the page lost a TraceOptions snippet");
+    let traces = snippets[1]["TraceOptions"]
+        .as_object()
+        .expect("TraceOptions is an object");
+    assert!(
+        !traces.contains_key(""),
+        "the trace snippet carries a root entry: {traces:?}"
+    );
+    // A literal, not NAMED_NAMESPACES.len(): comparing the snippet against the
+    // const it was built from is 0 == 0 on an empty const, and "touches no
+    // root" would then be true of nothing.
     assert_eq!(
-        page.matches("PrometheusSimple 127.0.0.1 19999").count(),
-        2,
-        "the trace snippet does not repeat the backends the metrics snippet set"
+        traces.len(),
+        4,
+        "the trace snippet names a different number of namespaces: {traces:?}"
     );
 }
 

@@ -115,7 +115,6 @@ in
                   };
                   namespace_roots = shipped (types.listOf types.str);
                   namespaces = shipped (types.listOf types.str);
-                  min_severity = shipped types.str;
                   log_max_bytes = shipped types.ints.unsigned;
                   respawn_backoff_secs = shipped types.ints.unsigned;
                 };

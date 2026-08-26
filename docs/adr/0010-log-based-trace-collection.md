@@ -1,7 +1,8 @@
 # 10. Trace lines off the journal, selected by configuration
 
-Status: proposed (2026-08-25), supersedes ADR 0007, where a line's stamp is
-applied amended by metsuke-jfb.11
+Status: proposed (2026-08-25). Supersedes ADR 0007.
+Amended by metsuke-jfb.11, which moved where a line's stamp is applied, and by
+metsuke-jfb.19, which dropped severity as a selection rule.
 
 ## Context
 
@@ -12,9 +13,12 @@ is that the privilege set is the attack surface — the reason changed, not the
 caution.
 
 The rewards-program developers asked for the distributions of announcement
-receipt, of EB body and closure receipt, of quorum, and of RB adoption, plus
-every trace at error, warning or notice severity and every `LeiosNotVoted`.
-They compute the distributions themselves, and said their list is incomplete.
+receipt, of EB body and closure receipt, of quorum, of `LeiosNotVoted` and of RB
+adoption, plus every trace at error, warning or notice severity — the one ask
+metsuke-jfb.19 drops. Every distribution maps to a namespace the node emits, all
+under `Consensus.Leios` except RB adoption, which is two namespaces:
+`ChainDB.AddBlockEvent.AddedToCurrentChain` and `Forge.Loop.AdoptedBlock`. They
+compute the distributions themselves, and said their list is incomplete.
 None of it is answerable from the Prometheus endpoint: one scrape is a periodic
 snapshot of chain state with no per-event timestamps, so "when did this arrive"
 has no field to read. The data exists only in the node's trace stream.
@@ -27,18 +31,27 @@ the block producer's write path, where a stalled reader is the node's problem.
 ## Decision
 
 The agent follows the node's journal with `journalctl --follow`, selects lines
-by namespace prefix or severity floor — both configuration, matched as *or*,
-since "every Leios event" and "every error, warning and notice" are two
-independent asks — and ships every field of what it selects. It parses the line
-as a JSON object and reads `ns` and `sev` off its top level and nothing else; a
-line the parse refuses declares neither field, so no rule reaches it. That parse
-is also what travels: a selected line is the object from here on, so the spool
-and the wire hold it re-rendered rather than as the node's own bytes, and
-nothing downstream parses it a second time. It does
-not know what a Leios trace means and computes nothing from one. One more
-namespace is therefore an edit to a config file rather than a release, bounded
-by a `namespace_roots` ceiling the host sets: the agent can read every unit's
-journal, and a namespace rule is what reaches into it by name.
+by namespace prefix — configuration — and ships every field of what it selects.
+It parses the line as a JSON object and reads `ns` off its top level and nothing
+else; a line the parse refuses declares no namespace, so no rule reaches it.
+
+Severity is not a rule. A namespace's severity is assigned by the node's own
+`TraceOptions`, so what a line carries in `sev` states what its operator
+configured rather than whether anyone asked for the line, and a floor over that
+selects a set that changes with the node's config and with a node version's
+spelling of the ladder. So the severity ask is dropped, not answered another
+way. What that costs is bounded: every distribution the program asked for is
+already a namespace in the shipped `namespaces` default, so the floor added no
+measurement line. What it added was error, warning and notice lines from
+namespaces nobody named, and no stated use exists for those.
+
+That parse is also what travels: a selected line is the object from here on, so
+the spool and the wire hold it re-rendered rather than as the node's own bytes,
+and nothing downstream parses it a second time. It does not know what a Leios
+trace means and computes nothing from one. One more namespace is therefore an
+edit to a config file rather than a release, bounded by a `namespace_roots`
+ceiling the host sets: the agent can read every unit's journal, and a namespace
+rule is what reaches into it by name.
 
 Collection is opt-in. Without a `[log]` section the agent reads only the
 loopback metrics endpoint and holds no group, which is ADR 0007's posture
@@ -74,10 +87,17 @@ source, and its own decision.
 ## Consequences
 
 - Trace collection has a node-config step beyond ADR 0007's. Adding the stdout
-  backend is not enough: every Leios namespace is emitted below the node's own
-  root severity threshold, and that threshold is also the ceiling on what the
-  agent's severity floor can ever see. The instructions page carries the step
-  and docs/research/cardano-node-11-tracing.md carries why.
+  backend is not enough: the node has to be told to emit the named namespaces at
+  all. The agent cannot select a line the node never wrote, which is the one way
+  severity still bounds what reaches the archive. The step names every namespace
+  the node must emit for the agent's rules to select anything, each with its own
+  severity, so it holds under whatever root threshold the operator has and the
+  page states no floor they must stay under. Both node-config snippets are keys
+  to merge, never a `TraceOptions` to paste over one: an operator's own config
+  may already carry these namespaces and settings on them that replacing the
+  object would discard. The instructions page carries the step and
+  docs/research/cardano-node-11-tracing.md carries why, and what the published
+  configs hold.
 - The grant is real and lasts as long as `[log]` is set. `systemd-journal`
   reads the whole system journal, not the node's unit: an agent compromised on
   a host that logs anything sensitive to the journal reads that too. The
@@ -98,13 +118,13 @@ source, and its own decision.
 - The end-to-end test carries a real node's selected lines all the way into the
   bucket, but not a Leios round's: one node forges an EB only if its own
   mempool overflows, and never receives an announcement or reaches a quorum,
-  because both need a peer. A node start fires both rules and is what that test
-  reads back. What a Leios round's traces look like is owned by the recordings
-  under crates/metsuke/tests/fixtures, replayed through a real journal in the
-  unit test and through the selection and spool in `cargo test`.
+  because both need a peer. A node start fires the namespace rules and is what
+  that test reads back. What a Leios round's traces look like is owned by the
+  recordings under crates/metsuke/tests/fixtures, replayed through a real
+  journal in the unit test and through the selection and spool in `cargo test`.
 - Selecting costs a JSON parse of every line the node writes, wanted or not,
-  and now the parsed object as well. That is deliberate: reading the fields as
-  substrings needed a rule about which occurrence in the line is the record's
+  and now the parsed object as well. That is deliberate: reading `ns` as a
+  substring needed a rule about which occurrence in the line is the record's
   own, and that rule is a claim about the node's key order that nothing
   enforces. Nobody has measured what the parse costs on a real block producer; a
   prefilter ahead of it is a local change if it turns out to matter.

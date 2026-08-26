@@ -66,15 +66,13 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # give journalctl's absolute path, because this unit's PATH is not one to
 # resolve a program on.
 #
-# namespaces are prefixes, min_severity is a floor spelled as cardano-node
-# spells it, and namespace_roots is this host's ceiling on namespaces — a
-# namespaces entry outside it is refused at startup. Why the ceiling bounds the
-# one rule and not the other: docs/adr/0010.
+# namespaces are prefixes and are the whole selection rule; namespace_roots is
+# this host's ceiling on them — a namespaces entry outside it is refused at
+# startup. Why severity is not a second rule: docs/adr/0010.
 # [log]
 # journal_unit = "cardano-node"
 # journalctl_path = "/usr/bin/journalctl"
 # namespace_roots = ["Consensus.", "ChainDB.", "Forge."]
 # namespaces = ["Consensus.Leios", "ChainDB.AddBlockEvent.AddedToCurrentChain", "Forge.Loop.AdoptedBlock"]
-# min_severity = "Notice"
 # log_max_bytes = 268435456
 # respawn_backoff_secs = 30
