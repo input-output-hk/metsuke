@@ -67,20 +67,20 @@ root sets no `maxFrequency`.
 Two different configs are in play, and everything measured above is the first:
 
 - `demo/proto-devnet/config/config.yaml` in the ouroboros-leios repo, pinned at
-  `prototype-2026w32`. The fixture recordings and the e2e node both come from it
-  (nix/e2e-test.nix). It is a demo, not what anyone operates.
+  `prototype-2026w32`. The fixture recordings come from it, and so does the chain the e2e
+  node joins. It is a demo, not what anyone operates.
 - `book.world.dev.cardano.org/environments-pre/leios/config.json`, which is what SPOs
-  run. Root threshold Notice; `Consensus.LeiosKernel` and `Consensus.LeiosPeer` at Debug
-  with `maxFrequency: 0`; `ChainDB` and `Forge.Loop` at Info, which is what carries
-  `AddedToCurrentChain` and `AdoptedBlock`. So an operator on this config already emits
-  every namespace the agent selects. The instructions page's trace step is not a no-op
-  for them even so: merging replaces a key's whole entry, so its `"severity": "Info"`
-  raises `Consensus.LeiosKernel` and `Consensus.LeiosPeer` from Debug to Info. That
-  admits every measurement and drops the wire-level Debug chatter above, so it costs
-  nothing anyone asked for. Pasting over their `TraceOptions` rather than merging is the
-  real loss — the rate limits it sets on `LeiosNotify.Remote` and `LeiosFetch.Remote`
-  would go with it, which is why both snippets are framed as keys to merge. Nothing in
-  this repo is verified against this config; that gap is metsuke-jfb.20.
+  run, recorded at nix/fixtures/leios-preprod-node-config.json — the recording owns every
+  value below. It already gives each namespace the agent selects an override that emits
+  it. The instructions page's trace step is not a no-op for them even so: merging replaces
+  a key's whole entry, so its `"severity": "Info"` raises the two `Consensus.Leios*` keys
+  from Debug, which admits every measurement and drops the Debug-severity lines under
+  those two namespaces. That costs nothing anyone asked for. It leaves the wire-level
+  namespaces above untouched — the snippet does not name them, so they keep whatever the
+  operator set. Pasting over their `TraceOptions` rather than merging is the
+  real loss — the per-namespace rate limits and silences it sets on namespaces nobody here
+  named would go with it, which is why both snippets are framed as keys to merge. What
+  asserts all of this against a running node: nix/e2e-test.nix.
 
 `cardano-node trace-documentation` is not a source for these: it emits 649 namespaces
 and no Leios one among them, because the Leios tracers have `documentFor _ = Nothing`.

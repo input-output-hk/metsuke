@@ -181,12 +181,12 @@ fn every_named_namespace_carries_its_own_severity() {
 }
 
 /// The agent parses each trace line as a JSON object, which is what `Stdout
-/// MachineFormat` writes and no other `Stdout` backend does. The snippet has to
-/// name it, and the page has to say so in prose besides: an operator merging
-/// into a config that already names a different `Stdout` backend gets working
-/// metrics and no trace lines at all.
+/// MachineFormat` writes and no other `Stdout` backend does. Only the snippet is
+/// checked here: what step 4 says about *applying* it rests on cardano-node's
+/// backend resolution order, which nothing in this repo verifies — see the note
+/// on `instructions::MetricsEndpoint::backend_config` (metsuke-jfb.24).
 #[test]
-fn the_backend_step_names_the_machine_format_backend_and_says_why() {
+fn the_backend_step_names_the_machine_format_backend() {
     let page = instructions::render(instructions::CONFIG_EXAMPLE, instructions::UNIT);
     let backends = trace_options(&page)[0]["TraceOptions"][""]["backends"]
         .as_array()
@@ -199,13 +199,6 @@ fn the_backend_step_names_the_machine_format_backend_and_says_why() {
             .iter()
             .any(|backend| backend == "Stdout MachineFormat"),
         "the snippet does not name the backend the agent can parse: {backends:?}"
-    );
-    // The prose, not just the snippet: the snippet alone is what an operator
-    // merging into an existing config can satisfy while still keeping a
-    // human-format backend.
-    assert!(
-        page.contains("one JSON object per line"),
-        "the page never says what MachineFormat is for"
     );
 }
 

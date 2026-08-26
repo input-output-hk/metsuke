@@ -118,8 +118,9 @@ source, and its own decision.
 - The end-to-end test carries a real node's selected lines all the way into the
   bucket, but not a Leios round's: one node forges an EB only if its own
   mempool overflows, and never receives an announcement or reaches a quorum,
-  because both need a peer. A node start fires the namespace rules and is what
-  that test reads back. What a Leios round's traces look like is owned by the
+  because both need a peer. What that test reads back is a node start and the
+  blocks the node forges alone, which between them cover every namespace the
+  agent ships selecting. What a Leios round's traces look like is owned by the
   recordings under crates/metsuke/tests/fixtures, replayed through a real
   journal in the unit test and through the selection and spool in `cargo test`.
 - Selecting costs a JSON parse of every line the node writes, wanted or not,

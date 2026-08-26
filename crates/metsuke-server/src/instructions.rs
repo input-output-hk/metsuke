@@ -131,12 +131,13 @@ as it stands. If it has one, merge into it rather than pasting over it: the
 <code>""</code> key is your node's root entry, so keep every other key it has
 and add to its backends list.</p>
 
-<p>Both backends have to end up in that list. <code>PrometheusSimple</code> is
-the metrics endpoint. <code>Stdout MachineFormat</code> is what writes traces as
-one JSON object per line, which is the only form step 5's agent can read — so if
-your root already names a different <code>Stdout</code> backend, replace it
-rather than keeping both. Get this wrong and metrics still work, step 5 looks
-applied, and not one trace line is ever collected.</p>
+<p>Both backends have to end up in that list, and each replaces one of its own
+kind rather than joining it: if your root already names a
+<code>PrometheusSimple</code> or an <code>Stdout</code> backend, replace that one
+instead of keeping both. If you would rather keep your own
+<code>PrometheusSimple</code>, leave it and point step 7's
+<code>metrics_url</code> at its port. Get this wrong and metrics still work,
+step 5 looks applied, and not one trace line is ever collected.</p>
 
 <p>Restart the node, then check it answers:</p>
 
@@ -302,6 +303,14 @@ impl MetricsEndpoint {
     /// The one node-config change the agent needs, as JSON: cardano-node reads
     /// JSON wherever it reads YAML, and the empty-string key is unwieldy in
     /// YAML by hand.
+    ///
+    /// Why step 4 says to replace a backend of the same kind rather than add
+    /// one: cardano-node resolves the root's `PrometheusSimple` with
+    /// `listToMaybe` (`Cardano/Node/Tracing/API.hs`, read at the
+    /// `cardano-node-leios` pin), so a second is silently ignored and an
+    /// operator who appends keeps the port they had. Stated here rather than on
+    /// the page — an operator needs the instruction, not the mechanism, and
+    /// nothing in this repo verifies another project's resolution order.
     fn backend_config(&self) -> String {
         format!(
             r#"{{

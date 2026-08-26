@@ -4,6 +4,10 @@
 # a value should be is not asserted here — the recorded fixtures under
 # crates/metsuke/tests/fixtures own that; this asserts that the parts meet.
 #
+# The node's tracing is the recorded pre-production configuration, and the
+# instructions page's node-config snippets are merged into it rather than pasted
+# over it, which is what the page tells an operator to do.
+#
 # One machine, because the agent refuses a plaintext upload_url that is not
 # loopback (crates/metsuke/src/endpoint.rs) and there is no certificate here to
 # make it https.
@@ -23,12 +27,59 @@
   leios,
 }:
 let
-  metricsPort = 12798;
+  inherit (pkgs) lib;
+
+  # What this configuration is: docs/research/cardano-node-11-tracing.md,
+  # section 1. Recorded by scripts/record-preprod-node-config.sh.
+  preprodConfigFile = ./fixtures/leios-preprod-node-config.json;
+  preprodConfig = lib.importJSON preprodConfigFile;
+
+  # The endpoint that recording already opens: an operator reaches step 4 with a
+  # `PrometheusSimple` backend already in place.
+  metricsPort =
+    let
+      backends = preprodConfig.TraceOptions."".backends;
+      named = lib.filter (lib.hasPrefix "PrometheusSimple ") backends;
+      words = lib.splitString " " (lib.head named);
+    in
+    assert lib.assertMsg (
+      named != [ ]
+    ) "${toString preprodConfigFile} opens no PrometheusSimple endpoint to scrape";
+    lib.toInt (lib.last words);
+
+  # crates/metsuke-server/src/instructions.rs reads it from here too.
+  pagePort =
+    let
+      example = fromTOML (builtins.readFile ../contrib/config.example.toml);
+      matched = builtins.match "https?://[^:/]+:([0-9]+)(/.*)?" example.metrics_url;
+    in
+    assert lib.assertMsg (
+      matched != null
+    ) "the shipped example config's metrics_url names no port: ${example.metrics_url}";
+    lib.toInt (lib.head matched);
+
   listenPort = 8080;
   s3Port = 3900;
 
+  # Applying the page's snippets is an edit to the file the node reads, and a
+  # store path cannot be edited. Seeded from `nodeConfig` at boot.
+  configPath = "/var/lib/cardano-node-config/config.json";
+
   devnetSrc = "${leios}/demo/proto-devnet";
   poolKeys = "${devnetSrc}/config/pools-keys/pool1";
+
+  # The guest boots here rather than at the host's clock, so the node forges.
+  # pool1's opcert is issued for KES period 0 and the demo's genesis is years
+  # old, so at any real clock the node is far past `maxKESEvolutions` and
+  # produces nothing — and further every day. A clock the test owns also drops
+  # the wall clock as an input.
+  genesisStart = (lib.importJSON "${devnetSrc}/config/genesis/byron-genesis.json").startTime;
+
+  # Leader about one slot in five for pool1's third of the stake
+  # (`1 - (1 - f) ^ σ`), so a block inside seconds rather than inside a Poisson
+  # tail. Not 1: every slot having a leader is further from anything an operator
+  # runs than it needs to be.
+  activeSlots = "0.5";
 
   # Recorded from poolKeys/cold.vkey, not derived: a bump of the Leios pin that
   # changed the demo's pool1 would silently move a derived value, where this
@@ -112,13 +163,15 @@ let
       done
   '';
 
-  # The proto-devnet demo's own configuration, with the trace backends replaced
-  # by a loopback PrometheusSimple one and the machine-readable stdout one the
-  # agent's trace collection reads back off the journal (ADR 0010). The genesis
-  # files are taken as they are: nothing here forges, so the node sits at the
-  # demo's own start time, serves the endpoint and writes its startup traces.
+  # The chain is the demo's and the tracing is the recording's, so the node boots
+  # as an operator who has not reached step 4 yet.
   #
-  # Why a start, not a round: docs/adr/0010.
+  # `activeSlots` is what makes it lead often enough to be certain of a block: at
+  # the demo's own 0.05, pool1's third of the stake leads about one slot in
+  # sixty, and a five-minute window was a coin toss this test lost. Shelley wants
+  # `epochLength == 10k/f`, so the two move together — the same gate
+  # devnet/flake.nix's `devnet-setup` applies, which is a fifth copy of what
+  # metsuke-4zo.60 tracks.
   nodeConfig =
     pkgs.runCommand "leios-node-config"
       {
@@ -129,15 +182,33 @@ let
       }
       # Genesis beside config.json, the YAML through yq, the topology template
       # taken as it is: scripts/record-scrape-fixtures.sh says why each of the
-      # three has to be done that way.
+      # three has to be done that way. Genesis paths go absolute because the node
+      # reads a copy of this config from `configPath`, not from here.
       ''
         mkdir -p $out
         cp ${devnetSrc}/config/genesis/*.json $out/
-        yq -o=json . ${devnetSrc}/config/config.yaml |
-          jq --arg backend "PrometheusSimple 127.0.0.1 ${toString metricsPort}" \
-            '.TraceOptionNodeName = "e2e"
-             | .TraceOptions."".backends = ["Stdout MachineFormat", $backend]' \
-            >$out/config.json
+        chmod u+w $out/*.json
+        jq --argjson f ${activeSlots} \
+          '.activeSlotsCoeff = $f | .epochLength = (10 * .securityParam / $f | floor)' \
+          ${devnetSrc}/config/genesis/shelley-genesis.json >$out/shelley-genesis.json
+        jq -e '.epochLength == (10 * .securityParam / .activeSlotsCoeff)' \
+          $out/shelley-genesis.json >/dev/null || {
+          echo "error: epochLength is not 10k/f in $out/shelley-genesis.json" >&2
+          exit 1
+        }
+        yq -o=json . ${devnetSrc}/config/config.yaml >devnet.json
+        jq -s --arg dir "$out" \
+          '.[0] as $devnet
+           | .[1] as $spo
+           | ($spo | with_entries(select(.key | startswith("TraceOption")))) as $tracing
+           | ($devnet | with_entries(select(.key | startswith("TraceOption") | not)))
+           + $tracing
+           + { TraceOptionNodeName: "e2e" }
+           | with_entries(
+               if (.key | endswith("GenesisFile"))
+               then .value = "\($dir)/\(.value)"
+               else . end)' \
+          devnet.json ${preprodConfigFile} >$out/config.json
         jq '.' ${devnetSrc}/config/topology.template.json >$out/topology.json
       '';
 
@@ -206,19 +277,55 @@ let
         environment.systemPackages = [
           serverPackage
           pkgs.awscli2
+          pkgs.curl
         ];
+
+        # `C+` at boot only, so the merged configuration the test script writes
+        # survives the restart it then does.
+        systemd.tmpfiles.rules = [
+          "d ${dirOf configPath} 0755 root root -"
+          "C+ ${configPath} 0644 root root - ${nodeConfig}/config.json"
+        ];
+
+        systemd.services.genesis-clock = {
+          before = [ "cardano-node.service" ];
+          requiredBy = [ "cardano-node.service" ];
+          serviceConfig = {
+            Type = "oneshot";
+            RemainAfterExit = true;
+            ExecStart = "${pkgs.coreutils}/bin/date -s @${toString (genesisStart + 60)}";
+          };
+        };
+        services.timesyncd.enable = false;
 
         systemd.services.cardano-node = {
           wantedBy = [ "multi-user.target" ];
           serviceConfig = {
+            # The keys are world-readable in the store and cardano-node refuses
+            # one that is; RuntimeDirectory exists before this runs, and it runs
+            # as the same dynamic user the node does.
+            ExecStartPre = pkgs.lib.concatStringsSep " " [
+              "${pkgs.coreutils}/bin/install -m0400 -t /run/cardano-node"
+              "${poolKeys}/vrf.skey"
+              "${poolKeys}/kes.skey"
+              "${poolKeys}/bls.skey"
+              "${poolKeys}/opcert.cert"
+            ];
             ExecStart = pkgs.lib.concatStringsSep " " [
               "${cardano-node}/bin/cardano-node run"
-              "--config ${nodeConfig}/config.json"
+              "--config ${configPath}"
               "--topology ${nodeConfig}/topology.json"
               "--database-path /var/lib/cardano-node/db"
               "--socket-path /run/cardano-node/node.socket"
               "--host-addr 127.0.0.1"
               "--port 3001"
+              # Forging, so block adoption happens at all: two of the three
+              # namespaces the agent ships selecting are adoption events, and a
+              # node that produces no block emits neither (metsuke-jfb.20).
+              "--shelley-vrf-key /run/cardano-node/vrf.skey"
+              "--shelley-kes-key /run/cardano-node/kes.skey"
+              "--shelley-bls-key /run/cardano-node/bls.skey"
+              "--shelley-operational-certificate /run/cardano-node/opcert.cert"
             ];
             # The Leios ledger's path in config.json is relative, so it lands here
             # rather than in the root directory.
@@ -314,9 +421,29 @@ let
       };
 
     testScript = ''
+      import html
       import json
       from collections import Counter
       from datetime import timedelta
+
+
+      # The recording's `"maxFrequency": 2.0` echoes back as 2.
+      def asNodeRenders(value):
+          if isinstance(value, dict):
+              return {key: asNodeRenders(inner) for key, inner in value.items()}
+          if isinstance(value, float) and value.is_integer():
+              return int(value)
+          return value
+
+
+      # The namespaces this node reaches of the ones the shipped agent selects:
+      # one Leios line, which is a start rather than a round (docs/adr/0010), and
+      # both block adoption events, which is why the node forges.
+      selected = [
+          "Consensus.LeiosKernel.Msg",
+          "ChainDB.AddBlockEvent.AddedToCurrentChain",
+          "Forge.Loop.AdoptedBlock",
+      ]
 
       start_all()
 
@@ -390,22 +517,199 @@ let
           )
           e2e.fail("journalctl -u metsuke.service | grep -q 'trace lines not collected'")
 
-      with subtest("the node's own trace lines reach the archive"):
-          # The agent follows from the journal's end, so this node's first
-          # start was already past when it attached. Restarting the node is a
-          # start it does not miss, and a start is where a node with no peers
-          # says anything the selection rules want.
+      with subtest("the page's node-config snippets merge into an SPO's own config"):
+          # Off the served page rather than restated here, so what this applies
+          # is what an operator pastes.
+          page = e2e.succeed("curl -sS http://127.0.0.1:${toString listenPort}/")
+          snippets = []
+          for block in page.split("<pre>")[1:]:
+              try:
+                  parsed = json.loads(html.unescape(block.split("</pre>")[0]))
+              except json.JSONDecodeError:
+                  continue
+              if "TraceOptions" in parsed:
+                  snippets.append(parsed["TraceOptions"])
+          assert len(snippets) == 2, page
+          backend_step, trace_step = snippets
+
+          def kind(backend):
+              return backend.split(" ")[0]
+
+          def apply_steps(options):
+              # The page's steps 4 and 5 as their prose reads.
+              options = json.loads(json.dumps(options))
+              replaced = {kind(backend) for backend in backend_step[""]["backends"]}
+              options[""]["backends"] = [
+                  backend
+                  for backend in options[""]["backends"]
+                  if kind(backend) not in replaced
+              ] + backend_step[""]["backends"]
+              options.update(trace_step)
+              return options
+
+          def assert_merge_kept(before, after):
+              # What merging means and pasting over does not: the operator's own
+              # keys survive it (metsuke-jfb.21).
+              untouched = {
+                  key: value
+                  for key, value in before.items()
+                  if key != "" and key not in trace_step
+              }
+              assert len(untouched) > 1, untouched
+              for key, value in untouched.items():
+                  assert after[key] == value, (key, after[key], value)
+              for key in ["severity", "detail"]:
+                  assert after[""][key] == before[""][key], after[""]
+              for backend in before[""]["backends"]:
+                  if kind(backend) not in {kind(b) for b in backend_step[""]["backends"]}:
+                      assert backend in after[""]["backends"], after[""]
+              for backend in backend_step[""]["backends"]:
+                  assert backend in after[""]["backends"], after[""]
+              # And no kind is named twice: the node reads only the first.
+              kinds = [kind(backend) for backend in after[""]["backends"]]
+              assert len(kinds) == len(set(kinds)), after[""]
+              assert trace_step, "the trace snippet named no namespace"
+              for namespace, entry in trace_step.items():
+                  assert after[namespace] == entry, (namespace, after[namespace])
+              return untouched
+
+          recorded = json.loads(e2e.succeed("cat ${preprodConfigFile}"))["TraceOptions"]
+          config = json.loads(e2e.succeed("cat ${configPath}"))
+          assert asNodeRenders(config["TraceOptions"]) == asNodeRenders(recorded), (
+              "the node did not boot the recorded tracing"
+          )
+
+          merged = apply_steps(recorded)
+          untouched = assert_merge_kept(recorded, merged)
+          config["TraceOptions"] = merged
+          e2e.succeed(
+              "cat > ${configPath} <<'MERGED'\n" + json.dumps(config, indent=2) + "\nMERGED"
+          )
+
+          # Against the recording's own root both replacements are no-ops -- its
+          # Stdout backend is already MachineFormat and its PrometheusSimple is
+          # already on the page's port -- so a merge that only appended would
+          # pass. This root makes both happen (metsuke-jfb.23).
+          def diverge(backend):
+              if kind(backend) == "Stdout":
+                  return "Stdout HumanFormatColoured"
+              if kind(backend) == "PrometheusSimple":
+                  return " ".join(backend.split(" ")[:-1] + ["19999"])
+              return backend
+
+          divergent = json.loads(json.dumps(recorded))
+          divergent[""]["backends"] = [
+              diverge(backend) for backend in divergent[""]["backends"]
+          ]
+          for backend in backend_step[""]["backends"]:
+              assert backend not in divergent[""]["backends"], divergent[""]
+          assert_merge_kept(divergent, apply_steps(divergent))
+
+      with subtest("the node runs what the merge produced"):
+          # The node's own reading, not this script's: it echoes the TraceOptions
+          # it resolved on every start. Scoped to one invocation, so the
+          # pre-merge start's report cannot answer for the post-merge one.
+          #
+          # This restart is also the start the trace subtest below reads back:
+          # the agent follows from the journal's end, so the node's first start
+          # was already past when it attached, and a start is where a node with
+          # no peers says anything the selection rules want.
+          # Before the restart takes it away: the recording on its own already
+          # emits every namespace the agent selects, which is what
+          # docs/research/cardano-node-11-tracing.md claims of the config SPOs
+          # run. Read off the boot invocation, which ran the recording unmerged.
+          boot = e2e.succeed(
+              "systemctl show -p InvocationID --value cardano-node.service"
+          ).strip()
+          for namespace in selected:
+              e2e.wait_until_succeeds(
+                  f"journalctl _SYSTEMD_INVOCATION_ID={boot} -o cat"
+                  f" | grep -qF '\"ns\":\"{namespace}\"'",
+                  timeout = timedelta(minutes = 2),
+              )
+
           e2e.succeed("systemctl restart cardano-node.service")
           e2e.wait_for_open_port(${toString metricsPort}, addr = "127.0.0.1")
+
+          # The endpoint the page's own backend line opens serves the names the
+          # agent reads. Until the merge, the recording's `PrometheusSimple
+          # suffix ...` was what every metrics subtest above scraped, and the
+          # flag word decides whether a name carries its type suffix -- so
+          # without this, nothing tests the form the page ships.
+          # crates/metsuke/src/scrape.rs owns which names those are.
           e2e.wait_until_succeeds(
-              "${archivedLines} | grep -qF 'Consensus.LeiosKernel.Msg'",
-              timeout = timedelta(minutes = 5),
+              "curl -sS http://127.0.0.1:${toString metricsPort}/metrics"
+              " | grep -c cardano_node_metrics_blockNum_int >/dev/null"
           )
+
+          invocation = e2e.succeed(
+              "systemctl show -p InvocationID --value cardano-node.service"
+          ).strip()
+          journal = f"journalctl _SYSTEMD_INVOCATION_ID={invocation} -o cat"
+          e2e.wait_until_succeeds(f"{journal} | grep -q Reflection.TracerConfigInfo")
+
+          report = e2e.succeed(
+              f"{journal} | grep '\"ns\":\"Reflection.TracerConfigInfo\"'"
+          ).splitlines()
+          resolved = json.loads(report[-1])["data"]["conf"]["Options"]
+
+          # Backends as a set: the echo is the parsed config re-rendered, and
+          # nothing here depends on its order.
+          assert sorted(resolved[""]["backends"]) == sorted(merged[""]["backends"]), (
+              resolved[""]
+          )
+          for key, value in merged.items():
+              if key == "":
+                  value = {k: v for k, v in value.items() if k != "backends"}
+                  got = {k: v for k, v in resolved[""].items() if k != "backends"}
+              else:
+                  got = resolved.get(key)
+              assert asNodeRenders(got) == asNodeRenders(value), (key, got, value)
+
+          # A namespace this node version does not have is reported as illegal
+          # rather than refusing the start, so without this a snippet naming one
+          # would be silent (metsuke-jfb.20). The trace is written only when
+          # there are complaints, so no line is the clean case.
+          warnings = e2e.succeed(
+              f"{journal} | grep '\"ns\":\"Reflection.TracerConsistencyWarnings\"' || true"
+          )
+          for namespace in trace_step:
+              assert f"Illegal namespace {namespace}" not in warnings, warnings
+
+          # A key the operator had and step 5 does not name still reaches a
+          # backend, which the echo above cannot say: `Startup.DiffusionInit` is
+          # Info in the recording and fires on every start. A prefix, not an
+          # exact ns: an entry governs its subtree, and what the node writes is
+          # `Startup.DiffusionInit.ListeningServerSocket` and its siblings.
+          survivor = "Startup.DiffusionInit"
+          assert survivor in untouched, untouched
+          e2e.wait_until_succeeds(
+              f"{journal} | grep -qF '\"ns\":\"{survivor}.'",
+              timeout = timedelta(minutes = 2),
+          )
+
+          # A silence the operator set is still a silence.
+          silenced = [
+              key for key, value in untouched.items() if value.get("severity") == "Silence"
+          ]
+          assert silenced, recorded
+          for namespace in silenced:
+              e2e.fail(f"{journal} | grep -q '\"ns\":\"{namespace}'")
+
+      with subtest("the node's own trace lines reach the archive"):
+          # `grep -c`, not `grep -q`: -q exits on the first match, and the
+          # SIGPIPE that gives zstd trips `archivedLines`' own pipefail, so a
+          # present line reports absent. -c reads the stream to its end and
+          # still exits non-zero on no match.
+          for namespace in selected:
+              e2e.wait_until_succeeds(
+                  f"${archivedLines} | grep -cF '\"ns\":\"{namespace}\"' >/dev/null",
+                  timeout = timedelta(minutes = 5),
+              )
           archived = [json.loads(line) for line in e2e.succeed("${archivedLines}").splitlines()]
           namespaces = Counter(line["ns"] for line in archived)
-          # The namespace rule, on the one Leios namespace a node with no peers
-          # reaches. Why a start, not a round: docs/adr/0010.
-          assert namespaces["Consensus.LeiosKernel.Msg"] > 0, namespaces
+          for namespace in selected:
+              assert namespaces[namespace] > 0, namespaces
           # Nothing outside the configured namespaces rides along, whatever
           # severity it carries: Reflection is under no configured namespace, so
           # severity alone selects nothing.
@@ -435,6 +739,13 @@ let
     '';
   };
 in
+# One agent scrapes one URL across the pre-merge node and the post-merge one, so
+# this test can only run while the two ports agree. Divergence is no operator's
+# problem — step 4 tells them which to keep — it is this test needing two URLs.
+assert lib.assertMsg (metricsPort == pagePort) (
+  "the recording opens port ${toString metricsPort} and the page's snippet opens "
+  + "${toString pagePort}: nix/e2e-test.nix scrapes one port across both"
+);
 {
   inherit test poolIdRecorded;
 }
