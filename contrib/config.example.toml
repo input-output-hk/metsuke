@@ -38,7 +38,9 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # Upload limits: request deadline, retry jitter bound after server/network
 # failures, and the clamp on the rejection backoff. Set upload_batch_max_bytes
 # to the server's max_decompressed_bytes (contrib/server.example.toml) or
-# under; nothing checks that for you. Why the two bound the same bytes:
+# under; nothing checks that for you. It covers the header as well as the
+# payload, where the server bounds the two separately and nothing here is
+# measured against its max_header_bytes. Why the two count a line the same way:
 # docs/adr/0010.
 # upload_timeout_secs = 60
 # upload_jitter_max_secs = 300

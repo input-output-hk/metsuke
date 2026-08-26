@@ -71,9 +71,11 @@ on the machine your node is on.</p>
 
 <h2>1. What leaves your machine</h2>
 
-<p>One upload is a JSON header line, zstd compressed, with a detached Ed25519
-signature over the compressed bytes. This is an example of the whole thing.
-Nothing outside these fields is collected:</p>
+<p>One upload is a plain JSON header, then your samples zstd compressed, one
+JSON object per line, with a detached Ed25519 signature over the whole byte
+sequence. The header rides in a zstd skippable frame, so <code>zstd -d</code>
+on an upload hands back the lines and nothing else. This is an example of the
+whole thing. Nothing outside these fields is collected:</p>
 
 <pre>{envelope}</pre>
 
@@ -81,7 +83,7 @@ Nothing outside these fields is collected:</p>
 a signal, so the batch uploads either way.</p>
 
 <p>If you do step 5, trace lines upload as their own batches: the same header
-line without <code>samples</code>, and then the lines you selected, one per
+with <code>schema_version</code> 2, and then the lines you selected, one per
 line and exactly as your node wrote them.</p>
 
 <p>The signature travels beside the body in three headers:
@@ -390,10 +392,10 @@ fn metadata_json() -> String {
 /// every build; the digits mean nothing beyond showing the format.
 const EXAMPLE_INSTANT: i64 = 1_780_000_000;
 
-/// One upload's header line, rendered from the wire types themselves: a field
-/// this crate can receive but the page does not name is the drift this is here
-/// to prevent. Indented for reading — the line on the wire is one line, which
-/// is what lets a trace-line upload append to it.
+/// One upload, rendered from the wire types themselves: a field this crate can
+/// receive but the page does not name is the drift this is here to prevent.
+/// The header is indented for reading — on the wire it is one line — and the
+/// payload follows it as the lines a decompressor hands back.
 fn example_envelope() -> String {
     let key = SigningKey::from_bytes(&[0u8; 32]);
     let at = OffsetDateTime::from_unix_timestamp(EXAMPLE_INSTANT)
@@ -417,10 +419,11 @@ fn example_envelope() -> String {
             }],
         },
     );
-    // A samples envelope's body is its header line and nothing else, so the
-    // whole body parses back as the object the page shows.
-    let body = envelope::body(&envelope).expect("an envelope of plain fields serializes");
     let header: serde_json::Value =
-        serde_json::from_slice(&body).expect("a header line is a JSON object");
-    serde_json::to_string_pretty(&header).expect("a parsed header re-renders")
+        serde_json::from_slice(&envelope::header_json(&envelope).expect("plain fields serialize"))
+            .expect("a header is a JSON object");
+    let header = serde_json::to_string_pretty(&header).expect("a parsed header re-renders");
+    let lines = envelope::payload_lines(&envelope).expect("plain fields serialize");
+    let lines = String::from_utf8(lines).expect("serde_json writes UTF-8");
+    format!("{header}\n\n{lines}")
 }

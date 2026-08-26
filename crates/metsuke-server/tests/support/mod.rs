@@ -20,7 +20,7 @@ use metsuke_server::config::{
 };
 use metsuke_server::index::Index;
 use metsuke_wire::envelope::{
-    self, Envelope, Payload, PoolId, SCHEMA_VERSION_SAMPLES, Sample, Signature, SigningKey,
+    self, Envelope, Limits, Payload, PoolId, SCHEMA_VERSION_SAMPLES, Sample, Signature, SigningKey,
     VerifyingKey,
 };
 use time::OffsetDateTime;
@@ -51,9 +51,16 @@ pub fn pool_of(key: &SigningKey) -> PoolId {
     PoolId::from_cold_key(&key.verifying_key())
 }
 
-/// A decompression ceiling wide enough that no test payload reaches it. Plain
-/// `u64`: `verify` and `audit` take the limit, not the config field.
+/// Ceilings wide enough that no test submission reaches either. Plain numbers:
+/// `verify` and `audit` take the limits, not the config fields.
+pub const MAX_HEADER_BYTES: u64 = 4096;
 pub const MAX_DECOMPRESSED_BYTES: u64 = 4 * 1024 * 1024;
+
+/// The two as `open` wants them.
+pub const TEST_LIMITS: Limits = Limits {
+    max_header_bytes: MAX_HEADER_BYTES,
+    max_decompressed_bytes: MAX_DECOMPRESSED_BYTES,
+};
 
 /// The clock every test judges against; envelopes are stamped with it.
 pub fn test_now() -> OffsetDateTime {
@@ -231,6 +238,7 @@ pub fn ingest_toml(config: &IngestConfig) -> String {
     let IngestConfig {
         allowlist,
         max_body_bytes,
+        max_header_bytes,
         max_decompressed_bytes,
         rate_limit_uploads,
         rate_limit_window_secs,
@@ -240,6 +248,7 @@ pub fn ingest_toml(config: &IngestConfig) -> String {
         "[ingest]
 allowlist = {allowlist}
 max_body_bytes = {max_body_bytes}
+max_header_bytes = {max_header_bytes}
 max_decompressed_bytes = {max_decompressed_bytes}
 rate_limit_uploads = {rate_limit_uploads}
 rate_limit_window_secs = {rate_limit_window_secs}
@@ -254,6 +263,7 @@ pub fn permissive_config(allowed: &[PoolId]) -> IngestConfig {
     IngestConfig {
         allowlist: allowlist(allowed),
         max_body_bytes: nonzero_u64(1024 * 1024),
+        max_header_bytes: nonzero_u64(MAX_HEADER_BYTES),
         max_decompressed_bytes: nonzero_u64(MAX_DECOMPRESSED_BYTES),
         rate_limit_uploads: nonzero_u32(100),
         rate_limit_window_secs: nonzero_u64(3600),

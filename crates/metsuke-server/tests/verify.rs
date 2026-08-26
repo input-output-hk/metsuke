@@ -6,13 +6,13 @@ use metsuke_server::archive::{FetchedObject, ObjectName};
 use metsuke_server::authority::{ColdKey, ColdKeyOrCalidus};
 use metsuke_server::calidus::CalidusKeys;
 use metsuke_server::verify::{Audit, AuditFailure, VerifyError, verify};
-use metsuke_wire::envelope::{Envelope, SigningKey};
+use metsuke_wire::envelope::{Envelope, Limits, SigningKey};
 
 mod support;
 use support::{
-    CannedDirectory, MAX_DECOMPRESSED_BYTES, TEST_TTL_SECS, UnavailableDirectory,
-    calidus_authority, calidus_key, envelope_for, nonzero_u32, other_key, pool_of, registration,
-    seal, test_key, test_now,
+    CannedDirectory, TEST_LIMITS, TEST_TTL_SECS, UnavailableDirectory, calidus_authority,
+    calidus_key, envelope_for, nonzero_u32, other_key, pool_of, registration, seal, test_key,
+    test_now,
 };
 
 /// The object the archive holds for `envelope`, signed by `signer`.
@@ -38,7 +38,16 @@ fn stored_object() -> FetchedObject {
 }
 
 fn verified(object: &FetchedObject) -> Result<Envelope, VerifyError> {
-    verify(object, MAX_DECOMPRESSED_BYTES, &mut ColdKey, test_now())
+    verify(object, TEST_LIMITS, &mut ColdKey, test_now())
+}
+
+/// `TEST_LIMITS` with a decompression ceiling no payload fits under, for the
+/// tests about the ceiling itself.
+fn tight_limits(max_decompressed_bytes: u64) -> Limits {
+    Limits {
+        max_decompressed_bytes,
+        ..TEST_LIMITS
+    }
 }
 
 #[test]
@@ -129,7 +138,7 @@ fn an_object_filed_under_the_wrong_key_does_not_verify() {
 #[test]
 fn a_payload_over_the_ceiling_does_not_verify() {
     let object = stored_object();
-    let error = verify(&object, 1, &mut ColdKey, test_now()).unwrap_err();
+    let error = verify(&object, tight_limits(1), &mut ColdKey, test_now()).unwrap_err();
     assert!(
         matches!(error, VerifyError::OversizedPayload { max: 1, .. }),
         "got: {error}"
@@ -171,7 +180,7 @@ fn every_failure_names_the_object() {
     *tampered.wire_bytes.last_mut().unwrap() ^= 0xff;
     for error in [
         verified(&tampered).unwrap_err(),
-        verify(&stored_object(), 1, &mut ColdKey, test_now()).unwrap_err(),
+        verify(&stored_object(), tight_limits(1), &mut ColdKey, test_now()).unwrap_err(),
     ] {
         assert!(error.to_string().contains(&key), "got: {error}");
     }
@@ -188,7 +197,7 @@ fn an_object_signed_by_the_pools_calidus_key_verifies() {
 
     let verified = verify(
         &object,
-        MAX_DECOMPRESSED_BYTES,
+        TEST_LIMITS,
         &mut calidus_authority(directory),
         test_now(),
     )
@@ -211,6 +220,6 @@ fn an_object_no_directory_can_decide_on_is_not_a_finding() {
         },
         nonzero_u32(TEST_TTL_SECS),
     ));
-    let error = verify(&object, MAX_DECOMPRESSED_BYTES, &mut authority, test_now()).unwrap_err();
+    let error = verify(&object, TEST_LIMITS, &mut authority, test_now()).unwrap_err();
     assert!(matches!(error, VerifyError::Undecided(_)), "got: {error}");
 }

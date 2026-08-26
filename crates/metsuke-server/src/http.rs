@@ -119,7 +119,8 @@ pub fn status_for(error: &IngestError) -> u16 {
             | Rejection::UnauthorizedKey { .. }
             | Rejection::TooManyRegistrations { .. }
             | Rejection::BadSignature => 403,
-            Rejection::MalformedPayload { .. }
+            Rejection::NotASubmission(_)
+            | Rejection::MalformedPayload { .. }
             | Rejection::UnsupportedSchema { .. }
             | Rejection::PoolIdMismatch { .. }
             | Rejection::TimestampOutOfWindow { .. }

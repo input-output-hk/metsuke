@@ -23,6 +23,7 @@ use metsuke_server::intake::Intake;
 use metsuke_server::rebuild::{EmptyArchive, RebuildError, RebuiltIndex, rebuild};
 use metsuke_server::s3::{S3Archive, S3Error};
 use metsuke_server::verify::{Audit, AuditError, audit};
+use metsuke_wire::envelope::Limits;
 use metsuke_wire::journal::{ERR, INFO};
 use rusty_s3::Credentials;
 use time::OffsetDateTime;
@@ -145,10 +146,10 @@ fn run() -> Result<(), Fatal> {
             command,
             serving,
             index,
-            |archive, max_decompressed_bytes| {
+            |archive, limits| {
                 report_audit(audit(
                     archive,
-                    max_decompressed_bytes,
+                    limits,
                     &mut ColdKey,
                     OffsetDateTime::now_utc(),
                 )?)
@@ -174,7 +175,7 @@ fn dispatch<A: Store + List + Bytes>(
     command: ArchiveCommand,
     serving: Serving,
     mut index: Index,
-    verify_archive: impl FnOnce(&A, u64) -> Result<(), Fatal>,
+    verify_archive: impl FnOnce(&A, Limits) -> Result<(), Fatal>,
 ) -> Result<(), Fatal> {
     match command {
         ArchiveCommand::Serve => serve(archive, serving, index),
@@ -185,9 +186,7 @@ fn dispatch<A: Store + List + Bytes>(
             };
             report_rebuild(rebuild(&archive, &mut index, empty)?)
         }
-        ArchiveCommand::VerifyArchive => {
-            verify_archive(&archive, serving.ingest.max_decompressed_bytes.get())
-        }
+        ArchiveCommand::VerifyArchive => verify_archive(&archive, serving.ingest.limits()),
     }
 }
 

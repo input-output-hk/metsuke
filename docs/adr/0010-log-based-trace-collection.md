@@ -44,12 +44,10 @@ a unit holding the group without the second cannot start journalctl at all.
 
 Selected lines land in the existing spool under their own byte cap and upload
 as schema v2 envelopes on the same signed path as samples (ADR 0001, 0002,
-0005). A body is a JSON header line and then the selected lines appended raw,
-so a trace line is signed and archived as the node's own bytes rather than as a
-JSON string of them, and a v1 body — one JSON object, which `serde_json` never
-writes a newline into — is that same header line with nothing after it. The
-framing therefore costs a line one byte, which is also what makes the agent's
-batch budget and the server's decompress limit the same measure. One envelope
+0005). They are the data frame's lines, appended raw, so a trace line is signed
+and archived as the node's own bytes rather than as a JSON string of them. The
+framing therefore costs a line one byte, which is what the agent's batch budget
+and the server's decompress limit both count it as. One envelope
 carries one kind of payload, and only the upload loop seals, so the two streams
 share a pool's replay counter without coordinating.
 

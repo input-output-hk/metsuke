@@ -9,7 +9,10 @@ use metsuke_server::config::IngestConfig;
 use metsuke_server::http::status_for;
 use metsuke_server::index::Index;
 use metsuke_server::intake::{IngestError, Intake, Rejection};
-use metsuke_wire::envelope::{Envelope, Payload, PoolId, SCHEMA_VERSION_LINES, SigningKey};
+use metsuke_wire::envelope::{
+    CONTAINER_MAGIC, ContainerError, Envelope, Payload, PoolId, SCHEMA_VERSION_LINES,
+    SCHEMA_VERSION_SAMPLES, SigningKey,
+};
 use time::OffsetDateTime;
 
 mod support;
@@ -53,19 +56,45 @@ fn submit(
     )
 }
 
-/// A body no `Envelope` can produce, sealed the way a client would seal one.
-fn submit_json(
+/// Submit a container built byte by byte, which is how a client speaking a
+/// schema this build does not would send one. `declared` is what the frame's
+/// length field states, so a test can state a length the header does not have.
+fn submit_container(
     intake: &mut Intake<FilesystemArchive, ColdKey>,
     key: &SigningKey,
-    body: serde_json::Value,
+    header: &[u8],
+    declared: u32,
+    data: &[u8],
 ) -> Result<metsuke_wire::envelope::Ack, IngestError> {
     use ed25519_dalek::Signer;
-    let bytes = zstd::encode_all(body.to_string().as_bytes(), 0).unwrap();
+    let bytes = container(header, declared, data);
     let signature = key.sign(&bytes);
     intake.submit(
         &submission(key.verifying_key(), pool_of(key), signature, &bytes),
         test_now(),
     )
+}
+
+/// A container built byte by byte around `data`, which is compressed here so
+/// only the framing is the caller's to state.
+fn container(header: &[u8], declared: u32, data: &[u8]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&CONTAINER_MAGIC.to_le_bytes());
+    bytes.extend_from_slice(&declared.to_le_bytes());
+    bytes.extend_from_slice(header);
+    bytes.extend_from_slice(&zstd::encode_all(data, 0).unwrap());
+    bytes
+}
+
+/// The same for a header this build could not build an `Envelope` for.
+fn submit_header(
+    intake: &mut Intake<FilesystemArchive, ColdKey>,
+    key: &SigningKey,
+    header: serde_json::Value,
+    data: &[u8],
+) -> Result<metsuke_wire::envelope::Ack, IngestError> {
+    let header = header.to_string();
+    submit_container(intake, key, header.as_bytes(), header.len() as u32, data)
 }
 
 // Acceptance: a valid batch is archived as the bytes that were signed, and
@@ -212,7 +241,14 @@ fn unsigned_bomb_is_rejected_before_it_is_decompressed() {
         ..permissive_config(&[pool_of(&key)])
     };
     let (mut intake, _dir) = intake_with(config);
-    let bomb = zstd::encode_all(vec![0u8; 64 * 1024 * 1024].as_slice(), 0).unwrap();
+    // Well framed, so the container check passes it on and the signature is
+    // what stands between the decompressor and 64 MiB of zeroes.
+    let header = header(&key, SCHEMA_VERSION_SAMPLES).to_string();
+    let bomb = container(
+        header.as_bytes(),
+        header.len() as u32,
+        &vec![0u8; 64 * 1024 * 1024],
+    );
     let (_, signature) = seal(&key, &envelope_for(&key, 1));
 
     let error = intake
@@ -256,7 +292,7 @@ fn payload_over_the_decompression_ceiling_is_rejected() {
     );
 }
 
-// The compressed body is capped before anything touches it.
+// The body as sent is capped before anything touches it.
 #[test]
 fn oversized_body_is_rejected() {
     let key = test_key();
@@ -334,16 +370,8 @@ fn unsupported_schema_version_is_rejected() {
     let key = test_key();
     let (mut intake, _dir) = intake_for(&[pool_of(&key)]);
     let unknown = SCHEMA_VERSION_LINES + 1;
-    let body = serde_json::json!({
-        "schema_version": unknown,
-        "pool_id": pool_of(&key).to_bech32(),
-        "agent_version": "0.1.0",
-        "counter": 1,
-        "timestamp": "2025-08-12T12:00:00Z",
-        "spans": [],
-    });
 
-    let error = submit_json(&mut intake, &key, body).unwrap_err();
+    let error = submit_header(&mut intake, &key, header(&key, unknown), b"").unwrap_err();
 
     assert!(
         matches!(rejection(error), Rejection::UnsupportedSchema { found } if found == unknown),
@@ -351,27 +379,90 @@ fn unsupported_schema_version_is_rejected() {
     );
 }
 
-// An envelope whose declared version and payload shape disagree is neither of
-// the two schemas, so it is malformed rather than unsupported.
+// A payload whose lines are not what its declared schema says they are is
+// malformed: the version names one payload shape, and these bytes are not it.
 #[test]
-fn a_version_contradicting_its_payload_is_malformed() {
+fn a_payload_that_is_not_its_declared_shape_is_malformed() {
     let key = test_key();
     let (mut intake, _dir) = intake_for(&[pool_of(&key)]);
-    let body = serde_json::json!({
-        "schema_version": SCHEMA_VERSION_LINES,
-        "pool_id": pool_of(&key).to_bech32(),
-        "agent_version": "0.1.0",
-        "counter": 1,
-        "timestamp": "2025-08-12T12:00:00Z",
-        "samples": [],
-    });
 
-    let error = submit_json(&mut intake, &key, body).unwrap_err();
+    let error = submit_header(
+        &mut intake,
+        &key,
+        header(&key, SCHEMA_VERSION_SAMPLES),
+        b"not a sample object\n",
+    )
+    .unwrap_err();
 
     assert!(
         matches!(rejection(error), Rejection::MalformedPayload { .. }),
-        "expected a self-contradicting envelope to read as malformed"
+        "expected a payload that is not samples to read as malformed"
     );
+}
+
+// The container check is first: a body that is not a submission is refused
+// before the allowlist, the limiter or any cryptography — so a pool that is
+// not allowlisted still hears about the framing rather than the allowlist.
+#[test]
+fn a_body_that_is_not_a_container_is_refused_before_the_allowlist() {
+    let key = test_key();
+    let (mut intake, _dir) = intake_for(&[]);
+    let bytes = zstd::encode_all(&b"{}\n"[..], 0).unwrap();
+    use ed25519_dalek::Signer;
+    let signature = key.sign(&bytes);
+
+    let error = intake
+        .submit(
+            &submission(key.verifying_key(), pool_of(&key), signature, &bytes),
+            test_now(),
+        )
+        .unwrap_err();
+
+    assert_eq!(status_for(&error), 400);
+    assert!(
+        matches!(
+            rejection(error),
+            Rejection::NotASubmission(ContainerError::NotAContainer)
+        ),
+        "expected the container check to run before the allowlist"
+    );
+}
+
+// The declared length is checked against the bound before any of it is read,
+// so a body claiming a gigabyte header costs the bound rather than the claim.
+#[test]
+fn a_header_over_the_bound_is_refused() {
+    let key = test_key();
+    let config = IngestConfig {
+        max_header_bytes: nonzero_u64(64),
+        ..permissive_config(&[pool_of(&key)])
+    };
+    let (mut intake, _dir) = intake_with(config);
+
+    let error = submit_container(&mut intake, &key, b"", 1 << 30, b"").unwrap_err();
+
+    assert!(
+        matches!(
+            rejection(error),
+            Rejection::NotASubmission(ContainerError::OversizedHeader {
+                declared: 1_073_741_824,
+                max: 64
+            })
+        ),
+        "expected the header bound to name both numbers"
+    );
+}
+
+/// A well-formed header at the named schema version, for the tests whose
+/// subject is what the header says rather than what it carries.
+fn header(key: &SigningKey, schema_version: u32) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": schema_version,
+        "pool_id": pool_of(key).to_bech32(),
+        "agent_version": "0.1.0",
+        "counter": 1,
+        "timestamp": "2025-08-12T12:00:00Z",
+    })
 }
 
 // The trace-line schema goes through the same chain and is archived under the

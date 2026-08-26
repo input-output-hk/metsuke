@@ -366,7 +366,16 @@
               }
             );
 
-            test = craneLib.cargoTest (commonArgs // { inherit cargoArtifacts; });
+            # zstd: the wire suite asserts a recording decompresses through the
+            # real CLI, because the claim is about conforming decompressors
+            # rather than about the crate.
+            test = craneLib.cargoTest (
+              commonArgs
+              // {
+                inherit cargoArtifacts;
+                nativeCheckInputs = [ pkgs.zstd ];
+              }
+            );
 
             # The workspace run unifies dependency features across members, so
             # a feature one binary must carry on its own can be supplied by the

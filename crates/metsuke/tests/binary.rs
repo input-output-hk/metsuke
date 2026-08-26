@@ -14,12 +14,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod support;
 use metsuke_wire::hex;
-use support::test_key;
+use support::{TEST_LIMITS, test_key};
 
 const RECORDED_CHAIN: &str = include_str!("fixtures/recordings/leios-node.prom");
-
-// Large enough for any test batch; the real limit is server config.
-const TEST_DECOMPRESS_LIMIT: u64 = 64 * 1024 * 1024;
 
 fn write_config(
     dir: &tempfile::TempDir,
@@ -142,7 +139,7 @@ async fn binary_uploads_a_batch_signed_by_the_flag_key() {
         &VerifyingKey::from_bytes(&vkey_bytes).unwrap(),
         &post.body,
         &Signature::from_bytes(&sig_bytes),
-        TEST_DECOMPRESS_LIMIT,
+        TEST_LIMITS,
     )
     .unwrap();
     assert_eq!(

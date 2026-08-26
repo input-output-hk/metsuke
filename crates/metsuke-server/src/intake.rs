@@ -1,7 +1,9 @@
 //! The one path an upload takes. `submit` read top to bottom is the check
 //! order; ADR 0002 fixes only what that order must satisfy.
 
-use metsuke_wire::envelope::{Ack, Envelope, PoolId, SCHEMA_VERSION_LINES, SCHEMA_VERSION_SAMPLES};
+use metsuke_wire::envelope::{
+    Ack, ContainerError, Envelope, PoolId, SCHEMA_VERSION_LINES, SCHEMA_VERSION_SAMPLES, split,
+};
 use time::OffsetDateTime;
 
 use crate::archive::{ArchiveError, Store, StoredSubmission};
@@ -17,6 +19,10 @@ use crate::ratelimit::RateLimiter;
 pub enum Rejection {
     #[error("body is {found} bytes, over the {max} byte limit")]
     OversizedBody { found: usize, max: u64 },
+    /// The body is not a submission container at all, which is answerable
+    /// from its first eight bytes and so is answered before anything else.
+    #[error("body is not a submission: {0}")]
+    NotASubmission(#[from] ContainerError),
     #[error("pool {pool_id} is not on the allowlist")]
     UnknownPool { pool_id: PoolId },
     #[error("pool {pool_id} is over its limit of {max} uploads per {window_secs}s")]
@@ -135,6 +141,11 @@ impl<A: Store, K: Authority> Intake<A, K> {
             }
             .into());
         }
+        // Before the allowlist, the limiter and the key: whether these bytes
+        // are a submission at all costs eight bytes to answer, and every check
+        // after this one costs more.
+        split(signed.wire_bytes, self.config.max_header_bytes.get())
+            .map_err(Rejection::NotASubmission)?;
         if !self.config.allowlist.contains_key(&pool_id) {
             return Err(Rejection::UnknownPool { pool_id }.into());
         }
@@ -146,27 +157,24 @@ impl<A: Store, K: Authority> Intake<A, K> {
             }
             .into());
         }
-        let envelope = authenticate(
-            &mut self.authority,
-            signed,
-            self.config.max_decompressed_bytes.get(),
-            now,
-        )
-        .map_err(|error| match error {
-            AuthError::UnauthorizedKey { pool_id, refusal } => match refusal {
-                Refusal::Chain(Resolution::TooMany { max }) => {
-                    IngestError::from(Rejection::TooManyRegistrations { pool_id, max })
+        let envelope = authenticate(&mut self.authority, signed, self.config.limits(), now)
+            .map_err(|error| match error {
+                AuthError::UnauthorizedKey { pool_id, refusal } => match refusal {
+                    Refusal::Chain(Resolution::TooMany { max }) => {
+                        IngestError::from(Rejection::TooManyRegistrations { pool_id, max })
+                    }
+                    refusal => IngestError::from(Rejection::UnauthorizedKey { pool_id, refusal }),
+                },
+                AuthError::BadSignature => Rejection::BadSignature.into(),
+                AuthError::OversizedPayload { max } => Rejection::OversizedPayload { max }.into(),
+                AuthError::MalformedPayload { reason } => {
+                    Rejection::MalformedPayload { reason }.into()
                 }
-                refusal => IngestError::from(Rejection::UnauthorizedKey { pool_id, refusal }),
-            },
-            AuthError::BadSignature => Rejection::BadSignature.into(),
-            AuthError::OversizedPayload { max } => Rejection::OversizedPayload { max }.into(),
-            AuthError::MalformedPayload { reason } => Rejection::MalformedPayload { reason }.into(),
-            AuthError::UnsupportedSchemaVersion { found } => {
-                Rejection::UnsupportedSchema { found }.into()
-            }
-            AuthError::Undecided(error) => error.into(),
-        })?;
+                AuthError::UnsupportedSchemaVersion { found } => {
+                    Rejection::UnsupportedSchema { found }.into()
+                }
+                AuthError::Undecided(error) => error.into(),
+            })?;
         self.accept(signed, envelope, now)
     }
 

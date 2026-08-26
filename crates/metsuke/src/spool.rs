@@ -133,9 +133,9 @@ fn open_spool(path: &PathBuf, busy_timeout: Duration) -> Result<Connection, Spoo
 /// so a crash never leaves the cap overshot. Returns how many rows the cap
 /// dropped.
 ///
-/// A row's `bytes` is what it costs in a sealed body: its own text plus the one
-/// byte separating it from the row before it (`envelope::body`). The delivery
-/// budget sums this column, so what it bounds is what the server decompresses.
+/// A row's `bytes` is what it costs in a sealed payload: its own text plus the
+/// newline terminating it (`envelope::payload_lines`). The delivery budget sums
+/// this column, so what it bounds is what the server decompresses.
 fn push_capped(
     conn: &mut Connection,
     stream: &Stream,

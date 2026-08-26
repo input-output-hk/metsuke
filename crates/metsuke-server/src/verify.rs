@@ -1,7 +1,7 @@
 //! Re-verify a stored object from nothing but the object: its key, its
 //! metadata and its bytes (ADR 0005). `audit` runs it over a whole bucket.
 
-use metsuke_wire::envelope::{Envelope, PoolId};
+use metsuke_wire::envelope::{Envelope, Limits, PoolId};
 use time::OffsetDateTime;
 
 use crate::archive::{ArchiveError, Fetch, FetchedObject, List, ObjectName};
@@ -51,7 +51,7 @@ pub enum VerifyError {
 /// disagreement is the finding.
 pub fn verify(
     object: &FetchedObject,
-    max_decompressed_bytes: u64,
+    limits: Limits,
     authority: &mut impl Authority,
     now: OffsetDateTime,
 ) -> Result<Envelope, VerifyError> {
@@ -63,31 +63,27 @@ pub fn verify(
         signature: object.signature,
         wire_bytes: &object.wire_bytes,
     };
-    let envelope = authenticate(authority, &signed, max_decompressed_bytes, now).map_err(
-        |error| match error {
-            AuthError::UnauthorizedKey { pool_id, refusal } => VerifyError::UnauthorizedKey {
-                key: key.clone(),
-                pool_id,
-                refusal,
-            },
-            AuthError::BadSignature => VerifyError::BadSignature { key: key.clone() },
-            AuthError::Undecided(error) => error.into(),
-            AuthError::OversizedPayload { max } => VerifyError::OversizedPayload {
-                key: key.clone(),
-                max,
-            },
-            AuthError::MalformedPayload { reason } => VerifyError::MalformedPayload {
-                key: key.clone(),
-                reason,
-            },
-            AuthError::UnsupportedSchemaVersion { found } => {
-                VerifyError::UnsupportedSchemaVersion {
-                    key: key.clone(),
-                    found,
-                }
-            }
+    let envelope = authenticate(authority, &signed, limits, now).map_err(|error| match error {
+        AuthError::UnauthorizedKey { pool_id, refusal } => VerifyError::UnauthorizedKey {
+            key: key.clone(),
+            pool_id,
+            refusal,
         },
-    )?;
+        AuthError::BadSignature => VerifyError::BadSignature { key: key.clone() },
+        AuthError::Undecided(error) => error.into(),
+        AuthError::OversizedPayload { max } => VerifyError::OversizedPayload {
+            key: key.clone(),
+            max,
+        },
+        AuthError::MalformedPayload { reason } => VerifyError::MalformedPayload {
+            key: key.clone(),
+            reason,
+        },
+        AuthError::UnsupportedSchemaVersion { found } => VerifyError::UnsupportedSchemaVersion {
+            key: key.clone(),
+            found,
+        },
+    })?;
     // The key is `store`'s output, so re-deriving it from the payload checks
     // the pool, the counter and the timestamp it was filed under in one go.
     let expected = ObjectName {
@@ -174,7 +170,7 @@ pub enum AuditError {
 /// bucket however long it takes, whatever the TTL says.
 pub fn audit(
     archive: &(impl List + Fetch),
-    max_decompressed_bytes: u64,
+    limits: Limits,
     authority: &mut impl Authority,
     now: OffsetDateTime,
 ) -> Result<Audit, AuditError> {
@@ -188,7 +184,7 @@ pub fn audit(
                 key,
                 reason: error.to_string(),
             }),
-            Ok(object) => match verify(&object, max_decompressed_bytes, authority, now) {
+            Ok(object) => match verify(&object, limits, authority, now) {
                 Ok(_) => verified += 1,
                 Err(VerifyError::Undecided(error)) => return Err(error.into()),
                 Err(error) => failures.push(error.into()),

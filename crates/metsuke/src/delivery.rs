@@ -21,11 +21,12 @@ pub struct Delivery {
     pool_id: PoolId,
     /// zstd level passed to `seal` (0 = zstd's default).
     compression_level: i32,
-    /// Pre-compression ceiling on one envelope's whole body, framing included,
-    /// which is the same measure the server's `max_decompressed_bytes` bounds.
-    /// It is still the agent's own number: nothing in the wire contract lets it
-    /// discover the server's, so a batch over that is rejected at upload and
-    /// stays spooled.
+    /// Pre-compression ceiling on one envelope: its header frame plus its
+    /// payload lines. The server bounds the two separately, and the payload
+    /// half is what its `max_decompressed_bytes` bounds — so a batch under this
+    /// is under that whenever the two numbers agree. It is still the agent's
+    /// own number: nothing in the wire contract lets it discover the server's,
+    /// so a batch over that is rejected at upload and stays spooled.
     batch_max_bytes: u64,
 }
 
@@ -115,18 +116,19 @@ impl Delivery {
             .map(Some)
     }
 
-    /// What the rows may sum to: the budget less what this envelope's own
-    /// framing spends, measured by sealing an empty one of the same shape
-    /// rather than by a second account of the header's fields. `u64::MAX` is
-    /// the widest counter this pool can ever draw, so the reserve never comes
-    /// up short of the counter the batch is actually stamped with.
+    /// What the rows may sum to: the budget less what this envelope's header
+    /// frame spends, measured by building that frame rather than by a second
+    /// account of its fields. `u64::MAX` is the widest counter this pool can
+    /// ever draw, so the reserve never comes up short of the counter the batch
+    /// is actually stamped with.
     ///
     /// A budget the framing already exhausts is an error, not a zero: every
     /// row is over a zero budget, so offering one would have the spool drop the
     /// head row a tick for as long as the config stands
     /// (`spool::outstanding_rows`).
     fn row_budget(&self, now: OffsetDateTime, empty: Payload) -> Result<u64, DeliveryError> {
-        let framing = envelope::body(&self.envelope(u64::MAX, now, empty))?.len() as u64;
+        let header = envelope::header_json(&self.envelope(u64::MAX, now, empty))?;
+        let framing = (envelope::HEADER_OFFSET + header.len()) as u64;
         match self.batch_max_bytes.checked_sub(framing) {
             Some(budget) if budget > 0 => Ok(budget),
             _ => Err(DeliveryError::BudgetBelowFraming {

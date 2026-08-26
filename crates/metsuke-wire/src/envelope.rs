@@ -1,7 +1,10 @@
-//! Envelope schemas and their sealed wire form: a JSON header line, then the
-//! payload's own lines, zstd compressed, raw detached Ed25519 over the
-//! compressed bytes (ADR 0001). `seal` and `open` are the whole interface, so
-//! verify-before-decompress (ADR 0002) is the only expressible call sequence.
+//! Envelope schemas and their sealed wire form: a zstd skippable frame
+//! carrying a JSON header, then a zstd data frame carrying the payload's JSON
+//! Lines, with one raw detached Ed25519 signature over both (ADR 0001). The
+//! header is readable by seeking past eight bytes, so `split` answers "who
+//! sent this" with no key and no decompressor; `seal` and `open` are the only
+//! way to produce or consume a whole submission, which is what keeps
+//! verify-before-decompress (ADR 0002) the only expressible call sequence.
 
 use std::io::Read;
 
@@ -14,6 +17,14 @@ pub use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 /// an envelope carries is `Payload::schema_version`.
 pub const SCHEMA_VERSION_SAMPLES: u32 = 1;
 pub const SCHEMA_VERSION_LINES: u32 = 2;
+
+/// The zstd skippable-frame magic (RFC 8878 §3.1.2) a submission begins with.
+/// Every conforming zstd tool skips this frame and decompresses the data frame
+/// after it, so the payload reads back without knowing this format exists.
+pub const CONTAINER_MAGIC: u32 = 0x184D_2A50;
+
+/// Where the header's JSON starts: past the magic and the u32 length beside it.
+pub const HEADER_OFFSET: usize = 8;
 
 /// Upload request headers (ADR 0001): pool id as bech32, verification key
 /// and detached signature as lowercase hex over the body bytes as sent.
@@ -120,8 +131,8 @@ impl Payload {
     }
 }
 
-/// One signed upload batch. The replay `counter` and `timestamp` live here,
-/// inside the signed payload (ADR 0002).
+/// One signed upload batch. The replay `counter` and `timestamp` live in the
+/// header frame, inside the signed bytes (ADR 0002).
 ///
 /// `schema_version` and `payload` are private and only `new` sets them: an
 /// envelope in hand always declares the version its payload has.
@@ -137,24 +148,17 @@ pub struct Envelope {
     payload: Payload,
 }
 
-/// The body's first line, and the only JSON either version parses.
-///
-/// v1 carries its samples here, because that is where v1 put them and v1's
-/// bytes are frozen; v2 leaves the key out and writes its trace lines after
-/// this line instead. `serde_json` escapes every newline it meets, so a
-/// serialized header is one line whatever it holds — which is what makes a v1
-/// body, one JSON object and nothing else, a header line with no lines after
-/// it.
+/// The skippable frame's content: everything about a submission that is not
+/// the payload itself. It holds no payload key, so which schema a submission
+/// declares is answerable without inflating a byte.
 #[derive(Serialize, Deserialize)]
-struct HeaderLine {
+struct Header {
     schema_version: u32,
     pool_id: PoolId,
     agent_version: String,
     counter: u64,
     #[serde(with = "time::serde::rfc3339")]
     timestamp: OffsetDateTime,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    samples: Option<Vec<Sample>>,
 }
 
 /// Which of this build's two schemas a declared version names.
@@ -216,6 +220,14 @@ pub struct Sample {
     pub clock_offset_ms: Option<i64>,
 }
 
+/// The two bounds `open` puts on bytes it did not produce. Both are server
+/// configuration (`IngestConfig`); this crate holds no default for either.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    pub max_header_bytes: u64,
+    pub max_decompressed_bytes: u64,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum SealError {
     /// JSON has no representation for non-finite floats; serializing one
@@ -226,16 +238,34 @@ pub enum SealError {
     Json(#[from] serde_json::Error),
     #[error("zstd compression failed: {0}")]
     Compress(#[source] std::io::Error),
-    /// The newline is what separates one trace line from the next, so a line
-    /// holding one would open as two under a valid signature.
+    /// The newline is what terminates one trace line, so a line holding one
+    /// would open as two under a valid signature.
     #[error("trace line {index} holds a newline")]
     LineHoldsNewline { index: usize },
+    /// The skippable frame states its length in a u32, so a header past that
+    /// has no frame to travel in.
+    #[error("header is {found} bytes, past what a skippable frame can declare")]
+    HeaderTooLarge { found: usize },
+}
+
+/// Why a body is not a submission container at all. Separate from `OpenError`
+/// because `split` answers it before a key or a decompressor is involved.
+#[derive(Debug, thiserror::Error)]
+pub enum ContainerError {
+    #[error("body does not begin with a zstd skippable frame")]
+    NotAContainer,
+    #[error("header frame declares {declared} bytes, over the {max} byte limit")]
+    OversizedHeader { declared: u64, max: u64 },
+    #[error("header frame declares {declared} bytes, but only {found} follow it")]
+    ShortHeader { declared: u64, found: usize },
 }
 
 #[derive(Debug, thiserror::Error)]
 pub enum OpenError {
     #[error("signature verification failed: {0}")]
     Signature(#[from] ed25519_dalek::SignatureError),
+    #[error(transparent)]
+    Container(#[from] ContainerError),
     #[error("zstd decompression failed: {0}")]
     Decompress(#[source] std::io::Error),
     #[error("decompressed size exceeds the {max_decompressed_bytes} byte limit")]
@@ -244,41 +274,90 @@ pub enum OpenError {
     Json(#[from] serde_json::Error),
     #[error("payload is not UTF-8")]
     NotUtf8,
+    /// Every line is newline-terminated, so bytes after the last one are a
+    /// line the sender did not finish writing.
+    #[error("payload's last line has no terminating newline")]
+    UnterminatedLine,
     #[error(
         "envelope schema version {found}, this build speaks \
          v{SCHEMA_VERSION_SAMPLES} and v{SCHEMA_VERSION_LINES}"
     )]
     UnsupportedSchemaVersion { found: u32 },
-    /// The header names a version whose body it does not have, so the envelope
-    /// contradicts itself and neither reading is the sender's.
-    #[error("envelope declares schema v{declared} and carries {found}")]
-    BodyContradictsVersion { declared: u32, found: &'static str },
 }
 
-/// The body `seal` compresses: the header line, then one line per trace line,
-/// as the node emitted it. Public because the agent budgets a batch against
-/// these bytes and the operator page renders them — both want what this build
-/// sends rather than a second measure of it.
-pub fn body(envelope: &Envelope) -> Result<Vec<u8>, SealError> {
-    let header = HeaderLine {
+/// A submission's two frames, borrowed from the bytes as received.
+pub struct Frames<'a> {
+    /// The skippable frame's content: the header JSON, uncompressed.
+    pub header: &'a [u8],
+    /// The zstd data frame, still compressed.
+    pub data: &'a [u8],
+}
+
+/// Split a submission into its frames, bounding the header at
+/// `max_header_bytes`. No key, no decompressor, and no allocation: this is
+/// what an ingest path runs before it spends anything on a body.
+pub fn split(bytes: &[u8], max_header_bytes: u64) -> Result<Frames<'_>, ContainerError> {
+    let prefix: [u8; HEADER_OFFSET] = bytes
+        .get(..HEADER_OFFSET)
+        .and_then(|prefix| prefix.try_into().ok())
+        .ok_or(ContainerError::NotAContainer)?;
+    let (magic, declared) = prefix.split_at(4);
+    if u32::from_le_bytes(magic.try_into().expect("four bytes")) != CONTAINER_MAGIC {
+        return Err(ContainerError::NotAContainer);
+    }
+    let declared = u32::from_le_bytes(declared.try_into().expect("four bytes")) as u64;
+    if declared > max_header_bytes {
+        return Err(ContainerError::OversizedHeader {
+            declared,
+            max: max_header_bytes,
+        });
+    }
+    let rest = &bytes[HEADER_OFFSET..];
+    // `declared` is under `max_header_bytes`, a u64 the config holds, so the
+    // cast only narrows a value already smaller than what `rest` can be.
+    let split_at = declared as usize;
+    if rest.len() < split_at {
+        return Err(ContainerError::ShortHeader {
+            declared,
+            found: rest.len(),
+        });
+    }
+    let (header, data) = rest.split_at(split_at);
+    Ok(Frames { header, data })
+}
+
+/// The header frame's content, uncompressed. The agent budgets a batch against
+/// this length rather than against a second account of the header's fields.
+pub fn header_json(envelope: &Envelope) -> Result<Vec<u8>, SealError> {
+    Ok(serde_json::to_vec(&Header {
         schema_version: envelope.schema_version,
         pool_id: envelope.pool_id,
         agent_version: envelope.agent_version.clone(),
         counter: envelope.counter,
         timestamp: envelope.timestamp,
-        samples: match &envelope.payload {
-            Payload::Samples { samples } => Some(samples.clone()),
-            Payload::Lines { .. } => None,
-        },
-    };
-    let mut body = serde_json::to_vec(&header)?;
-    if let Payload::Lines { lines } = &envelope.payload {
-        for (index, line) in lines.iter().enumerate() {
-            if line.contains('\n') {
-                return Err(SealError::LineHoldsNewline { index });
+    })?)
+}
+
+/// The data frame's content before compression: one JSON object per sample, or
+/// one trace line as the node emitted it, each terminated by a newline. What
+/// the server's `max_decompressed_bytes` bounds, and what `zstd -d` emits.
+pub fn payload_lines(envelope: &Envelope) -> Result<Vec<u8>, SealError> {
+    let mut body = Vec::new();
+    match &envelope.payload {
+        Payload::Samples { samples } => {
+            for sample in samples {
+                serde_json::to_writer(&mut body, sample)?;
+                body.push(b'\n');
             }
-            body.push(b'\n');
-            body.extend_from_slice(line.as_bytes());
+        }
+        Payload::Lines { lines } => {
+            for (index, line) in lines.iter().enumerate() {
+                if line.contains('\n') {
+                    return Err(SealError::LineHoldsNewline { index });
+                }
+                body.extend_from_slice(line.as_bytes());
+                body.push(b'\n');
+            }
         }
     }
     Ok(body)
@@ -301,8 +380,19 @@ pub fn seal(
             }
         }
     }
-    let body = body(envelope)?;
-    let wire_bytes = zstd::encode_all(body.as_slice(), level).map_err(SealError::Compress)?;
+    let header = header_json(envelope)?;
+    let declared = u32::try_from(header.len()).map_err(|_| SealError::HeaderTooLarge {
+        found: header.len(),
+    })?;
+    let data = zstd::encode_all(payload_lines(envelope)?.as_slice(), level)
+        .map_err(SealError::Compress)?;
+
+    let mut wire_bytes = Vec::with_capacity(HEADER_OFFSET + header.len() + data.len());
+    wire_bytes.extend_from_slice(&CONTAINER_MAGIC.to_le_bytes());
+    wire_bytes.extend_from_slice(&declared.to_le_bytes());
+    wire_bytes.extend_from_slice(&header);
+    wire_bytes.extend_from_slice(&data);
+
     use ed25519_dalek::Signer;
     let signature = key.sign(&wire_bytes);
     Ok((wire_bytes, signature))
@@ -312,18 +402,56 @@ pub fn seal(
 /// limit: it bounds the scratch buffer, never what is accepted.
 const DECOMPRESS_CHUNK_BYTES: usize = 64 * 1024;
 
-/// Verify the signature over the wire bytes as received, then decompress —
-/// refusing to inflate past `max_decompressed_bytes` — and parse. Uses
-/// `verify_strict` to reject signatures that only pass under malleable or
-/// mixed-order-point interpretations.
+/// Verify the signature over the wire bytes as received, then read the header
+/// out of the skippable frame and decompress the data frame — refusing to
+/// inflate past `limits.max_decompressed_bytes`. Uses `verify_strict` to
+/// reject signatures that only pass under malleable or mixed-order-point
+/// interpretations.
 pub fn open(
     key: &VerifyingKey,
     wire_bytes: &[u8],
     signature: &Signature,
-    max_decompressed_bytes: u64,
+    limits: Limits,
 ) -> Result<Envelope, OpenError> {
     key.verify_strict(wire_bytes, signature)?;
-    let decoder = zstd::Decoder::new(wire_bytes).map_err(OpenError::Decompress)?;
+    let frames = split(wire_bytes, limits.max_header_bytes)?;
+    // The version alone first, so a version this build never spoke is named as
+    // such whatever else its header holds — a v3 that dropped a field every
+    // version so far carries would otherwise report that missing field.
+    let peek: SchemaVersionPeek = serde_json::from_slice(frames.header)?;
+    let schema = Schema::of(peek.schema_version)?;
+    let header: Header = serde_json::from_slice(frames.header)?;
+    let body = inflate(frames.data, limits.max_decompressed_bytes)?;
+    let lines = match body.strip_suffix('\n') {
+        Some(rest) => rest.split('\n').collect(),
+        None if body.is_empty() => Vec::new(),
+        None => return Err(OpenError::UnterminatedLine),
+    };
+    let payload = match schema {
+        Schema::Samples => Payload::Samples {
+            samples: lines
+                .iter()
+                .map(|line| serde_json::from_str(line))
+                .collect::<Result<_, _>>()?,
+        },
+        Schema::Lines => Payload::Lines {
+            lines: lines.into_iter().map(str::to_string).collect(),
+        },
+    };
+    // Through `new`, so what comes out declares the version its payload has
+    // rather than the one the header claimed.
+    Ok(Envelope::new(
+        header.pool_id,
+        header.agent_version,
+        header.counter,
+        header.timestamp,
+        payload,
+    ))
+}
+
+/// Decompress one data frame, stopping one byte past the ceiling.
+fn inflate(data: &[u8], max_decompressed_bytes: u64) -> Result<String, OpenError> {
+    let decoder = zstd::Decoder::new(data).map_err(OpenError::Decompress)?;
     // One chunk out of the decoder at a time, reserving exactly what each
     // chunk needs: the payload never claims more than its own size, and the
     // reader stops one byte past the ceiling, so nothing bigger is held.
@@ -343,39 +471,7 @@ pub fn open(
             max_decompressed_bytes,
         });
     }
-    let body = String::from_utf8(body).map_err(|_| OpenError::NotUtf8)?;
-    let mut split = body.split('\n');
-    let header_line = split
-        .next()
-        .expect("splitting on a separator yields at least one part");
-    let lines: Vec<String> = split.map(str::to_string).collect();
-    // The version alone first, so a version this build never spoke is named as
-    // such whatever else its header holds — a v3 that dropped a field every
-    // version so far carries would otherwise report that missing field.
-    let peek: SchemaVersionPeek = serde_json::from_str(header_line)?;
-    let schema = Schema::of(peek.schema_version)?;
-    let header: HeaderLine = serde_json::from_str(header_line)?;
-    let contradicts = |found| OpenError::BodyContradictsVersion {
-        declared: header.schema_version,
-        found,
-    };
-    let payload = match (schema, header.samples) {
-        (Schema::Samples, Some(samples)) if lines.is_empty() => Payload::Samples { samples },
-        (Schema::Samples, Some(_)) => return Err(contradicts("lines after its header")),
-        (Schema::Samples, None) => return Err(contradicts("no samples")),
-        (Schema::Lines, None) => Payload::Lines { lines },
-        (Schema::Lines, Some(_)) => return Err(contradicts("samples in its header")),
-    };
-    // Through `new`, so what comes out declares the version its payload has
-    // rather than the one the header claimed: the match above is what decides
-    // the two agree, and nothing downstream has to take that on trust.
-    Ok(Envelope::new(
-        header.pool_id,
-        header.agent_version,
-        header.counter,
-        header.timestamp,
-        payload,
-    ))
+    String::from_utf8(body).map_err(|_| OpenError::NotUtf8)
 }
 
 #[derive(Deserialize)]

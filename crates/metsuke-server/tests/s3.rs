@@ -19,8 +19,8 @@ use rusty_s3::Credentials;
 
 mod support;
 use support::{
-    MAX_DECOMPRESSED_BYTES, TEST_TTL_SECS, UnavailableDirectory, calidus_key, envelope_for,
-    index_store, nonzero_u32, nonzero_u64, pool_of, seal, stored_submission, test_key, test_now,
+    TEST_LIMITS, TEST_TTL_SECS, UnavailableDirectory, calidus_key, envelope_for, index_store,
+    nonzero_u32, nonzero_u64, pool_of, seal, stored_submission, test_key, test_now,
 };
 
 /// One request the fake endpoint received.
@@ -349,7 +349,7 @@ fn a_stored_object_fetches_back_and_verifies() {
 
     let fetched = archive.fetch(&submission.object_key()).unwrap();
     assert_eq!(fetched.wire_bytes, wire_bytes);
-    let envelope = verify(&fetched, MAX_DECOMPRESSED_BYTES, &mut ColdKey, test_now()).unwrap();
+    let envelope = verify(&fetched, TEST_LIMITS, &mut ColdKey, test_now()).unwrap();
     assert_eq!(envelope.counter, submission.counter);
     assert_eq!(envelope.pool_id, pool_of(&test_key()));
 }
@@ -415,7 +415,7 @@ fn an_audit_verifies_what_is_stored_and_names_what_is_missing() {
         })
         .collect();
 
-    let found = audit(&archive, MAX_DECOMPRESSED_BYTES, &mut ColdKey, test_now()).unwrap();
+    let found = audit(&archive, TEST_LIMITS, &mut ColdKey, test_now()).unwrap();
     assert_eq!(found.verified, 2);
     assert!(found.failures.is_empty(), "{:?}", found.failures);
 
@@ -429,13 +429,7 @@ fn an_audit_verifies_what_is_stored_and_names_what_is_missing() {
     let mut listed = stored_keys.clone();
     listed.push(missing.to_key());
     let endpoint = FakeS3::start(vec![(200, listing(&listed, None))]);
-    let found = audit(
-        &endpoint.archive(1),
-        MAX_DECOMPRESSED_BYTES,
-        &mut ColdKey,
-        test_now(),
-    )
-    .unwrap();
+    let found = audit(&endpoint.archive(1), TEST_LIMITS, &mut ColdKey, test_now()).unwrap();
     assert_eq!(found.verified, 0);
     // Unreadable, not failed: nothing was checked, so nothing can be said
     // about these objects.
@@ -705,7 +699,7 @@ fn an_audit_stops_when_the_directory_cannot_answer() {
 
     let error = audit(
         &archive,
-        MAX_DECOMPRESSED_BYTES,
+        TEST_LIMITS,
         &mut ColdKeyOrCalidus::new(CalidusKeys::new(
             UnavailableDirectory {
                 reason: "db-sync is down",

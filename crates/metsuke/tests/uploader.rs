@@ -17,10 +17,8 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod support;
 use metsuke_wire::hex;
-use support::test_key;
+use support::{TEST_LIMITS, test_key};
 
-// Large enough for any test batch; the real limits are the two configs'.
-const TEST_DECOMPRESS_LIMIT: u64 = 64 * 1024 * 1024;
 const UNBOUNDED: u64 = 64 * 1024 * 1024;
 
 fn sealed_test_batch(dir: &tempfile::TempDir) -> metsuke::delivery::SealedBatch {
@@ -235,7 +233,7 @@ async fn acked_upload_carries_verifiable_headers_and_body() {
     let vkey = VerifyingKey::from_bytes(&vkey_bytes).unwrap();
     let sig_bytes = hex::decode::<64>(header(HEADER_SIGNATURE)).unwrap();
     let signature = Signature::from_bytes(&sig_bytes);
-    let opened = envelope::open(&vkey, &request.body, &signature, TEST_DECOMPRESS_LIMIT).unwrap();
+    let opened = envelope::open(&vkey, &request.body, &signature, TEST_LIMITS).unwrap();
     let Payload::Samples { samples } = opened.payload() else {
         panic!("a sample batch carries samples, got {:?}", opened.payload());
     };

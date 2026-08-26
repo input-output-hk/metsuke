@@ -40,10 +40,13 @@ fn every_outline_section_is_present_and_in_order() {
 #[test]
 fn every_v1_field_appears_on_the_page() {
     let page = instructions::page();
-    let body = envelope::body(&envelope_for(&test_key(), 1)).unwrap();
-    let envelope: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let sample = envelope["samples"][0].clone();
-    let fields = envelope
+    let envelope = envelope_for(&test_key(), 1);
+    let header: serde_json::Value =
+        serde_json::from_slice(&envelope::header_json(&envelope).unwrap()).unwrap();
+    let lines = envelope::payload_lines(&envelope).unwrap();
+    let sample: serde_json::Value =
+        serde_json::from_slice(lines.strip_suffix(b"\n").unwrap()).unwrap();
+    let fields = header
         .as_object()
         .unwrap()
         .keys()

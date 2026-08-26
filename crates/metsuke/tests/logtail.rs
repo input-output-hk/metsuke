@@ -14,7 +14,7 @@ use metsuke_wire::envelope::{self, Payload, PoolId, SigningKey};
 use time::OffsetDateTime;
 
 mod support;
-use support::{recording, replaying_journalctl, shipped_rules};
+use support::{TEST_LIMITS, recording, replaying_journalctl, shipped_rules};
 
 const LEIOS_RECORDING: &str = "leios-node-traces.log";
 const LEIOS_WINDOW: &str = include_str!("fixtures/recordings/leios-node-traces.log");
@@ -66,7 +66,7 @@ fn the_recorded_stream_reaches_a_sealed_batch_as_the_lines_the_rules_selected() 
         &key.verifying_key(),
         &batch.wire_bytes,
         &batch.signature,
-        UNBOUNDED,
+        TEST_LIMITS,
     )
     .unwrap();
     let Payload::Lines { lines } = opened.payload() else {

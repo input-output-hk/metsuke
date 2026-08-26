@@ -1,4 +1,4 @@
-# 1. Raw Ed25519 detached signature over the compressed body
+# 1. Raw Ed25519 detached signature over the request body
 
 Status: accepted (2026-08-19)
 
@@ -14,11 +14,13 @@ recurring vulnerability class.
 
 ## Decision
 
-The client signs the zstd-compressed request body — the exact bytes sent — with a
-raw Ed25519 detached signature. HTTP headers carry pool id, verification key, and
-signature. No COSE, no CBOR anywhere in the runtime data path. CIP-88/Calidus
-registration stays in existing SPO tooling; the server only reads its on-chain
-result.
+The client signs the request body — the exact bytes sent — with a raw Ed25519
+detached signature. The body is a zstd frame sequence: a skippable frame
+carrying the header as plaintext JSON, then the data frame the payload is
+compressed into (`envelope.rs`). One signature covers both. HTTP headers carry
+pool id, verification key, and signature. No COSE, no CBOR anywhere in the
+runtime data path. CIP-88/Calidus registration stays in existing SPO tooling;
+the server only reads its on-chain result.
 
 ## Consequences
 

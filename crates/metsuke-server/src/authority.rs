@@ -2,7 +2,7 @@
 //! both the ingest path and the archive audit run. Whether the two reach the
 //! same verdict is their `Authority`, not this sequence.
 
-use metsuke_wire::envelope::{self, Envelope, PoolId, Signature, VerifyingKey};
+use metsuke_wire::envelope::{self, Envelope, Limits, PoolId, Signature, VerifyingKey};
 use time::OffsetDateTime;
 
 use crate::calidus::{CalidusKeys, Directory, DirectoryError, Resolution};
@@ -14,7 +14,7 @@ pub struct Signed<'a> {
     pub pool_id: PoolId,
     pub vkey: VerifyingKey,
     pub signature: Signature,
-    /// The compressed body, byte for byte as received.
+    /// The body as sent, byte for byte as received.
     pub wire_bytes: &'a [u8],
 }
 
@@ -141,7 +141,7 @@ pub enum AuthError {
 pub fn authenticate(
     authority: &mut impl Authority,
     signed: &Signed<'_>,
-    max_decompressed_bytes: u64,
+    limits: Limits,
     now: OffsetDateTime,
 ) -> Result<Envelope, AuthError> {
     if let Speaks::Not(refusal) = authority.speaks_for(signed.pool_id, &signed.vkey, now)? {
@@ -150,35 +150,31 @@ pub fn authenticate(
             refusal,
         });
     }
-    envelope::open(
-        &signed.vkey,
-        signed.wire_bytes,
-        &signed.signature,
-        max_decompressed_bytes,
-    )
-    .map_err(|error| match error {
-        envelope::OpenError::Signature(_) => AuthError::BadSignature,
-        envelope::OpenError::TooLarge {
-            max_decompressed_bytes,
-        } => AuthError::OversizedPayload {
-            max: max_decompressed_bytes,
-        },
-        envelope::OpenError::Decompress(error) => AuthError::MalformedPayload {
-            reason: error.to_string(),
-        },
-        envelope::OpenError::Json(error) => AuthError::MalformedPayload {
-            reason: error.to_string(),
-        },
-        error @ envelope::OpenError::NotUtf8 => AuthError::MalformedPayload {
-            reason: error.to_string(),
-        },
-        envelope::OpenError::UnsupportedSchemaVersion { found } => {
-            AuthError::UnsupportedSchemaVersion { found }
+    envelope::open(&signed.vkey, signed.wire_bytes, &signed.signature, limits).map_err(|error| {
+        match error {
+            envelope::OpenError::Signature(_) => AuthError::BadSignature,
+            envelope::OpenError::TooLarge {
+                max_decompressed_bytes,
+            } => AuthError::OversizedPayload {
+                max: max_decompressed_bytes,
+            },
+            envelope::OpenError::UnsupportedSchemaVersion { found } => {
+                AuthError::UnsupportedSchemaVersion { found }
+            }
+            // Every remaining way to fail is a body no build of the agent
+            // wrote. Listed rather than caught by a wildcard, so a variant
+            // added to `OpenError` has to be placed here deliberately.
+            //
+            // `Container` reaches this through the audit, which opens a stored
+            // object with no ingest check ahead of it (`verify::verify`); the
+            // ingest path refuses a malformed container before `authenticate`.
+            error @ (envelope::OpenError::Container(_)
+            | envelope::OpenError::Decompress(_)
+            | envelope::OpenError::Json(_)
+            | envelope::OpenError::NotUtf8
+            | envelope::OpenError::UnterminatedLine) => AuthError::MalformedPayload {
+                reason: error.to_string(),
+            },
         }
-        // An envelope whose declared version and body disagree is not a version
-        // this build lacks: it is one no build produced.
-        error @ envelope::OpenError::BodyContradictsVersion { .. } => AuthError::MalformedPayload {
-            reason: error.to_string(),
-        },
     })
 }

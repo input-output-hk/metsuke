@@ -6,6 +6,7 @@
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
 
+use metsuke_wire::envelope::Limits;
 use serde::Deserialize;
 use url::Url;
 
@@ -190,10 +191,13 @@ pub struct IngestConfig {
     /// before any cryptography runs; the code is what says why the pool is
     /// here, and nothing at ingest reads it.
     pub allowlist: Codes,
-    /// Cap on the compressed body. `intake` measures what it was handed;
-    /// `http::read_body` is what refuses an oversized upload before reading
-    /// it.
+    /// Cap on the body as sent, header frame and data frame together.
+    /// `intake` measures what it was handed; `http::read_body` is what refuses
+    /// an oversized upload before reading it.
     pub max_body_bytes: NonZeroU64,
+    /// Cap on the header frame a submission declares, checked against the
+    /// declared length before any of it is read.
+    pub max_header_bytes: NonZeroU64,
     /// Ceiling the decompressor is allowed to inflate to.
     pub max_decompressed_bytes: NonZeroU64,
     /// Uploads one pool may make per `rate_limit_window_secs`.
@@ -202,4 +206,15 @@ pub struct IngestConfig {
     /// How far an envelope timestamp may sit from the server clock in
     /// either direction. The ADR-0002 backstop for lost counter state.
     pub max_timestamp_skew_secs: NonZeroU64,
+}
+
+impl IngestConfig {
+    /// The two bounds `envelope::open` puts on a submission. Paired because no
+    /// caller wants one of them without the other.
+    pub fn limits(&self) -> Limits {
+        Limits {
+            max_header_bytes: self.max_header_bytes.get(),
+            max_decompressed_bytes: self.max_decompressed_bytes.get(),
+        }
+    }
 }

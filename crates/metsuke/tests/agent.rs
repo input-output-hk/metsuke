@@ -19,12 +19,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod support;
 use metsuke_wire::hex;
-use support::test_key;
+use support::{TEST_LIMITS, test_key};
 
 const RECORDED_CHAIN: &str = include_str!("fixtures/recordings/leios-node.prom");
-
-// Large enough for any test batch; the real limit is server config.
-const TEST_DECOMPRESS_LIMIT: u64 = 64 * 1024 * 1024;
 
 /// Wide enough that no spool or batch cap fires here.
 const UNBOUNDED: u64 = 64 * 1024 * 1024;
@@ -130,7 +127,7 @@ async fn sampled_metrics_upload_as_a_verified_batch_and_ack_drains_the_spool() {
         &VerifyingKey::from_bytes(&vkey_bytes).unwrap(),
         &request.body,
         &Signature::from_bytes(&sig_bytes),
-        TEST_DECOMPRESS_LIMIT,
+        TEST_LIMITS,
     )
     .unwrap();
     // Recorded-body field values: tests/scrape.rs.
@@ -197,7 +194,7 @@ async fn one_tick_uploads_both_the_samples_and_the_trace_lines() {
                 &VerifyingKey::from_bytes(&vkey).unwrap(),
                 &request.body,
                 &Signature::from_bytes(&signature),
-                TEST_DECOMPRESS_LIMIT,
+                TEST_LIMITS,
             )
             .unwrap()
             .schema_version()

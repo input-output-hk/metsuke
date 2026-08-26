@@ -9,8 +9,8 @@ use metsuke::spool::{LogSpool, LogSpoolConfig, Spool, SpoolConfig};
 use metsuke_wire::envelope::{self, Payload, PoolId, Sample, SigningKey};
 use time::OffsetDateTime;
 
-// Large enough for any test batch; the real limit is server config.
-const TEST_DECOMPRESS_LIMIT: u64 = 64 * 1024 * 1024;
+mod support;
+use support::TEST_LIMITS;
 
 /// Wide enough that no cap in the spool or the batch fires unless a test asks
 /// for one.
@@ -102,7 +102,7 @@ fn pushed_samples_seal_verify_and_ack_drains_the_spool() {
         &key.verifying_key(),
         &batch.wire_bytes,
         &batch.signature,
-        TEST_DECOMPRESS_LIMIT,
+        TEST_LIMITS,
     )
     .unwrap();
     assert_eq!(samples_of(&opened), samples);
@@ -130,7 +130,7 @@ fn unacked_batch_is_retaken_with_a_fresh_counter() {
             &key.verifying_key(),
             &batch.wire_bytes,
             &batch.signature,
-            TEST_DECOMPRESS_LIMIT,
+            TEST_LIMITS,
         )
         .unwrap()
     };
@@ -186,7 +186,7 @@ fn spooled_trace_lines_seal_as_their_own_envelope() {
         &key.verifying_key(),
         &batch.wire_bytes,
         &batch.signature,
-        TEST_DECOMPRESS_LIMIT,
+        TEST_LIMITS,
     )
     .unwrap();
     assert_eq!(opened.schema_version(), 2);
@@ -225,14 +225,14 @@ fn acking_one_stream_leaves_the_other_spooled() {
         &key.verifying_key(),
         &samples.wire_bytes,
         &samples.signature,
-        TEST_DECOMPRESS_LIMIT,
+        TEST_LIMITS,
     )
     .unwrap();
     assert_eq!(samples_of(&opened), [sample_at(1)]);
 }
 
-/// What an envelope of `payload`'s shape costs before any row is in it: the
-/// header line, at the widest counter a spool can hand out. The batch budget
+/// What an envelope of `payload`'s shape costs before any row is in it: its
+/// header frame, at the widest counter a spool can hand out. The batch budget
 /// covers it, so a test that wants room for exactly two rows starts here.
 fn framing_bytes(key: &SigningKey, payload: Payload) -> u64 {
     let empty = envelope::Envelope::new(
@@ -242,13 +242,13 @@ fn framing_bytes(key: &SigningKey, payload: Payload) -> u64 {
         OffsetDateTime::UNIX_EPOCH,
         payload,
     );
-    envelope::body(&empty).unwrap().len() as u64
+    (envelope::HEADER_OFFSET + envelope::header_json(&empty).unwrap().len()) as u64
 }
 
-/// The bytes a batch of `envelope` seals into, which is what the server's
-/// `max_decompressed_bytes` bounds.
+/// The payload bytes a batch of `envelope` seals into, which is what the
+/// server's `max_decompressed_bytes` bounds.
 fn body_bytes(envelope: &envelope::Envelope) -> u64 {
-    envelope::body(envelope).unwrap().len() as u64
+    envelope::payload_lines(envelope).unwrap().len() as u64
 }
 
 // The batch budget is what keeps one envelope off both the agent's memory and
@@ -270,7 +270,7 @@ fn a_batch_stops_at_the_configured_budget_and_the_rest_is_retaken() {
             &key.verifying_key(),
             &batch.wire_bytes,
             &batch.signature,
-            TEST_DECOMPRESS_LIMIT,
+            TEST_LIMITS,
         )
         .unwrap()
     };
@@ -313,7 +313,7 @@ fn no_batch_seals_a_body_past_the_budget() {
             &key.verifying_key(),
             &batch.wire_bytes,
             &batch.signature,
-            TEST_DECOMPRESS_LIMIT,
+            TEST_LIMITS,
         )
         .unwrap()
     };
@@ -346,7 +346,7 @@ fn a_line_larger_than_the_whole_budget_is_dropped_rather_than_sealed() {
         &key.verifying_key(),
         &batch.wire_bytes,
         &batch.signature,
-        TEST_DECOMPRESS_LIMIT,
+        TEST_LIMITS,
     )
     .unwrap();
     assert_eq!(lines_of(&opened), [carriable.to_string()]);
@@ -384,7 +384,7 @@ fn a_budget_the_framing_exhausts_fails_the_tick_and_keeps_the_rows() {
         &key.verifying_key(),
         &batch.wire_bytes,
         &batch.signature,
-        TEST_DECOMPRESS_LIMIT,
+        TEST_LIMITS,
     )
     .unwrap();
     assert_eq!(lines_of(&opened), [line.to_string()]);

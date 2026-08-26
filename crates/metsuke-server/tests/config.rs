@@ -76,7 +76,7 @@ fn an_archive_without_a_kind_is_refused() {
 }
 
 /// The fields typed `NonZero`, so zero and absence are the same refusal.
-const NONZERO_FIELDS: [&str; 13] = [
+const NONZERO_FIELDS: [&str; 14] = [
     "query_timeout_secs",
     "list_max_rows",
     "resolution_ttl_secs",
@@ -86,6 +86,7 @@ const NONZERO_FIELDS: [&str; 13] = [
     "put_retry_backoff_ms",
     "list_max_pages",
     "max_body_bytes",
+    "max_header_bytes",
     "max_decompressed_bytes",
     "rate_limit_uploads",
     "rate_limit_window_secs",

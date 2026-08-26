@@ -51,7 +51,13 @@ fn valid_headers_decode_to_the_claimed_identity() {
     let (wire_bytes, signature) = seal(&key, &support::envelope_for(&key, 1));
     assert_eq!(decoded.signature, signature);
     // Decoded well enough to verify with: the whole point of the layer.
-    metsuke_wire::envelope::open(&decoded.vkey, &wire_bytes, &decoded.signature, 1 << 20).unwrap();
+    metsuke_wire::envelope::open(
+        &decoded.vkey,
+        &wire_bytes,
+        &decoded.signature,
+        support::TEST_LIMITS,
+    )
+    .unwrap();
 }
 
 #[test]

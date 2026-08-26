@@ -10,12 +10,18 @@ use std::path::{Path, PathBuf};
 
 use metsuke::config::{Config, LogConfig};
 use metsuke::logselect::SelectConfig;
-use metsuke_wire::envelope::SigningKey;
+use metsuke_wire::envelope::{Limits, SigningKey};
 
 /// The all-sevens test seed used across the suite.
 pub fn test_key() -> SigningKey {
     SigningKey::from_bytes(&[7u8; 32])
 }
+
+/// Wide enough for any test batch; the real limits are server config.
+pub const TEST_LIMITS: Limits = Limits {
+    max_header_bytes: 4096,
+    max_decompressed_bytes: 64 * 1024 * 1024,
+};
 
 /// A journalctl stand-in: a program that answers whatever arguments it is given
 /// with `recording`, so what a test exercises is the reading and not the flags.

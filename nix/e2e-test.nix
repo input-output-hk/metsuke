@@ -59,9 +59,9 @@ let
   '';
 
   # Every trace line the bucket holds, one per output line. The object is the
-  # raw signed body and nothing else (ADR 0005), so reading it back is zstd and
-  # jq: no metsuke code is on this side of the assertion, which is what lets it
-  # say the archive carries the node's lines rather than that metsuke agrees
+  # raw signed body and nothing else (ADR 0005), so reading it back is od, zstd
+  # and jq: no metsuke code is on this side of the assertion, which is what lets
+  # it say the archive carries the node's lines rather than that metsuke agrees
   # with itself. Objects that are not a trace-line envelope drop out at the
   # schema version.
   archivedLines = pkgs.writeShellScript "archived-trace-lines" ''
@@ -85,11 +85,19 @@ let
       s3 sync s3://${bucket}/${keyPrefix} /tmp/archive >/dev/null
     find /tmp/archive -name '*.json.zst' -print0 |
       while IFS= read -r -d "" object; do
-        # An envelope is a header line and then, for schema 2, the node's own
-        # trace lines. The header says which, so it is read and dropped.
-        body=$(zstd -dcq "$object")
-        if [ "$(head -1 <<<"$body" | jq -r .schema_version)" = 2 ]; then
-          tail -n +2 <<<"$body"
+        # The header rides uncompressed in a leading skippable frame: its
+        # length is the u32 at offset 4, and the JSON follows at offset 8. No
+        # decompressor is involved in reading it, which is the point of the
+        # frame. `zstd -dcq` then skips it and emits the payload alone — for
+        # schema 2, the node's own trace lines.
+        #
+        # The offsets are `envelope::HEADER_OFFSET` restated in shell, because
+        # this side of the assertion runs no metsuke code. Nothing keeps them
+        # in step: a container whose prefix changes shape changes them here.
+        length=$(od --address-radix=n --format=u4 --skip-bytes=4 --read-bytes=4 "$object" | tr -d ' ')
+        header=$(tail -c +9 "$object" | head -c "$length")
+        if [ "$(jq -r .schema_version <<<"$header")" = 2 ]; then
+          zstd -dcq "$object"
         fi
       done
   '';
@@ -237,6 +245,7 @@ let
           ingest = {
             allowlist.${poolId} = "MUSA-0000";
             max_body_bytes = 1048576;
+            max_header_bytes = 4096;
             max_decompressed_bytes = 4194304;
             rate_limit_uploads = 240;
             rate_limit_window_secs = 3600;
