@@ -10,11 +10,11 @@ use metsuke::logselect::{Selection, select};
 use metsuke::logsource::{JournalConfig, JournalSource};
 use metsuke::logtail;
 use metsuke::spool::{LogSpool, LogSpoolConfig, Spool, SpoolConfig};
-use metsuke_wire::envelope::{self, Payload, PoolId, SigningKey, TraceLine};
+use metsuke_wire::envelope::{self, SigningKey, TraceLine};
 use time::OffsetDateTime;
 
 mod support;
-use support::{TEST_LIMITS, recording, replaying_journalctl, shipped_rules, test_agent_id};
+use support::{TEST_LIMITS, recording, replaying_journalctl, shipped_rules, test_provenance};
 
 const LEIOS_RECORDING: &str = "leios-node-traces.log";
 const LEIOS_WINDOW: &str = include_str!("fixtures/recordings/leios-node-traces.log");
@@ -40,6 +40,7 @@ fn the_recorded_stream_reaches_a_sealed_batch_as_the_lines_the_rules_selected() 
         path: dir.path().join("spool.sqlite"),
         max_bytes: UNBOUNDED,
         busy_timeout: NO_CONTENTION,
+        provenance: test_provenance(),
     })
     .unwrap();
 
@@ -51,11 +52,10 @@ fn the_recorded_stream_reaches_a_sealed_batch_as_the_lines_the_rules_selected() 
             path: dir.path().join("spool.sqlite"),
             max_bytes: UNBOUNDED,
             busy_timeout: NO_CONTENTION,
+            provenance: test_provenance(),
         })
         .unwrap(),
         key.clone(),
-        PoolId::from_cold_key(&key.verifying_key()),
-        test_agent_id(),
         0,
         UNBOUNDED,
     );
@@ -70,12 +70,9 @@ fn the_recorded_stream_reaches_a_sealed_batch_as_the_lines_the_rules_selected() 
         TEST_LIMITS,
     )
     .unwrap();
-    let Payload::Lines { lines } = opened.payload() else {
-        panic!(
-            "a trace-line batch carries lines, got {:?}",
-            opened.payload()
-        );
-    };
+    let lines = opened
+        .trace_lines()
+        .expect("a trace-line batch carries lines");
 
     let selected: Vec<TraceLine> = LEIOS_WINDOW
         .lines()
@@ -85,7 +82,7 @@ fn the_recorded_stream_reaches_a_sealed_batch_as_the_lines_the_rules_selected() 
         })
         .collect();
     assert!(!selected.is_empty());
-    assert_eq!(lines, &selected);
+    assert_eq!(lines, selected);
 }
 
 // A spool that cannot be written is not a stream that ended: the drain hands
@@ -99,6 +96,7 @@ fn a_spool_that_refuses_a_write_ends_the_drain_with_the_failure() {
         path: path.clone(),
         max_bytes: UNBOUNDED,
         busy_timeout: NO_CONTENTION,
+        provenance: test_provenance(),
     })
     .unwrap();
     // Not contention, which waiting clears: the table the writes go to is gone

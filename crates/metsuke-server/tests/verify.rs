@@ -11,8 +11,8 @@ use metsuke_wire::envelope::{Envelope, Limits, SigningKey};
 mod support;
 use support::{
     CannedDirectory, TEST_LIMITS, TEST_TTL_SECS, UnavailableDirectory, calidus_authority,
-    calidus_key, envelope_for, nonzero_u32, other_key, pool_of, registration, seal, test_key,
-    test_now,
+    calidus_key, envelope_for, envelope_of_pool, nonzero_u32, other_key, pool_of, registration,
+    seal, test_key, test_now,
 };
 
 /// The object the archive holds for `envelope`, signed by `signer`.
@@ -190,8 +190,7 @@ fn every_failure_names_the_object() {
 #[test]
 fn an_object_signed_by_the_pools_calidus_key_verifies() {
     let hot = calidus_key();
-    let mut envelope = envelope_for(&hot, 7);
-    envelope.pool_id = pool_of(&test_key());
+    let envelope = envelope_of_pool(pool_of(&test_key()), 7);
     let object = object_of(&hot, &envelope);
     let directory = CannedDirectory::holding(envelope.pool_id, vec![registration("nonce-1-key-a")]);
 
@@ -211,8 +210,7 @@ fn an_object_signed_by_the_pools_calidus_key_verifies() {
 #[test]
 fn an_object_no_directory_can_decide_on_is_not_a_finding() {
     let hot = calidus_key();
-    let mut envelope = envelope_for(&hot, 7);
-    envelope.pool_id = pool_of(&test_key());
+    let envelope = envelope_of_pool(pool_of(&test_key()), 7);
     let object = object_of(&hot, &envelope);
     let mut authority = ColdKeyOrCalidus::new(CalidusKeys::new(
         UnavailableDirectory {

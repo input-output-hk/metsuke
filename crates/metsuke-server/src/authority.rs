@@ -174,7 +174,7 @@ pub fn authenticate(
             | envelope::OpenError::NotUtf8
             | envelope::OpenError::UnterminatedLine
             | envelope::OpenError::LineProvenance { .. }
-            | envelope::OpenError::LineShape { .. }) => AuthError::MalformedPayload {
+            | envelope::OpenError::LineStamp { .. }) => AuthError::MalformedPayload {
                 reason: error.to_string(),
             },
         }

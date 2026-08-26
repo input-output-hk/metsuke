@@ -12,14 +12,14 @@ use metsuke::scrape::ScrapeConfig;
 use metsuke::sntp::SntpConfig;
 use metsuke::spool::{LogSpool, LogSpoolConfig, Spool, SpoolConfig};
 use metsuke::uploader::{UploadConfig, UploadOutcome};
-use metsuke_wire::envelope::{self, Payload, PoolId, Signature, VerifyingKey};
+use metsuke_wire::envelope::{self, PoolId, Signature, VerifyingKey};
 use metsuke_wire::envelope::{HEADER_SIGNATURE, HEADER_VKEY};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod support;
 use metsuke_wire::hex;
-use support::{TEST_LIMITS, test_agent_id, test_key, trace_line};
+use support::{TEST_LIMITS, test_key, test_provenance, trace_line};
 
 const RECORDED_CHAIN: &str = include_str!("fixtures/recordings/leios-node.prom");
 
@@ -39,6 +39,7 @@ fn test_log_spool(dir: &tempfile::TempDir) -> LogSpool {
         path: spool_path(dir),
         max_bytes: UNBOUNDED,
         busy_timeout: NO_CONTENTION,
+        provenance: test_provenance(),
     })
     .unwrap()
 }
@@ -51,6 +52,7 @@ fn test_agent(dir: &tempfile::TempDir, metrics: &MockServer, uploads: &MockServe
         path: spool_path(dir),
         max_bytes: UNBOUNDED,
         busy_timeout: NO_CONTENTION,
+        provenance: test_provenance(),
     })
     .unwrap();
     Agent::new(
@@ -65,7 +67,7 @@ fn test_agent(dir: &tempfile::TempDir, metrics: &MockServer, uploads: &MockServe
                 timeout: Duration::from_millis(50),
             },
         },
-        Delivery::new(spool, test_key(), pool_id, test_agent_id(), 0, UNBOUNDED),
+        Delivery::new(spool, test_key(), 0, UNBOUNDED),
         UploadConfig {
             upload_url: format!("{}/v1/submit", uploads.uri()).try_into().unwrap(),
             pool_id,
@@ -131,9 +133,7 @@ async fn sampled_metrics_upload_as_a_verified_batch_and_ack_drains_the_spool() {
     )
     .unwrap();
     // Recorded-body field values: tests/scrape.rs.
-    let Payload::Samples { samples } = opened.payload() else {
-        panic!("a sample tick uploads samples, got {:?}", opened.payload());
-    };
+    let samples = opened.samples().expect("a sample tick uploads samples");
     assert_eq!(samples.len(), 1);
     assert_eq!(samples[0].block_height, Some(5));
     assert_eq!(samples[0].clock_offset_ms, None);

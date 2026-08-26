@@ -1,6 +1,7 @@
 # 10. Trace lines off the journal, selected by configuration
 
-Status: proposed (2026-08-25), supersedes ADR 0007
+Status: proposed (2026-08-25), supersedes ADR 0007, where a line's stamp is
+applied amended by metsuke-jfb.11
 
 ## Context
 
@@ -48,17 +49,24 @@ a unit holding the group without the second cannot start journalctl at all.
 
 Selected lines land in the existing spool under their own byte cap and upload
 as schema v2 envelopes on the same signed path as samples (ADR 0001, 0002,
-0005). They are the data frame's lines, each the node's object with the batch's
+0005). They are the data frame's lines, each the node's object with the agent's
 provenance added under the one reserved `metsuke` key, so a trace line and a
 metrics line have the same shape and one query over the archive reads both. One
 reserved key rather than the provenance fields merged into the line's top level:
 what a node writes there is the node version's to name, so a merge would need a
 rule about which names metsuke may take, and one reserved key is a constraint
-statable in a sentence. A line therefore costs more than its own bytes, which is
-what the agent's batch budget and the server's decompress limit both count it as
-(`spool::RowBudget`). One envelope carries one kind of payload, and only the
+statable in a sentence. One envelope carries one kind of payload, and only the
 upload loop seals, so the two streams share an agent's counter without
 coordinating.
+
+The stamp goes on before the row reaches the spool, so a stored row is the line
+it will be on the wire and taking a batch concatenates rows rather than reading
+any of them back (metsuke-jfb.11). Two things follow. A row costs exactly what
+the spool recorded for it, which is the one number the agent's batch budget and
+the server's decompress limit both count
+(`envelope::PayloadLine::wire_bytes`). And no later change to a payload schema
+can refuse a line already written: what the spool holds is text this build
+produced, not a value some future build has to agree with.
 
 Pipe mode is not built. It is a second implementation behind the same line
 source, and its own decision.

@@ -352,13 +352,18 @@ pkgs.testers.runNixOSTest {
             " && grep -q '\"ns\":\"Consensus.LeiosKernel.Certified\"' /tmp/spooled"
         )
         import json
-        lines = [json.loads(line) for line in tracing.succeed("cat /tmp/spooled").splitlines()]
+        # A spooled row is the wire line, stamped on the way in (metsuke-jfb.11),
+        # so the node's own object is what is left once metsuke's one reserved
+        # key comes off.
+        lines = [
+            {key: value for key, value in json.loads(line).items() if key != "metsuke"}
+            for line in tracing.succeed("cat /tmp/spooled").splitlines()
+        ]
         recorded = [json.loads(line) for line in tracing.succeed("cat ${traces}").splitlines()]
         # Field for field, which is the whole promise: the developers compute
         # their own distributions from the node's own record, and a transport
         # that dropped or renamed a field would leave them computing from
-        # metsuke's. Not byte for byte — a spooled line is the object
-        # re-rendered (ADR 0010).
+        # metsuke's.
         assert all(line in recorded for line in lines), [
             line for line in lines if line not in recorded
         ]

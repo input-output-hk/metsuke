@@ -43,7 +43,7 @@ fn every_v1_field_appears_on_the_page() {
     let envelope = envelope_for(&test_key(), 1);
     let header: serde_json::Value =
         serde_json::from_slice(&envelope::header_json(&envelope).unwrap()).unwrap();
-    let lines = envelope::payload_lines(&envelope).unwrap();
+    let lines = envelope::payload_lines(&envelope);
     let sample: serde_json::Value =
         serde_json::from_slice(lines.strip_suffix(b"\n").unwrap()).unwrap();
     let fields = header

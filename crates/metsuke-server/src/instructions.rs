@@ -5,8 +5,8 @@
 //! types — and no edit here can document a default the agent does not ship.
 
 use metsuke_wire::envelope::{
-    self, AgentId, Envelope, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, Payload, PoolId,
-    Sample, SigningKey,
+    self, AgentId, Envelope, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, Payload, PayloadLine,
+    PoolId, Provenance, Sample, SigningKey,
 };
 use time::OffsetDateTime;
 
@@ -82,9 +82,10 @@ whole thing. Nothing outside these fields is collected:</p>
 <p>Every sampled field may be <code>null</code>. A scrape that failed is itself
 a signal, so the batch uploads either way.</p>
 
-<p>Every line carries the header's own fields again under <code>metsuke</code>,
-so one line read out of the archive still says which pool and machine wrote it,
-in which batch and when. That is the only key metsuke claims on a line.</p>
+<p>Every line names the pool and the machine that wrote it under
+<code>metsuke</code>, so one line read out of the archive on its own still says
+where it came from. Which batch it travelled in, and when that batch was sealed,
+are in the header. That is the only key metsuke claims on a line.</p>
 
 <p>If you do step 5, trace lines upload as their own batches: the same header
 with <code>schema_version</code> 2, and then the lines you selected, one per
@@ -406,31 +407,38 @@ fn example_envelope() -> String {
     let key = SigningKey::from_bytes(&[0u8; 32]);
     let at = OffsetDateTime::from_unix_timestamp(EXAMPLE_INSTANT)
         .expect("a fixed timestamp is in range");
+    let provenance = Provenance {
+        pool_id: PoolId::from_cold_key(&key.verifying_key()),
+        agent_id: AgentId::slugify("relay-1").expect("a fixed name slugifies"),
+    };
+    let line = PayloadLine::sample(
+        &Sample {
+            sampled_at: at,
+            block_height: Some(12_318_442),
+            slot: Some(163_281_005),
+            slot_in_epoch: Some(281_005),
+            epoch: Some(587),
+            sync_progress: None,
+            node_version: Some("11.0.1".to_string()),
+            node_revision: Some("0e2b4b1a".to_string()),
+            clock_offset_ms: Some(-3),
+        },
+        &provenance,
+    )
+    .expect("plain fields stamp");
     let envelope = Envelope::new(
-        PoolId::from_cold_key(&key.verifying_key()),
-        AgentId::slugify("relay-1").expect("a fixed name slugifies"),
+        provenance.pool_id,
+        provenance.agent_id.clone(),
         CLIENT_VERSION.to_string(),
         42,
         at,
-        Payload::Samples {
-            samples: vec![Sample {
-                sampled_at: at,
-                block_height: Some(12_318_442),
-                slot: Some(163_281_005),
-                slot_in_epoch: Some(281_005),
-                epoch: Some(587),
-                sync_progress: None,
-                node_version: Some("11.0.1".to_string()),
-                node_revision: Some("0e2b4b1a".to_string()),
-                clock_offset_ms: Some(-3),
-            }],
-        },
+        Payload::samples(vec![line]),
     );
     let header: serde_json::Value =
         serde_json::from_slice(&envelope::header_json(&envelope).expect("plain fields serialize"))
             .expect("a header is a JSON object");
     let header = serde_json::to_string_pretty(&header).expect("a parsed header re-renders");
-    let lines = envelope::payload_lines(&envelope).expect("plain fields serialize");
-    let lines = String::from_utf8(lines).expect("serde_json writes UTF-8");
+    let lines =
+        String::from_utf8(envelope::payload_lines(&envelope)).expect("serde_json writes UTF-8");
     format!("{header}\n\n{lines}")
 }

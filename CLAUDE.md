@@ -11,7 +11,7 @@ smallest attack surface.
 Each is an accepted decision; read the ADR before working near it.
 
 - Wire signature is raw Ed25519 over the request body as sent; no COSE/CBOR on the submission path — docs/adr/0001
-- The counter lives inside the signed payload and counts one agent's batches; verify before decompress — docs/adr/0002
+- The counter lives in the signed header frame and counts one agent's batches; verify before decompress — docs/adr/0002
 - The agent signs with the key its pool id hashes from; what the server accepts is still cold key or Calidus — docs/adr/0003
 - Client SQLite spool is the only durability layer; ACK means the S3 PUT succeeded — docs/adr/0004
 - S3 stores the raw signed bytes; server SQLite is a rebuildable index — docs/adr/0005

@@ -10,17 +10,15 @@
 
 use time::OffsetDateTime;
 
-use crate::spool::{RowBudget, Spool, SpoolError, UncarriableReport};
-use metsuke_wire::envelope::{self, AgentId, Envelope, Payload, PoolId, Sample, SigningKey};
+use crate::spool::{RowBudget, Spool, SpoolError, SpooledRow, UncarriableReport};
+use metsuke_wire::envelope::{self, Envelope, Payload, PayloadLine, Sample, SigningKey};
 
 pub struct Delivery {
+    /// Also where the pool and agent a batch names come from: the spool stamped
+    /// every line it holds with them, so taking the header's identity from
+    /// anywhere else would let the two disagree.
     spool: Spool,
     key: SigningKey,
-    /// Checked against `key` at startup (`identity::check_pool_id`), so what
-    /// this stamps is what that key speaks for.
-    pool_id: PoolId,
-    /// Which of this pool's machines is reporting (`identity::agent_id`).
-    agent_id: AgentId,
     /// zstd level passed to `seal` (0 = zstd's default).
     compression_level: i32,
     /// Pre-compression ceiling on one envelope: its header frame plus its
@@ -65,16 +63,12 @@ impl Delivery {
     pub fn new(
         spool: Spool,
         key: SigningKey,
-        pool_id: PoolId,
-        agent_id: AgentId,
         compression_level: i32,
         batch_max_bytes: u64,
     ) -> Self {
         Delivery {
             spool,
             key,
-            pool_id,
-            agent_id,
             compression_level,
             batch_max_bytes,
         }
@@ -95,13 +89,8 @@ impl Delivery {
     ) -> Result<Option<SealedBatch>, DeliveryError> {
         let rows = self
             .spool
-            .outstanding(self.row_budget(now, Payload::Samples { samples: vec![] })?)?;
-        if rows.is_empty() {
-            return Ok(None);
-        }
-        let (ids, samples) = rows.into_iter().map(|row| (row.id, row.sample)).unzip();
-        self.seal(now, Payload::Samples { samples }, BatchRows::Samples(ids))
-            .map(Some)
+            .outstanding(self.row_budget(now, Payload::samples(vec![]))?)?;
+        self.batch(now, rows, Payload::samples, BatchRows::Samples)
     }
 
     /// The same for outstanding trace lines.
@@ -111,20 +100,32 @@ impl Delivery {
     ) -> Result<Option<SealedBatch>, DeliveryError> {
         let rows = self
             .spool
-            .outstanding_lines(self.row_budget(now, Payload::Lines { lines: vec![] })?)?;
+            .outstanding_lines(self.row_budget(now, Payload::trace_lines(vec![]))?)?;
+        self.batch(now, rows, Payload::trace_lines, BatchRows::Lines)
+    }
+
+    /// Seal what a stream offered, as the schema that stream holds. The rows
+    /// arrive as the lines they will be on the wire, so the two streams differ
+    /// only in which schema the payload declares and which table an ACK deletes
+    /// from.
+    fn batch(
+        &mut self,
+        now: OffsetDateTime,
+        rows: Vec<SpooledRow>,
+        payload: fn(Vec<PayloadLine>) -> Payload,
+        acks: fn(Vec<i64>) -> BatchRows,
+    ) -> Result<Option<SealedBatch>, DeliveryError> {
         if rows.is_empty() {
             return Ok(None);
         }
         let (ids, lines) = rows.into_iter().map(|row| (row.id, row.line)).unzip();
-        self.seal(now, Payload::Lines { lines }, BatchRows::Lines(ids))
-            .map(Some)
+        self.seal(now, payload(lines), acks(ids)).map(Some)
     }
 
-    /// The budget the spool takes rows against (`spool::RowBudget`), both halves
-    /// measured by building the thing rather than by a second account of its
-    /// fields. `u64::MAX` is the widest counter this agent can ever draw, so
-    /// neither reserve comes up short of the counter the batch is actually
-    /// stamped with.
+    /// The budget the spool takes rows against (`spool::RowBudget`), measured by
+    /// building the header rather than by a second account of its fields.
+    /// `u64::MAX` is the widest counter this agent can ever draw, so the reserve
+    /// never comes up short of the counter the batch is actually stamped with.
     ///
     /// A budget the framing already exhausts is an error, not a zero: every
     /// row is over a zero budget, so offering one would have the spool drop the
@@ -135,10 +136,7 @@ impl Delivery {
         let header = envelope::header_json(&envelope)?;
         let framing = (envelope::HEADER_OFFSET + header.len()) as u64;
         match self.batch_max_bytes.checked_sub(framing) {
-            Some(max_bytes) if max_bytes > 0 => Ok(RowBudget {
-                max_bytes,
-                per_row_bytes: envelope::provenance_bytes(&envelope)?,
-            }),
+            Some(max_bytes) if max_bytes > 0 => Ok(RowBudget { max_bytes }),
             _ => Err(DeliveryError::BudgetBelowFraming {
                 batch_max_bytes: self.batch_max_bytes,
                 framing,
@@ -147,9 +145,10 @@ impl Delivery {
     }
 
     fn envelope(&self, counter: u64, now: OffsetDateTime, payload: Payload) -> Envelope {
+        let stamp = self.spool.provenance();
         Envelope::new(
-            self.pool_id,
-            self.agent_id.clone(),
+            stamp.pool_id,
+            stamp.agent_id.clone(),
             crate::AGENT_VERSION.to_string(),
             counter,
             now,

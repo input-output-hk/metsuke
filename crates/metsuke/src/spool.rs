@@ -1,9 +1,12 @@
 //! The agent's only durability layer (ADR 0004): samples, trace lines,
 //! delivery state, and schema migrations in one SQLite file. A row leaves on
-//! server ACK, as the oldest row past its stream's byte cap, for being larger
-//! than a whole batch on its own (`outstanding_rows`), or for not reading back
-//! (`Spool::readable`); everything else is offered again at startup and every
-//! upload interval.
+//! server ACK, as the oldest row past its stream's byte cap, or for being
+//! larger than a whole batch on its own (`outstanding_rows`); everything else is
+//! offered again at startup and every upload interval.
+//!
+//! A row is stored as the line it will be on the wire
+//! (`envelope::PayloadLine`), stamped on the way in; nothing here reads one back
+//! as the schema it came from. What that buys is ADR 0010.
 //!
 //! Both caps are in bytes rather than rows because a trace line and a sample
 //! are not the same size and a trace stream's rate is not the sampler's; a row
@@ -14,7 +17,7 @@ use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension};
 
-use metsuke_wire::envelope::{Sample, TraceLine};
+use metsuke_wire::envelope::{PayloadLine, Provenance, Sample, SealError, TraceLine};
 
 pub struct SpoolConfig {
     pub path: PathBuf,
@@ -24,11 +27,14 @@ pub struct SpoolConfig {
     /// How long a write waits for the other connection to this file — the
     /// trace-line writer and the upload loop are separate threads.
     pub busy_timeout: Duration,
+    /// What every row this spool stores is stamped with (`Spool::provenance`).
+    pub provenance: Provenance,
 }
 
 pub struct Spool {
     conn: Connection,
     max_bytes: u64,
+    provenance: Provenance,
     /// Accumulated rather than returned per call, because the caller that has
     /// to say it is the upload loop and the deletes happen while a batch is
     /// being taken.
@@ -36,7 +42,7 @@ pub struct Spool {
 }
 
 /// What taking a batch deleted since the last report: rows no batch could
-/// carry, for the two reasons there are.
+/// carry.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UncarriableReport {
     /// Rows over a whole batch's budget on their own (`outstanding_rows`).
@@ -44,11 +50,6 @@ pub struct UncarriableReport {
     /// The largest row dropped, so the operator is told the budget a row has
     /// to clear rather than only that rows were dropped.
     pub largest_bytes: u64,
-    /// Rows this build could not read back (`Spool::readable`).
-    pub unreadable: u64,
-    /// Why the last of them was refused. A count alone leaves an operator
-    /// nothing to report, and the row itself is gone once it is deleted.
-    pub unreadable_reason: Option<String>,
 }
 
 impl UncarriableReport {
@@ -56,26 +57,15 @@ impl UncarriableReport {
         self.oversized += 1;
         self.largest_bytes = self.largest_bytes.max(bytes);
     }
-
-    fn record_unreadable(&mut self, reason: String) {
-        self.unreadable += 1;
-        self.unreadable_reason = Some(reason);
-    }
 }
 
-/// A spooled sample with the row id `ack` needs to delete it.
+/// A spooled line with the row id `ack` needs to delete it. One type for both
+/// streams: a stored row is a wire line whichever schema it belongs to, and
+/// which stream it came from is what the caller asked for.
 #[derive(Debug, Clone, PartialEq)]
-pub struct SpooledSample {
+pub struct SpooledRow {
     pub id: i64,
-    pub sample: Sample,
-}
-
-/// A spooled trace line: the object the node wrote, as `LogSpool::push` stored
-/// it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct SpooledLine {
-    pub id: i64,
-    pub line: TraceLine,
+    pub line: PayloadLine,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -84,8 +74,10 @@ pub enum SpoolError {
     Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]
     Migrate(#[from] metsuke_wire::sqlite::MigrateError),
-    #[error("sample does not serialize: {0}")]
-    Serialize(#[source] serde_json::Error),
+    /// A row is stamped before it is stored, so a value that has no wire line
+    /// is refused here rather than reaching the file.
+    #[error("row does not render as a payload line: {0}")]
+    Stamp(#[from] SealError),
 }
 
 const MIGRATIONS: &[&str] = &[
@@ -105,6 +97,21 @@ const MIGRATIONS: &[&str] = &[
         line TEXT NOT NULL,
         bytes INTEGER NOT NULL
     );",
+    // Rows are stored stamped from here on (metsuke-jfb.11). A row written
+    // before that carries no stamp, and the server refuses a batch line by line
+    // for a missing one, so such a row can never be delivered — keeping it only
+    // stalls its stream until the byte cap evicts it. Taking it costs no
+    // delivered data because no archive has received any yet.
+    //
+    // `json_valid` first: `json_extract` raises on text that is not JSON, and a
+    // row that is not JSON is not a wire line either. The path spells
+    // `PROVENANCE_KEY` a second time, SQL taking a literal;
+    // `migrating_takes_a_row_that_is_not_even_json` fails on a change to either
+    // alone, because the stamped row it keeps is matched by this path.
+    "DELETE FROM samples
+        WHERE json_valid(sample) = 0 OR json_extract(sample, '$.metsuke') IS NULL;
+    DELETE FROM log_lines
+        WHERE json_valid(line) = 0 OR json_extract(line, '$.metsuke') IS NULL;",
 ];
 
 /// The two streams, as the schema names them. Interpolated into SQL, so they
@@ -141,19 +148,18 @@ fn open_spool(path: &PathBuf, busy_timeout: Duration) -> Result<Connection, Spoo
 /// so a crash never leaves the cap overshot. Returns how many rows the cap
 /// dropped.
 ///
-/// The `bytes` column is what the row costs this file; what it costs a sealed
-/// payload is `RowBudget`.
+/// The `bytes` column is `PayloadLine::wire_bytes`.
 fn push_capped(
     conn: &mut Connection,
     stream: &Stream,
-    text: &str,
+    line: &PayloadLine,
     max_bytes: u64,
 ) -> Result<u64, SpoolError> {
     let Stream { table, payload } = *stream;
     let transaction = conn.transaction()?;
     transaction.execute(
         &format!("INSERT INTO {table} ({payload}, bytes) VALUES (?1, ?2)"),
-        rusqlite::params![text, text.len() as i64 + 1],
+        rusqlite::params![line.as_str(), clamp(line.wire_bytes())],
     )?;
     let dropped = transaction.execute(
         // Newest first, so what survives is the newest suffix that fits.
@@ -170,14 +176,11 @@ fn push_capped(
     Ok(dropped as u64)
 }
 
-/// What a batch may spend on rows, and what a row costs beyond its own bytes:
-/// every payload line is stamped with the batch's provenance
-/// (`envelope::provenance_bytes`), so a row's cost in a sealed payload is its
-/// text, its newline, and that stamp.
+/// What a batch may spend on rows. A row costs the `bytes` column and nothing
+/// beside it (`envelope::PayloadLine::wire_bytes`).
 #[derive(Debug, Clone, Copy)]
 pub struct RowBudget {
     pub max_bytes: u64,
-    pub per_row_bytes: u64,
 }
 
 /// The oldest rows whose cost fits in the budget, and what taking them cost.
@@ -205,13 +208,13 @@ fn outstanding_rows(
     budget: RowBudget,
 ) -> Result<Outstanding, SpoolError> {
     let Stream { table, payload } = *stream;
-    let params = [clamp(budget.max_bytes), clamp(budget.per_row_bytes)];
+    let params = [clamp(budget.max_bytes)];
     let uncarriable: Option<i64> = conn
         .query_row(
             &format!(
                 "DELETE FROM {table}
-                 WHERE id = (SELECT MIN(id) FROM {table}) AND bytes + ?2 > ?1
-                 RETURNING bytes + ?2"
+                 WHERE id = (SELECT MIN(id) FROM {table}) AND bytes > ?1
+                 RETURNING bytes"
             ),
             params,
             |row| row.get(0),
@@ -219,7 +222,7 @@ fn outstanding_rows(
         .optional()?;
     let mut statement = conn.prepare(&format!(
         "SELECT id, {payload} FROM (
-            SELECT id, {payload}, SUM(bytes + ?2) OVER (ORDER BY id) AS running FROM {table}
+            SELECT id, {payload}, SUM(bytes) OVER (ORDER BY id) AS running FROM {table}
         ) WHERE running <= ?1
         ORDER BY id"
     ))?;
@@ -232,8 +235,8 @@ fn outstanding_rows(
     })
 }
 
-/// Delete a set of rows in one transaction, so what an ACK covers — or what a
-/// tick refused (`Spool::readable`) — is applied whole or not at all.
+/// Delete a set of rows in one transaction, so what an ACK covers is applied
+/// whole or not at all.
 fn delete_rows(conn: &mut Connection, stream: &Stream, ids: &[i64]) -> Result<(), SpoolError> {
     let transaction = conn.transaction()?;
     {
@@ -259,69 +262,49 @@ impl Spool {
         Ok(Spool {
             conn: open_spool(&config.path, config.busy_timeout)?,
             max_bytes: config.max_bytes,
+            provenance: config.provenance.clone(),
             uncarriable_since_report: UncarriableReport::default(),
         })
     }
 
-    /// Append a sample. Returns how many rows the cap dropped.
+    /// Stamp a sample and append it. Returns how many rows the cap dropped.
     pub fn push(&mut self, sample: &Sample) -> Result<u64, SpoolError> {
-        let json = serde_json::to_string(sample).map_err(SpoolError::Serialize)?;
-        push_capped(&mut self.conn, &SAMPLES, &json, self.max_bytes)
+        let line = PayloadLine::sample(sample, &self.provenance)?;
+        push_capped(&mut self.conn, &SAMPLES, &line, self.max_bytes)
     }
 
-    /// Undelivered samples, oldest first, within the budget. A head row that
-    /// alone exceeds it is dropped here (`outstanding_rows`).
-    pub fn outstanding(&mut self, budget: RowBudget) -> Result<Vec<SpooledSample>, SpoolError> {
-        let taken = outstanding_rows(&self.conn, &SAMPLES, budget)?;
-        Ok(self
-            .readable(&SAMPLES, taken, |text| serde_json::from_str(text))?
-            .into_iter()
-            .map(|(id, sample)| SpooledSample { id, sample })
-            .collect())
+    /// Undelivered sample lines, oldest first, within the budget. A head row
+    /// that alone exceeds it is dropped here (`outstanding_rows`).
+    pub fn outstanding(&mut self, budget: RowBudget) -> Result<Vec<SpooledRow>, SpoolError> {
+        self.taken(&SAMPLES, budget)
     }
 
     /// The same for trace lines, which are written by the trace-line thread's
     /// own connection (`LogSpool`) and read here because only the upload loop
     /// seals.
-    pub fn outstanding_lines(&mut self, budget: RowBudget) -> Result<Vec<SpooledLine>, SpoolError> {
-        let taken = outstanding_rows(&self.conn, &LINES, budget)?;
-        Ok(self
-            .readable(&LINES, taken, TraceLine::parse)?
-            .into_iter()
-            .map(|(id, line)| SpooledLine { id, line })
-            .collect())
+    pub fn outstanding_lines(&mut self, budget: RowBudget) -> Result<Vec<SpooledRow>, SpoolError> {
+        self.taken(&LINES, budget)
     }
 
-    /// Read the taken rows as their stream's shape, deleting the ones this
-    /// build cannot read rather than failing the tick on them: the parse
-    /// refuses the same row every time, so it is dropped and accounted like the
-    /// over-budget head row (`outstanding_rows`).
-    fn readable<T, E: std::fmt::Display>(
-        &mut self,
-        stream: &Stream,
-        taken: Outstanding,
-        read: impl Fn(&str) -> Result<T, E>,
-    ) -> Result<Vec<(i64, T)>, SpoolError> {
+    fn taken(&mut self, stream: &Stream, budget: RowBudget) -> Result<Vec<SpooledRow>, SpoolError> {
+        let taken = outstanding_rows(&self.conn, stream, budget)?;
         if let Some(bytes) = taken.uncarriable_bytes {
             self.uncarriable_since_report.record_oversized(bytes);
         }
-        let mut readable = Vec::with_capacity(taken.rows.len());
-        let mut refused = Vec::new();
-        for (id, text) in taken.rows {
-            match read(&text) {
-                Ok(value) => readable.push((id, value)),
-                Err(refusal) => refused.push((id, format!("{} row {id}: {refusal}", stream.table))),
-            }
-        }
-        // Reported only once the delete commits: a rolled-back transaction
-        // leaves the rows there for the next tick, so claiming a drop here
-        // would tell an operator about data loss that did not happen.
-        let ids: Vec<i64> = refused.iter().map(|(id, _)| *id).collect();
-        delete_rows(&mut self.conn, stream, &ids)?;
-        for (_, reason) in refused {
-            self.uncarriable_since_report.record_unreadable(reason);
-        }
-        Ok(readable)
+        Ok(taken
+            .rows
+            .into_iter()
+            .map(|(id, text)| SpooledRow {
+                id,
+                line: PayloadLine::spooled(text),
+            })
+            .collect())
+    }
+
+    /// What every row in this file is stamped with, and therefore what a batch
+    /// drawn from it has to name in its header (`delivery::Delivery::envelope`).
+    pub fn provenance(&self) -> &Provenance {
+        &self.provenance
     }
 
     pub fn take_uncarriable_report(&mut self) -> UncarriableReport {
@@ -358,6 +341,9 @@ pub struct LogSpoolConfig {
     /// volume has nothing to do with the sampler's cadence.
     pub max_bytes: u64,
     pub busy_timeout: Duration,
+    /// The same stamp `SpoolConfig` carries: both writers store wire lines, and
+    /// which of them wrote a row is not something a reader has to know.
+    pub provenance: Provenance,
 }
 
 /// The trace-line writer's half of the spool. Append-only: the upload loop
@@ -365,6 +351,7 @@ pub struct LogSpoolConfig {
 pub struct LogSpool {
     conn: Connection,
     max_bytes: u64,
+    provenance: Provenance,
 }
 
 impl LogSpool {
@@ -372,12 +359,14 @@ impl LogSpool {
         Ok(LogSpool {
             conn: open_spool(&config.path, config.busy_timeout)?,
             max_bytes: config.max_bytes,
+            provenance: config.provenance.clone(),
         })
     }
 
-    /// Append one selected line as the object it is. Returns how many rows the
-    /// cap dropped.
+    /// Stamp one selected line and append it. Returns how many rows the cap
+    /// dropped.
     pub fn push(&mut self, line: &TraceLine) -> Result<u64, SpoolError> {
-        push_capped(&mut self.conn, &LINES, &line.to_line(), self.max_bytes)
+        let line = PayloadLine::trace_line(line, &self.provenance)?;
+        push_capped(&mut self.conn, &LINES, &line, self.max_bytes)
     }
 }

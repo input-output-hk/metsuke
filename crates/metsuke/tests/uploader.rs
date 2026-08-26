@@ -8,8 +8,7 @@ use metsuke::delivery::Delivery;
 use metsuke::spool::{Spool, SpoolConfig};
 use metsuke::uploader::{UploadConfig, UploadOutcome, upload};
 use metsuke_wire::envelope::{
-    self, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, Payload, PoolId, Sample, Signature,
-    VerifyingKey,
+    self, HEADER_POOL_ID, HEADER_SIGNATURE, HEADER_VKEY, PoolId, Sample, Signature, VerifyingKey,
 };
 use time::OffsetDateTime;
 use wiremock::matchers::{method, path};
@@ -17,7 +16,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod support;
 use metsuke_wire::hex;
-use support::{TEST_LIMITS, test_agent_id, test_key};
+use support::{TEST_LIMITS, test_key, test_provenance};
 
 const UNBOUNDED: u64 = 64 * 1024 * 1024;
 
@@ -26,10 +25,10 @@ fn sealed_test_batch(dir: &tempfile::TempDir) -> metsuke::delivery::SealedBatch 
         path: dir.path().join("spool.sqlite"),
         max_bytes: UNBOUNDED,
         busy_timeout: Duration::from_secs(1),
+        provenance: test_provenance(),
     })
     .unwrap();
-    let pool_id = PoolId::from_cold_key(&test_key().verifying_key());
-    let mut delivery = Delivery::new(spool, test_key(), pool_id, test_agent_id(), 0, UNBOUNDED);
+    let mut delivery = Delivery::new(spool, test_key(), 0, UNBOUNDED);
     delivery
         .push(&Sample {
             sampled_at: OffsetDateTime::UNIX_EPOCH,
@@ -234,9 +233,7 @@ async fn acked_upload_carries_verifiable_headers_and_body() {
     let sig_bytes = hex::decode::<64>(header(HEADER_SIGNATURE)).unwrap();
     let signature = Signature::from_bytes(&sig_bytes);
     let opened = envelope::open(&vkey, &request.body, &signature, TEST_LIMITS).unwrap();
-    let Payload::Samples { samples } = opened.payload() else {
-        panic!("a sample batch carries samples, got {:?}", opened.payload());
-    };
+    let samples = opened.samples().expect("a sample batch carries samples");
     assert_eq!(samples[0].block_height, Some(5));
     assert_eq!(
         opened.pool_id,

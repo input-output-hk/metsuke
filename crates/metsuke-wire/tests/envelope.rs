@@ -4,8 +4,8 @@
 
 use metsuke_wire::envelope::{
     self, AgentId, CONTAINER_MAGIC, Envelope, HEADER_OFFSET, Limits, PROVENANCE_KEY, Payload,
-    PoolId, Provenance, SCHEMA_VERSION_LINES, SCHEMA_VERSION_SAMPLES, Sample, SigningKey,
-    TraceLine,
+    PayloadLine, PoolId, Provenance, SCHEMA_VERSION_LINES, SCHEMA_VERSION_SAMPLES, Sample,
+    SigningKey, TraceLine,
 };
 use proptest::prelude::*;
 use time::OffsetDateTime;
@@ -105,13 +105,13 @@ fn arb_envelope() -> impl Strategy<Value = Envelope> {
     )
         .prop_map(
             |(pool_id, agent_id, agent_version, counter, timestamp, samples)| {
-                Envelope::new(
+                envelope_of(
                     pool_id,
                     agent_id,
                     agent_version,
                     counter,
                     timestamp,
-                    Payload::Samples { samples },
+                    |stamp| samples_payload(&samples, stamp),
                 )
             },
         )
@@ -128,13 +128,13 @@ fn arb_lines_envelope() -> impl Strategy<Value = Envelope> {
     )
         .prop_map(
             |(pool_id, agent_id, agent_version, counter, timestamp, lines)| {
-                Envelope::new(
+                envelope_of(
                     pool_id,
                     agent_id,
                     agent_version,
                     counter,
                     timestamp,
-                    Payload::Lines { lines },
+                    |stamp| lines_payload(&lines, stamp),
                 )
             },
         )
@@ -218,9 +218,8 @@ proptest! {
         lines in arb_lines_envelope(),
     ) {
         for envelope in [samples, lines] {
-            let body = envelope::payload_lines(&envelope).unwrap();
             let stated = serde_json::to_value(envelope.provenance()).unwrap();
-            let body = String::from_utf8(body).unwrap();
+            let body = String::from_utf8(envelope::payload_lines(&envelope)).unwrap();
             for line in body.lines() {
                 let line: serde_json::Value = serde_json::from_str(line).unwrap();
                 prop_assert_eq!(&line[PROVENANCE_KEY], &stated);
@@ -229,18 +228,18 @@ proptest! {
     }
 }
 
+// The stamp is what an agent knows before it spools a line, which is the pool
+// and the machine and nothing else: the batch's counter and timestamp are drawn
+// when it is sealed, so they stay in the header (ADR 0002).
 #[test]
-fn a_stamped_line_names_the_pool_the_agent_the_counter_and_the_time() {
+fn a_stamped_line_names_the_pool_and_the_agent() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
-    let body = envelope::payload_lines(&one_sample_envelope(&key)).unwrap();
+    let body = envelope::payload_lines(&one_sample_envelope(&key));
     let line: serde_json::Value =
         serde_json::from_slice(body.strip_suffix(b"\n").unwrap()).unwrap();
     let stamp = line[PROVENANCE_KEY].as_object().unwrap();
 
-    assert_eq!(
-        stamp.keys().collect::<Vec<_>>(),
-        ["agent_id", "counter", "pool_id", "timestamp"]
-    );
+    assert_eq!(stamp.keys().collect::<Vec<_>>(), ["agent_id", "pool_id"]);
     // Beside its own fields, not instead of them.
     assert!(line["sampled_at"].is_string());
 }
@@ -292,8 +291,6 @@ fn open_refuses_a_line_stamped_with_another_batch() {
     let elsewhere = Provenance {
         pool_id,
         agent_id: AgentId::parse("other-relay").unwrap(),
-        counter: 1,
-        timestamp: OffsetDateTime::UNIX_EPOCH,
     };
     let line = serde_json::json!({"ns": "Consensus.Leios", PROVENANCE_KEY: elsewhere});
     let (bytes, sig) = sealed_header(
@@ -316,7 +313,7 @@ fn open_refuses_a_line_stamped_with_another_batch() {
 }
 
 // A line with no provenance at all is refused by the field it does not have,
-// and by its place in the payload (`OpenError::LineShape`).
+// and by its place in the payload (`OpenError::LineStamp`).
 #[test]
 fn open_refuses_an_unstamped_line() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
@@ -324,8 +321,6 @@ fn open_refuses_an_unstamped_line() {
     let stamp = Provenance {
         pool_id,
         agent_id: AgentId::parse("relay-1").unwrap(),
-        counter: 1,
-        timestamp: OffsetDateTime::UNIX_EPOCH,
     };
     let stamped = serde_json::json!({"ns": "Consensus.Leios", PROVENANCE_KEY: stamp});
     let (bytes, sig) = sealed_header(
@@ -342,7 +337,7 @@ fn open_refuses_an_unstamped_line() {
     );
     let err = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap_err();
     assert!(
-        matches!(err, envelope::OpenError::LineShape { index: 1, .. }),
+        matches!(err, envelope::OpenError::LineStamp { index: 1, .. }),
         "expected the offending line to be named, got: {err}"
     );
     assert!(
@@ -544,27 +539,53 @@ fn open_under_a_huge_limit_costs_only_the_payload() {
     assert_eq!(opened, env);
 }
 
+// Refused where the sample is still a sample. serde_json writes `null` for a
+// non-finite float rather than failing, so a stamp that let one through would
+// put a sample that never scraped the value on the wire — and by then the field
+// is text and nothing downstream can tell the two apart.
 #[test]
-fn seal_rejects_non_finite_sync_progress() {
-    let key = SigningKey::from_bytes(&[7u8; 32]);
-    let env = Envelope::new(
-        PoolId::from_cold_key(&key.verifying_key()),
-        AgentId::parse("relay-1").unwrap(),
-        "0.1.0".into(),
-        1,
-        OffsetDateTime::UNIX_EPOCH,
-        Payload::Samples {
-            samples: vec![Sample {
-                sync_progress: Some(f64::NAN),
-                ..sample()
-            }],
+fn stamping_refuses_a_non_finite_sync_progress() {
+    let err = PayloadLine::sample(
+        &Sample {
+            sync_progress: Some(f64::NAN),
+            ..sample()
         },
-    );
-    let err = envelope::seal(&key, &env, 0).unwrap_err();
+        &test_stamp(),
+    )
+    .unwrap_err();
     assert!(matches!(
         err,
-        envelope::SealError::NonFiniteSyncProgress { index: 0, .. }
+        envelope::SealError::NonFiniteSyncProgress { .. }
     ));
+}
+
+// What a consumer gets back out of a batch: the fields, not the bytes. The
+// only place a payload struct reads a payload line.
+#[test]
+fn a_consumer_reads_a_batch_s_samples_back_as_samples() {
+    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let (bytes, sig) = envelope::seal(&key, &one_sample_envelope(&key), 0).unwrap();
+    let opened = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap();
+
+    assert_eq!(opened.samples().unwrap(), [sample()]);
+}
+
+// Asking a batch for the shape it does not carry names both versions rather
+// than reporting the fields the other schema happens not to have.
+#[test]
+fn reading_a_sample_batch_as_trace_lines_names_both_schemas() {
+    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let err = one_sample_envelope(&key).trace_lines().unwrap_err();
+    assert!(
+        matches!(
+            err,
+            envelope::ReadError::PayloadIsNot {
+                asked: SCHEMA_VERSION_LINES,
+                found: SCHEMA_VERSION_SAMPLES
+            }
+        ),
+        "expected both versions to be named, got: {err}"
+    );
 }
 
 // The newline is what terminates a line, and a `TraceLine` is a JSON object
@@ -573,16 +594,12 @@ fn seal_rejects_non_finite_sync_progress() {
 #[test]
 fn a_line_holding_a_newline_seals_as_one_line() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
-    let envelope = Envelope::new(
-        PoolId::from_cold_key(&key.verifying_key()),
-        AgentId::parse("relay-1").unwrap(),
-        "0.1.0".into(),
-        1,
-        OffsetDateTime::UNIX_EPOCH,
-        Payload::Lines {
-            lines: vec![TraceLine::parse("{\"msg\":\"first\\nsecond\"}").unwrap()],
-        },
-    );
+    let envelope = test_envelope(&key, |stamp| {
+        lines_payload(
+            &[TraceLine::parse("{\"msg\":\"first\\nsecond\"}").unwrap()],
+            stamp,
+        )
+    });
     let (bytes, sig) = envelope::seal(&key, &envelope, 0).unwrap();
     let opened = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap();
     assert_eq!(opened, envelope);
@@ -648,15 +665,38 @@ fn recorded(hex: &str) -> (Vec<u8>, Envelope) {
 // A framing change that still round-trips through this build's own `open`
 // would go unnoticed; the recordings are what make it a failing test. Opening
 // them restates none of their values — the recorder owns those.
+//
+// Resealed from the fields rather than from what `open` returned: `open` takes
+// each line as the text it received and `seal` concatenates them, so resealing
+// an opened recording reproduces whatever the recording said. Going back
+// through the payload structs and the stamp is what puts this build's own
+// rendering in the comparison.
 #[test]
 fn this_build_seals_the_recorded_submissions() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
     for hex in RECORDINGS {
         let (_, opened) = recorded(hex);
-        // Level 0, as scripts/record-submission.sh sealed it.
-        let (resealed, _) = envelope::seal(&key, &opened, 0).unwrap();
+        let (resealed, _) = envelope::seal(&key, &restamped(&opened), 0).unwrap();
         assert_eq!(metsuke_wire::hex::encode(&resealed), hex.trim());
     }
+}
+
+/// The same batch with every line rendered again from its own fields.
+fn restamped(envelope: &Envelope) -> Envelope {
+    let stamp = envelope.provenance();
+    let payload = match envelope.schema_version() {
+        SCHEMA_VERSION_SAMPLES => samples_payload(&envelope.samples().unwrap(), &stamp),
+        SCHEMA_VERSION_LINES => lines_payload(&envelope.trace_lines().unwrap(), &stamp),
+        found => panic!("a recording this build opened declared v{found}"),
+    };
+    Envelope::new(
+        envelope.pool_id,
+        envelope.agent_id.clone(),
+        envelope.agent_version.clone(),
+        envelope.counter,
+        envelope.timestamp,
+        payload,
+    )
 }
 
 // The point of the container: a tool that has never heard of metsuke skips the
@@ -687,7 +727,7 @@ fn zstd_decompresses_the_recordings_to_exactly_their_payloads() {
             "zstd -d refused a recording: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        assert_eq!(output.stdout, envelope::payload_lines(&opened).unwrap());
+        assert_eq!(output.stdout, envelope::payload_lines(&opened));
     }
 }
 
@@ -721,32 +761,80 @@ fn sealed_header(
     (bytes, signature)
 }
 
-/// The smallest envelope, for the tests that care about the container rather
-/// than what it holds.
-fn empty_samples_envelope(key: &SigningKey) -> Envelope {
+/// An envelope stamped with its own header, as the agent's spool stamps a row.
+/// `open` checks every line against the header, so lines stamped with anything
+/// else make a batch that can only fail to open — which is
+/// `open_refuses_a_line_stamped_with_another_batch`, not a builder's job.
+fn envelope_of(
+    pool_id: PoolId,
+    agent_id: AgentId,
+    agent_version: String,
+    counter: u64,
+    timestamp: OffsetDateTime,
+    payload: impl FnOnce(&Provenance) -> Payload,
+) -> Envelope {
+    let stamp = Provenance {
+        pool_id,
+        agent_id: agent_id.clone(),
+    };
+    let payload = payload(&stamp);
     Envelope::new(
+        pool_id,
+        agent_id,
+        agent_version,
+        counter,
+        timestamp,
+        payload,
+    )
+}
+
+fn samples_payload(samples: &[Sample], stamp: &Provenance) -> Payload {
+    Payload::samples(
+        samples
+            .iter()
+            .map(|sample| PayloadLine::sample(sample, stamp).expect("a generated sample stamps"))
+            .collect(),
+    )
+}
+
+fn lines_payload(lines: &[TraceLine], stamp: &Provenance) -> Payload {
+    Payload::trace_lines(
+        lines
+            .iter()
+            .map(|line| PayloadLine::trace_line(line, stamp).expect("a parsed line stamps"))
+            .collect(),
+    )
+}
+
+/// The fixed identity the non-property tests report under.
+fn test_stamp() -> Provenance {
+    Provenance {
+        pool_id: PoolId::from_cold_key(&SigningKey::from_bytes(&[7u8; 32]).verifying_key()),
+        agent_id: AgentId::parse("relay-1").unwrap(),
+    }
+}
+
+fn test_envelope(key: &SigningKey, payload: impl FnOnce(&Provenance) -> Payload) -> Envelope {
+    envelope_of(
         PoolId::from_cold_key(&key.verifying_key()),
         AgentId::parse("relay-1").unwrap(),
         "0.1.0".into(),
         1,
         OffsetDateTime::UNIX_EPOCH,
-        Payload::Samples { samples: vec![] },
+        payload,
     )
+}
+
+/// The smallest envelope, for the tests that care about the container rather
+/// than what it holds.
+fn empty_samples_envelope(key: &SigningKey) -> Envelope {
+    test_envelope(key, |_| Payload::samples(vec![]))
 }
 
 /// One with a payload, for the tests that need the data frame to inflate to
 /// something.
 fn one_sample_envelope(key: &SigningKey) -> Envelope {
-    Envelope::new(
-        PoolId::from_cold_key(&key.verifying_key()),
-        AgentId::parse("relay-1").unwrap(),
-        "0.1.0".into(),
-        1,
-        OffsetDateTime::UNIX_EPOCH,
-        Payload::Samples {
-            samples: vec![sample()],
-        },
-    )
+    test_envelope(key, |stamp| samples_payload(&[sample()], stamp))
 }
 
 fn sample() -> Sample {

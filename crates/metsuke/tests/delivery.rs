@@ -6,11 +6,11 @@ use std::time::Duration;
 
 use metsuke::delivery::Delivery;
 use metsuke::spool::{LogSpool, LogSpoolConfig, Spool, SpoolConfig};
-use metsuke_wire::envelope::{self, Payload, PoolId, Sample, SigningKey, TraceLine};
+use metsuke_wire::envelope::{self, Payload, PayloadLine, PoolId, Sample, SigningKey, TraceLine};
 use time::OffsetDateTime;
 
 mod support;
-use support::{TEST_LIMITS, test_agent_id, trace_line};
+use support::{TEST_LIMITS, test_provenance, trace_line};
 
 /// Wide enough that no cap in the spool or the batch fires unless a test asks
 /// for one.
@@ -19,19 +19,15 @@ const UNBOUNDED: u64 = 64 * 1024 * 1024;
 const NO_CONTENTION: Duration = Duration::from_secs(1);
 
 /// The samples an opened batch carries, so a test that is about delivery does
-/// not carry the payload match with it.
-fn samples_of(envelope: &envelope::Envelope) -> &[Sample] {
-    match envelope.payload() {
-        Payload::Samples { samples } => samples,
-        other => panic!("a sample batch carries samples, got {other:?}"),
-    }
+/// not carry the schema check with it.
+fn samples_of(envelope: &envelope::Envelope) -> Vec<Sample> {
+    envelope.samples().expect("a sample batch carries samples")
 }
 
-fn lines_of(envelope: &envelope::Envelope) -> &[TraceLine] {
-    match envelope.payload() {
-        Payload::Lines { lines } => lines,
-        other => panic!("a trace-line batch carries lines, got {other:?}"),
-    }
+fn lines_of(envelope: &envelope::Envelope) -> Vec<TraceLine> {
+    envelope
+        .trace_lines()
+        .expect("a trace-line batch carries lines")
 }
 
 fn sample_at(unix_secs: i64) -> Sample {
@@ -61,16 +57,10 @@ fn delivery_with_batch_cap(
         path: dir.path().join("spool.sqlite"),
         max_bytes: UNBOUNDED,
         busy_timeout: NO_CONTENTION,
+        provenance: test_provenance(),
     })
     .unwrap();
-    Delivery::new(
-        spool,
-        key.clone(),
-        PoolId::from_cold_key(&key.verifying_key()),
-        test_agent_id(),
-        0,
-        batch_max_bytes,
-    )
+    Delivery::new(spool, key.clone(), 0, batch_max_bytes)
 }
 
 /// The trace-line writer, which is a separate connection in the binary too.
@@ -79,6 +69,7 @@ fn temp_log_spool(dir: &tempfile::TempDir) -> LogSpool {
         path: dir.path().join("spool.sqlite"),
         max_bytes: UNBOUNDED,
         busy_timeout: NO_CONTENTION,
+        provenance: test_provenance(),
     })
     .unwrap()
 }
@@ -241,7 +232,7 @@ fn acking_one_stream_leaves_the_other_spooled() {
 fn empty_envelope(key: &SigningKey, payload: Payload) -> envelope::Envelope {
     envelope::Envelope::new(
         PoolId::from_cold_key(&key.verifying_key()),
-        test_agent_id(),
+        test_provenance().agent_id,
         metsuke::AGENT_VERSION.to_string(),
         u64::MAX,
         OffsetDateTime::UNIX_EPOCH,
@@ -256,15 +247,24 @@ fn framing_bytes(key: &SigningKey, payload: Payload) -> u64 {
     (envelope::HEADER_OFFSET + envelope::header_json(&empty).unwrap().len()) as u64
 }
 
-/// What stamping one row of that envelope's shape costs (`spool::RowBudget`).
-fn stamp_bytes(key: &SigningKey, payload: Payload) -> u64 {
-    envelope::provenance_bytes(&empty_envelope(key, payload)).unwrap()
+/// What one row costs a batch, measured off the line itself
+/// (`envelope::PayloadLine::wire_bytes`).
+fn sample_row_bytes(sample: &Sample) -> u64 {
+    PayloadLine::sample(sample, &test_provenance())
+        .unwrap()
+        .wire_bytes()
+}
+
+fn line_row_bytes(line: &TraceLine) -> u64 {
+    PayloadLine::trace_line(line, &test_provenance())
+        .unwrap()
+        .wire_bytes()
 }
 
 /// The payload bytes a batch of `envelope` seals into, which is what the
 /// server's `max_decompressed_bytes` bounds.
 fn body_bytes(envelope: &envelope::Envelope) -> u64 {
-    envelope::payload_lines(envelope).unwrap().len() as u64
+    envelope::payload_lines(envelope).len() as u64
 }
 
 // The batch budget is what keeps one envelope off both the agent's memory and
@@ -275,10 +275,8 @@ fn a_batch_stops_at_the_configured_budget_and_the_rest_is_retaken() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
     // One row's full cost (`spool::RowBudget`); the framing is spent before any
     // row is.
-    let one = serde_json::to_string(&sample_at(1)).unwrap().len() as u64
-        + 1
-        + stamp_bytes(&key, Payload::Samples { samples: vec![] });
-    let cap = framing_bytes(&key, Payload::Samples { samples: vec![] }) + 2 * one;
+    let one = sample_row_bytes(&sample_at(1));
+    let cap = framing_bytes(&key, Payload::samples(vec![])) + 2 * one;
     let mut delivery = delivery_with_batch_cap(&dir, &key, cap);
     for secs in 1..=5 {
         delivery.push(&sample_at(secs)).unwrap();
@@ -321,8 +319,7 @@ fn no_batch_seals_a_body_past_the_budget() {
     let line = trace_line(
         r#"{"at":"2026-08-25T18:19:38.018453907Z","ns":"Consensus.LeiosPeer.Announcement","data":{"msg":"\"quoted\""},"sev":"Info"}"#,
     );
-    let cap =
-        framing_bytes(&key, Payload::Lines { lines: vec![] }) + 40 * line.to_line().len() as u64;
+    let cap = framing_bytes(&key, Payload::trace_lines(vec![])) + 40 * line.to_line().len() as u64;
     let mut delivery = delivery_with_batch_cap(&dir, &key, cap);
     let mut lines = temp_log_spool(&dir);
     for secs in 1..=200 {
@@ -357,9 +354,8 @@ fn a_line_larger_than_the_whole_budget_is_dropped_rather_than_sealed() {
     let carriable = trace_line(
         r#"{"at":"2026-08-25T18:19:38.018453907Z","ns":"Consensus.LeiosPeer.Announcement","sev":"Info"}"#,
     );
-    let carriable_bytes = carriable.to_line().len() as u64;
-    let cap = framing_bytes(&key, Payload::Lines { lines: vec![] })
-        + 2 * (carriable_bytes + stamp_bytes(&key, Payload::Lines { lines: vec![] }));
+    let carriable_bytes = line_row_bytes(&carriable);
+    let cap = framing_bytes(&key, Payload::trace_lines(vec![])) + 2 * carriable_bytes;
     let mut delivery = delivery_with_batch_cap(&dir, &key, cap);
     let mut lines = temp_log_spool(&dir);
     lines
@@ -396,7 +392,7 @@ fn a_budget_the_framing_exhausts_fails_the_tick_and_keeps_the_rows() {
     );
     let mut lines = temp_log_spool(&dir);
     lines.push(&line).unwrap();
-    let framing = framing_bytes(&key, Payload::Lines { lines: vec![] });
+    let framing = framing_bytes(&key, Payload::trace_lines(vec![]));
 
     // `framing_bytes` stamps UNIX_EPOCH, so this budget is the framing exactly
     // and what it leaves for rows is zero rather than negative.

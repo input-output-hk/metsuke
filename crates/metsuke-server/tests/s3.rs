@@ -19,8 +19,8 @@ use rusty_s3::Credentials;
 
 mod support;
 use support::{
-    TEST_LIMITS, TEST_TTL_SECS, UnavailableDirectory, calidus_key, envelope_for, index_store,
-    nonzero_u32, nonzero_u64, pool_of, seal, stored_submission, test_key, test_now,
+    TEST_LIMITS, TEST_TTL_SECS, UnavailableDirectory, calidus_key, envelope_for, envelope_of_pool,
+    index_store, nonzero_u32, nonzero_u64, pool_of, seal, stored_submission, test_key, test_now,
 };
 
 /// One request the fake endpoint received.
@@ -682,8 +682,7 @@ fn an_audit_stops_when_the_directory_cannot_answer() {
     let endpoint = FakeS3::start(Vec::new());
     let archive = endpoint.archive(1);
     let hot = calidus_key();
-    let mut envelope = envelope_for(&hot, 1);
-    envelope.pool_id = pool_of(&test_key());
+    let envelope = envelope_of_pool(pool_of(&test_key()), 1);
     let (wire_bytes, signature) = seal(&hot, &envelope);
     archive
         .store(&StoredSubmission {

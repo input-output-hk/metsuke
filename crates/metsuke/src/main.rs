@@ -19,6 +19,7 @@ use metsuke::scrape::ScrapeConfig;
 use metsuke::sntp::SntpConfig;
 use metsuke::spool::{LogSpool, LogSpoolConfig, Spool, SpoolConfig, SpoolError};
 use metsuke::uploader::{UploadConfig, UploadOutcome, newer_version_available};
+use metsuke_wire::envelope::Provenance;
 use metsuke_wire::journal::{ERR, INFO, WARNING};
 
 #[derive(Debug, thiserror::Error)]
@@ -65,11 +66,18 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         keys::resolve_signing_key(args.signing_key.as_deref(), config.signing_key.as_deref())?;
     identity::check_pool_id(config.pool_id, &key.verifying_key())?;
     let agent_id = identity::agent_id(config.agent_id.as_deref())?;
+    // Resolved once and handed to both spool writers: it is what stamps every
+    // line and what a batch's header names, so one value or they could disagree.
+    let provenance = Provenance {
+        pool_id: config.pool_id,
+        agent_id: agent_id.clone(),
+    };
     let busy_timeout = Duration::from_secs(config.spool_busy_timeout_secs);
     let spool = Spool::open(&SpoolConfig {
         path: config.spool_path.clone(),
         max_bytes: config.spool_max_bytes,
         busy_timeout,
+        provenance: provenance.clone(),
     })?;
     let vkey = key.verifying_key();
     eprintln!(
@@ -93,8 +101,6 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         Delivery::new(
             spool,
             key,
-            config.pool_id,
-            agent_id,
             config.compression_level,
             config.upload_batch_max_bytes,
         ),
@@ -106,7 +112,7 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         vkey,
     );
     if let Some(log) = &config.log {
-        start_trace_collection(log, &config.spool_path, busy_timeout)?;
+        start_trace_collection(log, &config.spool_path, busy_timeout, provenance)?;
     }
 
     let sample_interval = Duration::from_secs(config.sample_interval_secs);
@@ -147,11 +153,13 @@ fn start_trace_collection(
     log: &LogConfig,
     spool_path: &std::path::Path,
     busy_timeout: Duration,
+    provenance: Provenance,
 ) -> Result<(), StartupError> {
     let spool = LogSpool::open(&LogSpoolConfig {
         path: spool_path.to_path_buf(),
         max_bytes: log.log_max_bytes,
         busy_timeout,
+        provenance,
     })?;
     let journal = JournalConfig {
         journal_unit: log.journal_unit.clone(),
@@ -197,13 +205,6 @@ fn upload_tick(agent: &mut Agent, schedule: &mut Schedule, config: &ScheduleConf
             "{WARNING}dropped {} rows no batch could ever carry, the largest {} bytes: \
              raise upload_batch_max_bytes past it, plus the envelope's framing",
             uncarriable.oversized, uncarriable.largest_bytes,
-        );
-    }
-    if let Some(reason) = &uncarriable.unreadable_reason {
-        eprintln!(
-            "{WARNING}dropped {} spooled rows this build cannot read, the last of them {reason}: \
-             a row the spool holds and the uploader refuses is a bug worth reporting",
-            uncarriable.unreadable,
         );
     }
     let outcome = match attempted {

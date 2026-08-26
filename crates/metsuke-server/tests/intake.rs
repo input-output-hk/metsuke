@@ -10,7 +10,7 @@ use metsuke_server::http::status_for;
 use metsuke_server::index::Index;
 use metsuke_server::intake::{IngestError, Intake, Rejection};
 use metsuke_wire::envelope::{
-    CONTAINER_MAGIC, ContainerError, Envelope, Payload, PoolId, SCHEMA_VERSION_LINES,
+    CONTAINER_MAGIC, ContainerError, Envelope, Payload, PayloadLine, PoolId, SCHEMA_VERSION_LINES,
     SCHEMA_VERSION_SAMPLES, SigningKey,
 };
 use time::OffsetDateTime;
@@ -20,8 +20,8 @@ use support::{
     CannedDirectory, FailingArchive, TEST_MAX_REGISTRATIONS, TEST_TTL_SECS, UnavailableDirectory,
     calidus_authority, calidus_key, envelope_at, envelope_carrying, envelope_for, index_store,
     lines_envelope_at, nonzero_u32, nonzero_u64, other_key, permissive_config, pool_of,
-    registered_pool, registration, rotated_calidus_key, seal, stored_submission, submission,
-    test_agent_id, test_key, test_now, test_sample, trace_line,
+    provenance_of, registered_pool, registration, rotated_calidus_key, seal, stored_submission,
+    submission, test_agent_id, test_key, test_now, test_sample, trace_line,
 };
 
 /// An intake wired to a temporary directory and database, ready to submit
@@ -279,9 +279,14 @@ fn payload_over_the_decompression_ceiling_is_rejected() {
         &key,
         1,
         test_now(),
-        Payload::Samples {
-            samples: std::iter::repeat_n(test_sample(test_now()), 1000).collect(),
-        },
+        Payload::samples(
+            std::iter::repeat_n(
+                PayloadLine::sample(&test_sample(test_now()), &provenance_of(&key))
+                    .expect("a test sample stamps"),
+                1000,
+            )
+            .collect(),
+        ),
     );
 
     let error = submit(&mut intake, &key, &envelope).unwrap_err();
@@ -341,12 +346,16 @@ fn counters_are_tracked_per_pool() {
 
 // The signed envelope's own claim about which pool it is for must match the
 // header the allowlist and rate limit were checked against.
+//
+// Built for the other pool throughout rather than by moving one field: every
+// line is stamped with the pool its header names (ADR 0010), so an envelope
+// whose `pool_id` was reassigned is refused by the stamp before this check is
+// reached — `open_refuses_a_line_stamped_with_another_batch` covers that.
 #[test]
 fn envelope_for_another_pool_is_rejected() {
     let key = test_key();
     let (mut intake, _dir) = intake_for(&[pool_of(&key)]);
-    let mut envelope = envelope_for(&key, 1);
-    envelope.pool_id = pool_of(&other_key());
+    let envelope = envelope_for(&other_key(), 1);
     let (body, signature) = seal(&key, &envelope);
 
     let error = intake

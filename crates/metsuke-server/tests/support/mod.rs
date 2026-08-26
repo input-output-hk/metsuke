@@ -20,8 +20,8 @@ use metsuke_server::config::{
 };
 use metsuke_server::index::Index;
 use metsuke_wire::envelope::{
-    self, AgentId, Envelope, Limits, Payload, PoolId, SCHEMA_VERSION_SAMPLES, Sample, Signature,
-    SigningKey, TraceLine, VerifyingKey,
+    self, AgentId, Envelope, Limits, Payload, PayloadLine, PoolId, Provenance,
+    SCHEMA_VERSION_SAMPLES, Sample, Signature, SigningKey, TraceLine, VerifyingKey,
 };
 use time::OffsetDateTime;
 
@@ -87,9 +87,43 @@ pub fn envelope_at(key: &SigningKey, counter: u64, now: OffsetDateTime) -> Envel
         key,
         counter,
         now,
-        Payload::Samples {
-            samples: vec![test_sample(now)],
-        },
+        Payload::samples(vec![
+            PayloadLine::sample(&test_sample(now), &provenance_of(key))
+                .expect("a test sample stamps"),
+        ]),
+    )
+}
+
+/// What every line of a submission from `key` is stamped with.
+pub fn provenance_of(key: &SigningKey) -> Provenance {
+    Provenance {
+        pool_id: pool_of(key),
+        agent_id: test_agent_id(),
+    }
+}
+
+/// An envelope naming `pool_id`, for whichever key ends up sealing it.
+///
+/// The pool a batch names and the key that signs it are separate: a Calidus
+/// submission is exactly one whose signer is not the pool's own key (ADR 0003).
+/// They cannot be separated by reassigning `Envelope::pool_id` after the fact —
+/// every line is stamped with the pool its header names, so `open` refuses a
+/// batch whose header moved out from under its lines.
+pub fn envelope_of_pool(pool_id: PoolId, counter: u64) -> Envelope {
+    let now = test_now();
+    let stamp = Provenance {
+        pool_id,
+        agent_id: test_agent_id(),
+    };
+    Envelope::new(
+        pool_id,
+        test_agent_id(),
+        metsuke_server::CLIENT_VERSION.to_string(),
+        counter,
+        now,
+        Payload::samples(vec![
+            PayloadLine::sample(&test_sample(now), &stamp).expect("a test sample stamps"),
+        ]),
     )
 }
 
@@ -114,7 +148,18 @@ pub fn lines_envelope_at(
     now: OffsetDateTime,
     lines: Vec<TraceLine>,
 ) -> Envelope {
-    envelope_carrying(key, counter, now, Payload::Lines { lines })
+    let stamp = provenance_of(key);
+    envelope_carrying(
+        key,
+        counter,
+        now,
+        Payload::trace_lines(
+            lines
+                .iter()
+                .map(|line| PayloadLine::trace_line(line, &stamp).expect("a parsed line stamps"))
+                .collect(),
+        ),
+    )
 }
 
 pub fn envelope_carrying(

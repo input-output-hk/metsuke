@@ -1,6 +1,7 @@
 # 2. Replay protection inside the signed payload, verify before decompress
 
-Status: accepted (2026-08-19), the counter's meaning amended by metsuke-jfb.3
+Status: accepted (2026-08-19), the counter's meaning amended by metsuke-jfb.3,
+where it lives on the wire amended by metsuke-jfb.11
 
 ## Context
 
@@ -12,10 +13,16 @@ unauthenticated bytes ever reach the decompressor.
 
 ## Decision
 
-A monotonic counter and a timestamp live inside the signed JSON payload, covered
-by the same signature as the data. The counter belongs to one agent, so a gap in
+A monotonic counter and a timestamp live in the header frame, covered by the
+same signature as the data (ADR 1). The counter belongs to one agent, so a gap in
 it is a batch the archive never got (`envelope::Envelope::counter`).
 Counter state lives in server SQLite.
+
+The header frame is the only place they appear. Both are the batch's, drawn when
+it is sealed, and a batch whose upload failed is sealed again into a later one —
+so a line stamped with either at the moment it was written would name a batch it
+did not travel in. What a line carries instead is the pool and the machine
+(`envelope::Provenance`), which an agent knows before it spools anything.
 
 Three things the ingest path must hold, whatever checks it grows:
 

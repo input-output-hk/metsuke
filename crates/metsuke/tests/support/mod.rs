@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use metsuke::config::{Config, LogConfig};
 use metsuke::logselect::SelectConfig;
-use metsuke_wire::envelope::{AgentId, Limits, SigningKey, TraceLine};
+use metsuke_wire::envelope::{AgentId, Limits, PoolId, Provenance, SigningKey, TraceLine};
 
 /// The all-sevens test seed used across the suite.
 pub fn test_key() -> SigningKey {
@@ -20,6 +20,20 @@ pub fn test_key() -> SigningKey {
 /// The machine name every batch in the suite is stamped with.
 pub fn test_agent_id() -> AgentId {
     AgentId::parse("test-relay").expect("a fixed name is a slug")
+}
+
+/// The pool `test_key` speaks for (`identity::check_pool_id` refuses any other).
+pub fn test_pool_id() -> PoolId {
+    PoolId::from_cold_key(&test_key().verifying_key())
+}
+
+/// What every row the suite spools is stamped with, and therefore what a batch
+/// drawn from that spool names in its header.
+pub fn test_provenance() -> Provenance {
+    Provenance {
+        pool_id: test_pool_id(),
+        agent_id: test_agent_id(),
+    }
 }
 
 /// A trace line as the spool and the wire hold one: the node's object, parsed.
