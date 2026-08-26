@@ -28,11 +28,12 @@ the block producer's write path, where a stalled reader is the node's problem.
 The agent follows the node's journal with `journalctl --follow`, selects lines
 by namespace prefix or severity floor — both configuration, matched as *or*,
 since "every Leios event" and "every error, warning and notice" are two
-independent asks — and ships what it selects verbatim. It reads `ns` and `sev`
-and nothing else, as substrings rather than by decoding the line; it does not
-know what a Leios trace means and computes nothing from one. One more namespace
-is therefore an edit to a config file rather than a release, bounded by a
-`namespace_roots` ceiling the host sets: the agent can read every unit's
+independent asks — and ships what it selects verbatim. It parses the line as a
+JSON object and reads `ns` and `sev` off its top level and nothing else; a line
+the parse refuses declares neither field, so no rule reaches it. It does
+not know what a Leios trace means and computes nothing from one. One more
+namespace is therefore an edit to a config file rather than a release, bounded
+by a `namespace_roots` ceiling the host sets: the agent can read every unit's
 journal, and a namespace rule is what reaches into it by name.
 
 Collection is opt-in. Without a `[log]` section the agent reads only the
@@ -85,6 +86,12 @@ source, and its own decision.
   reads back. What a Leios round's traces look like is owned by the recordings
   under crates/metsuke/tests/fixtures, replayed through a real journal in the
   unit test and through the selection and spool in `cargo test`.
+- Selecting costs a JSON parse of every line the node writes, wanted or not.
+  That is deliberate: reading the fields as substrings needed a rule about
+  which occurrence in the line is the record's own, and that rule is a claim
+  about the node's key order that nothing enforces. Nobody has measured what
+  the parse costs on a real block producer; a prefilter ahead of it is a local
+  change if it turns out to matter.
 - An upload tick now costs two envelopes where it cost one, and the trace
   stream's volume is not the sampler's. The shipped caps are starting numbers,
   not measured ones: the volume behind them was a flood-driven burst on a

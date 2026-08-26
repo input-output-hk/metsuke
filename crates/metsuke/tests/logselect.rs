@@ -2,7 +2,9 @@
 //! windows of one node's stdout, so a rule tested here faces every trace the
 //! node emitted alongside the wanted ones (tests/fixtures/README.md).
 
-use metsuke::logselect::{self, SelectConfig, Selection, Severity, select};
+use std::borrow::Cow;
+
+use metsuke::logselect::{Fields, SelectConfig, Selection, Severity, select};
 
 mod support;
 use support::{shipped_log_config, shipped_rules};
@@ -114,7 +116,7 @@ fn a_namespace_outside_the_roots_is_refused() {
 fn the_roots_do_not_bound_the_severity_rule() {
     let rules = shipped_rules();
     let warning = line_with(STARTUP_WINDOW, r#""sev":"Warning""#);
-    let namespace = logselect::namespace(warning).unwrap();
+    let namespace = Fields::of(warning).namespace.unwrap();
     assert!(
         !shipped_log_config()
             .namespace_roots
@@ -132,44 +134,77 @@ fn the_roots_do_not_bound_the_severity_rule() {
 fn the_pre_tracing_configuration_dump_is_skipped() {
     let first = STARTUP_WINDOW.lines().next().unwrap();
     assert!(first.starts_with("Node configuration:"), "{first:.60}");
-    assert_eq!(logselect::namespace(first), None);
-    assert_eq!(logselect::severity(first), None);
+    assert_eq!(Fields::of(first), Fields::default());
     assert_eq!(select(&shipped_rules(), first), Selection::Skip);
 }
 
-// What the two string rules rest on: the node writes `ns` before `data` and
-// `sev` after it, with only flat keys following. So the first `ns` and the
-// last `sev` in a line are the line's own, whatever `data` nests. The
-// recording is the guard — a node that reorders its keys makes what `select`
-// reads and what the line says two different things, and this is where that
-// shows.
+// A line cut short is not a JSON object, so it declares nothing and no rule
+// reaches it — not even the rule that selected the whole line, and the cut
+// here keeps both fields intact.
 #[test]
-fn the_string_rules_read_what_a_json_parse_reads() {
+fn a_truncated_line_declares_nothing_and_is_not_selected() {
+    let line = line_with(LEIOS_WINDOW, r#""ns":"Consensus.LeiosKernel.Certified""#);
+    assert_eq!(select(&shipped_rules(), line), Selection::Ship(line));
+    let cut = &line[..line.rfind(',').unwrap()];
+    assert!(cut.contains(r#""ns":"Consensus.LeiosKernel.Certified""#));
+    assert_eq!(Fields::of(cut), Fields::default());
+    assert_eq!(select(&shipped_rules(), cut), Selection::Skip);
+}
+
+// `data` is a namespace's own payload and the node puts whatever the trace
+// carries in it, `ns` and `sev` included. This is the case the substring
+// readers needed a first-occurrence and a last-occurrence rule to survive.
+#[test]
+fn a_namespace_nested_in_data_is_not_the_lines_namespace() {
+    let line = r#"{"at":"2026-08-25T18:19:56Z","ns":"Forge.Loop.AdoptedBlock","data":{"ns":"LeiosNotify.Remote.Send.RequestNext","sev":"Debug"},"sev":"Info","thread":"52","host":"alpha"}"#;
+    assert_eq!(
+        Fields::of(line),
+        Fields {
+            namespace: Some("Forge.Loop.AdoptedBlock".into()),
+            severity: Some(Severity::Info),
+        }
+    );
+}
+
+// The recorded shape reads borrowed, so the copy is not paid once per line the
+// node writes. A value the line does not spell literally still reads, copied
+// and correct; a borrowed `&str` field would refuse the whole line instead.
+#[test]
+fn reading_a_field_copies_only_what_the_line_does_not_spell_literally() {
+    let recorded = line_with(LEIOS_WINDOW, r#""ns":"Forge.Loop.AdoptedBlock""#);
+    assert!(matches!(
+        Fields::of(recorded).namespace,
+        Some(Cow::Borrowed(_))
+    ));
+
+    let escaped = r#"{"ns":"Forge\u002ELoop","sev":"Info"}"#;
+    let namespace = Fields::of(escaped).namespace;
+    assert!(matches!(&namespace, Some(Cow::Owned(_))));
+    assert_eq!(namespace.as_deref(), Some("Forge.Loop"));
+}
+
+// Every record in the recordings declares both fields. A node that stops
+// declaring one, or spells a severity this build does not know, silently
+// loses the rule that reads it — this is where that shows, and the count of
+// lines declaring neither is what holds the pre-tracing dump to being the only
+// one.
+#[test]
+fn every_recorded_record_declares_the_fields_a_rule_reads() {
     let mut records = 0;
-    let mut not_json = 0;
+    let mut declaring_neither = 0;
     for line in LEIOS_WINDOW.lines().chain(STARTUP_WINDOW.lines()) {
-        let Ok(parsed) = serde_json::from_str::<serde_json::Value>(line) else {
-            not_json += 1;
+        let fields = Fields::of(line);
+        if fields == Fields::default() {
+            declaring_neither += 1;
             continue;
-        };
+        }
         records += 1;
-        assert_eq!(
-            logselect::namespace(line),
-            parsed["ns"].as_str(),
-            "{line:.120}"
-        );
-        let sev = parsed["sev"]
-            .as_str()
-            .unwrap_or_else(|| panic!("a trace record declares a severity: {line:.120}"));
-        assert_eq!(
-            logselect::severity(line),
-            Some(sev.parse().expect("the ladder covers what the node writes")),
-            "{line:.120}"
-        );
+        assert!(fields.namespace.is_some(), "{line:.120}");
+        assert!(fields.severity.is_some(), "{line:.120}");
     }
     assert!(records > 0, "the recordings hold no trace records");
     // The pre-tracing configuration dump, and nothing else.
-    assert_eq!(not_json, 1);
+    assert_eq!(declaring_neither, 1);
 }
 
 // The point of selecting at all. Stated as a shape rather than a ratio: the

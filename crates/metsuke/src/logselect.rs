@@ -2,10 +2,10 @@
 //! severity floor, both configuration, matched as `or` (ADR 0010 says why not
 //! `and`).
 //!
-//! Only `ns` and `sev` are read, and both as substrings: what is shipped is the
-//! node's own bytes, so decoding the rest of a line would be the whole stream's
-//! cost paid to reach two fields.
+//! A line is parsed as a JSON object and only `ns` and `sev` are read off it.
+//! Parsing decides; it does not produce what goes on the wire.
 
+use std::borrow::Cow;
 use std::str::FromStr;
 
 use serde::Deserialize;
@@ -111,43 +111,51 @@ pub enum Selection<'a> {
     Skip,
 }
 
-/// The two keys, as the node writes them: the quote after the colon opens the
-/// value. A JSON string holding either would spell it `\"ns\":\"`, so no
-/// nested value can be mistaken for a key.
-const NS: &str = r#""ns":""#;
-const SEV: &str = r#""sev":""#;
+/// A value read out of the line, copied only when the line does not spell it
+/// literally. It carries the borrow on its own type because `#[serde(borrow)]`
+/// does not reach through an `Option`: on `Option<Cow<'a, str>>` the attribute
+/// is accepted and every value still arrives owned.
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct Read<'a>(#[serde(borrow)] Cow<'a, str>);
 
-/// The namespace a line declares, or `None` when it declares none.
-///
-/// The *first* `ns`: the node writes `ns` before `data`, and `data` is the only
-/// place a nested `ns` can sit. tests/logselect.rs holds that rule against the
-/// recording, which is what a node that reorders its keys fails.
-pub fn namespace(line: &str) -> Option<&str> {
-    string_at(line, line.find(NS)? + NS.len())
+/// The keys as the node spells them, read off the object's own top level so a
+/// `data` payload carrying either is not a candidate.
+#[derive(Deserialize)]
+struct Keys<'a> {
+    #[serde(borrow)]
+    ns: Option<Read<'a>>,
+    #[serde(borrow)]
+    sev: Option<Read<'a>>,
 }
 
-/// The severity a line declares, or `None` when it declares none or spells one
-/// this build does not know.
-///
-/// The *last* `sev`: `data` precedes it and every key after it is flat, so a
-/// nested `sev` can only come before the real one.
-pub fn severity(line: &str) -> Option<Severity> {
-    string_at(line, line.rfind(SEV)? + SEV.len())?.parse().ok()
+/// What one line declares, of the two fields a rule reads. Every line the
+/// parse refuses lands in one bucket, declaring neither: not an object, `ns`
+/// not a string, cut short mid-object.
+#[derive(Debug, Default, PartialEq)]
+pub struct Fields<'a> {
+    pub namespace: Option<Cow<'a, str>>,
+    pub severity: Option<Severity>,
 }
 
-/// The JSON string open at `start`, up to its closing quote. A value holding
-/// an escaped quote comes back short, which costs a rule its match rather than
-/// misreading the line — neither a namespace nor a severity name holds one.
-fn string_at(line: &str, start: usize) -> Option<&str> {
-    let rest = line.get(start..)?;
-    rest.find('"').map(|end| &rest[..end])
+impl<'a> Fields<'a> {
+    pub fn of(line: &'a str) -> Fields<'a> {
+        let Ok(keys) = serde_json::from_str::<Keys<'a>>(line) else {
+            return Fields::default();
+        };
+        Fields {
+            namespace: keys.ns.map(|Read(ns)| ns),
+            severity: keys.sev.and_then(|Read(name)| name.parse().ok()),
+        }
+    }
 }
 
-/// Judge one line, against the severity floor first: it is the rule that
-/// reaches every namespace, so it settles most of the stream in one compare.
 pub fn select<'a>(config: &SelectConfig, line: &'a str) -> Selection<'a> {
-    let kept = severity(line).is_some_and(|severity| severity >= config.min_severity)
-        || namespace(line).is_some_and(|namespace| {
+    let fields = Fields::of(line);
+    let kept = fields
+        .severity
+        .is_some_and(|severity| severity >= config.min_severity)
+        || fields.namespace.is_some_and(|namespace| {
             config
                 .namespaces
                 .iter()
