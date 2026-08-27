@@ -4,16 +4,19 @@
 
 use metsuke::keys;
 
-/// A cardano-cli TextEnvelope for the all-sevens Ed25519 seed: cborHex is
-/// CBOR bytes(32) — the `5820` major-type prefix — followed by the seed.
-fn seven_seed_envelope() -> String {
+mod support;
+use support::test_key;
+
+/// A cardano-cli TextEnvelope for the suite's seed: cborHex is CBOR bytes(32)
+/// — the `5820` major-type prefix — followed by the seed.
+fn test_key_envelope() -> String {
+    let seed = metsuke_wire::hex::encode(&test_key().to_bytes());
     format!(
         r#"{{
             "type": "StakePoolSigningKey_ed25519",
             "description": "Stake Pool Operator Signing Key",
-            "cborHex": "5820{}"
-        }}"#,
-        "07".repeat(32)
+            "cborHex": "5820{seed}"
+        }}"#
     )
 }
 
@@ -109,8 +112,7 @@ fn a_seed_that_is_not_hex_reports_that() {
 fn text_envelope_file_loads_the_seed_it_carries() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("pool.skey");
-    std::fs::write(&path, seven_seed_envelope()).unwrap();
+    std::fs::write(&path, test_key_envelope()).unwrap();
     let key = keys::load_signing_key(&path).unwrap();
-    let expected = metsuke_wire::envelope::SigningKey::from_bytes(&[7u8; 32]);
-    assert_eq!(key.verifying_key(), expected.verifying_key());
+    assert_eq!(key.verifying_key(), test_key().verifying_key());
 }

@@ -12,7 +12,7 @@ use metsuke_wire::envelope::{
 use time::OffsetDateTime;
 
 mod support;
-use support::{TEST_LIMITS, test_provenance, trace_line};
+use support::{TEST_LIMITS, test_key, test_provenance, trace_line};
 
 /// Wide enough that no cap in the spool or the batch fires unless a test asks
 /// for one.
@@ -82,7 +82,7 @@ fn temp_log_spool(dir: &tempfile::TempDir) -> LogSpool {
 #[test]
 fn pushed_samples_seal_verify_and_ack_drains_the_spool() {
     let dir = tempfile::tempdir().unwrap();
-    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let key = test_key();
     let mut delivery = temp_delivery(&dir, &key);
     let samples = [sample_at(1), sample_at(2)];
     for sample in &samples {
@@ -118,7 +118,7 @@ fn pushed_samples_seal_verify_and_ack_drains_the_spool() {
 #[test]
 fn unacked_batch_is_retaken_with_a_fresh_counter() {
     let dir = tempfile::tempdir().unwrap();
-    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let key = test_key();
     let mut delivery = temp_delivery(&dir, &key);
     delivery.push(&sample_at(1)).unwrap();
     let open = |batch: &metsuke::delivery::SealedBatch| {
@@ -146,7 +146,7 @@ fn unacked_batch_is_retaken_with_a_fresh_counter() {
 #[test]
 fn empty_spool_yields_no_batch() {
     let dir = tempfile::tempdir().unwrap();
-    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let key = test_key();
     let mut delivery = temp_delivery(&dir, &key);
     assert!(
         delivery
@@ -167,7 +167,7 @@ fn empty_spool_yields_no_batch() {
 #[test]
 fn spooled_trace_lines_seal_as_their_own_envelope() {
     let dir = tempfile::tempdir().unwrap();
-    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let key = test_key();
     let mut delivery = temp_delivery(&dir, &key);
     let mut lines = temp_log_spool(&dir);
     let recorded = [
@@ -205,7 +205,7 @@ fn spooled_trace_lines_seal_as_their_own_envelope() {
 #[test]
 fn acking_one_stream_leaves_the_other_spooled() {
     let dir = tempfile::tempdir().unwrap();
-    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let key = test_key();
     let mut delivery = temp_delivery(&dir, &key);
     let mut lines = temp_log_spool(&dir);
     delivery.push(&sample_at(1)).unwrap();
@@ -278,7 +278,7 @@ fn body_bytes(envelope: &envelope::Envelope) -> u64 {
 #[test]
 fn a_batch_stops_at_the_configured_budget_and_the_rest_is_retaken() {
     let dir = tempfile::tempdir().unwrap();
-    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let key = test_key();
     // One row's full cost (`spool::RowBudget`); the framing is spent before any
     // row is.
     let one = sample_row_bytes(&sample_at(1));
@@ -318,7 +318,7 @@ fn a_batch_stops_at_the_configured_budget_and_the_rest_is_retaken() {
 #[test]
 fn no_batch_seals_a_body_past_the_budget() {
     let dir = tempfile::tempdir().unwrap();
-    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let key = test_key();
     // Enough of both streams that the budget, not the spool, is what stops the
     // batch; the trace line is a real one, escaping and all.
     let line = trace_line(
@@ -355,7 +355,7 @@ fn no_batch_seals_a_body_past_the_budget() {
 #[test]
 fn a_line_larger_than_the_whole_budget_is_dropped_rather_than_sealed() {
     let dir = tempfile::tempdir().unwrap();
-    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let key = test_key();
     let carriable = trace_line(
         r#"{"at":"2026-08-25T18:19:38.018453907Z","ns":"Consensus.LeiosPeer.Announcement","sev":"Info"}"#,
     );
@@ -391,7 +391,7 @@ fn a_line_larger_than_the_whole_budget_is_dropped_rather_than_sealed() {
 #[test]
 fn a_budget_the_framing_exhausts_fails_the_tick_and_keeps_the_rows() {
     let dir = tempfile::tempdir().unwrap();
-    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let key = test_key();
     let line = trace_line(
         r#"{"at":"2026-08-25T18:19:38.018453907Z","ns":"Consensus.LeiosPeer.Announcement","sev":"Info"}"#,
     );
@@ -444,7 +444,7 @@ fn charged_bytes(dir: &tempfile::TempDir, table: &str) -> u64 {
 #[test]
 fn the_spool_charges_a_row_what_the_server_inflates_for_it() {
     let dir = tempfile::tempdir().unwrap();
-    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let key = test_key();
     let mut delivery = temp_delivery(&dir, &key);
     let mut lines = temp_log_spool(&dir);
     for secs in 1..=5 {

@@ -4,17 +4,15 @@
 
 use metsuke::config::{Config, LogConfig, LogSource};
 use metsuke::logsource::JournalConfig;
-use metsuke_wire::envelope::{PoolId, SigningKey};
+
+mod support;
+use support::test_pool_id;
 
 fn journal(log: &LogConfig) -> &JournalConfig {
     match &log.source {
         LogSource::Journald(journal) => journal,
         other => panic!("expected a journald source, got {other:?}"),
     }
-}
-
-fn test_pool_id() -> PoolId {
-    PoolId::from_cold_key(&SigningKey::from_bytes(&[7u8; 32]).verifying_key())
 }
 
 fn minimal_toml() -> String {

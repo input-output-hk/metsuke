@@ -9,12 +9,13 @@ use metsuke::delivery::Delivery;
 use metsuke::logselect::{Selection, select};
 use metsuke::logtail;
 use metsuke::spool::{LogSpool, LogSpoolConfig, Spool, SpoolConfig};
-use metsuke_wire::envelope::{self, SigningKey, TraceLine};
+use metsuke_wire::envelope::{self, TraceLine};
 use time::OffsetDateTime;
 
 mod support;
 use support::{
-    TEST_LIMITS, following, recording, replaying_journalctl, shipped_rules, test_provenance,
+    TEST_LIMITS, following, recording, replaying_journalctl, shipped_rules, test_key,
+    test_provenance,
 };
 
 const LEIOS_RECORDING: &str = "leios-node-traces.log";
@@ -43,7 +44,7 @@ fn the_recorded_stream_reaches_a_sealed_batch_as_the_lines_the_rules_selected() 
 
     logtail::drain(&mut source, &rules, &mut lines).unwrap();
 
-    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let key = test_key();
     let mut delivery = Delivery::new(
         Spool::open(&SpoolConfig {
             path: dir.path().join("spool.sqlite"),
