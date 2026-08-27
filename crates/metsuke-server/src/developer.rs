@@ -9,7 +9,7 @@
 
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest as _};
-use serde::Serialize;
+use metsuke_wire::http::{AFTER_FIELD, Listing, PREFIX_FIELD};
 
 use base64::Engine as _;
 
@@ -142,13 +142,13 @@ impl Filters {
     /// archive's own, so "everything" is every object this server filed
     /// rather than every key in the bucket.
     pub fn parse(url: &str) -> Result<Filters, BadQuery> {
-        let asked = query_value(url, "prefix")?;
+        let asked = query_value(url, PREFIX_FIELD)?;
         Ok(Filters {
             prefix: match asked.is_empty() {
                 true => KEY_PREFIX.to_string(),
                 false => asked,
             },
-            after: query_value(url, "after")?,
+            after: query_value(url, AFTER_FIELD)?,
         })
     }
 }
@@ -184,19 +184,11 @@ pub fn percent_decoded(value: &str) -> Option<String> {
     String::from_utf8(decoded).ok()
 }
 
-/// One page of the archive as the JSON a developer parses. Keys and nothing
-/// else: the pool, the agent and the kind are segments of the key
-/// (`archive::ObjectName`), and the server does not parse what the bucket
-/// hands it back.
-#[derive(Debug, Serialize)]
-struct PageJson<'a> {
-    keys: &'a [String],
-    truncated: bool,
-}
-
-pub fn page(listing: &Page) -> String {
-    let page = PageJson {
-        keys: &listing.keys,
+/// One page of the archive as the JSON a developer parses
+/// (`metsuke_wire::http::Listing`).
+pub fn page(listing: Page) -> String {
+    let page = Listing {
+        keys: listing.keys,
         truncated: listing.truncated,
     };
     serde_json::to_string(&page).expect("a page of keys and a flag serializes")

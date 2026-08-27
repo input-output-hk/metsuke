@@ -51,9 +51,6 @@ url = { version = "2.5.8", features = ["serde"] }
 base64 = "0.22.1"
 blake2 = "0.10.6"
 ed25519-dalek = "3.0.0"
-# The object key's unique segment (`archive::ObjectName`). Default features
-# rather than v7 alone: the random half is what `rng` brings.
-uuid = { version = "1.25.0", features = ["v7"] }
 
 [dev-dependencies]
 proptest = "1.11.0"

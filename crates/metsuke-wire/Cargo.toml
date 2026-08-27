@@ -22,6 +22,9 @@ time = { version = "0.3.55", features = ["serde-well-known"] }
 # No TLS from here: what a binary's transport needs is its own choice, and
 # feature unification would otherwise hand the agent the server's.
 ureq = { version = "3.4.0", default-features = false }
+# The object key's unique segment (`key::ObjectName`). Default features rather
+# than v7 alone: the random half is what `rng` brings.
+uuid = { version = "1.25.0", features = ["v7"] }
 zstd = "0.13.3"
 
 [dev-dependencies]

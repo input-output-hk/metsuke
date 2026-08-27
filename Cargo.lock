@@ -970,6 +970,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "metsuke-fetch"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "metsuke-server",
+ "metsuke-wire",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "time",
+ "ureq",
+]
+
+[[package]]
 name = "metsuke-server"
 version = "0.1.0"
 dependencies = [
@@ -1011,6 +1026,7 @@ dependencies = [
  "thiserror",
  "time",
  "ureq",
+ "uuid",
  "zstd",
 ]
 

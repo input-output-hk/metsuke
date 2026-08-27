@@ -1,9 +1,36 @@
-//! The HTTP client both binaries build, and the one reading of a non-2xx
-//! answer they both act on. It lives here because a status split that
-//! disagreed between them would make a retry loop mean one thing per call
-//! site.
+//! The HTTP client every binary builds, the one reading of a non-2xx answer
+//! they all act on, and the archive-pull contract the server answers and the
+//! fetch tool reads. A status split or a route that disagreed between them
+//! would make a retry loop or a sync mean one thing per call site.
 
 use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+
+/// The two routes an archive pull uses: one page of the listing, and one
+/// object's bytes.
+pub const SUBMISSIONS_PATH: &str = "/v1/submissions";
+pub const OBJECT_PATH: &str = "/v1/object";
+
+/// The listing's two filters, as query fields: the literal head of an object
+/// key, and the last key the client already has.
+pub const PREFIX_FIELD: &str = "prefix";
+pub const AFTER_FIELD: &str = "after";
+
+/// The field naming the object a download wants. A field rather than a path
+/// segment, because an object key holds `/` and would otherwise have to be
+/// reassembled from the route.
+pub const KEY_FIELD: &str = "key";
+
+/// One page of the archive listing. Keys and nothing else: the pool, the agent
+/// and the kind are segments of the key, so a client filters a listing without
+/// the server parsing one.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Listing {
+    pub keys: Vec<String>,
+    /// There is more after the last key (`metsuke_server::archive::Page`).
+    pub truncated: bool,
+}
 
 /// An agent bounded whole-request by `timeout` — connect, send and read
 /// together — which hands a status back as an answer rather than an error,

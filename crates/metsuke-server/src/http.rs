@@ -29,15 +29,9 @@ use crate::intake::{IngestError, Intake, Rejection};
 /// Where submissions arrive.
 pub const SUBMIT_PATH: &str = "/v1/submit";
 
-/// The developer routes: one page of the archive listing, and one object's
-/// bytes.
-pub const SUBMISSIONS_PATH: &str = "/v1/submissions";
-pub const OBJECT_PATH: &str = "/v1/object";
-
-/// The query field naming the object a download wants. A field rather than a
-/// path segment, because an object key holds `/` and would otherwise have to
-/// be reassembled from the route.
-pub const KEY_FIELD: &str = "key";
+/// The developer routes and the field a download names its object in
+/// (`metsuke_wire::http`), re-exported so a route reads off one name here.
+pub use metsuke_wire::http::{KEY_FIELD, OBJECT_PATH, SUBMISSIONS_PATH};
 
 /// The two methods the four routes take. Anything else is one value: a refusal
 /// names the method the route accepts, never the one that was tried.
@@ -259,7 +253,7 @@ fn listing<A: Store + Bytes + List>(
         Ok(listing) => Answer {
             status: 200,
             content_type: "application/json",
-            body: AnswerBody::Bytes(developer::page(&listing).into_bytes().into()),
+            body: AnswerBody::Bytes(developer::page(listing).into_bytes().into()),
             headers: Vec::new(),
         },
         Err(error) => unavailable("the archive cannot be listed", &error.to_string()),

@@ -153,6 +153,14 @@
             doCheck = false;
           };
 
+          # What the suites reach for beside the crates: `checks.test` says why
+          # each is here. Every way the suite is run needs them — the sandboxed
+          # checks, a per-crate run, and `just test` in the devShell.
+          suiteTools = [
+            pkgs.duckdb
+            pkgs.zstd
+          ];
+
           testAlone =
             crate:
             craneLib.cargoTest (
@@ -161,6 +169,7 @@
                 inherit cargoArtifacts;
                 pname = "${crate}-alone";
                 cargoExtraArgs = "--package ${crate}";
+                nativeCheckInputs = suiteTools;
               }
             );
 
@@ -197,6 +206,21 @@
                 cargoArtifacts = crossCrane.buildDepsOnly staticArgs;
               }
             );
+
+          # The server's tree. build.rs reads the agent manifest for
+          # CLIENT_VERSION, so the agent crate has to be here in full even
+          # though nothing links against it; the two contrib files are carried
+          # whole into the instructions page with include_str!, so cargo
+          # sources alone do not build.
+          serverFileset = pkgs.lib.fileset.unions [
+            (pkgs.lib.fileset.fromSource (crateSrc [
+              ./crates/metsuke-wire
+              ./crates/metsuke
+              ./crates/metsuke-server
+            ]))
+            ./contrib/config.example.toml
+            ./contrib/metsuke.service
+          ];
 
           unit = import ./nix/unit.nix;
 
@@ -264,27 +288,31 @@
             metsuke = craneLib.buildPackage agentArgs;
             metsuke-unit = contribUnit;
             metsuke-allowlist = (import ./nix/allowlist.nix { inherit pkgs; }).package;
+            # The developer's pull tool, which links the wire crate alone. The
+            # server tree is here because cargo loads every workspace member's
+            # manifest, and this crate dev-depends on the server: sources it
+            # cannot find are an error before anything is built.
+            metsuke-fetch = craneLib.buildPackage (
+              binaryArgs
+              // {
+                src = pkgs.lib.fileset.toSource {
+                  root = ./.;
+                  fileset = pkgs.lib.fileset.unions [
+                    serverFileset
+                    (pkgs.lib.fileset.fromSource (crateSrc [ ./crates/metsuke-fetch ]))
+                  ];
+                };
+                cargoExtraArgs = "--package metsuke-fetch";
+              }
+            );
             metsuke-static-x86_64-linux = staticAgent pkgs.pkgsCross.musl64;
             metsuke-static-aarch64-linux = staticAgent pkgs.pkgsCross.aarch64-multiplatform-musl;
             metsuke-server = craneLib.buildPackage (
               binaryArgs
               // {
-                # build.rs reads the agent manifest for CLIENT_VERSION, so the
-                # agent crate has to be here in full even though nothing links
-                # against it.
                 src = pkgs.lib.fileset.toSource {
                   root = ./.;
-                  fileset = pkgs.lib.fileset.unions [
-                    (pkgs.lib.fileset.fromSource (crateSrc [
-                      ./crates/metsuke-wire
-                      ./crates/metsuke
-                      ./crates/metsuke-server
-                    ]))
-                    # Carried whole into the instructions page, and
-                    # include_str!'d, so cargo sources alone do not build.
-                    ./contrib/config.example.toml
-                    ./contrib/metsuke.service
-                  ];
+                  fileset = serverFileset;
                 };
                 cargoExtraArgs = "--package metsuke-server";
               }
@@ -293,7 +321,7 @@
           };
 
           checks = {
-            inherit (config.packages) metsuke metsuke-server;
+            inherit (config.packages) metsuke metsuke-server metsuke-fetch;
 
             allowlist = (import ./nix/allowlist.nix { inherit pkgs; }).tests;
 
@@ -373,12 +401,14 @@
 
             # zstd: the wire suite asserts a recording decompresses through the
             # real CLI, because the claim is about conforming decompressors
-            # rather than about the crate.
+            # rather than about the crate. duckdb: the fetch suite asserts a
+            # synced object is read where it landed, which is a claim about
+            # duckdb and not about the container.
             test = craneLib.cargoTest (
               commonArgs
               // {
                 inherit cargoArtifacts;
-                nativeCheckInputs = [ pkgs.zstd ];
+                nativeCheckInputs = suiteTools;
               }
             );
 
@@ -387,6 +417,7 @@
             # other and still pass there (ticket metsuke-b4r).
             test-agent = testAlone "metsuke";
             test-server = testAlone "metsuke-server";
+            test-fetch = testAlone "metsuke-fetch";
 
             audit = craneLib.cargoAudit {
               inherit src;
@@ -423,7 +454,7 @@
 
           devShells.default = craneLib.devShell {
             inherit (config) checks;
-            packages = [
+            packages = suiteTools ++ [
               pkgs.cargo-audit
               pkgs.cargo-deny
               pkgs.cargo-llvm-cov

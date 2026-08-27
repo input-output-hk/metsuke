@@ -141,10 +141,11 @@ fn a_page_serializes_as_the_keys_the_archive_listed() {
         truncated: true,
     };
 
-    let json: serde_json::Value = serde_json::from_str(&page(&listing)).unwrap();
+    let keys = listing.keys.clone();
+    let json: serde_json::Value = serde_json::from_str(&page(listing)).unwrap();
 
     assert_eq!(json["truncated"], true);
-    assert_eq!(json["keys"][0], listing.keys[0]);
+    assert_eq!(json["keys"][0], keys[0]);
 }
 
 /// One listing request is one upstream request, so a configured bound above

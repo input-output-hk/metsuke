@@ -1,0 +1,25 @@
+[package]
+name = "metsuke-fetch"
+description = "Delta-sync of the signed telemetry archive to local files a developer reads directly"
+version = "0.1.0"
+publish = false
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+metsuke-wire = { path = "../metsuke-wire" }
+# The Basic credential, which is base64 of `user:password`.
+base64 = "0.22.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+# rustls, because a server reached over TLS is the deployed case and ureq
+# without a provider answers TlsRequired.
+ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
+
+[dev-dependencies]
+# tests/support/mod.rs says what the server is doing here.
+metsuke-server = { path = "../metsuke-server" }
+tempfile = "3.27.0"
+time = "0.3.55"
