@@ -338,9 +338,19 @@ def "main vm" [--table] {
 
 # The end-to-end test, which lives in devnet's flake because the node is pinned
 # there.
+#
+# Addressed as a subflake of this repo, not as `path:devnet`. That flake reaches
+# the tree above it — `../nix/e2e-test.nix`, and a `path:..` input for the two
+# modules — so a copy of `devnet` alone resolves both against /nix/store and pure
+# evaluation refuses them. Going through the repo also leaves git deciding what
+# is copied, so a devnet left running does not offer nix the unix socket under
+# devnet/.devnet.
+#
+# Edits to tracked files are read from disk, staged or not. A file git has never
+# seen is invisible, so a new fixture this test needs has to be added first.
 def "main e2e" [--table] {
   let run = capture "nix-e2e" "nix" [
-    build "path:devnet#hydraJobs.e2e.x86_64-linux" -L --no-link --print-out-paths
+    build ".?dir=devnet#hydraJobs.e2e.x86_64-linux" -L --no-link --print-out-paths
   ]
   exit (report-vm (vm-output $run) $table)
 }
