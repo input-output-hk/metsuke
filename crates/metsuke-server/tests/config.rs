@@ -196,6 +196,19 @@ fn put_retries_may_be_zero() {
     assert_eq!(s3.put_retries, 0);
 }
 
+/// The width `IngestConfig::rate_limit_window_secs` states, refused at load
+/// rather than at first use (ticket metsuke-4zo.38).
+#[test]
+fn a_window_wider_than_its_type_is_refused_at_load() {
+    let error = ServerConfig::from_toml(&with("rate_limit_window_secs", "4294967296"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("rate_limit_window_secs = 4294967296"),
+        "got: {error}"
+    );
+}
+
 /// A bad endpoint is a config error quoting what was written, not a startup
 /// failure from somewhere inside the archive.
 #[test]

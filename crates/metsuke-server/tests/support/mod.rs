@@ -281,7 +281,7 @@ pub fn permissive_config(allowed: &[PoolId]) -> IngestConfig {
         max_header_bytes: nonzero_u64(MAX_HEADER_BYTES),
         rate_limit_uploads: nonzero_u32(100),
         rate_limit_uploads_total: nonzero_u32(1000),
-        rate_limit_window_secs: nonzero_u64(3600),
+        rate_limit_window_secs: nonzero_u32(3600),
     }
 }
 

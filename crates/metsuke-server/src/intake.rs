@@ -32,12 +32,12 @@ pub enum Rejection {
     RateLimited {
         pool_id: PoolId,
         max: u32,
-        window_secs: u64,
+        window_secs: u32,
     },
     /// Separate from `RateLimited` because it says nothing about this pool:
     /// every pool together filled the window, and the fix is not the client's.
     #[error("the server is over its limit of {max} uploads per {window_secs}s")]
-    ServerBusy { max: u32, window_secs: u64 },
+    ServerBusy { max: u32, window_secs: u32 },
     #[error("signature does not verify over the body as received")]
     BadSignature,
     /// The signature stands, so these bytes are the pool's — and its header

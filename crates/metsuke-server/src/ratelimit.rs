@@ -4,7 +4,7 @@
 //! reading.
 
 use std::collections::HashMap;
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::NonZeroU32;
 
 use metsuke_wire::envelope::PoolId;
 use time::OffsetDateTime;
@@ -54,12 +54,12 @@ impl RateLimiter {
     pub fn new(
         max_per_pool: NonZeroU32,
         max_total: NonZeroU32,
-        window_secs: NonZeroU64,
+        window_secs: NonZeroU32,
     ) -> RateLimiter {
         RateLimiter {
             max_per_pool: max_per_pool.get(),
             max_total: max_total.get(),
-            window: time::Duration::seconds(window_secs.get() as i64),
+            window: time::Duration::seconds(window_secs.get().into()),
             pools: HashMap::new(),
             // Started at the epoch rather than at construction, so the first
             // upload restarts it: a limiter built an hour before it is used

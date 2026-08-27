@@ -170,5 +170,7 @@ pub struct IngestConfig {
     pub rate_limit_uploads: NonZeroU32,
     /// Uploads every pool together may make in the same window.
     pub rate_limit_uploads_total: NonZeroU32,
-    pub rate_limit_window_secs: NonZeroU64,
+    /// Seconds wide, in the width `time::Duration::seconds` takes without a
+    /// cast: a wider one wrapped negative and the limiter then refused nothing.
+    pub rate_limit_window_secs: NonZeroU32,
 }
