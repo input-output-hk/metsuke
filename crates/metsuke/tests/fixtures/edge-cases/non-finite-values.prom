@@ -1,0 +1,7 @@
+# Hand-authored: no recorded scrape carries a non-finite value, so the only
+# way to face the parser with one is to write it.
+# TYPE cardano_node_metrics_density_real gauge
+cardano_node_metrics_density_real NaN
+cardano_node_metrics_blockReplayProgress_real +Inf
+# TYPE cardano_node_metrics_blockNum_int gauge
+cardano_node_metrics_blockNum_int 42
