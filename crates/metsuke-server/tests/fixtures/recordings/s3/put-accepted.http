@@ -1,0 +1,8 @@
+# PUT /metsuke-record/v1/2026-08-27/01a0444b-377f-75b0-a5c8-903da648fc3f-pool13vscgf9dwn0jt56u965wp99ychz6avktk3pyrye326f3xctz4nm-test-relay-metrics.jsonl.zst?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=GK1122334455667788990011aa%2F20260827%2Fgarage%2Fs3%2Faws4_request&X-Amz-Date=20260827T173615Z&X-Amz-Expires=300&X-Amz-SignedHeaders=host%3Bx-amz-meta-signature%3Bx-amz-meta-vkey&X-Amz-Signature=1853540824586304174b4ba0b8a659a7eec748850e1832c7c33a84b820803e1f
+# recorded from garage-1.3.1 by scripts/record-s3-fixtures.sh
+HTTP/1.1 200
+x-amz-version-id: 845f2864957eb023b7c53e9e425ab513c688f4084804b77816909c16afe46851
+etag: "a49189f77d729e42e76369f47b0f2471"
+content-length: 0
+date: Thu, 27 Aug 2026 17:36:15 GMT
+

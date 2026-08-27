@@ -160,7 +160,7 @@ impl Filters {
 /// A malformed escape — half-written, or complete but not hex — stays as
 /// written. It cannot be part of an object key either way, so it fails at the
 /// filter rather than silently becoming a different string.
-fn percent_decoded(value: &str) -> Option<String> {
+pub fn percent_decoded(value: &str) -> Option<String> {
     let bytes = value.as_bytes();
     let mut decoded = Vec::with_capacity(bytes.len());
     let mut index = 0;

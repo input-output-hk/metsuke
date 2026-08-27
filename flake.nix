@@ -86,7 +86,7 @@
           craneLib = inputs.crane.mkLib pkgs;
           # Cargo sources and the fixtures: the scrape bodies and the trace
           # recordings are compiled in with include_str!, the submission
-          # recordings are read at test time.
+          # recordings and the S3 cassette are read at test time.
           #
           # Under crates/ alone, because this filter is not gitignore-aware: a
           # devnet run leaves .hex files in the working tree, and matching
@@ -95,6 +95,7 @@
             ".prom"
             ".log"
             ".hex"
+            ".http"
           ];
           cratesDir = "${toString ./crates}/";
           # The shipped config and unit, which both crates compile in whole:

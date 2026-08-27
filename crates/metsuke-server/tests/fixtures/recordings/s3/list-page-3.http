@@ -1,0 +1,8 @@
+# GET /metsuke-record/?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=GK1122334455667788990011aa%2F20260827%2Fgarage%2Fs3%2Faws4_request&X-Amz-Date=20260827T173615Z&X-Amz-Expires=300&X-Amz-SignedHeaders=host&continuation-token=%5DdjEvMjAyNi0wOC0yNy8wMWEwNDQ0Yi0zNzdmLTcyZWEtYmY2MS1lYmVkMzQ2ODZmY2UtcG9vbDEzdnNjZ2Y5ZHduMGp0NTZ1OTY1d3A5OXljaHo2YXZrdGszcHlyeWUzMjZmM3hjdHo0bm0tdGVzdC1yZWxheS1tZXRyaWNzLmpzb25sLnpzdA%3D%3D&encoding-type=url&list-type=2&max-keys=1&prefix=v1%2F&X-Amz-Signature=d75b39b4c2abc66ab7b90419ebfcc9ebd4b06689b45513fd56a57bd8c5b2cd37
+# recorded from garage-1.3.1 by scripts/record-s3-fixtures.sh
+HTTP/1.1 200
+content-type: application/xml
+content-length: 837
+date: Thu, 27 Aug 2026 17:36:15 GMT
+
+<?xml version="1.0" encoding="UTF-8"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>metsuke-record</Name><Prefix>v1%2F</Prefix><ContinuationToken>]djEvMjAyNi0wOC0yNy8wMWEwNDQ0Yi0zNzdmLTcyZWEtYmY2MS1lYmVkMzQ2ODZmY2UtcG9vbDEzdnNjZ2Y5ZHduMGp0NTZ1OTY1d3A5OXljaHo2YXZrdGszcHlyeWUzMjZmM3hjdHo0bm0tdGVzdC1yZWxheS1tZXRyaWNzLmpzb25sLnpzdA==</ContinuationToken><KeyCount>1</KeyCount><MaxKeys>1</MaxKeys><EncodingType>url</EncodingType><IsTruncated>false</IsTruncated><Contents><Key>v1%2F2026-08-27%2F01a0444b-377f-75b0-a5c8-903da648fc3f-pool13vscgf9dwn0jt56u965wp99ychz6avktk3pyrye326f3xctz4nm-test-relay-metrics.jsonl.zst</Key><LastModified>2026-08-27T17:36:15.238Z</LastModified><ETag>&quot;a49189f77d729e42e76369f47b0f2471&quot;</ETag><Size>420</Size><StorageClass>STANDARD</StorageClass></Contents></ListBucketResult>

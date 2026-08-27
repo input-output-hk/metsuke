@@ -15,6 +15,7 @@ use metsuke_server::archive::{
 };
 use metsuke_server::authority::Signed;
 use metsuke_server::config::{AbsolutePath, DeveloperConfig, HttpConfig, IngestConfig};
+use metsuke_server::developer::percent_decoded;
 use metsuke_wire::envelope::{
     self, AgentId, Envelope, Payload, PayloadLine, PoolId, Provenance, Sample, Signature,
     SigningKey, TraceLine, VerifyingKey,
@@ -457,6 +458,186 @@ impl List for FailingArchive {
             reason: self.reason.to_string(),
         })
     }
+}
+
+/// One answer an S3 endpoint gave, and the only reader and writer of the
+/// cassette format: tests/fixtures/README.md.
+pub struct Reply {
+    pub status: u16,
+    pub headers: Vec<(String, String)>,
+    pub body: Vec<u8>,
+}
+
+/// Where scripts/record-s3-fixtures.sh writes and every replay reads.
+pub fn cassette() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/recordings/s3")
+}
+
+impl Reply {
+    /// The recorded exchange `<name>.http`, parsed back into the answer it
+    /// holds.
+    pub fn recorded(name: &str) -> Reply {
+        let path = cassette().join(format!("{name}.http"));
+        let recording =
+            std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let end_of_head = recording
+            .windows(2)
+            .position(|pair| pair == b"\n\n")
+            .unwrap_or_else(|| panic!("{}: no blank line after the headers", path.display()));
+        let head = std::str::from_utf8(&recording[..end_of_head])
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let mut lines = head.lines().filter(|line| !line.starts_with('#'));
+        let status = lines
+            .next()
+            .and_then(|line| line.strip_prefix("HTTP/1.1 "))
+            .and_then(|status| status.parse().ok())
+            .unwrap_or_else(|| panic!("{}: no status line", path.display()));
+        Reply {
+            status,
+            headers: lines
+                .map(|line| {
+                    let (name, value) = line
+                        .split_once(": ")
+                        .unwrap_or_else(|| panic!("{}: {line:?} is not a header", path.display()));
+                    (name.to_string(), value.to_string())
+                })
+                .collect(),
+            body: recording[end_of_head + 2..].to_vec(),
+        }
+    }
+
+    /// An answer nothing was recorded for. Only where the assertion is the
+    /// status alone, or where the body is one no S3 endpoint produces:
+    /// anything an endpoint's own dialect decides is `recorded`.
+    pub fn invented(status: u16, body: &str) -> Reply {
+        Reply {
+            status,
+            headers: Vec::new(),
+            body: body.as_bytes().to_vec(),
+        }
+    }
+
+    pub fn text(&self) -> String {
+        String::from_utf8(self.body.clone()).expect("a listing is text")
+    }
+
+    /// Written as `<into>/<name>.http`, with the request that drew it and
+    /// where it came from above the answer. It lives here so one place decides
+    /// the format both ways; the destination is the caller's, so nothing
+    /// overwrites a committed recording without naming the directory it is in.
+    pub fn write(
+        &self,
+        into: &Path,
+        name: &str,
+        request: &str,
+        provenance: &str,
+    ) -> std::io::Result<PathBuf> {
+        use std::io::Write as _;
+
+        let path = into.join(format!("{name}.http"));
+        let mut file = std::fs::File::create(&path)?;
+        writeln!(file, "# {request}")?;
+        writeln!(file, "# {provenance}")?;
+        writeln!(file, "HTTP/1.1 {}", self.status)?;
+        for (name, value) in &self.headers {
+            writeln!(file, "{name}: {value}")?;
+        }
+        writeln!(file)?;
+        file.write_all(&self.body)?;
+        Ok(path)
+    }
+
+    /// This answer served over one hop. Framing is that hop's, so the recorded
+    /// `Content-Length` is dropped rather than repeated: the body is what was
+    /// recorded either way.
+    pub fn as_response(&self) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+        let mut response = tiny_http::Response::from_data(self.body.clone())
+            .with_status_code(self.status)
+            .with_chunked_threshold(usize::MAX);
+        for (name, value) in &self.headers {
+            if name.eq_ignore_ascii_case("content-length")
+                || name.eq_ignore_ascii_case("transfer-encoding")
+            {
+                continue;
+            }
+            response.add_header(
+                tiny_http::Header::from_bytes(name.as_bytes(), value.as_bytes())
+                    .expect("a recorded header is a header"),
+            );
+        }
+        response
+    }
+}
+
+/// The keys a recorded listing names, percent-decoded as `encoding-type=url`
+/// wrote them. Read straight out of the XML rather than through the archive,
+/// so the two readings of one answer are independent.
+fn keys_in(reply: &Reply) -> Vec<String> {
+    elements(&reply.text(), "Key")
+        .iter()
+        .map(|key| percent_decoded(key).expect("a recorded key decodes"))
+        .collect()
+}
+
+/// The keys of a listing that names some: a recording that lost its
+/// `<Contents>` would otherwise green an assertion with nothing on either
+/// side.
+pub fn some_keys_in(reply: &Reply) -> Vec<String> {
+    let keys = keys_in(reply);
+    assert!(!keys.is_empty(), "the recorded listing names no key");
+    keys
+}
+
+/// The token a truncated listing hands back to resume from, if it is one.
+pub fn token_in(reply: &Reply) -> Option<String> {
+    elements(&reply.text(), "NextContinuationToken")
+        .first()
+        .cloned()
+}
+
+fn elements(xml: &str, tag: &str) -> Vec<String> {
+    xml.split(&format!("<{tag}>"))
+        .skip(1)
+        .filter_map(|rest| rest.split_once(&format!("</{tag}>")))
+        .map(|(value, _)| value.to_string())
+        .collect()
+}
+
+/// A listing naming `keys`, in the envelope a real endpoint sent: the recorded
+/// answer with its `<Contents>` block repeated once per key. Only the keys are
+/// the test's — the namespace, the encoding and the fields around them are the
+/// recording's.
+pub fn listing_of(keys: &[String]) -> Reply {
+    let recorded = Reply::recorded("list-all");
+    let listing = recorded.text();
+    let opens = listing
+        .find("<Contents>")
+        .expect("a recorded listing has one");
+    let closes = listing
+        .rfind("</Contents>")
+        .expect("a recorded listing has one")
+        + "</Contents>".len();
+    let block =
+        &listing[opens..listing.find("</Contents>").expect("a closing tag") + "</Contents>".len()];
+    let contents: String = keys
+        .iter()
+        .map(|key| replace_element(block, "Key", &key.replace('/', "%2F")))
+        .collect();
+    let head = replace_element(&listing[..opens], "KeyCount", &keys.len().to_string());
+    Reply {
+        body: format!("{head}{contents}{}", &listing[closes..]).into_bytes(),
+        ..recorded
+    }
+}
+
+fn replace_element(xml: &str, tag: &str, value: &str) -> String {
+    let (before, rest) = xml
+        .split_once(&format!("<{tag}>"))
+        .unwrap_or_else(|| panic!("no <{tag}> to replace"));
+    let (_, after) = rest
+        .split_once(&format!("</{tag}>"))
+        .unwrap_or_else(|| panic!("no </{tag}> to replace"));
+    format!("{before}<{tag}>{value}</{tag}>{after}")
 }
 
 /// The opening two bytes of a TLS record: content type 22 (handshake), then

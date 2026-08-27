@@ -2,6 +2,11 @@
 //! hold on the wire: the object is the received body verbatim, its metadata
 //! headers are all present and signed, and a PUT the endpoint refuses is an
 //! error rather than a silently dropped submission.
+//!
+//! What the endpoint answers is replayed from the cassette
+//! (tests/fixtures/README.md), so an S3 dialect the archive misreads — an
+//! error body, a continuation token, the key encoding — fails here rather
+//! than in the bucket.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -15,8 +20,8 @@ use rusty_s3::Credentials;
 
 mod support;
 use support::{
-    MAX_HEADER_BYTES, envelope_for, nonzero_u32, nonzero_u64, object_name, pool_of, read_object,
-    seal, stored_submission, test_key, test_now,
+    MAX_HEADER_BYTES, Reply, envelope_for, listing_of, nonzero_u32, nonzero_u64, object_name,
+    pool_of, read_object, seal, some_keys_in, stored_submission, test_key, test_now, token_in,
 };
 
 /// One request the fake endpoint received.
@@ -47,8 +52,17 @@ impl Seen {
         self.url.contains("list-type=2")
     }
 
+    /// The page this listing request asked to resume from, decoded by the
+    /// same reader the developer route decodes a query with.
+    fn continuation_token(&self) -> Option<String> {
+        let token = metsuke_server::developer::query_value(&self.url, "continuation-token")
+            .expect("the archive's own query decodes");
+        Some(token).filter(|token| !token.is_empty())
+    }
+
     /// This stored request served back as the object it wrote, metadata
-    /// headers and all.
+    /// headers and all — which is what a real endpoint does with them
+    /// (`get-object.http`).
     fn as_object(&self) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
         // Framed by Content-Length whatever the fixture weighs: chunked is
         // what `an_endpoint_that_states_no_length_cannot_serve_a_download`
@@ -68,10 +82,11 @@ impl Seen {
 }
 
 /// An S3 endpoint that records every request and answers a scripted sequence
-/// of replies. Once the script runs out it behaves as an object store: a PUT
-/// keeps the body and its `x-amz-meta-*` headers, and a GET of that path hands
-/// both back. That is what lets a test store an object and read it back
-/// without ever asserting on a header name.
+/// of replies, each one a recorded answer or a bare status the test invented.
+/// Once the script runs out it behaves as an object store: a PUT keeps the
+/// body and its `x-amz-meta-*` headers, and a GET of that path hands both
+/// back. That is what lets a test store an object and read it back without
+/// ever asserting on a header name.
 struct FakeS3 {
     endpoint: String,
     seen: Arc<Mutex<Vec<Seen>>>,
@@ -89,7 +104,7 @@ impl Drop for FakeS3 {
 }
 
 impl FakeS3 {
-    fn start(replies: Vec<(u16, String)>) -> FakeS3 {
+    fn start(replies: Vec<Reply>) -> FakeS3 {
         let server = Arc::new(tiny_http::Server::http("127.0.0.1:0").unwrap());
         let endpoint = format!("http://{}", server.server_addr());
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -118,9 +133,7 @@ impl FakeS3 {
                     let key = received.object_key().to_string();
                     seen.lock().unwrap().push(received.clone());
                     let response = match replies.next() {
-                        Some((status, body)) => {
-                            tiny_http::Response::from_string(body).with_status_code(status)
-                        }
+                        Some(reply) => reply.as_response(),
                         None if received.method == "PUT" => {
                             objects.insert(key, received);
                             tiny_http::Response::from_string(String::new())
@@ -128,12 +141,11 @@ impl FakeS3 {
                         None if received.lists() => {
                             let mut keys: Vec<String> = objects.keys().cloned().collect();
                             keys.sort();
-                            tiny_http::Response::from_string(listing(&keys, None))
+                            listing_of(&keys).as_response()
                         }
                         None => match objects.get(&key) {
                             Some(stored) => stored.as_object(),
-                            None => tiny_http::Response::from_string("NoSuchKey".to_string())
-                                .with_status_code(404),
+                            None => Reply::recorded("get-missing").as_response(),
                         },
                     };
                     let _ = request.respond(response);
@@ -223,7 +235,7 @@ fn stored(signature: metsuke_wire::envelope::Signature, wire_bytes: &[u8]) -> St
 
 #[test]
 fn a_stored_object_is_put_at_its_key_with_the_body_verbatim() {
-    let endpoint = FakeS3::start(vec![(200, String::new())]);
+    let endpoint = FakeS3::start(vec![Reply::recorded("put-accepted")]);
     let (wire_bytes, signature) = submission(COUNTER);
     let submission = stored(signature, &wire_bytes);
     endpoint.archive(1).store(&submission).unwrap();
@@ -243,7 +255,7 @@ fn a_stored_object_is_put_at_its_key_with_the_body_verbatim() {
 
 #[test]
 fn the_metadata_headers_carry_what_re_verifying_the_object_needs() {
-    let endpoint = FakeS3::start(vec![(200, String::new())]);
+    let endpoint = FakeS3::start(vec![Reply::recorded("put-accepted")]);
     let (wire_bytes, signature) = submission(COUNTER);
     let key = test_key();
     endpoint
@@ -267,7 +279,7 @@ fn the_metadata_headers_carry_what_re_verifying_the_object_needs() {
 /// signature; an unsigned header is one a middlebox could rewrite.
 #[test]
 fn the_metadata_headers_are_signed() {
-    let endpoint = FakeS3::start(vec![(200, String::new())]);
+    let endpoint = FakeS3::start(vec![Reply::recorded("put-accepted")]);
     let (wire_bytes, signature) = submission(COUNTER);
     endpoint
         .archive(1)
@@ -289,7 +301,10 @@ fn the_metadata_headers_are_signed() {
 /// that is what makes spending it worth anything.
 #[test]
 fn a_failed_put_is_retried_up_to_the_configured_count_after_the_backoff() {
-    let endpoint = FakeS3::start(vec![(500, "slow down".to_string()), (200, String::new())]);
+    let endpoint = FakeS3::start(vec![
+        Reply::invented(500, "slow down"),
+        Reply::recorded("put-accepted"),
+    ]);
     let (wire_bytes, signature) = submission(COUNTER);
     let started = std::time::Instant::now();
     endpoint
@@ -306,7 +321,7 @@ fn a_failed_put_is_retried_up_to_the_configured_count_after_the_backoff() {
 
 #[test]
 fn a_put_that_keeps_failing_is_an_error_naming_the_key_and_the_attempts() {
-    let endpoint = FakeS3::start(vec![(500, "no".to_string()), (500, "no".to_string())]);
+    let endpoint = FakeS3::start(vec![Reply::invented(500, "no"), Reply::invented(500, "no")]);
     let (wire_bytes, signature) = submission(COUNTER);
     let submission = stored(signature, &wire_bytes);
     let error = endpoint
@@ -325,15 +340,17 @@ fn a_put_that_keeps_failing_is_an_error_naming_the_key_and_the_attempts() {
 /// path of a request the client is waiting on.
 #[test]
 fn a_refused_put_is_not_retried() {
-    let endpoint = FakeS3::start(vec![(403, "AccessDenied".to_string())]);
+    let endpoint = FakeS3::start(vec![Reply::recorded("put-refused")]);
     let (wire_bytes, signature) = submission(COUNTER);
     let error = endpoint
         .archive(1)
         .store(&stored(signature, &wire_bytes))
         .unwrap_err()
         .to_string();
+    // The endpoint's own words for it, so an operator reading the log sees
+    // what the bucket said rather than a status alone.
     assert!(
-        error.contains("403") && error.contains("1 attempt"),
+        error.contains("403") && error.contains("1 attempt") && error.contains("AccessDenied"),
         "got: {error}"
     );
     assert_eq!(endpoint.requests().len(), 1);
@@ -354,6 +371,22 @@ fn a_stored_object_fetches_back_and_verifies() {
     let header = verify(&fetched, MAX_HEADER_BYTES).unwrap();
     assert_eq!(header.counter, COUNTER);
     assert_eq!(header.provenance.pool_id, pool_of(&test_key()));
+}
+
+/// The same round trip against a real endpoint's answer: a submission the
+/// recorder stored and Garage handed back verifies from the bytes and the two
+/// metadata headers as they arrived (`get-object.http`). The recorder signs
+/// with this suite's key, so what it verifies to is what the tests stamp.
+#[test]
+fn the_object_a_bucket_handed_back_verifies() {
+    let stored_key = some_keys_in(&Reply::recorded("list-all"))[0].clone();
+    let endpoint = FakeS3::start(vec![Reply::recorded("get-object")]);
+
+    let fetched = endpoint.archive(1).fetch(&stored_key).unwrap();
+
+    let header = verify(&fetched, MAX_HEADER_BYTES).unwrap();
+    assert_eq!(header.provenance.pool_id, pool_of(&test_key()));
+    assert_eq!(fetched.vkey, test_key().verifying_key());
 }
 
 /// The download route reads the bucket through `Bytes`, which asks for the
@@ -428,7 +461,7 @@ fn an_audit_verifies_what_is_stored_and_names_what_is_missing() {
     let missing = object_name(&key, test_now(), Kind::Metrics);
     let mut listed = stored_keys.clone();
     listed.push(missing.to_key());
-    let endpoint = FakeS3::start(vec![(200, listing(&listed, None))]);
+    let endpoint = FakeS3::start(vec![listing_of(&listed)]);
     let found = audit(&endpoint.archive(1), MAX_HEADER_BYTES).unwrap();
     assert_eq!(found.verified, 0);
     // Unreadable, not failed: nothing was checked, so nothing can be said
@@ -439,18 +472,20 @@ fn an_audit_verifies_what_is_stored_and_names_what_is_missing() {
 
 #[test]
 fn fetching_a_key_the_bucket_does_not_hold_is_an_error() {
-    let endpoint = FakeS3::start(Vec::new());
+    let endpoint = FakeS3::start(vec![Reply::recorded("get-missing")]);
     let key = stored(submission(COUNTER).1, b"").object_key();
     let error = endpoint.archive(1).fetch(&key).unwrap_err().to_string();
     assert!(
-        error.contains(&key) && error.contains("404"),
+        error.contains(&key) && error.contains("404") && error.contains("NoSuchKey"),
         "got: {error}"
     );
 }
 
+/// An object in the bucket that this server did not write: its bytes are
+/// there and the metadata is not (`get-unadorned.http`).
 #[test]
 fn fetching_an_object_without_its_metadata_names_the_missing_header() {
-    let endpoint = FakeS3::start(vec![(200, "body".to_string())]);
+    let endpoint = FakeS3::start(vec![Reply::recorded("get-unadorned")]);
     let key = stored(submission(COUNTER).1, b"").object_key();
     let error = endpoint.archive(1).fetch(&key).unwrap_err().to_string();
     assert!(error.contains(META_VKEY), "got: {error}");
@@ -504,70 +539,27 @@ fn an_endpoint_that_is_not_listening_is_an_error() {
     assert!(error.contains(&submission.object_key()), "got: {error}");
 }
 
-/// The two objects a listing fixture holds, keyed the way the archive keys
-/// them, so what the listing returns is what `ObjectName` can read back.
-fn listed_keys() -> Vec<String> {
-    let mut keys: Vec<String> = [1i64, 2]
-        .into_iter()
-        .map(|step| {
-            object_name(
-                &test_key(),
-                test_now() + time::Duration::seconds(step),
-                Kind::Metrics,
-            )
-            .to_key()
-        })
-        .collect();
-    // A listing comes back in key order, which two ids stamped a second apart
-    // are already in — but only the sort says so.
-    keys.sort();
-    keys
-}
-
-/// A `ListObjectsV2` answer, keys percent-encoded because the request asks for
-/// `encoding-type=url` (asserted in
-/// `listing_follows_the_continuation_token_to_the_end`).
-fn listing(keys: &[String], next: Option<&str>) -> String {
-    let contents: String = keys
-        .iter()
-        .map(|key| {
-            format!(
-                "    <Contents>
-        <Key>{key}</Key>
-        <LastModified>2025-08-12T14:00:00.000Z</LastModified>
-        <ETag>\"e\"</ETag>
-        <Size>4</Size>
-    </Contents>\n",
-                key = key.replace('/', "%2F"),
-            )
-        })
-        .collect();
-    let truncated = match next {
-        Some(token) => format!(
-            "    <IsTruncated>true</IsTruncated>
-    <NextContinuationToken>{token}</NextContinuationToken>\n"
-        ),
-        None => "    <IsTruncated>false</IsTruncated>\n".to_string(),
-    };
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-    <Name>metsuke-test</Name>
-{truncated}{contents}    <EncodingType>url</EncodingType>
-</ListBucketResult>"#
-    )
+/// One recorded page of a bucket holding three objects, listed a key at a
+/// time. Page 3 is the last, so it hands back no continuation token.
+fn recorded_page(page_number: u32) -> Reply {
+    Reply::recorded(&format!("list-page-{page_number}"))
 }
 
 #[test]
 fn listing_follows_the_continuation_token_to_the_end() {
-    let listed = listed_keys();
-    let endpoint = FakeS3::start(vec![
-        (200, listing(&listed[..1], Some("page-two"))),
-        (200, listing(&listed[1..], None)),
-    ]);
+    let pages: Vec<Reply> = (1..=3).map(recorded_page).collect();
+    let listed: Vec<String> = pages.iter().flat_map(some_keys_in).collect();
+    let tokens: Vec<String> = pages[..2]
+        .iter()
+        .map(|page| token_in(page).expect("a truncated page hands one back"))
+        .collect();
+    let endpoint = FakeS3::start(pages);
+
+    // Every key the three pages named, percent-decoded as the answers
+    // encoded them.
     assert_eq!(endpoint.archive(1).keys().unwrap(), listed);
     let requests = endpoint.requests();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 3);
     assert!(requests[0].method == "GET" && !requests[0].url.contains("continuation-token"));
     // What makes the percent-encoded keys in the answer the encoding to expect.
     assert!(
@@ -575,35 +567,43 @@ fn listing_follows_the_continuation_token_to_the_end() {
         "got {}",
         requests[0].url
     );
-    assert!(
-        requests[1].url.contains("continuation-token=page-two"),
-        "the second page must be asked for by token, got {}",
-        requests[1].url
-    );
+    for (request, token) in requests[1..].iter().zip(&tokens) {
+        assert_eq!(
+            request.continuation_token().as_ref(),
+            Some(token),
+            "the next page must be asked for by the token the last one gave, got {}",
+            request.url
+        );
+    }
 }
 
 /// The developer listing is one upstream request: the client's filters go out
 /// as `prefix` and `start-after`, the bound as `max-keys`, and nothing here
-/// follows a continuation token.
+/// follows a continuation token. The cursor is the first key of the bucket
+/// this cassette was recorded from, so what comes back is what the endpoint
+/// really answered that question — the two keys after it, the cursor itself
+/// excluded.
 #[test]
 fn a_page_is_one_list_request_carrying_the_clients_filters() {
-    let listed = listed_keys();
-    let endpoint = FakeS3::start(vec![(200, listing(&listed, None))]);
+    let cursor = some_keys_in(&Reply::recorded("list-all"))[0].clone();
+    let after_the_cursor = some_keys_in(&Reply::recorded("list-after"));
+    let endpoint = FakeS3::start(vec![Reply::recorded("list-after")]);
 
     let page = endpoint
         .archive(1)
-        .page("v1/2025-08-12/", &listed[0], nonzero_u32(50))
+        .page("v1/", &cursor, nonzero_u32(50))
         .unwrap();
 
-    assert_eq!(page.keys, listed);
+    assert_eq!(page.keys, after_the_cursor);
+    assert!(!page.keys.contains(&cursor), "start-after is exclusive");
     assert!(!page.truncated);
     let requests = endpoint.requests();
     assert_eq!(requests.len(), 1, "one page is one request");
     let url = &requests[0].url;
-    assert!(url.contains("prefix=v1%2F2025-08-12%2F"), "got {url}");
+    assert!(url.contains("prefix=v1%2F"), "got {url}");
     assert!(url.contains("max-keys=50"), "got {url}");
     assert!(
-        url.contains(&format!("start-after={}", listed[0].replace('/', "%2F"))),
+        url.contains(&format!("start-after={}", cursor.replace('/', "%2F"))),
         "got {url}"
     );
 }
@@ -612,8 +612,9 @@ fn a_page_is_one_list_request_carrying_the_clients_filters() {
 /// developer reading a short page as the whole archive would miss the rest.
 #[test]
 fn a_truncated_listing_is_reported_as_the_endpoint_reported_it() {
-    let listed = listed_keys();
-    let endpoint = FakeS3::start(vec![(200, listing(&listed, Some("page-two")))]);
+    let listing = recorded_page(1);
+    let listed = some_keys_in(&listing);
+    let endpoint = FakeS3::start(vec![listing]);
 
     let page = endpoint.archive(1).page("", "", nonzero_u32(1000)).unwrap();
 
@@ -631,7 +632,7 @@ fn a_truncated_listing_is_reported_as_the_endpoint_reported_it() {
 #[test]
 fn a_key_the_bucket_does_not_hold_is_no_such_object() {
     let missing = object_name(&test_key(), test_now(), Kind::Metrics).to_key();
-    let endpoint = FakeS3::start(vec![(404, "NoSuchKey".to_string())]);
+    let endpoint = FakeS3::start(vec![Reply::recorded("get-missing")]);
 
     let error = read_object(&endpoint.archive(0), &missing).unwrap_err();
 
@@ -646,7 +647,7 @@ fn a_key_the_bucket_does_not_hold_is_no_such_object() {
 #[test]
 fn a_bucket_that_refuses_a_download_is_not_a_missing_object() {
     let key = object_name(&test_key(), test_now(), Kind::Metrics).to_key();
-    let endpoint = FakeS3::start(vec![(503, "SlowDown".to_string())]);
+    let endpoint = FakeS3::start(vec![Reply::invented(503, "SlowDown")]);
 
     let error = read_object(&endpoint.archive(0), &key).unwrap_err();
 
@@ -693,15 +694,12 @@ fn unframed_endpoint() -> String {
     url
 }
 
-/// An endpoint that stays truncated forever, stopped by `list_max_pages`.
+/// An endpoint that stays truncated forever, stopped by `list_max_pages`. The
+/// two truncated pages alternate, so what stops the walk is the bound rather
+/// than the repeated-token check below.
 #[test]
 fn a_listing_that_never_ends_fails_at_the_configured_page_bound() {
-    let listed = listed_keys();
-    let endpoint = FakeS3::start(
-        (0..8)
-            .map(|page| (200, listing(&listed[..1], Some(&format!("page-{page}")))))
-            .collect(),
-    );
+    let endpoint = FakeS3::start((0..8).map(|page| recorded_page(1 + page % 2)).collect());
     let error = endpoint
         .archive_listing_at_most(3)
         .keys()
@@ -714,30 +712,33 @@ fn a_listing_that_never_ends_fails_at_the_configured_page_bound() {
 /// The same non-ending listing by another route: a token that repeats.
 #[test]
 fn a_listing_whose_token_does_not_advance_is_an_error() {
-    let listed = listed_keys();
-    let endpoint = FakeS3::start(vec![
-        (200, listing(&listed[..1], Some("stuck"))),
-        (200, listing(&listed[..1], Some("stuck"))),
-    ]);
+    let stuck = token_in(&recorded_page(1)).expect("a truncated page hands one back");
+    let endpoint = FakeS3::start(vec![recorded_page(1), recorded_page(1)]);
     let error = endpoint
         .archive_listing_at_most(100)
         .keys()
         .unwrap_err()
         .to_string();
-    assert!(error.contains("stuck"), "got: {error}");
+    assert!(error.contains(&stuck), "got: {error}");
     assert_eq!(endpoint.requests().len(), 2);
 }
 
 #[test]
 fn a_listing_the_endpoint_refuses_is_an_error() {
-    let endpoint = FakeS3::start(vec![(500, "NoSuchBucket".to_string())]);
+    let endpoint = FakeS3::start(vec![Reply::recorded("list-missing-bucket")]);
     let error = endpoint.archive(1).keys().unwrap_err().to_string();
-    assert!(error.contains("500"), "got: {error}");
+    assert!(
+        error.contains("404") && error.contains("NoSuchBucket"),
+        "got: {error}"
+    );
 }
 
+/// A body no S3 endpoint sends, which is the point: whatever answers on that
+/// port, a listing that does not parse is an error rather than an empty
+/// bucket.
 #[test]
 fn a_listing_that_is_not_the_expected_xml_is_an_error() {
-    let endpoint = FakeS3::start(vec![(200, "<html>hello</html>".to_string())]);
+    let endpoint = FakeS3::start(vec![Reply::invented(200, "<html>hello</html>")]);
     assert!(endpoint.archive(1).keys().is_err());
 }
 

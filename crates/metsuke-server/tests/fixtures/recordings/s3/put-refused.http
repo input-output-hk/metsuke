@@ -1,0 +1,8 @@
+# PUT /metsuke-record/v1/2026-08-27/01a0444b-377f-7526-b7d9-bd17cdb23d98-pool13vscgf9dwn0jt56u965wp99ychz6avktk3pyrye326f3xctz4nm-test-relay-metrics.jsonl.zst?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=GK00112233445566778899aabb%2F20260827%2Fgarage%2Fs3%2Faws4_request&X-Amz-Date=20260827T173615Z&X-Amz-Expires=300&X-Amz-SignedHeaders=host%3Bx-amz-meta-signature%3Bx-amz-meta-vkey&X-Amz-Signature=58e5983c2cc11a91d1737c5140e17e165929323b137a8a41619e04538d8608e5
+# recorded from garage-1.3.1 by scripts/record-s3-fixtures.sh
+HTTP/1.1 403
+content-type: application/xml
+content-length: 342
+date: Thu, 27 Aug 2026 17:36:15 GMT
+
+<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>Forbidden: Operation is not allowed for this key.</Message><Resource>/metsuke-record/v1/2026-08-27/01a0444b-377f-7526-b7d9-bd17cdb23d98-pool13vscgf9dwn0jt56u965wp99ychz6avktk3pyrye326f3xctz4nm-test-relay-metrics.jsonl.zst</Resource><Region>garage</Region></Error>

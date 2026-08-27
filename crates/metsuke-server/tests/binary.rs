@@ -523,21 +523,15 @@ fn verify_archive_on_an_empty_bucket_exits_nonzero() {
     assert!(stderr.contains("no objects"), "{stderr}");
 }
 
-/// An endpoint answering a valid listing of an empty bucket.
+/// An endpoint answering the listing a bucket holding nothing really sent
+/// (`list-empty.http`).
 fn empty_bucket_endpoint() -> String {
     let endpoint = tiny_http::Server::http("127.0.0.1:0").unwrap();
     let url = format!("http://{}", endpoint.server_addr());
     std::thread::spawn(move || {
+        let empty = support::Reply::recorded("list-empty");
         for request in endpoint.incoming_requests() {
-            let _ = request.respond(tiny_http::Response::from_string(
-                r#"<?xml version="1.0" encoding="UTF-8"?>
-<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-    <Name>metsuke-test</Name>
-    <IsTruncated>false</IsTruncated>
-    <EncodingType>url</EncodingType>
-</ListBucketResult>"#
-                    .to_string(),
-            ));
+            let _ = request.respond(empty.as_response());
         }
     });
     url

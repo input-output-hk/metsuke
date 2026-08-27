@@ -1,0 +1,10 @@
+# GET /metsuke-record/v1/2026-08-27/01a0444b-377f-723d-963a-26a792fa0126-pool13vscgf9dwn0jt56u965wp99ychz6avktk3pyrye326f3xctz4nm-test-relay-metrics.jsonl.zst?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=GK1122334455667788990011aa%2F20260827%2Fgarage%2Fs3%2Faws4_request&X-Amz-Date=20260827T173615Z&X-Amz-Expires=300&X-Amz-SignedHeaders=host&X-Amz-Signature=20cd3bf602e0b5f5ceb78f39955370012df33fffdd204a34f08cc9095e85dadd
+# recorded from garage-1.3.1 by scripts/record-s3-fixtures.sh
+HTTP/1.1 200
+last-modified: Thu, 27 Aug 2026 17:36:15 GMT
+accept-ranges: bytes
+etag: "e280193cafaa091ab5d41031213613d7"
+content-length: 24
+date: Thu, 27 Aug 2026 17:36:15 GMT
+
+an object nothing signed

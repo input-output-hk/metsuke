@@ -1,0 +1,8 @@
+# GET /metsuke-record/?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=GK1122334455667788990011aa%2F20260827%2Fgarage%2Fs3%2Faws4_request&X-Amz-Date=20260827T173615Z&X-Amz-Expires=300&X-Amz-SignedHeaders=host&encoding-type=url&list-type=2&max-keys=1&prefix=v1%2F&X-Amz-Signature=d54c4d0c2b6f28dfc023e6427cc3b256f750662c1dd9f090201e8815e9e287d6
+# recorded from garage-1.3.1 by scripts/record-s3-fixtures.sh
+HTTP/1.1 200
+content-type: application/xml
+content-length: 844
+date: Thu, 27 Aug 2026 17:36:15 GMT
+
+<?xml version="1.0" encoding="UTF-8"?><ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Name>metsuke-record</Name><Prefix>v1%2F</Prefix><NextContinuationToken>]djEvMjAyNi0wOC0yNy8wMWEwNDQ0Yi0zNzdmLTcyOTMtODIxZC1lMzA4Y2QwZTAxOGUtcG9vbDEzdnNjZ2Y5ZHduMGp0NTZ1OTY1d3A5OXljaHo2YXZrdGszcHlyeWUzMjZmM3hjdHo0bm0tdGVzdC1yZWxheS1tZXRyaWNzLmpzb25sLnpzdA==</NextContinuationToken><KeyCount>1</KeyCount><MaxKeys>1</MaxKeys><EncodingType>url</EncodingType><IsTruncated>true</IsTruncated><Contents><Key>v1%2F2026-08-27%2F01a0444b-377f-7293-821d-e308cd0e018e-pool13vscgf9dwn0jt56u965wp99ychz6avktk3pyrye326f3xctz4nm-test-relay-metrics.jsonl.zst</Key><LastModified>2026-08-27T17:36:15.241Z</LastModified><ETag>&quot;41995744940ac2af30818c85e0478187&quot;</ETag><Size>420</Size><StorageClass>STANDARD</StorageClass></Contents></ListBucketResult>
