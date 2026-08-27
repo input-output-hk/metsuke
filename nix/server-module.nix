@@ -29,9 +29,9 @@ let
   positive = mkOption { type = types.ints.positive; };
   required = type: mkOption { inherit type; };
 
-  # `ArchiveConfig` is one tagged enum in Rust, so it is one here: an attrTag
-  # cannot hold a bucket and a filesystem root at once, where a flat submodule
-  # of nullable fields could and would only be refused at startup.
+  # An attrTag cannot hold a bucket and a filesystem root at once, where a flat
+  # submodule of nullable fields could and would only be refused at startup. It
+  # renders as the `[archive.<kind>]` table `ArchiveConfig` deserializes.
   archiveType = types.attrTag {
     filesystem = mkOption {
       type = types.submodule {
@@ -54,17 +54,7 @@ let
     };
   };
 
-  # Back to the `kind = "…"` shape `ArchiveConfig`'s serde tag deserializes.
-  taggedArchive =
-    archive:
-    let
-      kind = lib.head (lib.attrNames archive);
-    in
-    { inherit kind; } // archive.${kind};
-
-  configFile = toml.generate "metsuke-server-config.toml" (
-    cfg.settings // { archive = taggedArchive cfg.settings.archive; }
-  );
+  configFile = toml.generate "metsuke-server-config.toml" cfg.settings;
 in
 {
   options.services.metsuke-server = {

@@ -95,9 +95,12 @@ pub struct DeveloperConfig {
     pub list_max_rows: NonZeroU32,
 }
 
-/// Where accepted submissions go. S3 is what production runs (ADR 0005).
+/// Where accepted submissions go. S3 is what production runs (ADR 0005). The
+/// kind is the table's own name — `[archive.s3]` — rather than a `kind` field,
+/// because serde buffers an internally-tagged table and every value under it
+/// then reports at `[archive]` instead of at the line that set it.
 #[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum ArchiveConfig {
     Filesystem { root: PathBuf },
     S3(S3Config),

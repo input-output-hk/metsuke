@@ -5,7 +5,7 @@
 use metsuke_server::config::{ArchiveConfig, ServerConfig};
 
 mod support;
-use support::{example_config as example, pool_of, server_toml, test_key};
+use support::{example_archive, example_config as example, pool_of, server_toml, test_key};
 
 /// The example is the complete config every test here mutates, so a field the
 /// server grows must reach the file an operator copies from before this suite
@@ -39,9 +39,17 @@ fn a_filesystem_archive_loads() {
     assert_eq!(root, dir.path().join("archive"));
 }
 
+/// `example()` with its whole `[archive.s3]` table replaced by `block`.
+fn archive_of(block: &str) -> String {
+    let example = example();
+    let (before, _, after) = example_archive(&example);
+    format!("{before}{block}\n{after}")
+}
+
 /// `example()` with the line that sets `field` replaced by `replacement`, or
 /// dropped when there is none. The setting line is matched on its own, so the
-/// commented-out `[archive]` block and the prose above it are left alone.
+/// commented-out `[archive.filesystem]` block and the prose above it are left
+/// alone.
 fn rewriting(field: &str, replacement: Option<String>) -> String {
     let setting = format!("{field} =");
     example()
@@ -64,14 +72,25 @@ fn with(field: &str, value: &str) -> String {
     rewriting(field, Some(format!("{field} = {value}")))
 }
 
-/// An archive with no `kind` cannot be guessed at: writing to a filesystem
-/// root when the operator meant a bucket would archive nothing recoverable.
+/// An archive whose kind is not one of the two cannot be guessed at: writing
+/// to a filesystem root when the operator meant a bucket would archive nothing
+/// recoverable.
 #[test]
-fn an_archive_without_a_kind_is_refused() {
-    let error = ServerConfig::from_toml(&without("kind"))
+fn an_archive_of_an_unknown_kind_is_refused() {
+    let error = ServerConfig::from_toml(&example().replace("[archive.s3]", "[archive.bucket]"))
         .unwrap_err()
         .to_string();
-    assert!(error.contains("kind"), "got: {error}");
+    assert!(error.contains("filesystem"), "got: {error}");
+    assert!(error.contains("s3"), "got: {error}");
+}
+
+/// And an archive naming no kind at all is refused at the table it left empty.
+#[test]
+fn an_archive_without_a_kind_is_refused() {
+    let error = ServerConfig::from_toml(&archive_of("[archive]\n"))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("[archive]"), "got: {error}");
 }
 
 /// The fields typed `NonZero`, so zero and absence are the same refusal.
@@ -154,20 +173,17 @@ fn a_field_where_zero_means_nothing_is_refused() {
     }
 }
 
-/// Where the refusal points. An `[ingest]` field is named at its own line; an
-/// `[archive]` one is not, because serde's internally-tagged enum buffers the
-/// table and drops the span with it (ticket metsuke-zzs).
+/// Where the refusal points: at the line the operator has to edit, in every
+/// section. The archive is the one that had to earn it, for the reason
+/// `ArchiveConfig` states (ticket metsuke-zzs).
 #[test]
 fn a_refused_value_is_pointed_at_by_its_own_line() {
-    let error = ServerConfig::from_toml(&with("max_body_bytes", "0"))
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("max_body_bytes = 0"), "got: {error}");
-
-    let error = ServerConfig::from_toml(&with("request_timeout_ms", "0"))
-        .unwrap_err()
-        .to_string();
-    assert!(error.contains("[archive]"), "got: {error}");
+    for field in ["max_body_bytes", "request_timeout_ms"] {
+        let error = ServerConfig::from_toml(&with(field, "0"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(&format!("{field} = 0")), "got: {error}");
+    }
 }
 
 /// The `NonZero` exception, as `S3Config::put_retries` states it.

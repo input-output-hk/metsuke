@@ -245,10 +245,7 @@ impl ServerToml {
 }
 
 pub fn filesystem_archive(root: &Path) -> String {
-    format!(
-        "[archive]\nkind = \"filesystem\"\nroot = \"{}\"\n",
-        root.display()
-    )
+    format!("[archive.filesystem]\nroot = \"{}\"\n", root.display())
 }
 
 /// `[ingest]` as the file holds it, from the struct it loads back into. The
@@ -343,16 +340,25 @@ pub fn example_config() -> String {
         .replace("pool1CHANGEME", &pool_of(&test_key()).to_bech32())
 }
 
-/// The example's `[archive]` section, with the endpoint and retry count a test
-/// needs. Stops at the blank line, so the commented-out filesystem block below
-/// it stays out.
+/// The example's `[archive.s3]` table: what precedes its header, its own body
+/// lines, and what follows the blank line that ends it. Stopping there is what
+/// keeps the commented-out filesystem block below out of every caller.
+pub fn example_archive(example: &str) -> (&str, Vec<&str>, &str) {
+    let (before, rest) = example
+        .split_once("[archive.s3]\n")
+        .expect("the example names an [archive.s3] section");
+    let (table, after) = rest
+        .split_once("\n\n")
+        .expect("the table ends at a blank line");
+    (before, table.lines().collect(), after)
+}
+
+/// That table with the endpoint and retry count a test needs.
 pub fn example_s3_archive(endpoint: &str, put_retries: u32) -> String {
-    let body: Vec<String> = example_config()
-        .split_once("\n[archive]\n")
-        .expect("the example names an [archive] section")
-        .1
-        .lines()
-        .take_while(|line| !line.trim().is_empty())
+    let example = example_config();
+    let (_, table, _) = example_archive(&example);
+    let body: Vec<String> = table
+        .iter()
         .map(|line| match line.split_once(" = ") {
             Some(("endpoint", _)) => format!("endpoint = \"{endpoint}\""),
             Some(("put_retries", _)) => format!("put_retries = {put_retries}"),
@@ -363,7 +369,7 @@ pub fn example_s3_archive(endpoint: &str, put_retries: u32) -> String {
             _ => line.to_string(),
         })
         .collect();
-    format!("[archive]\n{}\n", body.join("\n"))
+    format!("[archive.s3]\n{}\n", body.join("\n"))
 }
 
 /// What every test's credential file holds. One place, so the unit tests and

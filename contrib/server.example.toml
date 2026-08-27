@@ -14,8 +14,7 @@ max_concurrent_requests = 64
 
 # The S3 archive reads its credentials from AWS_ACCESS_KEY_ID and
 # AWS_SECRET_ACCESS_KEY in the process environment.
-[archive]
-kind = "s3"
+[archive.s3]
 bucket = "cardano-playground-metsuke"
 region = "eu-central-1"
 # Whatever stands in for S3 here has to answer a GET with a Content-Length,
@@ -28,8 +27,7 @@ put_retry_backoff_ms = 500
 list_max_pages = 1000
 
 # The other kind, for a single-host deployment.
-# [archive]
-# kind = "filesystem"
+# [archive.filesystem]
 # root = "/var/lib/metsuke-server/archive"
 
 [ingest]
