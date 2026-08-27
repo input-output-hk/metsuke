@@ -86,6 +86,12 @@ let
         settings = {
           inherit archive;
           listen = "127.0.0.1:${toString listenPort}";
+          http = {
+            idle_timeout_secs = 30;
+            read_timeout_secs = 60;
+            write_timeout_secs = 60;
+            max_concurrent_requests = 64;
+          };
           # Every limit the server refuses to start without, set through the
           # module: an option whose name has drifted from the Rust field
           # renders a key the server then refuses, which is what this listing

@@ -236,6 +236,10 @@ pub enum ArchiveError {
     NoSuchObject { key: String },
     #[error("fetching {key}: {reason}")]
     Fetch { key: String, reason: String },
+    /// Not `Fetch`: no key can be read off this endpoint and no retry changes
+    /// that. Both answer 503, so this exists for the operator's log line.
+    #[error("{endpoint} answered a GET with no Content-Length")]
+    EndpointUnusable { endpoint: String },
     #[error("storing {key}: {reason} (after {attempts} attempts)")]
     Upload {
         key: String,
@@ -318,7 +322,23 @@ pub trait Fetch {
 /// `Fetch` reconciles is what a filesystem archive cannot answer, and
 /// downloading does not need it.
 pub trait Bytes {
-    fn bytes(&self, key: &str) -> Result<Vec<u8>, ArchiveError>;
+    /// The object open for reading. A reader rather than a `Vec` because
+    /// nothing bounds an object already in the archive — one written under an
+    /// older, wider limit is read whole otherwise (metsuke-4zo.72).
+    fn reader(&self, key: &str) -> Result<ObjectStream, ArchiveError>;
+}
+
+/// An object being read out of the archive. The length is not optional: a
+/// download that could not state one would have to answer chunked, and then
+/// the copy granularity would be a size the client sees. An archive that will
+/// not say how much it holds fails here instead.
+pub struct ObjectStream {
+    /// What it is being read from. A read that fails once the answer has
+    /// started can only be reported to the log, and this is what names it
+    /// there — the download knows no client beyond the one credential.
+    pub key: String,
+    pub length: u64,
+    pub reader: Box<dyn io::Read + Send>,
 }
 
 /// Objects as files under a root directory, keyed exactly as S3 keys them.
@@ -393,22 +413,32 @@ impl Store for FilesystemArchive {
 }
 
 impl Bytes for FilesystemArchive {
-    fn bytes(&self, key: &str) -> Result<Vec<u8>, ArchiveError> {
+    fn reader(&self, key: &str) -> Result<ObjectStream, ArchiveError> {
+        let refuse = |reason: String| ArchiveError::Fetch {
+            key: key.to_string(),
+            reason,
+        };
         // Parsed before it is joined: a key that is not an object name is the
         // only way a path outside the root could be reached, and `parse`
         // admits nothing but `v1/<pool>/<date>/<file>`.
-        let name = ObjectName::parse(key).map_err(|error| ArchiveError::Fetch {
+        let name = ObjectName::parse(key).map_err(|error| refuse(error.to_string()))?;
+        let file =
+            fs::File::open(self.root.join(name.to_key())).map_err(|error| match error.kind() {
+                io::ErrorKind::NotFound => ArchiveError::NoSuchObject {
+                    key: key.to_string(),
+                },
+                _ => refuse(error.to_string()),
+            })?;
+        // The length off the open handle, not off a separate stat: a file
+        // replaced between the two would be answered with the other one's.
+        let length = file
+            .metadata()
+            .map_err(|error| refuse(error.to_string()))?
+            .len();
+        Ok(ObjectStream {
             key: key.to_string(),
-            reason: error.to_string(),
-        })?;
-        fs::read(self.root.join(name.to_key())).map_err(|error| match error.kind() {
-            io::ErrorKind::NotFound => ArchiveError::NoSuchObject {
-                key: key.to_string(),
-            },
-            _ => ArchiveError::Fetch {
-                key: key.to_string(),
-                reason: error.to_string(),
-            },
+            length,
+            reader: Box::new(file),
         })
     }
 }

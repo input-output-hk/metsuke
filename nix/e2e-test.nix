@@ -384,6 +384,12 @@ let
           restartSecs = 2;
           settings = {
             listen = "127.0.0.1:${toString listenPort}";
+            http = {
+              idle_timeout_secs = 30;
+              read_timeout_secs = 60;
+              write_timeout_secs = 60;
+              max_concurrent_requests = 64;
+            };
             archive.s3 = {
               inherit bucket region;
               endpoint = "http://127.0.0.1:${toString s3Port}";

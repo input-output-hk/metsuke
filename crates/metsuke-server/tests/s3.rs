@@ -6,7 +6,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use metsuke_server::archive::{Bytes, Fetch, Kind, List, Store, StoredSubmission};
+use metsuke_server::archive::{ArchiveError, Fetch, Kind, List, Store, StoredSubmission};
 use metsuke_server::config::S3Config;
 use metsuke_server::s3::{META_SIGNATURE, META_VKEY, S3Archive};
 use metsuke_server::verify::{audit, verify};
@@ -15,8 +15,8 @@ use rusty_s3::Credentials;
 
 mod support;
 use support::{
-    MAX_HEADER_BYTES, envelope_for, nonzero_u32, nonzero_u64, object_name, pool_of, seal,
-    stored_submission, test_key, test_now,
+    MAX_HEADER_BYTES, envelope_for, nonzero_u32, nonzero_u64, object_name, pool_of, read_object,
+    seal, stored_submission, test_key, test_now,
 };
 
 /// One request the fake endpoint received.
@@ -50,7 +50,12 @@ impl Seen {
     /// This stored request served back as the object it wrote, metadata
     /// headers and all.
     fn as_object(&self) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
-        let mut response = tiny_http::Response::from_data(self.body.clone());
+        // Framed by Content-Length whatever the fixture weighs: chunked is
+        // what `an_endpoint_that_states_no_length_cannot_serve_a_download`
+        // refuses, so a fixture that grew past a threshold would fail every
+        // other download test with that refusal.
+        let mut response =
+            tiny_http::Response::from_data(self.body.clone()).with_chunked_threshold(usize::MAX);
         for (field, value) in &self.headers {
             if field.to_lowercase().starts_with("x-amz-meta-") {
                 response.add_header(
@@ -357,7 +362,7 @@ fn an_object_downloads_as_the_bytes_that_were_put() {
     archive.store(&submission).unwrap();
 
     assert_eq!(
-        archive.bytes(&submission.object_key()).unwrap(),
+        read_object(&archive, &submission.object_key()).unwrap(),
         wire_bytes,
         "a developer verifies the signature over exactly these bytes"
     );
@@ -371,8 +376,7 @@ fn bytes_for_a_key_that_is_not_an_object_name_never_reaches_the_bucket() {
     let endpoint = FakeS3::start(Vec::new());
     let archive = endpoint.archive(1);
 
-    let error = archive
-        .bytes("v1/../../etc/passwd")
+    let error = read_object(&archive, "v1/../../etc/passwd")
         .unwrap_err()
         .to_string();
 
@@ -624,13 +628,10 @@ fn a_key_the_bucket_does_not_hold_is_no_such_object() {
     let missing = object_name(&test_key(), test_now(), Kind::Metrics).to_key();
     let endpoint = FakeS3::start(vec![(404, "NoSuchKey".to_string())]);
 
-    let error = endpoint.archive(0).bytes(&missing).unwrap_err();
+    let error = read_object(&endpoint.archive(0), &missing).unwrap_err();
 
     assert!(
-        matches!(
-            error,
-            metsuke_server::archive::ArchiveError::NoSuchObject { .. }
-        ),
+        matches!(error, ArchiveError::NoSuchObject { .. }),
         "got: {error:?}"
     );
 }
@@ -642,15 +643,49 @@ fn a_bucket_that_refuses_a_download_is_not_a_missing_object() {
     let key = object_name(&test_key(), test_now(), Kind::Metrics).to_key();
     let endpoint = FakeS3::start(vec![(503, "SlowDown".to_string())]);
 
-    let error = endpoint.archive(0).bytes(&key).unwrap_err();
+    let error = read_object(&endpoint.archive(0), &key).unwrap_err();
 
     assert!(
-        !matches!(
-            error,
-            metsuke_server::archive::ArchiveError::NoSuchObject { .. }
-        ),
+        !matches!(error, ArchiveError::NoSuchObject { .. }),
         "got: {error:?}"
     );
+}
+
+/// An endpoint whose answer carries no `Content-Length` cannot be downloaded
+/// from: the length is passed through to the client, and there is none to pass
+/// (`config::S3Config::endpoint`).
+#[test]
+fn an_endpoint_that_states_no_length_cannot_serve_a_download() {
+    let key = object_name(&test_key(), test_now(), Kind::Metrics).to_key();
+    let endpoint = unframed_endpoint();
+    let archive = S3Archive::new(&config_for(&endpoint, 0), credentials()).unwrap();
+
+    let error = read_object(&archive, &key).unwrap_err();
+
+    assert!(
+        matches!(error, ArchiveError::EndpointUnusable { .. }),
+        "got: {error:?}"
+    );
+    // The endpoint by name: the operator's log line is what this variant
+    // exists for, and it is unactionable without it.
+    assert!(error.to_string().contains("Content-Length"), "got: {error}");
+    assert!(error.to_string().contains(&endpoint), "got: {error}");
+}
+
+/// An endpoint answering 200 with a body and no `Content-Length`: a zero
+/// chunked threshold is how tiny_http is made to frame one that way.
+fn unframed_endpoint() -> String {
+    let server = tiny_http::Server::http("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", server.server_addr());
+    std::thread::spawn(move || {
+        for request in server.incoming_requests() {
+            let _ = request.respond(
+                tiny_http::Response::from_data(b"an object nothing states the size of".to_vec())
+                    .with_chunked_threshold(0),
+            );
+        }
+    });
+    url
 }
 
 /// An endpoint that stays truncated forever, stopped by `list_max_pages`.

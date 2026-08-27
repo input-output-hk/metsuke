@@ -111,6 +111,17 @@ in
         options = {
           listen = required types.str;
 
+          http = mkOption {
+            type = types.submodule {
+              options = {
+                idle_timeout_secs = positive;
+                read_timeout_secs = positive;
+                write_timeout_secs = positive;
+                max_concurrent_requests = positive;
+              };
+            };
+          };
+
           archive = mkOption {
             type = archiveType;
           };

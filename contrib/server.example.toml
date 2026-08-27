@@ -5,12 +5,21 @@
 
 listen = "127.0.0.1:8080"
 
+# Generous, because a pool on a bad link still has to get its batch in.
+[http]
+idle_timeout_secs = 30
+read_timeout_secs = 60
+write_timeout_secs = 60
+max_concurrent_requests = 64
+
 # The S3 archive reads its credentials from AWS_ACCESS_KEY_ID and
 # AWS_SECRET_ACCESS_KEY in the process environment.
 [archive]
 kind = "s3"
 bucket = "cardano-playground-metsuke"
 region = "eu-central-1"
+# Whatever stands in for S3 here has to answer a GET with a Content-Length,
+# not chunked.
 endpoint = "https://s3.eu-central-1.amazonaws.com"
 request_timeout_secs = 30
 signature_validity_secs = 300

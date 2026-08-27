@@ -18,9 +18,32 @@ use crate::applications::Codes;
 pub struct ServerConfig {
     /// `host:port` to bind, plain HTTP (what fronts it: `http`).
     pub listen: String,
+    pub http: HttpConfig,
     pub archive: ArchiveConfig,
     pub ingest: IngestConfig,
     pub developer: DeveloperConfig,
+}
+
+/// What the transport refuses, as against what the intake refuses. Every field
+/// bounds one way a client can hold a connection open without finishing with
+/// it; `serve` is where each is applied.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HttpConfig {
+    /// How long a connection may take to deliver a complete request head. It
+    /// is also the keep-alive bound, because a connection waiting for its next
+    /// request is a connection that has delivered no head yet.
+    pub idle_timeout_secs: NonZeroU64,
+    /// Deadline for the whole request body, not for one read of it. A client
+    /// trickling a byte at a time renews any per-read deadline forever
+    /// (metsuke-a3a), so the bound has to be on the body.
+    pub read_timeout_secs: NonZeroU64,
+    /// How long a write may make no progress, which is what a client that has
+    /// stopped reading its answer costs.
+    pub write_timeout_secs: NonZeroU64,
+    /// Connections served at once, held from accept to close. HTTP/1.1 carries
+    /// one request per connection at a time, so this is the request cap too.
+    pub max_concurrent_requests: NonZeroU32,
 }
 
 /// A path the config states in full. Relative would be resolved against
@@ -89,7 +112,9 @@ pub struct S3Config {
     pub bucket: String,
     pub region: String,
     /// Endpoint URL, bucket name excluded: the AWS regional endpoint in
-    /// production, a Garage or MinIO address in a test.
+    /// production, a Garage or MinIO address in a test. It has to answer a GET
+    /// with a `Content-Length` rather than chunked, as S3 does
+    /// (`archive::ObjectStream`).
     pub endpoint: Url,
     /// Deadline for one S3 request.
     pub request_timeout_secs: NonZeroU64,

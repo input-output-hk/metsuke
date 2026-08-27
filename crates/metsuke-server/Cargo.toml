@@ -12,6 +12,19 @@ toml = "0.9.8"
 
 [dependencies]
 metsuke-wire = { path = "../metsuke-wire" }
+bytes = "1.11.0"
+# The HTTP surface. http1 and server only: the endpoint speaks HTTP/1.1 behind
+# a proxy, and a protocol nothing sends is a protocol nothing has to be safe
+# against.
+hyper = { version = "1.11.0", default-features = false, features = [
+  "http1",
+  "server",
+] }
+# `TokioIo` and `TokioTimer`, which is all hyper needs to run on tokio.
+hyper-util = { version = "0.1.20", default-features = false, features = [
+  "tokio",
+] }
+http-body-util = "0.1.5"
 # Request signing and listing only; the transport is ureq.
 rusty-s3 = { version = "0.10.2", default-features = false, features = [
   "rustcrypto",
@@ -21,7 +34,13 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.20"
 time = { version = "0.3.55", features = ["serde-well-known"] }
-tiny_http = { version = "0.12.0", default-features = false }
+# `rt` and not `rt-multi-thread`: the runtime shape is `serve::bind`'s.
+tokio = { version = "1.53.1", default-features = false, features = [
+  "net",
+  "rt",
+  "sync",
+  "time",
+] }
 toml = "0.9.8"
 # Named rather than taken from ureq's defaults, because `s3::transient`
 # matches `Error::Rustls`, which only exists while this feature is on.
@@ -39,5 +58,8 @@ uuid = { version = "1.25.0", features = ["v7"] }
 [dev-dependencies]
 proptest = "1.11.0"
 tempfile = "3.27.0"
+# The S3 endpoint doubles the archive suite runs against. Only a test serves
+# over it; the server's own surface is hyper.
+tiny_http = { version = "0.12.0", default-features = false }
 uuid = { version = "1.25.0", features = ["v7"] }
 zstd = "0.13.3"

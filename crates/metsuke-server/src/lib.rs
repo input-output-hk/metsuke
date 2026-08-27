@@ -14,6 +14,7 @@ pub mod instructions;
 pub mod intake;
 pub mod ratelimit;
 pub mod s3;
+pub mod serve;
 pub mod verify;
 
 /// The agent version this server nudges operators towards (`build.rs`).

@@ -7,13 +7,14 @@
 use metsuke_server::archive::{Bytes, FilesystemArchive, List, Store};
 use metsuke_server::cli::{Args, ArgsError, Command};
 use metsuke_server::config::{
-    ArchiveConfig, ConfigError, DeveloperConfig, IngestConfig, S3Config, ServerConfig,
+    ArchiveConfig, ConfigError, DeveloperConfig, HttpConfig, IngestConfig, S3Config, ServerConfig,
 };
 use metsuke_server::developer::Developer;
 use metsuke_server::http;
 use metsuke_server::instructions;
 use metsuke_server::intake::Intake;
 use metsuke_server::s3::{S3Archive, S3Error};
+use metsuke_server::serve;
 use metsuke_server::verify::{Audit, AuditError, audit};
 use metsuke_wire::journal::{ERR, INFO};
 use rusty_s3::Credentials;
@@ -52,7 +53,7 @@ enum Fatal {
     ArchiveEmpty,
     #[error("cannot listen on {listen}: {reason}")]
     Listen { listen: String, reason: String },
-    /// Mid-life, not startup: why it is fatal is `http::serve`.
+    /// Mid-life, not startup: why it is fatal is `serve::Listener::serve`.
     #[error("the listener stopped accepting: {0}")]
     Accept(#[from] std::io::Error),
 }
@@ -75,12 +76,14 @@ fn run() -> Result<(), Fatal> {
     })?;
     let ServerConfig {
         listen,
+        http,
         archive,
         ingest,
         developer,
     } = ServerConfig::from_toml(&text)?;
     let serving = Serving {
         listen,
+        http,
         ingest,
         developer,
     };
@@ -109,13 +112,14 @@ fn run() -> Result<(), Fatal> {
 /// it.
 struct Serving {
     listen: String,
+    http: HttpConfig,
     ingest: IngestConfig,
     developer: DeveloperConfig,
 }
 
 /// Run the named subcommand against one archive. `verify_archive` is the only
 /// step that is not the same work for every kind, so it is the parameter.
-fn dispatch<A: Store + List + Bytes>(
+fn dispatch<A: Store + List + Bytes + Send + Sync + 'static>(
     archive: A,
     command: Command,
     serving: Serving,
@@ -148,13 +152,16 @@ fn s3_archive(config: &S3Config) -> Result<S3Archive, Fatal> {
     Ok(S3Archive::new(config, credentials)?)
 }
 
-fn serve<A: Store + Bytes + List>(archive: A, serving: Serving) -> Result<(), Fatal> {
+fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
+    archive: A,
+    serving: Serving,
+) -> Result<(), Fatal> {
     let Serving {
         listen,
+        http: limits,
         ingest,
         developer: credentials,
     } = serving;
-    let listen = listen.as_str();
     // Read here rather than at load: `verify-archive` answers no developer
     // request, so a credential file only this path needs must not decide
     // whether it runs.
@@ -162,8 +169,8 @@ fn serve<A: Store + Bytes + List>(archive: A, serving: Serving) -> Result<(), Fa
     // Built from files compiled in, so a broken one is a build that must not
     // reach an operator asking for it.
     let page = instructions::page();
-    let server = tiny_http::Server::http(listen).map_err(|source| Fatal::Listen {
-        listen: listen.to_string(),
+    let listener = serve::bind(&listen).map_err(|source| Fatal::Listen {
+        listen: listen.clone(),
         reason: source.to_string(),
     })?;
     // The bound address, not the configured one: `:0` is how the tests and
@@ -172,11 +179,11 @@ fn serve<A: Store + Bytes + List>(archive: A, serving: Serving) -> Result<(), Fa
         "{INFO}metsuke-server {} accepting {} pools at http://{}{}",
         env!("CARGO_PKG_VERSION"),
         ingest.allowlist.len(),
-        server.server_addr(),
+        listener.address(),
         http::SUBMIT_PATH,
     );
-    let mut intake = Intake::new(ingest, archive);
-    match http::serve(&server, &mut intake, &developer, &page)? {}
+    let intake = Intake::new(ingest, archive);
+    match listener.serve(limits, intake, developer, page)? {}
 }
 
 /// The developer account, with the password read off the file the config

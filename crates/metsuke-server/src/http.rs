@@ -1,25 +1,26 @@
-//! The HTTP surface: the POST route submissions arrive on, whose headers
-//! decode into an `authority::Signed`, the two GET routes a developer pulls
-//! the archive back out through (`developer`), and the `instructions` page.
-//! TLS belongs to the reverse proxy in front of this (endpoint-protection.md,
-//! Transport), as does any IP-keyed limit (same doc, cost asymmetry and abuse
-//! handling) — this layer knows only pool ids and one developer credential.
+//! What the server answers, as values: the POST route submissions arrive on,
+//! whose headers decode into an `authority::Signed`, the two GET routes a
+//! developer pulls the archive back out through (`developer`), and the
+//! `instructions` page.
 //!
-//! What the proxy must also do: buffer each request body in full before
-//! forwarding it. `serve` reads bodies on the accepting thread and tiny_http
-//! 0.12 exposes no socket timeout, so one client trickling a body stalls
-//! ingest for every pool until it gives up. Binding a loopback address is
-//! what keeps that reachable only through the proxy.
-
-use std::io::Read;
+//! No transport type appears here. `answer` takes a decoded `Request` and
+//! returns an `Answer`, so every route's answer is reachable from a test
+//! without a socket; `serve` is the only module that knows what carried it,
+//! and words the refusals only it can reach.
+//!
+//! TLS belongs to the reverse proxy in front of this
+//! (docs/research/endpoint-protection.md, Transport), as does any IP-keyed
+//! limit (same doc, cost asymmetry and abuse handling) — this layer knows only
+//! pool ids and one developer credential. The proxy is defence in depth and
+//! nothing more: what the server refuses on its own it refuses with nothing in
+//! front of it (`config::HttpConfig`).
 
 use metsuke_wire::envelope::{HEADER_SIGNATURE, HEADER_VKEY, PoolId, Signature, VerifyingKey};
 use metsuke_wire::hex::{self, HexError};
 use metsuke_wire::journal::{ERR, WARNING};
 use time::OffsetDateTime;
-use tiny_http::{Header, Method, Request, Response, Server};
 
-use crate::archive::{ArchiveError, Bytes, List, Store};
+use crate::archive::{ArchiveError, Bytes, List, ObjectStream, Store};
 use crate::authority::Signed;
 use crate::developer::{self, Developer, Filters, Unauthorized};
 use crate::instructions;
@@ -37,6 +38,37 @@ pub const OBJECT_PATH: &str = "/v1/object";
 /// path segment, because an object key holds `/` and would otherwise have to
 /// be reassembled from the route.
 pub const KEY_FIELD: &str = "key";
+
+/// The two methods the four routes take. Anything else is one value: a refusal
+/// names the method the route accepts, never the one that was tried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Method {
+    Get,
+    Post,
+    Other,
+}
+
+/// A request with its transport decoded.
+#[derive(Debug)]
+pub struct Request {
+    pub method: Method,
+    /// The target as sent, path and query together: the filters and the object
+    /// key are read off it (`developer::Filters`).
+    pub target: String,
+    /// The two ADR-0001 headers, decoded by whoever built this — once, because
+    /// whether they decode is also what decides if a body is worth reading
+    /// (`serve::handle`). `Err` names the first header that did not decode.
+    pub submission: Result<SubmissionHeaders, HeaderError>,
+    pub authorization: Option<String>,
+    pub body: Vec<u8>,
+}
+
+impl Request {
+    /// The route the target names, which is the target up to its query.
+    pub fn path(&self) -> &str {
+        self.target.split('?').next().unwrap_or_default()
+    }
+}
 
 /// The identity a request presents. Holding one means the two ADR-0001 headers
 /// were present and well formed; whether the signature verifies is the
@@ -64,9 +96,12 @@ pub enum HeaderError {
 }
 
 impl SubmissionHeaders {
-    pub fn decode(headers: &[Header]) -> Result<SubmissionHeaders, HeaderError> {
-        let vkey: [u8; 32] = decode_hex(headers, HEADER_VKEY)?;
-        let signature: [u8; 64] = decode_hex(headers, HEADER_SIGNATURE)?;
+    pub fn decode(
+        vkey: Option<&str>,
+        signature: Option<&str>,
+    ) -> Result<SubmissionHeaders, HeaderError> {
+        let vkey: [u8; 32] = decode_hex(vkey, HEADER_VKEY)?;
+        let signature: [u8; 64] = decode_hex(signature, HEADER_SIGNATURE)?;
         Ok(SubmissionHeaders {
             vkey: VerifyingKey::from_bytes(&vkey).map_err(|error| HeaderError::Vkey {
                 reason: error.to_string(),
@@ -82,21 +117,14 @@ impl SubmissionHeaders {
     }
 }
 
-fn value<'a>(headers: &'a [Header], header: &'static str) -> Result<&'a str, HeaderError> {
-    headers
-        .iter()
-        .find(|candidate| candidate.field.equiv(header))
-        .map(|candidate| candidate.value.as_str())
-        .ok_or(HeaderError::Missing { header })
-}
-
 /// Carries which header was wrong into `HeaderError`, so a refusal names the
 /// one the operator has to fix.
 fn decode_hex<const N: usize>(
-    headers: &[Header],
+    value: Option<&str>,
     header: &'static str,
 ) -> Result<[u8; N], HeaderError> {
-    hex::decode(value(headers, header)?).map_err(|error| match error {
+    let value = value.ok_or(HeaderError::Missing { header })?;
+    hex::decode(value).map_err(|error| match error {
         HexError::NotHex => HeaderError::NotHex { header },
         HexError::WrongLength { found, expected } => HeaderError::WrongLength {
             header,
@@ -123,80 +151,65 @@ pub fn status_for(error: &IngestError) -> u16 {
     }
 }
 
-/// Serve submissions one at a time: at one upload per pool per interval the
-/// loop is idle between submissions.
-///
-/// Only returns on error, and every error it can see is terminal. tiny_http
-/// 0.12 leaves its accept thread on the first `accept` failure and queues that
-/// error once, so a second `recv` would block on an empty queue forever —
-/// logging and continuing would leave a process that looks healthy to systemd
-/// and accepts nothing. Failing out is what turns it back into a restart.
-pub fn serve<A: Store + Bytes + List>(
-    server: &Server,
-    intake: &mut Intake<A>,
-    developer: &Developer,
-    page: &str,
-) -> Result<std::convert::Infallible, std::io::Error> {
-    loop {
-        let mut request = server.recv()?;
-        let answer = route(intake, developer, page, &mut request);
-        respond(request, answer);
-    }
+/// What the server writes back. `headers` carries what a status needs beside
+/// the body, which so far is the 401's challenge. Whose request it was is a
+/// parameter of the refusal, not a field: nothing a client reads carries it,
+/// and `serve` already holds it (`serve::handle`).
+pub struct Answer {
+    pub status: u16,
+    pub content_type: &'static str,
+    pub body: AnswerBody,
+    pub headers: Vec<(&'static str, String)>,
 }
 
-/// What the server writes back. `signer` is the pool the presented key derives
-/// to, where a request got that far: without it a log line cannot say whose
-/// uploads are not landing. `headers` carries what a status needs beside the
-/// body, which so far is the 401's challenge.
-struct Answer {
-    status: u16,
-    content_type: &'static str,
-    body: Vec<u8>,
-    signer: Option<PoolId>,
-    headers: Vec<(&'static str, String)>,
+/// What an answer's body is made of. Every refusal and every generated page is
+/// bytes this server already holds; only the download is an archive read
+/// (`archive::Bytes`).
+pub enum AnswerBody {
+    Bytes(Vec<u8>),
+    Stream(ObjectStream),
 }
 
-fn route<A: Store + Bytes + List>(
-    intake: &mut Intake<A>,
+/// One request answered. Blocking, because it stores to and reads from the
+/// archive (`serve::bind`).
+pub fn answer<A: Store + Bytes + List>(
+    intake: &Intake<A>,
     developer: &Developer,
     page: &str,
-    request: &mut Request,
+    request: Request,
 ) -> Answer {
-    let url = request.url().to_string();
-    let path = url.split('?').next().unwrap_or_default().to_string();
-    let method = request.method().clone();
+    let path = request.path().to_string();
     match path.as_str() {
         // Unauthenticated: it is what an operator reads before they have
         // anything to authenticate with.
-        instructions::PATH => match method {
+        instructions::PATH => match request.method {
             Method::Get => Answer {
                 status: 200,
                 content_type: "text/html; charset=utf-8",
-                body: page.as_bytes().to_vec(),
-                signer: None,
+                body: AnswerBody::Bytes(page.as_bytes().to_vec()),
                 headers: Vec::new(),
             },
             _ => refuse(None, 405, format!("{} takes GET", instructions::PATH)),
         },
         // A known route reached with the wrong method is named, because a
         // client that guessed the method is not a client at the wrong address.
-        SUBMIT_PATH => match method {
-            Method::Post => submit(intake, request),
+        SUBMIT_PATH => match request.method {
+            Method::Post => submit(intake, &request),
             _ => refuse(None, 405, format!("{SUBMIT_PATH} takes POST")),
         },
         // Authentication comes before the method check: answering 405 first
         // would confirm the route exists to a client that never presented a
         // credential.
         SUBMISSIONS_PATH | OBJECT_PATH => {
-            if let Err(error) = developer.authorize(authorization(request).as_deref()) {
+            if let Err(error) = developer.authorize(request.authorization.as_deref()) {
                 return challenge(&path, &error);
             }
-            if method != Method::Get {
+            if request.method != Method::Get {
                 return refuse(None, 405, format!("{path} takes GET"));
             }
             match path.as_str() {
-                SUBMISSIONS_PATH => listing(intake, developer, &url),
-                _ => object(intake, &url),
+                SUBMISSIONS_PATH => listing(intake, developer, &request.target),
+                _ => object(intake, &request.target),
             }
         }
         _ => refuse(
@@ -205,14 +218,6 @@ fn route<A: Store + Bytes + List>(
             format!("no route {path}, submissions go to {SUBMIT_PATH}"),
         ),
     }
-}
-
-fn authorization(request: &Request) -> Option<String> {
-    request
-        .headers()
-        .iter()
-        .find(|header| header.field.equiv("authorization"))
-        .map(|header| header.value.as_str().to_string())
 }
 
 /// Everything a 401 says to the client. One string for every reason, so the
@@ -241,9 +246,9 @@ fn challenge(path: &str, error: &Unauthorized) -> Answer {
 fn listing<A: Store + Bytes + List>(
     intake: &Intake<A>,
     developer: &Developer,
-    url: &str,
+    target: &str,
 ) -> Answer {
-    let filters = match Filters::parse(url) {
+    let filters = match Filters::parse(target) {
         Ok(filters) => filters,
         Err(error) => return refuse(None, 400, error.to_string()),
     };
@@ -254,8 +259,7 @@ fn listing<A: Store + Bytes + List>(
         Ok(listing) => Answer {
             status: 200,
             content_type: "application/json",
-            body: developer::page(&listing).into_bytes(),
-            signer: None,
+            body: AnswerBody::Bytes(developer::page(&listing).into_bytes()),
             headers: Vec::new(),
         },
         Err(error) => unavailable("the archive cannot be listed", &error.to_string()),
@@ -264,22 +268,21 @@ fn listing<A: Store + Bytes + List>(
 
 /// One object, as the bytes that were archived. No existence check first: the
 /// archive is the only account of what it holds, so its own 404 is the answer.
-fn object<A: Store + Bytes>(intake: &Intake<A>, url: &str) -> Answer {
-    let key = match developer::query_value(url, KEY_FIELD) {
+fn object<A: Store + Bytes>(intake: &Intake<A>, target: &str) -> Answer {
+    let key = match developer::query_value(target, KEY_FIELD) {
         Ok(key) => key,
         Err(error) => return refuse(None, 400, error.to_string()),
     };
     if key.is_empty() {
         return refuse(None, 400, format!("name the object in ?{KEY_FIELD}="));
     }
-    match intake.archive().bytes(&key) {
-        Ok(bytes) => Answer {
+    match intake.archive().reader(&key) {
+        Ok(stream) => Answer {
             status: 200,
             // RFC 8878: the body is the zstd the pool signed, so a developer
             // decompresses it themselves.
             content_type: "application/zstd",
-            body: bytes,
-            signer: None,
+            body: AnswerBody::Stream(stream),
             headers: Vec::new(),
         },
         Err(ArchiveError::NoSuchObject { .. }) => refuse(None, 404, "no such object".to_string()),
@@ -294,78 +297,44 @@ fn unavailable(reason: &str, withheld: &str) -> Answer {
     refuse_withholding(None, 503, reason.to_string(), Some(withheld.to_string()))
 }
 
-fn submit<A: Store>(intake: &mut Intake<A>, request: &mut Request) -> Answer {
-    let headers = match SubmissionHeaders::decode(request.headers()) {
+fn submit<A: Store>(intake: &Intake<A>, request: &Request) -> Answer {
+    let headers = match &request.submission {
         Ok(headers) => headers,
         Err(error) => return refuse(None, 400, error.to_string()),
     };
-    // Named before the body is read, so a log line about an upload that never
-    // reached the intake still says whose it was.
     let signer = headers.pool_id();
-    let wire_bytes = match read_body(request, intake.max_body_bytes()) {
-        Ok(wire_bytes) => wire_bytes,
-        Err(reason) => return refuse(Some(signer), reason.status, reason.text),
-    };
     let submission = Signed {
         vkey: headers.vkey,
         signature: headers.signature,
-        wire_bytes: &wire_bytes,
+        wire_bytes: &request.body,
     };
     match intake.submit(&submission, OffsetDateTime::now_utc()) {
         Ok(ack) => Answer {
             status: 200,
             content_type: "application/json",
-            body: serde_json::to_vec(&ack).expect("an Ack of two strings serializes"),
-            signer: Some(signer),
+            body: AnswerBody::Bytes(
+                serde_json::to_vec(&ack).expect("an Ack of two strings serializes"),
+            ),
             headers: Vec::new(),
         },
         Err(error) => refuse(Some(signer), status_for(&error), error.to_string()),
     }
 }
 
-/// A body that never reached the intake, with the status it earns.
-struct BodyError {
-    status: u16,
-    text: String,
-}
-
-/// Read at most `max_body_bytes`, refusing anything longer. `Content-Length`
-/// catches the honest oversized upload before any verification work; the
-/// bounded read catches a chunked body that lies about its size. Neither
-/// avoids *reading* the excess: tiny_http drains whatever the body declared
-/// when the request drops, allocating that much (metsuke-a3a).
-fn read_body(request: &mut Request, max_body_bytes: u64) -> Result<Vec<u8>, BodyError> {
-    let oversized = |found: usize| BodyError {
-        status: 413,
-        text: Rejection::OversizedBody {
-            found,
-            max: max_body_bytes,
-        }
-        .to_string(),
-    };
-    if let Some(length) = request.body_length()
-        && length as u64 > max_body_bytes
-    {
-        return Err(oversized(length));
-    }
-    let mut body = Vec::new();
-    request
-        .as_reader()
-        .take(max_body_bytes.saturating_add(1))
-        .read_to_end(&mut body)
-        .map_err(|error| BodyError {
-            status: 400,
-            text: format!("could not read the request body: {error}"),
-        })?;
-    if body.len() as u64 > max_body_bytes {
-        return Err(oversized(body.len()));
-    }
-    Ok(body)
+/// The 413 an oversized body earns, worded by the intake so the client reads
+/// one sentence for the cap whichever layer caught it. `serve` is the layer
+/// that catches it, because it is the one reading the body.
+pub fn oversized(signer: Option<PoolId>, found: usize, max: u64) -> Answer {
+    refuse(
+        signer,
+        413,
+        Rejection::OversizedBody { found, max }.to_string(),
+    )
 }
 
 /// Every refusal is logged: the reason text is the only record of why a
 /// pool's uploads are not landing.
-fn refuse(signer: Option<PoolId>, status: u16, reason: String) -> Answer {
+pub fn refuse(signer: Option<PoolId>, status: u16, reason: String) -> Answer {
     refuse_withholding(signer, status, reason, None)
 }
 
@@ -386,41 +355,15 @@ fn refuse_withholding(
     Answer {
         status,
         content_type: "text/plain; charset=utf-8",
-        body: reason.into_bytes(),
-        signer,
+        body: AnswerBody::Bytes(reason.into_bytes()),
         headers: Vec::new(),
     }
 }
 
 /// How a request is named before anything it claims has been verified.
-fn named(signer: Option<PoolId>) -> String {
+pub fn named(signer: Option<PoolId>) -> String {
     match signer {
         Some(pool_id) => pool_id.to_bech32(),
         None => "an unidentified client".to_string(),
-    }
-}
-
-fn respond(request: Request, answer: Answer) {
-    let content_type = Header::from_bytes("content-type", answer.content_type)
-        .expect("a static content type is a valid header");
-    let mut response = Response::from_data(answer.body)
-        .with_status_code(answer.status)
-        .with_header(content_type);
-    for (field, value) in &answer.headers {
-        response.add_header(
-            Header::from_bytes(field.as_bytes(), value.as_bytes())
-                .expect("a header this server writes is well formed"),
-        );
-    }
-    if let Err(error) = request.respond(response) {
-        // tiny_http answers `Ok` for a client that merely hung up, so this is
-        // a real write failure. On an accepted submission the bytes are
-        // already archived, and the agent — never having seen the ack — sends
-        // them again, so the bucket ends up holding the batch twice.
-        eprintln!(
-            "{ERR}could not answer {} with {}: {error}",
-            named(answer.signer),
-            answer.status,
-        );
     }
 }

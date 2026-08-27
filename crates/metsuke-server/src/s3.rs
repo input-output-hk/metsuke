@@ -15,8 +15,8 @@ use metsuke_wire::envelope::{Signature, VerifyingKey};
 use metsuke_wire::{hex, http};
 
 use crate::archive::{
-    ArchiveError, Bytes, Fetch, FetchedObject, KEY_PREFIX, List, ObjectName, Page, Store,
-    StoredSubmission,
+    ArchiveError, Bytes, Fetch, FetchedObject, KEY_PREFIX, List, ObjectName, ObjectStream, Page,
+    Store, StoredSubmission,
 };
 use crate::config::S3Config;
 use metsuke_wire::journal::WARNING;
@@ -262,7 +262,7 @@ impl List for S3Archive {
 }
 
 impl Bytes for S3Archive {
-    fn bytes(&self, key: &str) -> Result<Vec<u8>, ArchiveError> {
+    fn reader(&self, key: &str) -> Result<ObjectStream, ArchiveError> {
         let refuse = |reason: String| ArchiveError::Fetch {
             key: key.to_string(),
             reason,
@@ -276,18 +276,27 @@ impl Bytes for S3Archive {
             .sign(self.signature_validity);
         // The bucket is the source of truth about what it holds, so its 404
         // is the answer rather than something to pre-empt with a lookup.
-        let mut response = answer(self.agent.get(url.as_str()).call()).map_err(|failure| {
-            match failure.status {
-                Some(404) => ArchiveError::NoSuchObject {
-                    key: key.to_string(),
-                },
-                _ => refuse(failure.reason),
-            }
-        })?;
-        response
-            .body_mut()
-            .read_to_vec()
-            .map_err(|error| refuse(format!("unreadable body: {error}")))
+        let response =
+            answer(self.agent.get(url.as_str()).call()).map_err(|failure| {
+                match failure.status {
+                    Some(404) => ArchiveError::NoSuchObject {
+                        key: key.to_string(),
+                    },
+                    _ => refuse(failure.reason),
+                }
+            })?;
+        let body = response.into_body();
+        // Why a download cannot go out without one: `archive::ObjectStream`.
+        let length = body
+            .content_length()
+            .ok_or_else(|| ArchiveError::EndpointUnusable {
+                endpoint: self.bucket.base_url().to_string(),
+            })?;
+        Ok(ObjectStream {
+            key: key.to_string(),
+            length,
+            reader: Box::new(body.into_reader()),
+        })
     }
 }
 

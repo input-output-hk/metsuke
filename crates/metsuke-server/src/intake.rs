@@ -6,6 +6,8 @@
 //! plaintext inside the signed bytes, so what an object is filed under comes
 //! out of bytes the signature already covered.
 
+use std::sync::Mutex;
+
 use metsuke_wire::envelope::{Ack, ContainerError, HeaderError, PoolId, read_header};
 use time::OffsetDateTime;
 
@@ -59,9 +61,12 @@ pub enum IngestError {
     Archive(#[from] ArchiveError),
 }
 
+/// The limiter is the server's only mutable state, so it is the only thing
+/// behind a lock: an upload takes it for the charge alone and never across the
+/// archive write, and a developer reading the archive never takes it at all.
 pub struct Intake<A: Store> {
     config: IngestConfig,
-    limiter: RateLimiter,
+    limiter: Mutex<RateLimiter>,
     archive: A,
 }
 
@@ -74,7 +79,7 @@ impl<A: Store> Intake<A> {
         );
         Intake {
             config,
-            limiter,
+            limiter: Mutex::new(limiter),
             archive,
         }
     }
@@ -94,7 +99,7 @@ impl<A: Store> Intake<A> {
     /// Run one upload through the chain. `now` is the server clock,
     /// taken once so every check in one upload judges the same instant and the
     /// object is stamped with what the limiter charged.
-    pub fn submit(&mut self, signed: &Signed<'_>, now: OffsetDateTime) -> Result<Ack, IngestError> {
+    pub fn submit(&self, signed: &Signed<'_>, now: OffsetDateTime) -> Result<Ack, IngestError> {
         let pool_id = signed.pool_id();
         if signed.wire_bytes.len() as u64 > self.config.max_body_bytes.get() {
             return Err(Rejection::OversizedBody {
@@ -111,7 +116,14 @@ impl<A: Store> Intake<A> {
         if !self.config.allowlist.contains_key(&pool_id) {
             return Err(Rejection::UnknownPool { pool_id }.into());
         }
-        match self.limiter.charge(pool_id, now) {
+        // A temporary of this statement, so the guard is released before the
+        // match reads it rather than at the end of the block.
+        let charged = self
+            .limiter
+            .lock()
+            .expect("the rate limiter is never poisoned: charging cannot panic")
+            .charge(pool_id, now);
+        match charged {
             Charged::Allowed => (),
             Charged::PoolIsOver => {
                 return Err(Rejection::RateLimited {
@@ -138,7 +150,7 @@ impl<A: Store> Intake<A> {
     /// The post-signature half: the batch is the pool's, so what it says about
     /// itself is what the object is filed under.
     fn accept(
-        &mut self,
+        &self,
         signed: &Signed<'_>,
         pool_id: PoolId,
         now: OffsetDateTime,

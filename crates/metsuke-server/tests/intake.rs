@@ -37,7 +37,7 @@ fn rejection(error: IngestError) -> Rejection {
 }
 
 fn submit(
-    intake: &mut Intake<FilesystemArchive>,
+    intake: &Intake<FilesystemArchive>,
     key: &SigningKey,
     envelope: &Envelope,
 ) -> Result<metsuke_wire::envelope::Ack, IngestError> {
@@ -66,7 +66,7 @@ fn only_key(intake: &Intake<FilesystemArchive>) -> String {
 /// schema this build does not would send one. `declared` is what the frame's
 /// length field states, so a test can state a length the header does not have.
 fn submit_container(
-    intake: &mut Intake<FilesystemArchive>,
+    intake: &Intake<FilesystemArchive>,
     key: &SigningKey,
     header: &[u8],
     declared: u32,
@@ -94,7 +94,7 @@ fn container(header: &[u8], declared: u32, data: &[u8]) -> Vec<u8> {
 
 /// The same for a header this build could not build an `Envelope` for.
 fn submit_header(
-    intake: &mut Intake<FilesystemArchive>,
+    intake: &Intake<FilesystemArchive>,
     key: &SigningKey,
     header: serde_json::Value,
     data: &[u8],
@@ -122,7 +122,7 @@ fn header(key: &SigningKey, schema_version: u32) -> serde_json::Value {
 #[test]
 fn valid_submission_is_archived_raw_and_acked() {
     let key = test_key();
-    let (mut intake, dir) = intake_for(&[pool_of(&key)]);
+    let (intake, dir) = intake_for(&[pool_of(&key)]);
     let envelope = envelope_for(&key, 1);
     let (body, signature) = seal(&key, &envelope);
 
@@ -143,9 +143,9 @@ fn valid_submission_is_archived_raw_and_acked() {
 #[test]
 fn an_accepted_submission_is_filed_under_what_it_carries() {
     let key = test_key();
-    let (mut intake, _dir) = intake_for(&[pool_of(&key)]);
+    let (intake, _dir) = intake_for(&[pool_of(&key)]);
 
-    submit(&mut intake, &key, &envelope_for(&key, 4)).unwrap();
+    submit(&intake, &key, &envelope_for(&key, 4)).unwrap();
 
     let name = ObjectName::parse(&only_key(&intake)).unwrap();
     assert_eq!(name.pool_id, pool_of(&key));
@@ -158,9 +158,9 @@ fn an_accepted_submission_is_filed_under_what_it_carries() {
 #[test]
 fn the_object_key_is_time_major_and_names_the_sender() {
     let key = test_key();
-    let (mut intake, _dir) = intake_for(&[pool_of(&key)]);
+    let (intake, _dir) = intake_for(&[pool_of(&key)]);
 
-    submit(&mut intake, &key, &envelope_for(&key, 1)).unwrap();
+    submit(&intake, &key, &envelope_for(&key, 1)).unwrap();
 
     let stored = only_key(&intake);
     let expected_tail = format!(
@@ -179,13 +179,13 @@ fn the_object_key_is_time_major_and_names_the_sender() {
 #[test]
 fn two_agents_of_one_pool_both_land() {
     let key = test_key();
-    let (mut intake, _dir) = intake_for(&[pool_of(&key)]);
+    let (intake, _dir) = intake_for(&[pool_of(&key)]);
     let first = envelope_for(&key, 1);
     let mut second = envelope_for(&key, 1);
     second.agent_id = metsuke_wire::envelope::AgentId::parse("other-relay").unwrap();
 
-    submit(&mut intake, &key, &first).unwrap();
-    submit(&mut intake, &key, &second).unwrap();
+    submit(&intake, &key, &first).unwrap();
+    submit(&intake, &key, &second).unwrap();
 
     let mut agents: Vec<String> = stored_keys(&intake)
         .iter()
@@ -199,8 +199,8 @@ fn two_agents_of_one_pool_both_land() {
 #[test]
 fn unknown_pool_is_rejected() {
     let key = test_key();
-    let (mut intake, _dir) = intake_for(&[pool_of(&other_key())]);
-    let error = submit(&mut intake, &key, &envelope_for(&key, 1)).unwrap_err();
+    let (intake, _dir) = intake_for(&[pool_of(&other_key())]);
+    let error = submit(&intake, &key, &envelope_for(&key, 1)).unwrap_err();
     assert!(
         matches!(rejection(error), Rejection::UnknownPool { .. }),
         "expected the allowlist to reject"
@@ -215,7 +215,7 @@ fn unknown_pool_is_rejected() {
 fn a_key_that_is_not_the_pools_cold_key_speaks_for_nobody() {
     let pool = pool_of(&test_key());
     let impostor = other_key();
-    let (mut intake, _dir) = intake_for(&[pool]);
+    let (intake, _dir) = intake_for(&[pool]);
     // The batch's own header still names the allowlisted pool: the server does
     // not read it, so the claim buys the impostor nothing.
     let envelope = envelope_for(&impostor, 1);
@@ -240,7 +240,7 @@ fn a_key_that_is_not_the_pools_cold_key_speaks_for_nobody() {
 #[test]
 fn tampered_body_is_rejected() {
     let key = test_key();
-    let (mut intake, _dir) = intake_for(&[pool_of(&key)]);
+    let (intake, _dir) = intake_for(&[pool_of(&key)]);
     let envelope = envelope_for(&key, 1);
     let (mut body, signature) = seal(&key, &envelope);
     *body.last_mut().unwrap() ^= 0xff;
@@ -265,7 +265,7 @@ fn tampered_body_is_rejected() {
 #[test]
 fn a_data_frame_that_is_not_zstd_is_archived_unread() {
     let key = test_key();
-    let (mut intake, _dir) = intake_for(&[pool_of(&key)]);
+    let (intake, _dir) = intake_for(&[pool_of(&key)]);
     let header = header(&key, SCHEMA_VERSION_SAMPLES).to_string();
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&CONTAINER_MAGIC.to_le_bytes());
@@ -291,8 +291,8 @@ fn oversized_body_is_rejected() {
         max_body_bytes: nonzero_u64(16),
         ..permissive_config(&[pool_of(&key)])
     };
-    let (mut intake, _dir) = intake_with(config);
-    let error = submit(&mut intake, &key, &envelope_for(&key, 1)).unwrap_err();
+    let (intake, _dir) = intake_with(config);
+    let error = submit(&intake, &key, &envelope_for(&key, 1)).unwrap_err();
     assert!(
         matches!(rejection(error), Rejection::OversizedBody { .. }),
         "expected the body size cap to reject"
@@ -308,9 +308,9 @@ fn second_upload_in_the_window_is_rate_limited() {
         rate_limit_uploads: nonzero_u32(1),
         ..permissive_config(&[pool_of(&key)])
     };
-    let (mut intake, _dir) = intake_with(config);
-    submit(&mut intake, &key, &envelope_for(&key, 1)).unwrap();
-    let error = submit(&mut intake, &key, &envelope_for(&key, 2)).unwrap_err();
+    let (intake, _dir) = intake_with(config);
+    submit(&intake, &key, &envelope_for(&key, 1)).unwrap();
+    let error = submit(&intake, &key, &envelope_for(&key, 2)).unwrap_err();
     assert!(
         matches!(rejection(error), Rejection::RateLimited { .. }),
         "expected the rate limit to reject"
@@ -328,10 +328,10 @@ fn the_shared_budget_refuses_a_pool_inside_its_own_limit() {
         rate_limit_uploads_total: nonzero_u32(1),
         ..permissive_config(&[pool_of(&first), pool_of(&second)])
     };
-    let (mut intake, _dir) = intake_with(config);
-    submit(&mut intake, &first, &envelope_for(&first, 1)).unwrap();
+    let (intake, _dir) = intake_with(config);
+    submit(&intake, &first, &envelope_for(&first, 1)).unwrap();
 
-    let error = submit(&mut intake, &second, &envelope_for(&second, 1)).unwrap_err();
+    let error = submit(&intake, &second, &envelope_for(&second, 1)).unwrap_err();
 
     assert_eq!(status_for(&error), 429);
     assert!(
@@ -346,7 +346,7 @@ fn the_shared_budget_refuses_a_pool_inside_its_own_limit() {
 #[test]
 fn a_body_that_is_not_a_container_is_refused_before_the_allowlist() {
     let key = test_key();
-    let (mut intake, _dir) = intake_for(&[]);
+    let (intake, _dir) = intake_for(&[]);
     let bytes = zstd::encode_all(&b"{}\n"[..], 0).unwrap();
     use ed25519_dalek::Signer;
     let signature = key.sign(&bytes);
@@ -377,9 +377,9 @@ fn a_header_over_the_bound_is_refused() {
         max_header_bytes: nonzero_u64(64),
         ..permissive_config(&[pool_of(&key)])
     };
-    let (mut intake, _dir) = intake_with(config);
+    let (intake, _dir) = intake_with(config);
 
-    let error = submit_container(&mut intake, &key, b"", 1 << 30, b"").unwrap_err();
+    let error = submit_container(&intake, &key, b"", 1 << 30, b"").unwrap_err();
 
     assert!(
         matches!(
@@ -398,9 +398,9 @@ fn a_header_over_the_bound_is_refused() {
 #[test]
 fn a_header_frame_that_does_not_read_is_refused() {
     let key = test_key();
-    let (mut intake, _dir) = intake_for(&[pool_of(&key)]);
+    let (intake, _dir) = intake_for(&[pool_of(&key)]);
 
-    let error = submit_container(&mut intake, &key, b"{}", 2, b"").unwrap_err();
+    let error = submit_container(&intake, &key, b"{}", 2, b"").unwrap_err();
 
     assert_eq!(status_for(&error), 400);
     assert!(
@@ -414,10 +414,10 @@ fn a_header_frame_that_does_not_read_is_refused() {
 #[test]
 fn a_schema_version_with_no_object_name_is_refused() {
     let key = test_key();
-    let (mut intake, _dir) = intake_for(&[pool_of(&key)]);
+    let (intake, _dir) = intake_for(&[pool_of(&key)]);
     let unknown = SCHEMA_VERSION_LINES + 1;
 
-    let error = submit_header(&mut intake, &key, header(&key, unknown), b"").unwrap_err();
+    let error = submit_header(&intake, &key, header(&key, unknown), b"").unwrap_err();
 
     assert_eq!(status_for(&error), 400);
     assert!(
@@ -434,7 +434,7 @@ fn a_schema_version_with_no_object_name_is_refused() {
 #[test]
 fn a_trace_line_upload_is_accepted_and_filed_as_logs() {
     let key = test_key();
-    let (mut intake, dir) = intake_for(&[pool_of(&key)]);
+    let (intake, dir) = intake_for(&[pool_of(&key)]);
     let lines = vec![trace_line(
         r#"{"at":"2026-08-25T18:19:41.024688522Z","ns":"x","sev":"Info"}"#,
     )];
@@ -462,7 +462,7 @@ fn a_trace_line_upload_is_accepted_and_filed_as_logs() {
 #[test]
 fn archive_failure_is_not_a_rejection() {
     let key = test_key();
-    let mut intake = Intake::new(
+    let intake = Intake::new(
         permissive_config(&[pool_of(&key)]),
         FailingArchive {
             reason: "archive is down",
@@ -489,9 +489,9 @@ fn archive_failure_is_not_a_rejection() {
 #[test]
 fn a_rejected_submission_stores_no_object() {
     let key = test_key();
-    let (mut intake, _dir) = intake_for(&[pool_of(&other_key())]);
+    let (intake, _dir) = intake_for(&[pool_of(&other_key())]);
 
-    submit(&mut intake, &key, &envelope_for(&key, 1)).unwrap_err();
+    submit(&intake, &key, &envelope_for(&key, 1)).unwrap_err();
 
     let keys = stored_keys(&intake);
     assert!(keys.is_empty(), "got: {keys:?}");

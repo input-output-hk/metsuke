@@ -3,7 +3,7 @@
 //! reading it back must be one bijection, and a key that is not one must say
 //! so rather than parse into a plausible wrong pool.
 
-use metsuke_server::archive::{Bytes, FilesystemArchive, Kind, List, ObjectName, Store};
+use metsuke_server::archive::{FilesystemArchive, Kind, List, ObjectName, Store};
 use metsuke_wire::envelope::{AgentId, PoolId, SigningKey};
 use proptest::prelude::*;
 use time::{OffsetDateTime, UtcOffset};
@@ -11,7 +11,8 @@ use uuid::{NoContext, Timestamp, Uuid};
 
 mod support;
 use support::{
-    envelope_for, object_name, pool_of, seal, stored_submission, test_agent_id, test_key, test_now,
+    envelope_for, object_name, pool_of, read_object, seal, stored_submission, test_agent_id,
+    test_key, test_now,
 };
 
 /// A name whose id was stamped at `unix`, so a test can name the day a key
@@ -200,7 +201,7 @@ fn an_object_reads_back_as_the_bytes_that_were_stored() {
     );
     archive.store(&stored).unwrap();
 
-    assert_eq!(archive.bytes(&stored.object_key()).unwrap(), body);
+    assert_eq!(read_object(&archive, &stored.object_key()).unwrap(), body);
 }
 
 /// A key the archive does not hold is an error naming it, not an empty body a
@@ -211,7 +212,7 @@ fn bytes_for_a_key_the_archive_does_not_hold_names_it() {
     let archive = FilesystemArchive::new(dir.path());
     let missing = name_at(pool_of(&test_key()), 1_755_000_000).to_key();
 
-    let error = archive.bytes(&missing).unwrap_err().to_string();
+    let error = read_object(&archive, &missing).unwrap_err().to_string();
 
     assert!(error.contains(&missing), "got: {error}");
 }
@@ -229,7 +230,9 @@ fn bytes_for_a_key_that_climbs_out_of_the_root_is_refused() {
     std::fs::write(dir.path().join("secret"), b"not the archive's").unwrap();
     let archive = FilesystemArchive::new(&root);
 
-    let error = archive.bytes("v1/../secret").unwrap_err().to_string();
+    let error = read_object(&archive, "v1/../secret")
+        .unwrap_err()
+        .to_string();
 
     assert!(
         error.contains("is not a v1 archive object key"),

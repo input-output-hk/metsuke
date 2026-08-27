@@ -11,10 +11,10 @@ use std::path::{Path, PathBuf};
 
 use metsuke_server::applications::ApplicationCode;
 use metsuke_server::archive::{
-    ArchiveError, Kind, List, ObjectName, Page, Store, StoredSubmission,
+    ArchiveError, Bytes, Kind, List, ObjectName, ObjectStream, Page, Store, StoredSubmission,
 };
 use metsuke_server::authority::Signed;
-use metsuke_server::config::{AbsolutePath, DeveloperConfig, IngestConfig};
+use metsuke_server::config::{AbsolutePath, DeveloperConfig, HttpConfig, IngestConfig};
 use metsuke_wire::envelope::{
     self, AgentId, Envelope, Payload, PayloadLine, PoolId, Provenance, Sample, Signature,
     SigningKey, TraceLine, VerifyingKey,
@@ -174,6 +174,7 @@ pub fn allowlist_toml(allowed: &BTreeMap<PoolId, ApplicationCode>) -> String {
 /// load rather than passing on a value nobody set.
 pub struct ServerToml {
     pub listen: String,
+    pub http: String,
     pub archive: String,
     pub ingest: String,
     pub developer: String,
@@ -184,16 +185,50 @@ pub struct ServerToml {
 pub fn server_toml(dir: &Path, allowed: &[PoolId]) -> ServerToml {
     ServerToml {
         listen: "127.0.0.1:0".to_string(),
+        http: http_toml(&permissive_http()),
         archive: filesystem_archive(&dir.join("archive")),
         ingest: ingest_toml(&permissive_config(allowed)),
         developer: developer_toml(dir),
     }
 }
 
+/// Transport limits wide enough that only the check under test can fire. The
+/// timeouts are bounded rather than unlimited, so a regression fails a test
+/// rather than hanging it.
+pub fn permissive_http() -> HttpConfig {
+    HttpConfig {
+        idle_timeout_secs: nonzero_u64(10),
+        read_timeout_secs: nonzero_u64(10),
+        write_timeout_secs: nonzero_u64(10),
+        max_concurrent_requests: nonzero_u32(64),
+    }
+}
+
+/// `[http]` as the file holds it. Destructured for the same reason
+/// `ingest_toml` is: a field added to `HttpConfig` and not here does not
+/// compile.
+pub fn http_toml(config: &HttpConfig) -> String {
+    let HttpConfig {
+        idle_timeout_secs,
+        read_timeout_secs,
+        write_timeout_secs,
+        max_concurrent_requests,
+    } = config;
+    format!(
+        "[http]
+idle_timeout_secs = {idle_timeout_secs}
+read_timeout_secs = {read_timeout_secs}
+write_timeout_secs = {write_timeout_secs}
+max_concurrent_requests = {max_concurrent_requests}
+"
+    )
+}
+
 impl ServerToml {
     pub fn render(&self) -> String {
         [
             format!("listen = \"{}\"", self.listen),
+            self.http.clone(),
             self.archive.clone(),
             self.ingest.clone(),
             self.developer.clone(),
@@ -277,6 +312,21 @@ pub fn stored_submission<'a>(
         signature,
         wire_bytes,
     }
+}
+
+/// One object read whole off an archive. The download streams
+/// (`archive::Bytes`), and a test comparing it to the bytes that were stored
+/// wants both in hand.
+pub fn read_object(archive: &impl Bytes, key: &str) -> Result<Vec<u8>, ArchiveError> {
+    use std::io::Read as _;
+
+    let mut stream = archive.reader(key)?;
+    let mut bytes = Vec::new();
+    stream
+        .reader
+        .read_to_end(&mut bytes)
+        .expect("a test archive's object reads");
+    Ok(bytes)
 }
 
 /// The name a submission from `key` received at `now` is filed under.
@@ -375,6 +425,15 @@ impl Store for FailingArchive {
         Err(ArchiveError::Io {
             key: submission.object_key(),
             source: std::io::Error::other(self.reason),
+        })
+    }
+}
+
+impl Bytes for FailingArchive {
+    fn reader(&self, key: &str) -> Result<ObjectStream, ArchiveError> {
+        Err(ArchiveError::Fetch {
+            key: key.to_string(),
+            reason: self.reason.to_string(),
         })
     }
 }
