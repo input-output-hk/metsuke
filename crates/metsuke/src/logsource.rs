@@ -54,9 +54,34 @@ pub enum LineSourceError {
 }
 
 pub struct JournalSource {
-    child: Child,
+    /// `None` once `reap` or `stop` has taken it, so `drop` does not wait on a
+    /// child one of them already reaped.
+    child: Option<Child>,
     lines: BufReader<ChildStdout>,
     path: String,
+}
+
+/// How the journalctl behind a stream stopped: the status it chose, or why this
+/// process could not find out.
+///
+/// Kept because a journalctl refused the journal read exits on its own, while
+/// one following a unit that does not resolve waits forever — two ends the
+/// reading side cannot tell apart, with different remedies.
+#[derive(Debug)]
+pub enum ChildEnd {
+    Status(std::process::ExitStatus),
+    Unavailable(std::io::Error),
+}
+
+impl std::fmt::Display for ChildEnd {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChildEnd::Status(status) => write!(f, "journalctl {status}"),
+            ChildEnd::Unavailable(error) => {
+                write!(f, "journalctl's own exit status is unavailable: {error}")
+            }
+        }
+    }
 }
 
 impl JournalSource {
@@ -89,10 +114,44 @@ impl JournalSource {
             .take()
             .expect("stdout is piped, so the handle is there");
         Ok(JournalSource {
-            child,
+            child: Some(child),
             lines: BufReader::new(stdout),
             path,
         })
+    }
+
+    /// The status of a journalctl whose output has ended.
+    ///
+    /// Blocking, and no kill: stdout closes as the child exits, so `try_wait`
+    /// can still answer `None` for the moment in between, and killing on that
+    /// answer would report this process's signal in place of the status the
+    /// child chose.
+    pub fn reap(mut self) -> ChildEnd {
+        waited(self.taken())
+    }
+
+    /// The same for a stream that stopped without ending, where the child may
+    /// still be running and following the unit.
+    pub fn stop(mut self) -> ChildEnd {
+        let mut child = self.taken();
+        match child.kill() {
+            Ok(()) => waited(child),
+            Err(error) => ChildEnd::Unavailable(error),
+        }
+    }
+
+    /// Both callers consume the source, so the child is still here.
+    fn taken(&mut self) -> Child {
+        self.child
+            .take()
+            .expect("a source hands its child to reap or stop once")
+    }
+}
+
+fn waited(mut child: Child) -> ChildEnd {
+    match child.wait() {
+        Ok(status) => ChildEnd::Status(status),
+        Err(error) => ChildEnd::Unavailable(error),
     }
 }
 
@@ -118,8 +177,10 @@ impl Drop for JournalSource {
     /// behind otherwise, and the respawn would then have two following the
     /// same unit.
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        if let Some(child) = &mut self.child {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 

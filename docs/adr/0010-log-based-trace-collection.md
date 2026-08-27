@@ -1,8 +1,9 @@
 # 10. Trace lines off the journal, selected by configuration
 
 Status: accepted (2026-08-27). Supersedes ADR 0007.
-Amended by metsuke-jfb.11, which moved where a line's stamp is applied, and by
-metsuke-jfb.19, which dropped severity as a selection rule.
+Amended by metsuke-jfb.11, which moved where a line's stamp is applied, by
+metsuke-jfb.19, which dropped severity as a selection rule, and by
+metsuke-4zo.98, which settled what the archive says about lost lines: nothing.
 
 ## Context
 
@@ -114,13 +115,27 @@ upstream of it.
   default kills it with the agent, but it runs under the agent's identity at a
   path whoever can write the config file chooses — the reach writing
   `upload_url` already gives, through a different mechanism.
-- A respawned journalctl resumes at the journal's current end, so every gap
-  between an unexpected exit and a successful respawn is lost silently. No
-  cursor is persisted. Whether that is acceptable for the distributions the
-  developers are computing is not settled here.
-- A misconfigured `journal_unit` is silent: `journalctl --follow` on a unit
-  that does not exist waits forever rather than failing, and the agent has no
-  "no lines in N minutes" signal.
+- Nothing in the archive says a line is missing, and that is settled rather than
+  pending: metsuke-4zo.98 weighed a loss record in the payload and refused it.
+  Of the five paths that can lose lines, four do not occur at the shipped caps —
+  the retention figure is on metsuke-uxw's comments — and the fifth is a restart,
+  which is a window with no count in it, so a record would state a guess. Adding
+  one would put a rare shape in the stream every consumer reads, which is what a
+  columnar reader handles worst (metsuke-4zo.112). Loss reaches the operator
+  through the agent's counters (metsuke-4zo.109) and the program through absence
+  in the bucket (metsuke-4zo.110); a large gap stays visible as a hole in the
+  timestamps of the lines around it, and a small one is not worth a shape.
+- The restart gap is worth closing rather than describing. `--show-cursor` and
+  `--after-cursor` resume exactly with `--output=cat` intact, if the follow model
+  becomes a polled read (metsuke-4zo.114). It cannot help `source = "pipe"`: a
+  pipe has no cursor and nothing to replay.
+- A misconfigured `journal_unit` is still silent while the agent runs:
+  `journalctl --follow` on a unit that does not exist waits forever rather than
+  failing, and the agent has no "no lines in N minutes" signal. A journalctl that
+  cannot be executed does fail the start; one refused the journal read exits
+  after the exec succeeded, so it is still a warning per backoff
+  (metsuke-4zo.116). A stream that ends now carries the status its journalctl
+  exited with, which is what separates those two ends.
 - The end-to-end test carries a real node's selected lines all the way into the
   bucket, but not a Leios round's: one node forges an EB only if its own
   mempool overflows, and never receives an announcement or reaches a quorum,

@@ -10,7 +10,7 @@ use metsuke_wire::envelope::TraceLine;
 use metsuke_wire::journal::{ERR, WARNING};
 
 use crate::logselect::{SelectConfig, Selection, select};
-use crate::logsource::{JournalConfig, JournalSource, LineSource};
+use crate::logsource::{ChildEnd, JournalConfig, JournalSource, LineSource};
 use crate::spool::{LogSpool, SpoolError};
 
 /// How many times one line's spool write is retried when SQLite answers busy.
@@ -23,6 +23,11 @@ const BUSY_RETRIES: u32 = 3;
 /// stream ends. `journalctl --follow` outlives the node's own restarts, so an
 /// end here means the transport failed rather than that the node stopped.
 ///
+/// `first` is the stream the caller already opened, so a journalctl that cannot
+/// be executed at all never reaches this loop (`main::StartupError::TraceSource`
+/// owns why). One that execs and is then refused the journal still does, and is
+/// still re-spawned every backoff — metsuke-4zo.116.
+///
 /// Returns only on a spool that cannot be written, which the caller ends the
 /// process on: `main` already treats a spool it cannot open as fatal, and a
 /// full disk is the same condition found later. Respawning through it would
@@ -32,27 +37,40 @@ pub fn run(
     selection: SelectConfig,
     respawn_backoff: Duration,
     mut spool: LogSpool,
+    first: JournalSource,
 ) -> SpoolError {
+    let mut opened = Some(first);
     loop {
-        match JournalSource::spawn(&journal) {
+        let spawned = match opened.take() {
+            Some(source) => Ok(source),
+            None => JournalSource::spawn(&journal),
+        };
+        match spawned {
             Err(error) => eprintln!("{ERR}trace lines not collected: {error}"),
-            Ok(mut source) => {
-                if let Err(error) = drain(&mut source, &selection, &mut spool) {
-                    return error;
-                }
-                // A journalctl that exits at once — refused the journal, told
-                // to follow a unit it cannot resolve — otherwise leaves this
-                // loop respawning it forever with nothing in the journal to
-                // say no line was ever read.
-                eprintln!(
-                    "{WARNING}the trace line stream from {} ended; \
-                     no lines are collected until it is followed again",
-                    journal.journal_unit,
-                );
-            }
+            Ok(mut source) => match drain(&mut source, &selection, &mut spool) {
+                // The child is left to `drop`: nothing more is collected and
+                // the caller is about to end the process.
+                Err(error) => return error,
+                // For this source the end of the output is journalctl's own
+                // stdout closing, not a node exiting, so the child is on its
+                // way out and its status is there to be had.
+                Ok(DrainEnd::NodeExited) => stream_ended(&journal, source.reap()),
+                Ok(DrainEnd::SourceFailed) => stream_ended(&journal, source.stop()),
+            },
         }
         std::thread::sleep(respawn_backoff);
     }
+}
+
+/// Say the stream stopped, and what journalctl's own exit says about why: a
+/// journalctl that exits at once otherwise leaves this loop respawning it
+/// forever with nothing in the journal to say no line was ever read.
+fn stream_ended(journal: &JournalConfig, end: ChildEnd) {
+    eprintln!(
+        "{WARNING}the trace line stream from {} ended ({end}); \
+         no lines are collected until it is followed again",
+        journal.journal_unit,
+    );
 }
 
 /// Whether a spool failure is the other connection holding the file, which

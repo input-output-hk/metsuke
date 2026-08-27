@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use metsuke::config::{Config, LogConfig};
 use metsuke::logselect::SelectConfig;
+use metsuke::logsource::{JournalConfig, JournalSource, LineSourceError};
 use metsuke_wire::envelope::{AgentId, Limits, PoolId, Provenance, SigningKey, TraceLine};
 
 /// The all-sevens test seed used across the suite.
@@ -47,23 +48,67 @@ pub const TEST_LIMITS: Limits = Limits {
     max_decompressed_bytes: 64 * 1024 * 1024,
 };
 
-/// A journalctl stand-in: a program that answers whatever arguments it is given
-/// with `recording`, so what a test exercises is the reading and not the flags.
-/// A two-line script is enough, because journalctl's own output is what a
-/// recording already is (tests/fixtures/README.md).
-pub fn replaying_journalctl(dir: &tempfile::TempDir, recording: &Path) -> PathBuf {
-    let path = dir.path().join("journalctl");
-    std::fs::write(
-        &path,
-        format!("#!/bin/sh\nexec cat {}\n", recording.display()),
-    )
-    .unwrap();
+/// An executable `/bin/sh` script at `name`, for the tests that need a program
+/// where a configured binary is expected.
+pub fn sh_stand_in(dir: &tempfile::TempDir, name: &str, body: &str) -> PathBuf {
+    let path = dir.path().join(name);
+    std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
     path
+}
+
+/// A journalctl stand-in: a program that answers whatever arguments it is given
+/// with `recording`, so what a test exercises is the reading and not the flags.
+/// One line is enough, because journalctl's own output is what a recording
+/// already is (tests/fixtures/README.md).
+pub fn replaying_journalctl(dir: &tempfile::TempDir, recording: &Path) -> PathBuf {
+    sh_stand_in(
+        dir,
+        "journalctl",
+        &format!("exec cat {}", recording.display()),
+    )
+}
+
+/// Follow a stand-in as if it were the node's journalctl.
+///
+/// Retries `ETXTBSY`, which is the harness racing with itself rather than
+/// anything about the source: these tests write an executable while their
+/// siblings fork, and a forked child holds that file's write fd until it execs,
+/// so a spawn inside that window is refused. Every test spawning over a
+/// stand-in goes through here, so the retry is stated once.
+pub fn following(journalctl_path: PathBuf) -> JournalSource {
+    for _ in 0..RETRIES_ON_BUSY {
+        match JournalSource::spawn(&JournalConfig {
+            journal_unit: TEST_UNIT.to_string(),
+            journalctl_path: journalctl_path.clone(),
+        }) {
+            Ok(source) => return source,
+            Err(error) if is_text_file_busy(&error) => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(error) => panic!("{}: {error}", journalctl_path.display()),
+        }
+    }
+    panic!("{} stayed busy", journalctl_path.display());
+}
+
+/// The unit every test in the suite follows. Which unit it is decides nothing:
+/// the stand-in answers whatever arguments it is given.
+pub const TEST_UNIT: &str = "cardano-node";
+
+const RETRIES_ON_BUSY: u32 = 50;
+
+fn is_text_file_busy(error: &LineSourceError) -> bool {
+    match error {
+        LineSourceError::Spawn { source, .. } => {
+            source.kind() == std::io::ErrorKind::ExecutableFileBusy
+        }
+        LineSourceError::Read { .. } => false,
+    }
 }
 
 /// The `[log]` section an operator gets without writing any of it: the shipped

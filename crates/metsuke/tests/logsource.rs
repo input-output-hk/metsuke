@@ -14,7 +14,7 @@ use metsuke::logsource::{
 };
 
 mod support;
-use support::{recording, replaying_journalctl};
+use support::{following, recording, replaying_journalctl, sh_stand_in};
 
 const STARTUP_RECORDING: &str = "leios-node-traces-startup.log";
 const STARTUP_WINDOW: &str = include_str!("fixtures/recordings/leios-node-traces-startup.log");
@@ -22,11 +22,7 @@ const STARTUP_WINDOW: &str = include_str!("fixtures/recordings/leios-node-traces
 #[test]
 fn every_line_arrives_in_order_and_the_stream_ends() {
     let dir = tempfile::tempdir().unwrap();
-    let mut source = JournalSource::spawn(&JournalConfig {
-        journal_unit: "cardano-node".to_string(),
-        journalctl_path: replaying_journalctl(&dir, &recording(STARTUP_RECORDING)),
-    })
-    .unwrap();
+    let mut source = following(replaying_journalctl(&dir, &recording(STARTUP_RECORDING)));
 
     let mut read = Vec::new();
     while let Some(line) = source.next_line().unwrap() {
@@ -37,6 +33,43 @@ fn every_line_arrives_in_order_and_the_stream_ends() {
     // The end is an end, not an error: the caller's respawn decision hangs on
     // telling the two apart.
     assert_eq!(source.next_line().unwrap(), None);
+}
+
+// The status the child chose, not the signal this process would send it. 13 is
+// arbitrary: what is asserted is that the number arrives, because the number is
+// what tells a journalctl refused the journal from one that never resolved its
+// unit. Which status a real journalctl picks is not recorded anywhere, so
+// nothing here claims one.
+#[test]
+fn a_stream_that_ended_reports_the_status_its_journalctl_exited_with() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut source = following(sh_stand_in(&dir, "refusing-journalctl", "exit 13"));
+    while source.next_line().unwrap().is_some() {}
+
+    let end = source.reap().to_string();
+
+    assert!(
+        end.contains("13"),
+        "the end has to carry journalctl's own status, got: {end}"
+    );
+}
+
+// The misconfigured-unit shape: journalctl waits and never exits, so this
+// process ends it and what it reports is that kill.
+#[test]
+fn a_stream_still_running_is_ended_and_says_so() {
+    let dir = tempfile::tempdir().unwrap();
+    // A stand-in that cannot reach an exit of its own. One that writes a
+    // recording would race instead: the whole of it fits in a pipe buffer, so it
+    // can finish and exit 0 before this line runs.
+    let source = following(sh_stand_in(&dir, "waiting-journalctl", "exec sleep 3600"));
+
+    let end = source.stop().to_string();
+
+    assert!(
+        end.contains("signal"),
+        "a journalctl this process ended has no status of its own, got: {end}"
+    );
 }
 
 // A journalctl that is not where the config says fails at startup rather than

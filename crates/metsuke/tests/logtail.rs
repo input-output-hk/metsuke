@@ -7,14 +7,15 @@ use std::time::Duration;
 
 use metsuke::delivery::Delivery;
 use metsuke::logselect::{Selection, select};
-use metsuke::logsource::{JournalConfig, JournalSource};
 use metsuke::logtail;
 use metsuke::spool::{LogSpool, LogSpoolConfig, Spool, SpoolConfig};
 use metsuke_wire::envelope::{self, SigningKey, TraceLine};
 use time::OffsetDateTime;
 
 mod support;
-use support::{TEST_LIMITS, recording, replaying_journalctl, shipped_rules, test_provenance};
+use support::{
+    TEST_LIMITS, following, recording, replaying_journalctl, shipped_rules, test_provenance,
+};
 
 const LEIOS_RECORDING: &str = "leios-node-traces.log";
 const LEIOS_WINDOW: &str = include_str!("fixtures/recordings/leios-node-traces.log");
@@ -31,11 +32,7 @@ const NO_CONTENTION: Duration = Duration::from_secs(1);
 fn the_recorded_stream_reaches_a_sealed_batch_as_the_lines_the_rules_selected() {
     let dir = tempfile::tempdir().unwrap();
     let rules = shipped_rules();
-    let mut source = JournalSource::spawn(&JournalConfig {
-        journal_unit: "cardano-node".to_string(),
-        journalctl_path: replaying_journalctl(&dir, &recording(LEIOS_RECORDING)),
-    })
-    .unwrap();
+    let mut source = following(replaying_journalctl(&dir, &recording(LEIOS_RECORDING)));
     let mut lines = LogSpool::open(&LogSpoolConfig {
         path: dir.path().join("spool.sqlite"),
         max_bytes: UNBOUNDED,
@@ -106,11 +103,7 @@ fn a_spool_that_refuses_a_write_ends_the_drain_with_the_failure() {
         .unwrap()
         .execute_batch("DROP TABLE log_lines")
         .unwrap();
-    let mut source = JournalSource::spawn(&JournalConfig {
-        journal_unit: "cardano-node".to_string(),
-        journalctl_path: replaying_journalctl(&dir, &recording(LEIOS_RECORDING)),
-    })
-    .unwrap();
+    let mut source = following(replaying_journalctl(&dir, &recording(LEIOS_RECORDING)));
 
     let err = logtail::drain(&mut source, &shipped_rules(), &mut lines).unwrap_err();
 
