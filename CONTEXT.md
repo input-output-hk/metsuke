@@ -36,6 +36,13 @@ _Avoid_: machine, host, relay, node
 The name an **Agent** is known by within its **Pool**. Chosen by the
 **Operator**, and unique only within the **Pool**.
 
+**Scrape**:
+One read of a node's metrics endpoint, and the one line an **Agent** ships for
+it: every metric the endpoint returned, plus the **Agent**'s own scrape time and
+clock offset. A failed read is a **Scrape** too, carrying no metrics and the
+reason it failed.
+_Avoid_: sample, snapshot, poll, metrics, measurement
+
 **Submission**:
 One report an **Agent** sends the server, signed by its **Pool**'s **Cold
 Key**. Which **Pool** it is from is the hash of that key, never something the
@@ -85,6 +92,7 @@ _Avoid_: user, consumer, analyst, client
 - A **Pool** may report from many **Agents**, each with its own **Agent ID** and
   its own **Sequence Number** run
 - A **Submission** is signed by one key, and that key is what names its **Pool**
+- A **Submission** carries whole **Scrapes**, one line each, never a metric on its own
 - A **Pool** outside the **Allowlist** has no accepted **Submissions**, whatever key it holds
 - A **Pool** reaches the **Allowlist** only when its **Application Code** appears in both an
   **Application** and its current pool registration
