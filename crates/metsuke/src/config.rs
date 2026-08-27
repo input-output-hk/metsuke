@@ -3,11 +3,13 @@
 //! absent or malformed; every cadence and limit is a config knob with a
 //! shipped default (see contrib/config.example.toml).
 
+use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
 use serde::Deserialize;
 
 use crate::endpoint::{MetricsUrl, UploadUrl};
+use crate::logsource::{JournalConfig, PipeConfig};
 use crate::sntp;
 use metsuke_wire::envelope::PoolId;
 
@@ -18,9 +20,9 @@ pub struct Config {
     /// than derived from the key, and checked against it at startup
     /// (`identity::check_pool_id`).
     pub pool_id: PoolId,
-    /// What to call this machine on every line it ships. Absent means the
-    /// machine's own hostname, slugified (`identity::agent_id`); a value here
-    /// is slugified the same way.
+    /// What to call this Agent on every line it ships. Absent means its own
+    /// hostname, slugified (`identity::agent_id`); a value here is slugified
+    /// the same way.
     #[serde(default)]
     pub agent_id: Option<String>,
     /// The node's PrometheusSimple endpoint.
@@ -79,26 +81,116 @@ pub struct Config {
     pub log: Option<LogConfig>,
 }
 
+/// Which stream the trace lines come from. Named in the config rather than
+/// inferred from stdin: an agent that guessed would collect nothing, or tee
+/// nothing, and say neither.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LogSourceKind {
+    Journald,
+    Pipe,
+}
+
+/// The configured source with the fields that source needs, and no others.
+#[derive(Debug, PartialEq)]
+pub enum LogSource {
+    Journald(JournalConfig),
+    Pipe(PipeConfig),
+}
+
 /// The `[log]` section. The unit and the journalctl have no sensible default:
 /// which service the node runs as is not something this crate can guess, and
 /// neither is where journalctl lives (`logsource::JournalConfig`).
 #[derive(Debug, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "LogToml")]
 pub struct LogConfig {
-    pub journal_unit: String,
-    pub journalctl_path: PathBuf,
+    pub source: LogSource,
     /// The ceiling on every namespace rule this host will ever honour
     /// (semantics: `logselect::SelectConfig::new`).
-    #[serde(default = "default_log_namespace_roots")]
     pub namespace_roots: Vec<String>,
     /// Namespace prefixes to ship (semantics: `logselect::SelectConfig`).
-    #[serde(default = "default_log_namespaces")]
     pub namespaces: Vec<String>,
     /// Trace-line spool cap (semantics: `spool::LogSpoolConfig`).
-    #[serde(default = "default_log_max_bytes")]
     pub log_max_bytes: u64,
-    #[serde(default = "default_log_respawn_backoff_secs")]
     pub respawn_backoff_secs: u64,
+}
+
+/// The `[log]` table as written, before the source's own fields are checked
+/// against the source.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LogToml {
+    source: LogSourceKind,
+    journal_unit: Option<String>,
+    journalctl_path: Option<PathBuf>,
+    pipe_queue_capacity: Option<NonZeroUsize>,
+    #[serde(default = "default_log_namespace_roots")]
+    namespace_roots: Vec<String>,
+    #[serde(default = "default_log_namespaces")]
+    namespaces: Vec<String>,
+    #[serde(default = "default_log_max_bytes")]
+    log_max_bytes: u64,
+    #[serde(default = "default_log_respawn_backoff_secs")]
+    respawn_backoff_secs: u64,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum LogSourceError {
+    #[error("[log] source = \"journald\" needs {field}")]
+    JournaldNeeds { field: &'static str },
+    #[error(
+        "[log] source = \"pipe\" reads the node's own stdout and never the journal, \
+         so {field} must not be set"
+    )]
+    PipeRefuses { field: &'static str },
+    #[error("[log] source = \"journald\" does not queue lines, so {field} must not be set")]
+    JournaldRefuses { field: &'static str },
+}
+
+impl TryFrom<LogToml> for LogConfig {
+    type Error = LogSourceError;
+
+    fn try_from(toml: LogToml) -> Result<LogConfig, LogSourceError> {
+        let source = match toml.source {
+            LogSourceKind::Journald => {
+                if toml.pipe_queue_capacity.is_some() {
+                    return Err(LogSourceError::JournaldRefuses {
+                        field: "pipe_queue_capacity",
+                    });
+                }
+                LogSource::Journald(JournalConfig {
+                    journal_unit: toml.journal_unit.ok_or(LogSourceError::JournaldNeeds {
+                        field: "journal_unit",
+                    })?,
+                    journalctl_path: toml.journalctl_path.ok_or(LogSourceError::JournaldNeeds {
+                        field: "journalctl_path",
+                    })?,
+                })
+            }
+            LogSourceKind::Pipe => {
+                for (field, set) in [
+                    ("journal_unit", toml.journal_unit.is_some()),
+                    ("journalctl_path", toml.journalctl_path.is_some()),
+                ] {
+                    if set {
+                        return Err(LogSourceError::PipeRefuses { field });
+                    }
+                }
+                LogSource::Pipe(PipeConfig {
+                    queue_capacity: toml
+                        .pipe_queue_capacity
+                        .unwrap_or_else(default_pipe_queue_capacity),
+                })
+            }
+        };
+        Ok(LogConfig {
+            source,
+            namespace_roots: toml.namespace_roots,
+            namespaces: toml.namespaces,
+            log_max_bytes: toml.log_max_bytes,
+            respawn_backoff_secs: toml.respawn_backoff_secs,
+        })
+    }
 }
 
 fn default_sample_interval_secs() -> u64 {
@@ -153,6 +245,12 @@ fn default_log_namespaces() -> Vec<String> {
         "ChainDB.AddBlockEvent.AddedToCurrentChain".to_string(),
         "Forge.Loop.AdoptedBlock".to_string(),
     ]
+}
+
+/// Lines the tee may hold for the spool worker (semantics:
+/// `logsource::PipeConfig`).
+fn default_pipe_queue_capacity() -> NonZeroUsize {
+    NonZeroUsize::new(4096).expect("4096 is not zero")
 }
 
 fn default_log_max_bytes() -> u64 {

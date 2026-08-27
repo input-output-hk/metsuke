@@ -262,6 +262,7 @@
           packages = {
             metsuke = craneLib.buildPackage agentArgs;
             metsuke-unit = contribUnit;
+            metsuke-allowlist = (import ./nix/allowlist.nix { inherit pkgs; }).package;
             metsuke-static-x86_64-linux = staticAgent pkgs.pkgsCross.musl64;
             metsuke-static-aarch64-linux = staticAgent pkgs.pkgsCross.aarch64-multiplatform-musl;
             metsuke-server = craneLib.buildPackage (
@@ -292,6 +293,8 @@
 
           checks = {
             inherit (config.packages) metsuke metsuke-server;
+
+            allowlist = (import ./nix/allowlist.nix { inherit pkgs; }).tests;
 
             static-x86_64-linux = linksNothing config.packages.metsuke-static-x86_64-linux;
             static-aarch64-linux = linksNothing config.packages.metsuke-static-aarch64-linux;

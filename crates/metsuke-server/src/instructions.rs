@@ -425,8 +425,7 @@ fn example_envelope() -> String {
     )
     .expect("plain fields stamp");
     let envelope = Envelope::new(
-        provenance.pool_id,
-        provenance.agent_id.clone(),
+        provenance.clone(),
         CLIENT_VERSION.to_string(),
         42,
         at,

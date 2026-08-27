@@ -1,6 +1,6 @@
 //! Who this agent is: the id every line it ships is stamped with, and whether
 //! the key it signs with speaks for the pool it claims. Both are answered once
-//! at startup, so a machine that cannot say either never spools a row.
+//! at startup, so an Agent that cannot say either never spools a row.
 
 use metsuke_wire::envelope::{AgentId, AgentIdError, PoolId, VerifyingKey};
 
@@ -8,7 +8,7 @@ use metsuke_wire::envelope::{AgentId, AgentIdError, PoolId, VerifyingKey};
 pub enum IdentityError {
     #[error("agent_id: {0}")]
     AgentId(#[from] AgentIdError),
-    #[error("this machine's hostname is not UTF-8: {found:?}")]
+    #[error("this Agent's hostname is not UTF-8: {found:?}")]
     HostnameNotUtf8 { found: std::ffi::OsString },
     #[error(
         "the signing key speaks for {implied}, but pool_id is {configured}: \
@@ -17,9 +17,9 @@ pub enum IdentityError {
     PoolIdMismatch { configured: PoolId, implied: PoolId },
 }
 
-/// The configured id, or this machine's hostname when there is none. Both go
-/// through `slugify`, so `agent_id = "Relay_1"` names the same agent a host
-/// called `Relay_1` does, and neither refuses to start over a character.
+/// The configured id, or this Agent's hostname when there is none. Both go
+/// through `slugify`, so `agent_id = "Edge_1"` names the same Agent one whose
+/// hostname is `Edge_1` does, and neither refuses to start over a character.
 ///
 /// The hostname comes from the kernel rather than `/proc`, which the unit only
 /// sees when trace collection is on (ADR 0010).

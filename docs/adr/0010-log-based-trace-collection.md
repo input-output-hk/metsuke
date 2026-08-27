@@ -1,6 +1,6 @@
 # 10. Trace lines off the journal, selected by configuration
 
-Status: proposed (2026-08-25). Supersedes ADR 0007.
+Status: accepted (2026-08-27). Supersedes ADR 0007.
 Amended by metsuke-jfb.11, which moved where a line's stamp is applied, and by
 metsuke-jfb.19, which dropped severity as a selection rule.
 
@@ -30,8 +30,10 @@ the block producer's write path, where a stalled reader is the node's problem.
 
 ## Decision
 
-The agent follows the node's journal with `journalctl --follow`, selects lines
-by namespace prefix — configuration — and ships every field of what it selects.
+The agent reads the node's trace stream from the source `[log].source` names,
+selects lines by namespace prefix — configuration — and ships every field of
+what it selects. The journal source follows `journalctl --follow`; the pipe
+source reads the node's own stdout and tees it through untouched.
 It parses the line as a JSON object and reads `ns` off its top level and nothing
 else; a line the parse refuses declares no namespace, so no rule reaches it.
 
@@ -81,8 +83,12 @@ the server's decompress limit both count
 can refuse a line already written: what the spool holds is text this build
 produced, not a value some future build has to agree with.
 
-Pipe mode is not built. It is a second implementation behind the same line
-source, and its own decision.
+Both sources are built, behind one `LineSource`, and `[log].source` picks
+between them with no default: an agent that guessed would collect nothing or
+tee nothing and say neither. The pipe holds no group at all, so a host that
+runs `cardano-node run | metsuke` pays none of what this ADR prices. The NixOS
+module renders only the journal, because the unit it writes has no node
+upstream of it.
 
 ## Consequences
 

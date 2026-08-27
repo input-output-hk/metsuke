@@ -73,23 +73,48 @@ fn is_busy(error: &SpoolError) -> bool {
 /// Read until the stream ends, or return the failure that made the spool
 /// unwritable. A busy spool is waited out; anything else is the caller's to
 /// end the process on.
+/// Why a drain stopped. The pipe caller ends the process on it, and only
+/// `NodeExited` is a success: a stream that failed collected nothing more, and
+/// exiting zero for it would tell systemd the run was done.
+#[derive(Debug, PartialEq)]
+pub enum DrainEnd {
+    /// stdin read zero bytes, so the node closed its output.
+    NodeExited,
+    /// The source stopped without the node having exited.
+    SourceFailed,
+}
+
 pub fn drain(
     source: &mut impl LineSource,
     selection: &SelectConfig,
     spool: &mut LogSpool,
-) -> Result<(), SpoolError> {
+) -> Result<DrainEnd, SpoolError> {
     let mut dropped = 0u64;
+    let mut reserved = 0u64;
+    let mut end = DrainEnd::NodeExited;
     loop {
         let line = match source.next_line() {
             Ok(Some(line)) => line,
             Ok(None) => break,
             Err(error) => {
-                eprintln!("{WARNING}trace line stream ended: {error}");
+                eprintln!("{ERR}trace line stream failed: {error}");
+                end = DrainEnd::SourceFailed;
                 break;
             }
         };
-        let Selection::Ship(line) = select(selection, &line) else {
-            continue;
+        let line = match select(selection, &line) {
+            Selection::Ship(line) => line,
+            Selection::ReservedKey => {
+                if reserved == 0 {
+                    eprintln!(
+                        "{WARNING}the node wrote a line carrying metsuke's own reserved key; \
+                         it cannot be shipped and is dropped"
+                    );
+                }
+                reserved += 1;
+                continue;
+            }
+            Selection::Skip => continue,
         };
         match push_waiting_out_contention(spool, &line) {
             Ok(0) => {}
@@ -106,17 +131,25 @@ pub fn drain(
                 dropped += count;
             }
             Err(error) => {
-                if dropped > 0 {
-                    eprintln!("{WARNING}the trace-line spool cap dropped {dropped} lines in all");
-                }
+                report_totals(dropped, reserved);
                 return Err(error);
             }
         }
     }
+    report_totals(dropped, reserved);
+    Ok(end)
+}
+
+/// What a drain lost, each with its own remedy: the cap bites when uploads
+/// cannot keep up, and a reserved key is the node writing a name metsuke has
+/// taken.
+fn report_totals(dropped: u64, reserved: u64) {
     if dropped > 0 {
         eprintln!("{WARNING}the trace-line spool cap dropped {dropped} lines in all");
     }
-    Ok(())
+    if reserved > 0 {
+        eprintln!("{WARNING}{reserved} node lines carried metsuke's reserved key and were dropped");
+    }
 }
 
 /// Append one line, retrying while SQLite answers busy. The retry is the whole

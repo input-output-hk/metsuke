@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use metsuke::delivery::Delivery;
 use metsuke::spool::{LogSpool, LogSpoolConfig, Spool, SpoolConfig};
-use metsuke_wire::envelope::{self, Payload, PayloadLine, PoolId, Sample, SigningKey, TraceLine};
+use metsuke_wire::envelope::{
+    self, Limits, Payload, PayloadLine, PoolId, Provenance, Sample, SigningKey, TraceLine,
+};
 use time::OffsetDateTime;
 
 mod support;
@@ -98,7 +100,10 @@ fn pushed_samples_seal_verify_and_ack_drains_the_spool() {
     )
     .unwrap();
     assert_eq!(samples_of(&opened), samples);
-    assert_eq!(opened.pool_id, PoolId::from_cold_key(&key.verifying_key()));
+    assert_eq!(
+        opened.provenance.pool_id,
+        PoolId::from_cold_key(&key.verifying_key())
+    );
     delivery.ack(batch).unwrap();
     assert!(
         delivery
@@ -230,8 +235,10 @@ fn acking_one_stream_leaves_the_other_spooled() {
 /// spool can hand out: what the batch budget reserves before any row is in it.
 fn empty_envelope(key: &SigningKey, payload: Payload) -> envelope::Envelope {
     envelope::Envelope::new(
-        PoolId::from_cold_key(&key.verifying_key()),
-        test_provenance().agent_id,
+        Provenance {
+            pool_id: PoolId::from_cold_key(&key.verifying_key()),
+            ..test_provenance()
+        },
         metsuke::AGENT_VERSION.to_string(),
         u64::MAX,
         OffsetDateTime::UNIX_EPOCH,
@@ -414,6 +421,67 @@ fn a_budget_the_framing_exhausts_fails_the_tick_and_keeps_the_rows() {
     )
     .unwrap();
     assert_eq!(lines_of(&opened), [line]);
+}
+
+/// What the spool charged the rows of one stream, read off the file rather
+/// than recomputed: the `bytes` column `push_capped` wrote.
+fn charged_bytes(dir: &tempfile::TempDir, table: &str) -> u64 {
+    rusqlite::Connection::open(dir.path().join("spool.sqlite"))
+        .unwrap()
+        .query_row(
+            &format!("SELECT COALESCE(SUM(bytes), 0) FROM {table}"),
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .unwrap() as u64
+}
+
+// metsuke-jfb.9: what the spool charged a row is what the server has to inflate
+// for it. Measured against `max_decompressed_bytes` itself, the limit the agent's
+// `upload_batch_max_bytes` has to stay under: the batch opens at exactly the
+// charged total and is refused one byte under it, so a framing change that moves
+// the payload's real cost without the `bytes` column fails here.
+#[test]
+fn the_spool_charges_a_row_what_the_server_inflates_for_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let mut delivery = temp_delivery(&dir, &key);
+    let mut lines = temp_log_spool(&dir);
+    for secs in 1..=5 {
+        delivery.push(&sample_at(secs)).unwrap();
+        lines
+            .push(&trace_line(&format!(
+                r#"{{"at":"2026-08-25T18:19:38.018453907Z","ns":"Consensus.Leios","data":{{"msg":"\"quoted\" {secs}"}}}}"#
+            )))
+            .unwrap();
+    }
+    let charged = [
+        charged_bytes(&dir, "samples"),
+        charged_bytes(&dir, "log_lines"),
+    ];
+    let batches = [
+        delivery.take_batch(test_now()).unwrap().unwrap(),
+        delivery.take_line_batch(test_now()).unwrap().unwrap(),
+    ];
+
+    for (charged, batch) in charged.into_iter().zip(batches) {
+        let opened = |max_decompressed_bytes| {
+            envelope::open(
+                &key.verifying_key(),
+                &batch.wire_bytes,
+                &batch.signature,
+                Limits {
+                    max_header_bytes: TEST_LIMITS.max_header_bytes,
+                    max_decompressed_bytes,
+                },
+            )
+        };
+        opened(charged).expect("the payload fits in exactly what its rows were charged");
+        match opened(charged - 1) {
+            Err(envelope::OpenError::TooLarge { .. }) => {}
+            other => panic!("the payload is smaller than its rows were charged: {other:?}"),
+        }
+    }
 }
 
 /// A timestamp with the subsecond digits a real batch carries: the header line

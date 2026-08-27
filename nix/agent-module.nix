@@ -100,13 +100,22 @@ in
             description = ''
               Trace-line collection. Setting it opens the unit up by what
               reading a journal takes, which is the privilege ADR 0010 is
-              about and which nix/unit.nix spells out; leaving it null leaves
-              the agent under ADR 0007's posture and starts no journalctl.
+              about and which nix/unit.nix spells out; leaving it null starts
+              no journalctl and grants nothing.
             '';
             default = null;
             type = types.nullOr (
               types.submodule {
                 options = {
+                  # The unit this module renders runs the agent on its own, with
+                  # no node upstream of it, so the pipe has nothing to read.
+                  # Naming it here is refused rather than rendered, because a
+                  # rendered one gets /dev/null, reads EOF at once, and
+                  # Restart=always turns that into a loop collecting nothing.
+                  source = mkOption {
+                    type = types.enum [ "journald" ];
+                    default = "journald";
+                  };
                   journal_unit = required types.str;
                   # Not `shipped`: which journalctl exists is this module's to
                   # know, and the hardened unit's PATH is not to be relied on.

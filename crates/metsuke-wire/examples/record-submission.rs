@@ -55,14 +55,7 @@ fn main() {
         ),
         other => panic!("unknown payload shape {other:?}"),
     };
-    let envelope = Envelope::new(
-        provenance.pool_id,
-        provenance.agent_id.clone(),
-        "0.1.0".to_string(),
-        42,
-        at,
-        payload,
-    );
+    let envelope = Envelope::new(provenance, "0.1.0".to_string(), 42, at, payload);
     let (bytes, _) = seal(&key, &envelope, 0).expect("the recorded envelope seals");
     println!("{}", metsuke_wire::hex::encode(&bytes));
 }

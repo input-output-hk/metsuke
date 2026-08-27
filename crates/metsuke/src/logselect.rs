@@ -4,7 +4,7 @@
 //! A line is parsed as a JSON object and only `ns` is read off it. That parse is
 //! what a selected line is from here on (`envelope::TraceLine`).
 
-use metsuke_wire::envelope::TraceLine;
+use metsuke_wire::envelope::{TraceLine, TraceLineError};
 
 /// The rules in force, which only `new` builds.
 #[derive(Debug)]
@@ -47,6 +47,11 @@ impl SelectConfig {
 pub enum Selection {
     Ship(TraceLine),
     Skip,
+    /// A well-formed line refused only for declaring the reserved
+    /// `PROVENANCE_KEY` at its top level (`TraceLineError::ReservedKey`), kept
+    /// apart from `Skip` so the caller can count and log it instead of
+    /// dropping it unremarked.
+    ReservedKey,
 }
 
 /// What one line declares, of the field a rule reads, off the object's own top
@@ -64,10 +69,11 @@ impl<'a> Fields<'a> {
     }
 }
 
-/// A line the parse refuses (`envelope::TraceLineError`) declares no namespace.
 pub fn select(config: &SelectConfig, line: &str) -> Selection {
-    let Ok(line) = TraceLine::parse(line) else {
-        return Selection::Skip;
+    let line = match TraceLine::parse(line) {
+        Ok(line) => line,
+        Err(TraceLineError::ReservedKey) => return Selection::ReservedKey,
+        Err(TraceLineError::NotAnObject(_)) => return Selection::Skip,
     };
     let kept = Fields::of(&line).namespace.is_some_and(|namespace| {
         config

@@ -202,10 +202,10 @@ async fn binary_uploads_a_batch_signed_by_the_flag_key() {
     )
     .unwrap();
     assert_eq!(
-        opened.pool_id,
+        opened.provenance.pool_id,
         PoolId::from_cold_key(&test_key().verifying_key())
     );
-    assert_eq!(opened.agent_id.as_str(), AGENT_ID);
+    assert_eq!(opened.provenance.agent_id.as_str(), AGENT_ID);
     // The flag key signed it: `open` verified against the header vkey,
     // which must be the flag key's.
     assert_eq!(vkey_bytes, test_key().verifying_key().to_bytes());

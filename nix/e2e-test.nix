@@ -111,9 +111,10 @@ let
   secretAccessKey = "0011223344556677889900112233445566778899001122334455667788990011";
   rpcSecret = "5c1915fa04d0b6739675c61bf5907eb0fe3d9c69850c83820f51b4d25d13868c";
 
-  # Never presented: no developer pulls the archive here, the test reads the
-  # bucket directly.
-  password = pkgs.writeText "password" "not-a-real-secret";
+  # The developer account the download subtest authenticates as.
+  developerUser = "metsuke-dev";
+  developerPassword = "not-a-real-secret";
+  password = pkgs.writeText "password" developerPassword;
 
   awsEnvironment = pkgs.writeText "aws-environment" ''
     AWS_ACCESS_KEY_ID=${accessKeyId}
@@ -408,7 +409,7 @@ let
               rate_limit_window_secs = 3600;
             };
             developer = {
-              user = "metsuke-dev";
+              user = developerUser;
               list_max_rows = 1000;
             };
           };
@@ -718,6 +719,37 @@ let
               and line["metsuke"]["agent_id"] == "${agentId}"
               for line in archived
           ), archived[0]
+
+      with subtest("a developer downloads a stored object through the server's own routes"):
+          # Garage is a real S3, not the tiny_http double `tests/s3.rs` GETs
+          # against, so this is the one place `ObjectStream.length` and
+          # `ArchiveError::EndpointUnusable` run against the class of endpoint
+          # that could break them (metsuke-jfb.28).
+          auth = "${developerUser}:${developerPassword}"
+          listing = json.loads(
+              e2e.succeed(
+                  f"curl -sSf -u {auth}"
+                  " http://127.0.0.1:${toString listenPort}/v1/submissions"
+              )
+          )
+          assert listing["keys"], listing
+          key = listing["keys"][0]
+          e2e.succeed(
+              f"curl -sSf -u {auth}"
+              f" 'http://127.0.0.1:${toString listenPort}/v1/object?key={key}'"
+              " -o /tmp/downloaded.zst"
+          )
+          e2e.succeed(
+              "set -a; . ${awsEnvironment}; AWS_DEFAULT_REGION=${region};"
+              f" aws --endpoint-url http://127.0.0.1:${toString s3Port}"
+              f" s3 cp s3://${bucket}/{key} /tmp/direct.zst"
+          )
+          # Byte-identical to the copy taken straight off the bucket: the
+          # download route hands back the stored bytes verbatim
+          # (`archive::Bytes`), and the subtest below has `verify::verify`
+          # signature-check an S3 fetch of the same archive, so identical
+          # bytes here means the download route hands out bytes that verify.
+          e2e.succeed("cmp /tmp/downloaded.zst /tmp/direct.zst")
 
       with subtest("the stored bytes verify against the key that signed them"):
           # Last, and after the units stop: this opens the server's index as

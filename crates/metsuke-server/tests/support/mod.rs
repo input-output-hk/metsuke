@@ -121,8 +121,7 @@ pub fn envelope_carrying(
     payload: Payload,
 ) -> Envelope {
     Envelope::new(
-        pool_of(key),
-        test_agent_id(),
+        provenance_of(key),
         metsuke_server::CLIENT_VERSION.to_string(),
         counter,
         now,

@@ -37,8 +37,8 @@ fn verified(object: &FetchedObject) -> Result<Header, VerifyError> {
 fn an_object_as_stored_verifies_to_the_header_it_holds() {
     let header = verified(&stored_object()).unwrap();
     assert_eq!(header.counter, 7);
-    assert_eq!(header.pool_id, pool_of(&test_key()));
-    assert_eq!(header.agent_id, test_agent_id());
+    assert_eq!(header.provenance.pool_id, pool_of(&test_key()));
+    assert_eq!(header.provenance.agent_id, test_agent_id());
     assert_eq!(header.timestamp, test_now());
 }
 

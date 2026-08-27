@@ -2,8 +2,16 @@
 //! out. Required fields fail loudly when absent; cadence and probe knobs
 //! default to the shipped values the example config documents.
 
-use metsuke::config::Config;
+use metsuke::config::{Config, LogConfig, LogSource};
+use metsuke::logsource::JournalConfig;
 use metsuke_wire::envelope::{PoolId, SigningKey};
+
+fn journal(log: &LogConfig) -> &JournalConfig {
+    match &log.source {
+        LogSource::Journald(journal) => journal,
+        other => panic!("expected a journald source, got {other:?}"),
+    }
+}
 
 fn test_pool_id() -> PoolId {
     PoolId::from_cold_key(&SigningKey::from_bytes(&[7u8; 32]).verifying_key())
@@ -23,7 +31,7 @@ fn minimal_toml() -> String {
 /// A `[log]` section holding only what has no default: the two paths that
 /// describe this host and nothing about which lines to ship.
 fn minimal_log_section() -> String {
-    "[log]\njournal_unit = \"cardano-node\"\njournalctl_path = \"/usr/bin/journalctl\"".to_string()
+    "[log]\nsource = \"journald\"\njournal_unit = \"cardano-node\"\njournalctl_path = \"/usr/bin/journalctl\"".to_string()
 }
 
 // Defaults per the spec: sample every 5 minutes, upload every hour,
@@ -76,7 +84,7 @@ fn trace_collection_is_absent_until_it_is_configured() {
 fn a_log_section_naming_only_the_host_s_paths_takes_the_shipped_defaults() {
     let toml = format!("{}\n{}\n", minimal_toml(), minimal_log_section());
     let log = Config::from_toml(&toml).unwrap().log.unwrap();
-    assert_eq!(log.journal_unit, "cardano-node");
+    assert_eq!(journal(&log).journal_unit, "cardano-node");
     assert_eq!(log.namespace_roots, ["Consensus.", "ChainDB.", "Forge."]);
     assert_eq!(
         log.namespaces,
@@ -207,10 +215,10 @@ fn the_example_log_section_documents_the_real_defaults() {
         .log
         .expect("the example documents a [log] section");
     let shipped = Config::from_toml(&format!(
-        "{}\n[log]\njournal_unit = \"{}\"\njournalctl_path = \"{}\"\n",
+        "{}\n[log]\nsource = \"journald\"\njournal_unit = \"{}\"\njournalctl_path = \"{}\"\n",
         minimal_toml(),
-        documented.journal_unit,
-        documented.journalctl_path.display(),
+        journal(&documented).journal_unit,
+        journal(&documented).journalctl_path.display(),
     ))
     .unwrap()
     .log

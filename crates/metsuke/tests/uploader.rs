@@ -234,7 +234,7 @@ async fn acked_upload_carries_verifiable_headers_and_body() {
     let samples = opened.samples().expect("a sample batch carries samples");
     assert_eq!(samples[0].block_height, Some(5));
     assert_eq!(
-        opened.pool_id,
+        opened.provenance.pool_id,
         PoolId::from_cold_key(&test_key().verifying_key())
     );
 }

@@ -106,8 +106,7 @@ fn arb_envelope() -> impl Strategy<Value = Envelope> {
         .prop_map(
             |(pool_id, agent_id, agent_version, counter, timestamp, samples)| {
                 envelope_of(
-                    pool_id,
-                    agent_id,
+                    Provenance { pool_id, agent_id },
                     agent_version,
                     counter,
                     timestamp,
@@ -129,8 +128,7 @@ fn arb_lines_envelope() -> impl Strategy<Value = Envelope> {
         .prop_map(
             |(pool_id, agent_id, agent_version, counter, timestamp, lines)| {
                 envelope_of(
-                    pool_id,
-                    agent_id,
+                    Provenance { pool_id, agent_id },
                     agent_version,
                     counter,
                     timestamp,
@@ -211,6 +209,37 @@ proptest! {
         prop_assert_eq!(PoolId::from_bech32(&pool_id.to_bech32()).unwrap(), pool_id);
     }
 
+    // metsuke-jfb.9: what a row is charged is what the payload spends on it.
+    // The agent budgets a batch by summing `wire_bytes` and the server bounds
+    // the bytes `payload_lines` produced, so a framing change that moves one
+    // without the other puts the two limits out of step.
+    #[test]
+    fn a_payload_costs_what_its_lines_charge(
+        samples in proptest::collection::vec(arb_sample(), 0..8),
+        lines in proptest::collection::vec(arb_trace_line(), 0..8),
+    ) {
+        let stamp = test_stamp();
+        let sample_lines: Vec<PayloadLine> = samples
+            .iter()
+            .map(|sample| PayloadLine::sample(sample, &stamp).unwrap())
+            .collect();
+        let trace_lines: Vec<PayloadLine> = lines
+            .iter()
+            .map(|line| PayloadLine::trace_line(line, &stamp).unwrap())
+            .collect();
+        for lines in [sample_lines, trace_lines] {
+            let charged: u64 = lines.iter().map(PayloadLine::wire_bytes).sum();
+            let envelope = Envelope::new(
+                stamp.clone(),
+                "0.1.0".into(),
+                1,
+                OffsetDateTime::UNIX_EPOCH,
+                Payload::samples(lines),
+            );
+            prop_assert_eq!(envelope::payload_lines(&envelope).len() as u64, charged);
+        }
+    }
+
     // Both payload shapes make the same line; ADR 0010 says why that matters.
     #[test]
     fn every_payload_line_carries_the_batch_s_provenance(
@@ -218,7 +247,7 @@ proptest! {
         lines in arb_lines_envelope(),
     ) {
         for envelope in [samples, lines] {
-            let stated = serde_json::to_value(envelope.provenance()).unwrap();
+            let stated = serde_json::to_value(&envelope.provenance).unwrap();
             let body = String::from_utf8(envelope::payload_lines(&envelope)).unwrap();
             for line in body.lines() {
                 let line: serde_json::Value = serde_json::from_str(line).unwrap();
@@ -358,7 +387,7 @@ fn the_header_reads_back_without_a_decompressor() {
     let header: serde_json::Value = serde_json::from_slice(frames.header).unwrap();
 
     assert_eq!(header["schema_version"], SCHEMA_VERSION_SAMPLES);
-    assert_eq!(header["pool_id"], env.pool_id.to_bech32());
+    assert_eq!(header["pool_id"], env.provenance.pool_id.to_bech32());
     assert_eq!(header["counter"], env.counter);
 }
 
@@ -373,11 +402,23 @@ fn read_header_answers_the_batch_s_own_account_of_itself() {
     let header = envelope::read_header(&bytes, TEST_LIMITS.max_header_bytes).unwrap();
 
     assert_eq!(header.schema_version, SCHEMA_VERSION_SAMPLES);
-    assert_eq!(header.pool_id, env.pool_id);
-    assert_eq!(header.agent_id, env.agent_id);
+    assert_eq!(header.provenance, env.provenance);
     assert_eq!(header.agent_version, env.agent_version);
     assert_eq!(header.counter, env.counter);
     assert_eq!(header.timestamp, env.timestamp);
+}
+
+// The header's JSON is the wire, so the Rust shape behind it is free to move
+// only as long as these bytes do not: `Provenance` became one flattened field
+// of `Header`, and this is what says the keys stayed where they were.
+#[test]
+fn the_header_renders_the_same_bytes_as_it_always_has() {
+    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let header = envelope::header_json(&empty_samples_envelope(&key)).unwrap();
+    assert_eq!(
+        String::from_utf8(header).unwrap(),
+        r#"{"schema_version":1,"pool_id":"pool13vscgf9dwn0jt56u965wp99ychz6avktk3pyrye326f3xctz4nm","agent_id":"relay-1","agent_version":"0.1.0","counter":1,"timestamp":"1970-01-01T00:00:00Z"}"#
+    );
 }
 
 // A header frame that is not a header is its own refusal, told apart from a
@@ -718,15 +759,14 @@ fn this_build_seals_the_recorded_submissions() {
 
 /// The same batch with every line rendered again from its own fields.
 fn restamped(envelope: &Envelope) -> Envelope {
-    let stamp = envelope.provenance();
+    let stamp = &envelope.provenance;
     let payload = match envelope.schema_version() {
-        SCHEMA_VERSION_SAMPLES => samples_payload(&envelope.samples().unwrap(), &stamp),
-        SCHEMA_VERSION_LINES => lines_payload(&envelope.trace_lines().unwrap(), &stamp),
+        SCHEMA_VERSION_SAMPLES => samples_payload(&envelope.samples().unwrap(), stamp),
+        SCHEMA_VERSION_LINES => lines_payload(&envelope.trace_lines().unwrap(), stamp),
         found => panic!("a recording this build opened declared v{found}"),
     };
     Envelope::new(
-        envelope.pool_id,
-        envelope.agent_id.clone(),
+        stamp.clone(),
         envelope.agent_version.clone(),
         envelope.counter,
         envelope.timestamp,
@@ -801,26 +841,14 @@ fn sealed_header(
 /// else make a batch that can only fail to open — which is
 /// `open_refuses_a_line_stamped_with_another_batch`, not a builder's job.
 fn envelope_of(
-    pool_id: PoolId,
-    agent_id: AgentId,
+    provenance: Provenance,
     agent_version: String,
     counter: u64,
     timestamp: OffsetDateTime,
     payload: impl FnOnce(&Provenance) -> Payload,
 ) -> Envelope {
-    let stamp = Provenance {
-        pool_id,
-        agent_id: agent_id.clone(),
-    };
-    let payload = payload(&stamp);
-    Envelope::new(
-        pool_id,
-        agent_id,
-        agent_version,
-        counter,
-        timestamp,
-        payload,
-    )
+    let payload = payload(&provenance);
+    Envelope::new(provenance, agent_version, counter, timestamp, payload)
 }
 
 fn samples_payload(samples: &[Sample], stamp: &Provenance) -> Payload {
@@ -851,8 +879,10 @@ fn test_stamp() -> Provenance {
 
 fn test_envelope(key: &SigningKey, payload: impl FnOnce(&Provenance) -> Payload) -> Envelope {
     envelope_of(
-        PoolId::from_cold_key(&key.verifying_key()),
-        AgentId::parse("relay-1").unwrap(),
+        Provenance {
+            pool_id: PoolId::from_cold_key(&key.verifying_key()),
+            agent_id: AgentId::parse("relay-1").unwrap(),
+        },
         "0.1.0".into(),
         1,
         OffsetDateTime::UNIX_EPOCH,

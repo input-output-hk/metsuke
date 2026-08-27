@@ -35,19 +35,6 @@
     # The db-sync leios1-dbsync-a-1 runs; cardano-playground pins this branch.
     cardano-db-sync-leios.url = "github:IntersectMBO/cardano-db-sync/jl/leios-prototype";
 
-    # The reference CIP-151 implementation. Nothing in cardano-cli can produce
-    # a label-867 witness -- it cannot sign arbitrary bytes at all -- and a
-    # blob our own encoder produced would make a verification test agree with
-    # itself. Upstream ships no lockfile, so bun.lock and bun.nix beside this
-    # flake are ours and pin what it builds against.
-    cardano-signer-src = {
-      url = "github:gitmachtl/cardano-signer";
-      flake = false;
-    };
-    bun2nix = {
-      url = "github:nix-community/bun2nix";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
   };
 
   outputs =
@@ -133,34 +120,6 @@
           securityParam = 6;
           epochLength = 1200;
           metricsPort = 12798;
-
-          bun2nix = inputs.bun2nix.packages.${system}.default;
-
-          # Upstream keeps package.json beside the script and ships no
-          # lockfile, so the build tree is its src plus ours.
-          signerSrc = pkgs.runCommand "cardano-signer-src" { } ''
-            mkdir -p $out
-            cp ${inputs.cardano-signer-src}/src/package.json $out/
-            cp ${inputs.cardano-signer-src}/src/cardano-signer.js $out/
-            cp ${./cardano-signer/bun.lock} $out/bun.lock
-          '';
-
-          cardano-signer = bun2nix.mkDerivation {
-            pname = "cardano-signer";
-            version = "1.35.0";
-            src = signerSrc;
-            bunDeps = bun2nix.fetchBunDeps { bunNix = ./cardano-signer/bun.nix; };
-            nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
-            dontBuild = true;
-            installPhase = ''
-              runHook preInstall
-              mkdir -p $out/lib/cardano-signer $out/bin
-              cp -r . $out/lib/cardano-signer
-              makeBinaryWrapper ${pkgs.bun}/bin/bun $out/bin/cardano-signer \
-                --add-flags "run --prefer-offline --no-install $out/lib/cardano-signer/cardano-signer.js"
-              runHook postInstall
-            '';
-          };
 
           setup = pkgs.writeShellApplication {
             name = "devnet-setup";
@@ -431,7 +390,6 @@
               cardano-node
               cardano-db-sync
               ;
-            inherit cardano-signer;
             devnet-setup = setup;
             devnet-revisions = revisions;
             devnet-submit-metadata = submitMetadata;

@@ -75,6 +75,7 @@ pub fn shipped_log_config() -> LogConfig {
         metrics_url = "http://127.0.0.1:12798/metrics"
         upload_url = "https://metsuke.example.org/v1/submit"
         [log]
+        source = "journald"
         journal_unit = "cardano-node"
         journalctl_path = "/usr/bin/journalctl"
         "#,

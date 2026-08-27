@@ -182,7 +182,7 @@ fn two_agents_of_one_pool_both_land() {
     let (intake, _dir) = intake_for(&[pool_of(&key)]);
     let first = envelope_for(&key, 1);
     let mut second = envelope_for(&key, 1);
-    second.agent_id = metsuke_wire::envelope::AgentId::parse("other-relay").unwrap();
+    second.provenance.agent_id = metsuke_wire::envelope::AgentId::parse("other-relay").unwrap();
 
     submit(&intake, &key, &first).unwrap();
     submit(&intake, &key, &second).unwrap();
@@ -409,10 +409,12 @@ fn a_header_frame_that_does_not_read_is_refused() {
     );
 }
 
-// A schema this build has no name for cannot be filed, and the refusal names
-// the version rather than reading as a malformed header.
+// Not schema gating: the key scheme needs a <metrics|logs> segment
+// (archive::Kind), and a version this build has no Kind for has nothing to
+// put there. The refusal names that — a key that cannot be formed — not the
+// schema version as such.
 #[test]
-fn a_schema_version_with_no_object_name_is_refused() {
+fn a_schema_version_with_no_key_segment_is_refused() {
     let key = test_key();
     let (intake, _dir) = intake_for(&[pool_of(&key)]);
     let unknown = SCHEMA_VERSION_LINES + 1;
@@ -423,9 +425,9 @@ fn a_schema_version_with_no_object_name_is_refused() {
     assert!(
         matches!(
             rejection(error),
-            Rejection::UnnameableKind { schema_version } if schema_version == unknown
+            Rejection::KeylessSchema { schema_version } if schema_version == unknown
         ),
-        "expected the kind to name the version"
+        "expected the refusal to name the schema version that has no key segment"
     );
 }
 

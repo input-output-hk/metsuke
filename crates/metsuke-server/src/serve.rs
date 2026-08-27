@@ -37,7 +37,7 @@ const DOWNLOAD_CHUNK_BYTES: usize = 64 * 1024;
 struct Serving<A: Store> {
     intake: Intake<A>,
     developer: Developer,
-    page: String,
+    page: bytes::Bytes,
 }
 
 /// A bound listener that has not been served yet. Two steps because the
@@ -84,7 +84,7 @@ impl Listener {
         let serving = Arc::new(Serving {
             intake,
             developer,
-            page,
+            page: bytes::Bytes::from(page),
         });
         self.runtime
             .block_on(accept(self.listener, limits, serving))
@@ -357,9 +357,7 @@ fn respond(answer: Answer) -> hyper::Response<ResponseBody> {
     let body = match body {
         // No Content-Length set here: a body already in hand reports its own
         // size and hyper writes the header from that.
-        AnswerBody::Bytes(bytes) => Full::new(Bytes::from(bytes))
-            .map_err(|never| match never {})
-            .boxed(),
+        AnswerBody::Bytes(bytes) => Full::new(bytes).map_err(|never| match never {}).boxed(),
         // A stream does not, so what the archive declared is stated instead.
         AnswerBody::Stream(stream) => {
             response = response.header(hyper::header::CONTENT_LENGTH, stream.length);

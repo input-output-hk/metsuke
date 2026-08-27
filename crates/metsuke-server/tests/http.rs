@@ -26,7 +26,7 @@ use support::{
 struct Server<A: metsuke_server::archive::Store> {
     intake: Intake<A>,
     developer: Developer,
-    page: String,
+    page: bytes::Bytes,
     _dir: tempfile::TempDir,
 }
 
@@ -63,7 +63,7 @@ fn over<A: metsuke_server::archive::Store>(archive: A, dir: tempfile::TempDir) -
     Server {
         intake: Intake::new(permissive_config(&[pool_of(&test_key())]), archive),
         developer,
-        page: instructions::page(),
+        page: bytes::Bytes::from(instructions::page()),
         _dir: dir,
     }
 }

@@ -11,11 +11,11 @@ metrics_url = "http://127.0.0.1:12798/metrics"
 # Required: the metsuke-server submission endpoint.
 upload_url = "https://metsuke.example.org/v1/submit"
 
-# What to call this machine on every line it ships, so a pool reporting from
-# more than one host can tell them apart. Defaults to this machine's hostname,
-# folded to lowercase a-z0-9 in dash-separated runs; a value set here is folded
-# the same way.
-#   agent_id = "relay-1"
+# What to call this Agent on every line it ships, so a pool reporting from more
+# than one Agent can tell them apart. Defaults to this Agent's hostname, folded
+# to lowercase a-z0-9 in dash-separated runs; a value set here is folded the
+# same way.
+#   agent_id = "edge-1"
 
 # Path to the signing key (cardano-cli TextEnvelope). It has to be the cold key
 # pool_id above hashes from, or the agent refuses to start. The --signing-key
@@ -62,14 +62,23 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # this section is set (docs/adr/0010). The node also has to be configured to
 # write these traces at all: that step is on the instructions page too.
 #
-# journal_unit and journalctl_path have no default: name your node's unit, and
-# give journalctl's absolute path, because this unit's PATH is not one to
-# resolve a program on.
+# source picks the stream and is never guessed. With "journald", journal_unit
+# and journalctl_path have no default: name your node's unit, and give
+# journalctl's absolute path, because this unit's PATH is not one to resolve a
+# program on.
+#
+# With source = "pipe" the node runs as `cardano-node run | metsuke`: metsuke
+# reads the node's stdout, writes every line through to its own stdout
+# unchanged, and never makes the node wait. A line it has no room to queue is
+# dropped and counted, and pipe_queue_capacity is how many it may hold. It
+# reads no journal, so neither journal key may be set, and the NixOS module
+# does not render this source: the unit it writes has no node upstream of it.
 #
 # namespaces are prefixes and are the whole selection rule; namespace_roots is
 # this host's ceiling on them — a namespaces entry outside it is refused at
 # startup. Why severity is not a second rule: docs/adr/0010.
 # [log]
+# source = "journald"
 # journal_unit = "cardano-node"
 # journalctl_path = "/usr/bin/journalctl"
 # namespace_roots = ["Consensus.", "ChainDB.", "Forge."]

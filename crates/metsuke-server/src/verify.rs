@@ -53,7 +53,7 @@ pub fn verify(object: &FetchedObject, max_header_bytes: u64) -> Result<Header, V
     let expected = ObjectName {
         id: object.name.id,
         pool_id: signed.pool_id(),
-        agent_id: header.agent_id.clone(),
+        agent_id: header.provenance.agent_id.clone(),
         kind,
     }
     .to_key();

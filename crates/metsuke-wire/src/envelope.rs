@@ -40,7 +40,7 @@ pub struct Ack {
     pub latest_version: String,
 }
 
-/// Which machine reported a batch: lowercase ASCII alphanumerics in
+/// Which Agent reported a batch: lowercase ASCII alphanumerics in
 /// dash-separated runs. Two constructors, because the two callers want
 /// different things from a name — `slugify` turns any hostname into an id, so a
 /// host called `Relay_1` reports instead of refusing to start, and `parse`
@@ -152,7 +152,7 @@ impl PoolId {
     }
 
     /// The pool id a cold verification key hashes to. The ADR-0003 cold-key
-    /// check is `envelope.pool_id == PoolId::from_cold_key(vkey)`.
+    /// check is `envelope.provenance.pool_id == PoolId::from_cold_key(vkey)`.
     pub fn from_cold_key(key: &VerifyingKey) -> Self {
         use blake2::digest::consts::U28;
         use blake2::{Blake2b, Digest};
@@ -195,7 +195,7 @@ impl<'de> Deserialize<'de> for PoolId {
 pub const PROVENANCE_KEY: &str = "metsuke";
 
 /// What every payload line carries under `PROVENANCE_KEY`: which pool and
-/// machine wrote the line, so a line read out of the archive on its own still
+/// Agent wrote the line, so a line read out of the archive on its own still
 /// says where it came from.
 ///
 /// The two values an agent knows before it spools a line, and no more. The
@@ -265,6 +265,13 @@ impl PayloadLine {
     /// stored `bytes` and a batch's budget cannot disagree (metsuke-jfb.9).
     pub fn wire_bytes(&self) -> u64 {
         self.0.len() as u64 + 1
+    }
+
+    /// The bytes `wire_bytes` counts, appended. Beside it so the framing is one
+    /// edit rather than two.
+    fn write_wire(&self, body: &mut Vec<u8>) {
+        body.extend_from_slice(self.0.as_bytes());
+        body.push(b'\n');
     }
 }
 
@@ -352,9 +359,9 @@ impl Payload {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Envelope {
     schema_version: u32,
-    pub pool_id: PoolId,
-    /// Which of this pool's machines sealed the batch.
-    pub agent_id: AgentId,
+    /// Which pool and which of its Agents sealed the batch, and what every
+    /// line of it is stamped with.
+    pub provenance: Provenance,
     pub agent_version: String,
     /// Per-agent monotonic counter: a gap in one agent's run of it is a batch
     /// the archive never got.
@@ -371,8 +378,10 @@ pub struct Envelope {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Header {
     pub schema_version: u32,
-    pub pool_id: PoolId,
-    pub agent_id: AgentId,
+    /// Flattened, so the header's keys stay where they were before the two
+    /// fields became one (`the_header_renders_the_same_bytes_as_it_always_has`).
+    #[serde(flatten)]
+    pub provenance: Provenance,
     pub agent_version: String,
     pub counter: u64,
     #[serde(with = "time::serde::rfc3339")]
@@ -397,8 +406,7 @@ impl Schema {
 
 impl Envelope {
     pub fn new(
-        pool_id: PoolId,
-        agent_id: AgentId,
+        provenance: Provenance,
         agent_version: String,
         counter: u64,
         timestamp: OffsetDateTime,
@@ -406,8 +414,7 @@ impl Envelope {
     ) -> Envelope {
         Envelope {
             schema_version: payload.schema_version(),
-            pool_id,
-            agent_id,
+            provenance,
             agent_version,
             counter,
             timestamp,
@@ -417,11 +424,6 @@ impl Envelope {
 
     pub fn schema_version(&self) -> u32 {
         self.schema_version
-    }
-
-    /// What every line of this batch is stamped with (`Header::provenance`).
-    pub fn provenance(&self) -> Provenance {
-        Header::of(self).provenance()
     }
 
     /// The batch's samples, for a reader that wants the fields rather than the
@@ -465,20 +467,10 @@ impl Header {
     fn of(envelope: &Envelope) -> Header {
         Header {
             schema_version: envelope.schema_version,
-            pool_id: envelope.pool_id,
-            agent_id: envelope.agent_id.clone(),
+            provenance: envelope.provenance.clone(),
             agent_version: envelope.agent_version.clone(),
             counter: envelope.counter,
             timestamp: envelope.timestamp,
-        }
-    }
-
-    /// The only place a `Provenance` is made, so `open` checking a line against
-    /// the header checks it against what stamped the line.
-    fn provenance(&self) -> Provenance {
-        Provenance {
-            pool_id: self.pool_id,
-            agent_id: self.agent_id.clone(),
         }
     }
 }
@@ -700,8 +692,7 @@ pub fn payload_lines(envelope: &Envelope) -> Vec<u8> {
             .sum(),
     );
     for line in &envelope.payload.lines {
-        body.extend_from_slice(line.as_str().as_bytes());
-        body.push(b'\n');
+        line.write_wire(&mut body);
     }
     body
 }
@@ -761,11 +752,10 @@ pub fn open(
         None if body.is_empty() => Vec::new(),
         None => return Err(OpenError::UnterminatedLine),
     };
-    let stamp = header.provenance();
     let lines = lines
         .into_iter()
         .enumerate()
-        .map(|(index, line)| stamped(index, line, &stamp))
+        .map(|(index, line)| stamped(index, line, &header.provenance))
         .collect::<Result<Vec<PayloadLine>, OpenError>>()?;
     let payload = match schema {
         Schema::Samples => Payload::samples(lines),
@@ -774,8 +764,7 @@ pub fn open(
     // Through `new`, so what comes out declares the version its payload has
     // rather than the one the header claimed.
     Ok(Envelope::new(
-        header.pool_id,
-        header.agent_id,
+        header.provenance,
         header.agent_version,
         header.counter,
         header.timestamp,

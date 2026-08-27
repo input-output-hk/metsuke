@@ -145,7 +145,7 @@ pub fn status_for(error: &IngestError) -> u16 {
             Rejection::UnknownPool { .. } | Rejection::BadSignature => 403,
             Rejection::NotASubmission(_)
             | Rejection::UnreadableHeader(_)
-            | Rejection::UnnameableKind { .. } => 400,
+            | Rejection::KeylessSchema { .. } => 400,
         },
         IngestError::Archive(_) => 503,
     }
@@ -166,7 +166,7 @@ pub struct Answer {
 /// bytes this server already holds; only the download is an archive read
 /// (`archive::Bytes`).
 pub enum AnswerBody {
-    Bytes(Vec<u8>),
+    Bytes(bytes::Bytes),
     Stream(ObjectStream),
 }
 
@@ -175,7 +175,7 @@ pub enum AnswerBody {
 pub fn answer<A: Store + Bytes + List>(
     intake: &Intake<A>,
     developer: &Developer,
-    page: &str,
+    page: &bytes::Bytes,
     request: Request,
 ) -> Answer {
     let path = request.path().to_string();
@@ -186,7 +186,7 @@ pub fn answer<A: Store + Bytes + List>(
             Method::Get => Answer {
                 status: 200,
                 content_type: "text/html; charset=utf-8",
-                body: AnswerBody::Bytes(page.as_bytes().to_vec()),
+                body: AnswerBody::Bytes(page.clone()),
                 headers: Vec::new(),
             },
             _ => refuse(None, 405, format!("{} takes GET", instructions::PATH)),
@@ -259,7 +259,7 @@ fn listing<A: Store + Bytes + List>(
         Ok(listing) => Answer {
             status: 200,
             content_type: "application/json",
-            body: AnswerBody::Bytes(developer::page(&listing).into_bytes()),
+            body: AnswerBody::Bytes(developer::page(&listing).into_bytes().into()),
             headers: Vec::new(),
         },
         Err(error) => unavailable("the archive cannot be listed", &error.to_string()),
@@ -313,7 +313,9 @@ fn submit<A: Store>(intake: &Intake<A>, request: &Request) -> Answer {
             status: 200,
             content_type: "application/json",
             body: AnswerBody::Bytes(
-                serde_json::to_vec(&ack).expect("an Ack of two strings serializes"),
+                serde_json::to_vec(&ack)
+                    .expect("an Ack of two strings serializes")
+                    .into(),
             ),
             headers: Vec::new(),
         },
@@ -355,7 +357,7 @@ fn refuse_withholding(
     Answer {
         status,
         content_type: "text/plain; charset=utf-8",
-        body: AnswerBody::Bytes(reason.into_bytes()),
+        body: AnswerBody::Bytes(reason.into_bytes().into()),
         headers: Vec::new(),
     }
 }

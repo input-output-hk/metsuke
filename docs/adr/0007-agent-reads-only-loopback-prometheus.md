@@ -1,6 +1,6 @@
 # 7. Agent reads only the loopback Prometheus endpoint
 
-Status: accepted (2026-08-19)
+Status: superseded by ADR 0010 (2026-08-27)
 
 ## Context
 

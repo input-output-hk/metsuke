@@ -44,10 +44,12 @@ pub enum Rejection {
     /// frame is not one this build can read a name out of.
     #[error("header frame does not read: {0}")]
     UnreadableHeader(#[from] HeaderError),
-    /// Not schema gating: an accepted batch is filed under what it carries, and
-    /// a version this build has no name for has no object key to be filed at.
-    #[error("nothing here files a schema v{schema_version} batch")]
-    UnnameableKind { schema_version: u32 },
+    /// Not schema gating: an accepted batch is filed under what it carries.
+    /// The key scheme's kind segment is `<metrics|logs>` (`archive::Kind`), and
+    /// a version this build has no `Kind` for has nothing to put in that
+    /// segment — the refusal is the key, not the schema, having no name.
+    #[error("schema v{schema_version} names no <metrics|logs> segment, so no key can be formed")]
+    KeylessSchema { schema_version: u32 },
 }
 
 /// A submission the server could not process. `Rejected` is the client's
@@ -157,14 +159,14 @@ impl<A: Store> Intake<A> {
     ) -> Result<Ack, IngestError> {
         let header = read_header(signed.wire_bytes, self.config.max_header_bytes.get())
             .map_err(Rejection::UnreadableHeader)?;
-        let kind = Kind::of(header.schema_version).ok_or(Rejection::UnnameableKind {
+        let kind = Kind::of(header.schema_version).ok_or(Rejection::KeylessSchema {
             schema_version: header.schema_version,
         })?;
         // The pool comes from the key and the agent from the header: the pool
-        // is what the allowlist admitted, and which of its machines reported is
+        // is what the allowlist admitted, and which of its Agents reported is
         // not something the server has any other account of.
         let stored = StoredSubmission {
-            name: ObjectName::stamped(now, pool_id, header.agent_id, kind),
+            name: ObjectName::stamped(now, pool_id, header.provenance.agent_id, kind),
             vkey: signed.vkey,
             signature: signed.signature,
             wire_bytes: signed.wire_bytes,

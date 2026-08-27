@@ -144,10 +144,8 @@ impl Delivery {
     }
 
     fn envelope(&self, counter: u64, now: OffsetDateTime, payload: Payload) -> Envelope {
-        let stamp = self.spool.provenance();
         Envelope::new(
-            stamp.pool_id,
-            stamp.agent_id.clone(),
+            self.spool.provenance().clone(),
             crate::AGENT_VERSION.to_string(),
             counter,
             now,

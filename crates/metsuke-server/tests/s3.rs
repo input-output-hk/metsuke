@@ -348,7 +348,7 @@ fn a_stored_object_fetches_back_and_verifies() {
     assert_eq!(fetched.wire_bytes, wire_bytes);
     let header = verify(&fetched, MAX_HEADER_BYTES).unwrap();
     assert_eq!(header.counter, COUNTER);
-    assert_eq!(header.pool_id, pool_of(&test_key()));
+    assert_eq!(header.provenance.pool_id, pool_of(&test_key()));
 }
 
 /// The download route reads the bucket through `Bytes`, which asks for the

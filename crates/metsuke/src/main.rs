@@ -6,13 +6,13 @@ use std::time::{Duration, Instant};
 
 use metsuke::agent::Agent;
 use metsuke::cli::{Args, ArgsError};
-use metsuke::config::{Config, ConfigError, LogConfig};
+use metsuke::config::{Config, ConfigError, LogConfig, LogSource};
 use metsuke::delivery::Delivery;
 use metsuke::identity::{self, IdentityError};
 use metsuke::keys::{self, KeyError};
 use metsuke::logselect::{OutsideRoots, SelectConfig};
-use metsuke::logsource::JournalConfig;
-use metsuke::logtail;
+use metsuke::logsource::PipeSource;
+use metsuke::logtail::{self, DrainEnd};
 use metsuke::sampler::SamplerConfig;
 use metsuke::schedule::{Schedule, ScheduleConfig};
 use metsuke::scrape::ScrapeConfig;
@@ -79,6 +79,13 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         busy_timeout,
         provenance: provenance.clone(),
     })?;
+    let discarded = spool.discarded_by_upgrade();
+    if discarded > 0 {
+        eprintln!(
+            "{WARNING}the spool upgrade discarded {discarded} rows written before rows carried \
+             a stamp; no server would have accepted them"
+        );
+    }
     let vkey = key.verifying_key();
     eprintln!(
         "{INFO}metsuke {} on {agent_id} sampling {} for {}",
@@ -141,8 +148,8 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
     }
 }
 
-/// Open the trace-line half of the spool and hand it to a thread that follows
-/// the node's journal. Failing to open it is a startup failure like any other
+/// Open the trace-line half of the spool and hand it to a thread reading the
+/// configured source. Failing to open it is a startup failure like any other
 /// spool failure: an operator who configured `[log]` asked for these lines.
 ///
 /// The thread is never joined. systemd's default `KillMode=control-group`
@@ -160,22 +167,50 @@ fn start_trace_collection(
         busy_timeout,
         provenance,
     })?;
-    let journal = JournalConfig {
-        journal_unit: log.journal_unit.clone(),
-        journalctl_path: log.journalctl_path.clone(),
-    };
     let selection = SelectConfig::new(&log.namespace_roots, log.namespaces.clone())?;
     let backoff = Duration::from_secs(log.respawn_backoff_secs);
-    eprintln!(
-        "{INFO}collecting trace lines from {}: namespaces {}",
-        log.journal_unit,
-        log.namespaces.join(", "),
-    );
-    std::thread::spawn(move || {
-        let error = logtail::run(journal, selection, backoff, spool);
-        eprintln!("{ERR}the trace-line spool is not writable: {error}");
-        std::process::exit(1);
-    });
+    let namespaces = log.namespaces.join(", ");
+    match &log.source {
+        LogSource::Journald(journal) => {
+            eprintln!(
+                "{INFO}collecting trace lines from {}: namespaces {namespaces}",
+                journal.journal_unit,
+            );
+            let journal = journal.clone();
+            std::thread::spawn(move || {
+                let error = logtail::run(journal, selection, backoff, spool);
+                eprintln!("{ERR}the trace-line spool is not writable: {error}");
+                std::process::exit(1);
+            });
+        }
+        LogSource::Pipe(pipe) => {
+            eprintln!(
+                "{INFO}collecting trace lines from the node's stdout: namespaces {namespaces}"
+            );
+            let pipe = pipe.clone();
+            std::thread::spawn(move || {
+                let mut spool = spool;
+                let mut source = PipeSource::spawn(&pipe);
+                // The pipe ends when the node exits, and this agent has nothing
+                // left to sample: the journald path respawns instead, because
+                // there the stream ending says nothing about the node.
+                match logtail::drain(&mut source, &selection, &mut spool) {
+                    Err(error) => {
+                        eprintln!("{ERR}the trace-line spool is not writable: {error}");
+                        std::process::exit(1);
+                    }
+                    Ok(DrainEnd::SourceFailed) => {
+                        eprintln!("{ERR}the node's output stopped without the node exiting");
+                        std::process::exit(1);
+                    }
+                    Ok(DrainEnd::NodeExited) => {
+                        eprintln!("{INFO}the node's output ended; metsuke is stopping with it");
+                        std::process::exit(0);
+                    }
+                }
+            });
+        }
+    }
     Ok(())
 }
 

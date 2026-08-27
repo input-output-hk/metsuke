@@ -25,7 +25,7 @@ CBOR anywhere in the runtime data path.
 
 - One verification path, one byte string signed; no canonicalization surface.
 - The stored S3 object (the same bytes) is independently verifiable forever.
-- The server can verify before decompressing (see ADR 2 for the check order).
+- The server can verify before decompressing (see `metsuke_server::intake::Intake::submit` for the check order).
 - SPOs cannot reuse wallet-produced COSE signatures; the client binary does the
   signing.
 - "Runtime data path" means the submission, which is the only path there is:

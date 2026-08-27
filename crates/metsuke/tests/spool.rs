@@ -316,6 +316,7 @@ fn open_migrates_a_fresh_database() {
     rusqlite::Connection::open(&config.path).unwrap();
     let mut spool = Spool::open(&config).unwrap();
     spool.push(&sample_at(1)).unwrap();
+    assert_eq!(spool.discarded_by_upgrade(), 0);
     assert_eq!(spool.outstanding(whole_spool()).unwrap().len(), 1);
     let raw = rusqlite::Connection::open(&config.path).unwrap();
     let version: u32 = raw
@@ -358,6 +359,9 @@ fn migrating_a_spool_written_before_the_stamp_takes_its_unstamped_rows() {
     }
     let mut spool = Spool::open(&config).unwrap();
 
+    // What the operator is told they lost: the three rows the upgrade took,
+    // not the three the schema change rewrote on the way there.
+    assert_eq!(spool.discarded_by_upgrade(), 3);
     assert!(spool.outstanding(whole_spool()).unwrap().is_empty());
     spool.push(&sample_at(4)).unwrap();
     assert_eq!(
@@ -398,6 +402,7 @@ fn migrating_takes_a_row_that_is_not_even_json() {
 
     let mut spool = Spool::open(&config).unwrap();
 
+    assert_eq!(spool.discarded_by_upgrade(), 1);
     assert_eq!(
         spool
             .outstanding_lines(whole_spool())

@@ -129,6 +129,15 @@ fn the_pre_tracing_configuration_dump_is_skipped() {
     assert_eq!(select(&shipped_rules(), first), Selection::Skip);
 }
 
+// A node line that happens to hold the reserved provenance key at its top
+// level is well-formed, not malformed, so it must not fall into the same
+// bucket as a line that declares nothing (metsuke-jfb.12).
+#[test]
+fn a_line_declaring_the_reserved_key_is_not_skip() {
+    let line = r#"{"ns":"Forge.Loop.AdoptedBlock","sev":"Info","metsuke":1}"#;
+    assert_eq!(select(&shipped_rules(), line), Selection::ReservedKey);
+}
+
 // A line cut short is not a JSON object, so it declares nothing and no rule
 // reaches it — not even the rule that selected the whole line, and the cut
 // here keeps both fields intact.
@@ -200,7 +209,7 @@ fn the_shipped_rules_select_without_reaching_debug() {
         .lines()
         .filter_map(|line| match select(&rules, line) {
             Selection::Ship(line) => Some(line),
-            Selection::Skip => None,
+            Selection::Skip | Selection::ReservedKey => None,
         })
         .collect();
     assert!(!shipped.is_empty(), "the rules selected nothing at all");

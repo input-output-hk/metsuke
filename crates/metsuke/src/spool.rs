@@ -35,6 +35,7 @@ pub struct Spool {
     conn: Connection,
     max_bytes: u64,
     provenance: Provenance,
+    discarded_by_upgrade: u64,
     /// Accumulated rather than returned per call, because the caller that has
     /// to say it is the upload loop and the deletes happen while a batch is
     /// being taken.
@@ -114,6 +115,11 @@ const MIGRATIONS: &[&str] = &[
         WHERE json_valid(line) = 0 OR json_extract(line, '$.metsuke') IS NULL;",
 ];
 
+/// Which of `MIGRATIONS` deletes the unstamped rows, as
+/// `sqlite::Applied::version` numbers it: the only one whose row count is a
+/// backlog an operator is losing rather than a schema change.
+const STAMP_MIGRATION: u32 = 3;
+
 /// The two streams, as the schema names them. Interpolated into SQL, so they
 /// are `&'static str` from here and never anything a caller supplies.
 struct Stream {
@@ -136,12 +142,16 @@ const LINES: Stream = Stream {
 /// WAL because the file has two writers: under rollback journalling a reader
 /// takes a shared lock that blocks the trace-line writer, so the upload loop
 /// reading a batch would stall the stream for as long as it takes.
-fn open_spool(path: &PathBuf, busy_timeout: Duration) -> Result<Connection, SpoolError> {
+fn open_spool(path: &PathBuf, busy_timeout: Duration) -> Result<(Connection, u64), SpoolError> {
     let conn = Connection::open(path)?;
     conn.busy_timeout(busy_timeout)?;
     conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
-    metsuke_wire::sqlite::migrate(&conn, MIGRATIONS)?;
-    Ok(conn)
+    let applied = metsuke_wire::sqlite::migrate(&conn, MIGRATIONS)?;
+    let discarded = applied
+        .iter()
+        .find(|migration| migration.version == STAMP_MIGRATION)
+        .map_or(0, |migration| migration.rows);
+    Ok((conn, discarded))
 }
 
 /// Append one row and evict the oldest beyond `max_bytes`, in one transaction
@@ -157,21 +167,30 @@ fn push_capped(
 ) -> Result<u64, SpoolError> {
     let Stream { table, payload } = *stream;
     let transaction = conn.transaction()?;
-    transaction.execute(
-        &format!("INSERT INTO {table} ({payload}, bytes) VALUES (?1, ?2)"),
-        rusqlite::params![line.as_str(), clamp(line.wire_bytes())],
-    )?;
-    let dropped = transaction.execute(
-        // Newest first, so what survives is the newest suffix that fits.
-        &format!(
-            "DELETE FROM {table} WHERE id NOT IN (
-                SELECT id FROM (
-                    SELECT id, SUM(bytes) OVER (ORDER BY id DESC) AS running FROM {table}
-                ) WHERE running <= ?1
-            )"
-        ),
-        [clamp(max_bytes)],
-    )?;
+    transaction
+        .prepare_cached(&format!(
+            "INSERT INTO {table} ({payload}, bytes) VALUES (?1, ?2)"
+        ))?
+        .execute(rusqlite::params![line.as_str(), clamp(line.wire_bytes())])?;
+    let total: i64 = transaction
+        .prepare_cached(&format!("SELECT COALESCE(SUM(bytes), 0) FROM {table}"))?
+        .query_row([], |row| row.get(0))?;
+    let dropped = if total > clamp(max_bytes) {
+        transaction
+            .prepare_cached(
+                // Newest first, so what survives is the newest suffix that fits.
+                &format!(
+                    "DELETE FROM {table} WHERE id NOT IN (
+                        SELECT id FROM (
+                            SELECT id, SUM(bytes) OVER (ORDER BY id DESC) AS running FROM {table}
+                        ) WHERE running <= ?1
+                    )"
+                ),
+            )?
+            .execute([clamp(max_bytes)])?
+    } else {
+        0
+    };
     transaction.commit()?;
     Ok(dropped as u64)
 }
@@ -259,12 +278,20 @@ fn clamp(bytes: u64) -> i64 {
 impl Spool {
     /// Open (creating if absent) and migrate the spool database.
     pub fn open(config: &SpoolConfig) -> Result<Self, SpoolError> {
+        let (conn, discarded_by_upgrade) = open_spool(&config.path, config.busy_timeout)?;
         Ok(Spool {
-            conn: open_spool(&config.path, config.busy_timeout)?,
+            conn,
             max_bytes: config.max_bytes,
             provenance: config.provenance.clone(),
             uncarriable_since_report: UncarriableReport::default(),
+            discarded_by_upgrade,
         })
+    }
+
+    /// Rows `STAMP_MIGRATION` deleted when this spool was opened. Reported
+    /// rather than logged here, the way `take_uncarriable_report` is.
+    pub fn discarded_by_upgrade(&self) -> u64 {
+        self.discarded_by_upgrade
     }
 
     /// Stamp a sample and append it. Returns how many rows the cap dropped.
@@ -356,8 +383,11 @@ pub struct LogSpool {
 
 impl LogSpool {
     pub fn open(config: &LogSpoolConfig) -> Result<Self, SpoolError> {
+        // The upgrade's discard count is `Spool::discarded_by_upgrade`: the
+        // agent opens that half first, so this one migrates nothing.
+        let (conn, _) = open_spool(&config.path, config.busy_timeout)?;
         Ok(LogSpool {
-            conn: open_spool(&config.path, config.busy_timeout)?,
+            conn,
             max_bytes: config.max_bytes,
             provenance: config.provenance.clone(),
         })
