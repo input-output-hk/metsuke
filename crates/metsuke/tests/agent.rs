@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use metsuke::agent::Agent;
 use metsuke::delivery::Delivery;
-use metsuke::sampler::SamplerConfig;
 use metsuke::scrape::ScrapeConfig;
+use metsuke::scraper::ScraperConfig;
 use metsuke::sntp::SntpConfig;
 use metsuke::spool::{LogSpool, LogSpoolConfig, Spool, SpoolConfig};
 use metsuke::uploader::{UploadConfig, UploadOutcome};
@@ -19,7 +19,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod support;
 use metsuke_wire::hex;
-use support::{TEST_LIMITS, test_key, test_provenance, trace_line};
+use support::{TEST_LIMITS, block_number, test_key, test_provenance, trace_line};
 
 const RECORDED_CHAIN: &str = include_str!("fixtures/recordings/leios-node.prom");
 
@@ -44,7 +44,7 @@ fn test_log_spool(dir: &tempfile::TempDir) -> LogSpool {
     .unwrap()
 }
 
-/// An agent sampling the given metrics server and uploading to the given
+/// An agent scraping the given metrics server and uploading to the given
 /// upload server. SNTP points at a dead loopback port so the offset is null.
 fn test_agent(dir: &tempfile::TempDir, metrics: &MockServer, uploads: &MockServer) -> Agent {
     let spool = Spool::open(&SpoolConfig {
@@ -55,7 +55,7 @@ fn test_agent(dir: &tempfile::TempDir, metrics: &MockServer, uploads: &MockServe
     })
     .unwrap();
     Agent::new(
-        SamplerConfig {
+        ScraperConfig {
             scrape: ScrapeConfig {
                 metrics_url: format!("{}/metrics", metrics.uri()).try_into().unwrap(),
                 timeout: Duration::from_secs(5),
@@ -91,7 +91,7 @@ async fn metrics_server() -> MockServer {
 // Acceptance: recorded scrape bodies in → signed, compressed batch with
 // correct headers out, and the ack deletes the delivered rows.
 #[tokio::test]
-async fn sampled_metrics_upload_as_a_verified_batch_and_ack_drains_the_spool() {
+async fn scraped_metrics_upload_as_a_verified_batch_and_ack_drains_the_spool() {
     let metrics = metrics_server().await;
     let uploads = MockServer::start().await;
     Mock::given(method("POST"))
@@ -105,7 +105,7 @@ async fn sampled_metrics_upload_as_a_verified_batch_and_ack_drains_the_spool() {
     let mut agent = test_agent(&dir, &metrics, &uploads);
 
     let (first, second) = tokio::task::spawn_blocking(move || {
-        agent.sample_once().unwrap();
+        agent.scrape_once().unwrap();
         let first = agent.upload_once().unwrap();
         let second = agent.upload_once().unwrap();
         (first, second)
@@ -130,18 +130,18 @@ async fn sampled_metrics_upload_as_a_verified_batch_and_ack_drains_the_spool() {
         TEST_LIMITS,
     )
     .unwrap();
-    // Recorded-body field values: tests/scrape.rs.
-    let samples = opened.samples().expect("a sample tick uploads samples");
-    assert_eq!(samples.len(), 1);
-    assert_eq!(samples[0].block_height, Some(5));
-    assert_eq!(samples[0].clock_offset_ms, None);
+    // What the recorded body states: tests/scrape.rs.
+    let scrapes = opened.scrapes().expect("a scrape tick uploads scrapes");
+    assert_eq!(scrapes.len(), 1);
+    assert_eq!(block_number(&scrapes[0]), Some(5));
+    assert_eq!(scrapes[0].clock_offset_ms, None);
 }
 
-// One upload tick clears both streams: an agent that shipped samples and left
+// One upload tick clears both streams: an agent that shipped scrapes and left
 // the trace lines for the next tick would deliver them an upload interval late
-// for as long as any sample is ever spooled.
+// for as long as any scrape is ever spooled.
 #[tokio::test]
-async fn one_tick_uploads_both_the_samples_and_the_trace_lines() {
+async fn one_tick_uploads_both_the_scrapes_and_the_trace_lines() {
     let metrics = metrics_server().await;
     let uploads = MockServer::start().await;
     Mock::given(method("POST"))
@@ -158,7 +158,7 @@ async fn one_tick_uploads_both_the_samples_and_the_trace_lines() {
         .unwrap();
 
     let (first, second) = tokio::task::spawn_blocking(move || {
-        agent.sample_once().unwrap();
+        agent.scrape_once().unwrap();
         let first = agent.upload_once().unwrap();
         let second = agent.upload_once().unwrap();
         (first, second)
@@ -217,7 +217,7 @@ async fn failed_upload_keeps_the_rows_for_the_next_attempt() {
     let mut agent = test_agent(&dir, &metrics, &uploads);
 
     let (first, second) = tokio::task::spawn_blocking(move || {
-        agent.sample_once().unwrap();
+        agent.scrape_once().unwrap();
         let first = agent.upload_once().unwrap();
         let second = agent.upload_once().unwrap();
         (first, second)

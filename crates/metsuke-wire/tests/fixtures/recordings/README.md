@@ -1,6 +1,6 @@
 # Wire recordings
 
-`submission-samples.hex` and `submission-lines.hex` are one sealed submission
+`submission-scrapes.hex` and `submission-lines.hex` are one sealed submission
 of each payload shape, lowercase hex on one line. They pin the container's
 framing: what `seal` writes into the skippable frame and the data frame, and
 therefore what a bucket holds and what `zstd -d` hands a tool that never heard

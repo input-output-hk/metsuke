@@ -190,7 +190,7 @@ fn a_pool_off_the_allowlist_is_forbidden() {
 }
 
 /// An archive that will not take the bytes is a 5xx, or the agent acks and
-/// deletes samples that were never stored (ADR 0004).
+/// deletes scrapes that were never stored (ADR 0004).
 #[test]
 fn an_archive_that_cannot_store_is_unavailable() {
     let answer = unreachable_archive().answer(post(&test_key(), 1));

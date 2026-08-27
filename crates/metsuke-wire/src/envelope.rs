@@ -15,7 +15,7 @@ pub use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 
 /// The schema versions this crate speaks, one per `Payload` variant; which one
 /// an envelope carries is `Payload::schema_version`.
-pub const SCHEMA_VERSION_SAMPLES: u32 = 1;
+pub const SCHEMA_VERSION_SCRAPES: u32 = 1;
 pub const SCHEMA_VERSION_LINES: u32 = 2;
 
 /// The zstd skippable-frame magic (RFC 8878 §3.1.2) a submission begins with.
@@ -218,19 +218,9 @@ pub struct Provenance {
 pub struct PayloadLine(String);
 
 impl PayloadLine {
-    /// Stamp one sample.
-    ///
-    /// Its own constructor because JSON has no representation for a non-finite
-    /// float: serde_json writes `null` for one, so a sample carrying a
-    /// non-finite `sync_progress` would otherwise travel as a sample that never
-    /// scraped it.
-    pub fn sample(sample: &Sample, provenance: &Provenance) -> Result<PayloadLine, SealError> {
-        if let Some(value) = sample.sync_progress
-            && !value.is_finite()
-        {
-            return Err(SealError::NonFiniteSyncProgress { value });
-        }
-        PayloadLine::stamp(sample, provenance)
+    /// Stamp one scrape.
+    pub fn scrape(scrape: &Scrape, provenance: &Provenance) -> Result<PayloadLine, SealError> {
+        PayloadLine::stamp(scrape, provenance)
     }
 
     /// Stamp one selected trace line. `TraceLine`'s own invariant is that it
@@ -331,9 +321,9 @@ pub struct Payload {
 }
 
 impl Payload {
-    pub fn samples(lines: Vec<PayloadLine>) -> Payload {
+    pub fn scrapes(lines: Vec<PayloadLine>) -> Payload {
         Payload {
-            schema_version: SCHEMA_VERSION_SAMPLES,
+            schema_version: SCHEMA_VERSION_SCRAPES,
             lines,
         }
     }
@@ -390,14 +380,14 @@ pub struct Header {
 
 /// Which of this build's two schemas a declared version names.
 enum Schema {
-    Samples,
+    Scrapes,
     Lines,
 }
 
 impl Schema {
     fn of(version: u32) -> Result<Schema, OpenError> {
         match version {
-            SCHEMA_VERSION_SAMPLES => Ok(Schema::Samples),
+            SCHEMA_VERSION_SCRAPES => Ok(Schema::Scrapes),
             SCHEMA_VERSION_LINES => Ok(Schema::Lines),
             found => Err(OpenError::UnsupportedSchemaVersion { found }),
         }
@@ -426,10 +416,10 @@ impl Envelope {
         self.schema_version
     }
 
-    /// The batch's samples, for a reader that wants the fields rather than the
+    /// The batch's scrapes, for a reader that wants the fields rather than the
     /// bytes. A consumer's call, never the agent's (`PayloadLine`).
-    pub fn samples(&self) -> Result<Vec<Sample>, ReadError> {
-        self.read(SCHEMA_VERSION_SAMPLES)
+    pub fn scrapes(&self) -> Result<Vec<Scrape>, ReadError> {
+        self.read(SCHEMA_VERSION_SCRAPES)
     }
 
     /// The same for a trace-line batch.
@@ -475,21 +465,97 @@ impl Header {
     }
 }
 
-/// One scrape. Every field is nullable: a failed scrape is itself signal.
+/// One **Scrape** (CONTEXT.md) as it goes on the wire. The agent never sends
+/// both a `failure` and a metric, and does send an empty `metrics` with no
+/// failure, for a body that yielded no metric. Making the first
+/// unrepresentable rather than a habit is metsuke-uxw.7.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Sample {
+pub struct Scrape {
     /// Scrape time, RFC 3339 UTC.
     #[serde(with = "time::serde::rfc3339")]
-    pub sampled_at: OffsetDateTime,
-    pub block_height: Option<u64>,
-    pub slot: Option<u64>,
-    pub slot_in_epoch: Option<u64>,
-    pub epoch: Option<u64>,
-    pub sync_progress: Option<f64>,
-    pub node_version: Option<String>,
-    pub node_revision: Option<String>,
+    pub scraped_at: OffsetDateTime,
     pub clock_offset_ms: Option<i64>,
+    pub failure: Option<Failure>,
+    /// Whatever the endpoint stated, in the order it stated it.
+    pub metrics: Vec<Metric>,
 }
+
+/// One metric as the endpoint wrote it. `value` is a JSON number, so a counter
+/// past an f64's exact-integer range keeps its digits; `declared_type` is
+/// `None` when the body carried no `# TYPE` line for the name.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Metric {
+    pub name: String,
+    pub labels: std::collections::BTreeMap<String, String>,
+    pub value: serde_json::Number,
+    pub declared_type: Option<String>,
+}
+
+/// Why a scrape carries no metrics. `reason` is what a consumer groups by and
+/// `detail` is the message the agent had, which names the port, the status or
+/// the limit.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Failure {
+    pub reason: Reason,
+    pub detail: String,
+}
+
+/// What stopped a scrape, as few cases as the agent can actually tell apart.
+/// Serialized as its own name in snake case, so grouping the archive by it is a
+/// string comparison and nothing more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Reason {
+    /// Nothing answered on the endpoint's port.
+    Unreachable,
+    /// The endpoint answered, and not with metrics.
+    Refused,
+    /// The body was past the agent's configured limit.
+    TooLarge,
+    /// The answer began and broke off before its body was read.
+    Unreadable,
+}
+
+impl Reason {
+    /// Every case, for the callers that have to cover all of them — the
+    /// instructions page renders its list from here. Complete or the crate does
+    /// not build: see the const assertion below it.
+    pub const ALL: [Reason; 4] = [
+        Reason::Unreachable,
+        Reason::Refused,
+        Reason::TooLarge,
+        Reason::Unreadable,
+    ];
+
+    /// The case after this one, `None` at the end. This chain is what says how
+    /// many cases there are: the match is exhaustive, so a new variant is a
+    /// compile error here, beside the array it has to join.
+    const fn after(self) -> Option<Reason> {
+        match self {
+            Reason::Unreachable => Some(Reason::Refused),
+            Reason::Refused => Some(Reason::TooLarge),
+            Reason::TooLarge => Some(Reason::Unreadable),
+            Reason::Unreadable => None,
+        }
+    }
+}
+
+/// `ALL` is the whole chain, in its order. A case linked into `after` but left
+/// out of the array walks past its end, which is a build error, and a reordering
+/// fails the assertion.
+const _: () = {
+    let mut at = 0;
+    let mut case = Some(Reason::ALL[0]);
+    while let Some(reason) = case {
+        assert!(
+            reason as usize == Reason::ALL[at] as usize,
+            "Reason::ALL is out of order"
+        );
+        case = reason.after();
+        at += 1;
+    }
+    assert!(at == Reason::ALL.len(), "Reason::ALL is missing a case");
+};
 
 /// The two bounds `open` puts on bytes it did not produce. Both are server
 /// configuration (`IngestConfig`); this crate holds no default for either.
@@ -501,10 +567,6 @@ pub struct Limits {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SealError {
-    /// JSON has no representation for non-finite floats; serializing one
-    /// would silently become `null` on the wire.
-    #[error("sync_progress is not finite ({value})")]
-    NonFiniteSyncProgress { value: f64 },
     #[error("JSON serialization failed: {0}")]
     Json(#[from] serde_json::Error),
     #[error("zstd compression failed: {0}")]
@@ -560,13 +622,13 @@ pub enum OpenError {
     },
     #[error(
         "envelope schema version {found}, this build speaks \
-         v{SCHEMA_VERSION_SAMPLES} and v{SCHEMA_VERSION_LINES}"
+         v{SCHEMA_VERSION_SCRAPES} and v{SCHEMA_VERSION_LINES}"
     )]
     UnsupportedSchemaVersion { found: u32 },
 }
 
 /// Why reading a batch's lines as their fields failed
-/// (`Envelope::samples`, `Envelope::trace_lines`).
+/// (`Envelope::scrapes`, `Envelope::trace_lines`).
 ///
 /// Its own error rather than an `OpenError`: a submission is accepted and
 /// archived without anything reading a payload line's own fields, so these are
@@ -651,7 +713,7 @@ pub fn header_json(envelope: &Envelope) -> Result<Vec<u8>, SealError> {
     Ok(serde_json::to_vec(&Header::of(envelope))?)
 }
 
-/// One payload line as it goes on the wire: the sample's or the node's own
+/// One payload line as it goes on the wire: the scrape's or the node's own
 /// object, plus this batch's provenance under the one reserved key. The field
 /// name spells `PROVENANCE_KEY`'s value a second time because `serde(rename)`
 /// takes a literal; the tests assert against the constant, so a change to
@@ -758,7 +820,7 @@ pub fn open(
         .map(|(index, line)| stamped(index, line, &header.provenance))
         .collect::<Result<Vec<PayloadLine>, OpenError>>()?;
     let payload = match schema {
-        Schema::Samples => Payload::samples(lines),
+        Schema::Scrapes => Payload::scrapes(lines),
         Schema::Lines => Payload::trace_lines(lines),
     };
     // Through `new`, so what comes out declares the version its payload has
@@ -776,7 +838,7 @@ pub fn open(
 /// as it stands.
 ///
 /// Only the reserved key is read. A line's own fields are the schema's business,
-/// and what a consumer makes of them is `Envelope::samples` — reading them here
+/// and what a consumer makes of them is `Envelope::scrapes` — reading them here
 /// would make every archived line's fate depend on the payload structs of
 /// whichever build opened it.
 fn stamped(index: usize, line: &str, stamp: &Provenance) -> Result<PayloadLine, OpenError> {

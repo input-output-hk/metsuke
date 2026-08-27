@@ -1,4 +1,4 @@
-//! The agent loop body: `sample_once` and `upload_once` are the two ticks
+//! The agent loop body: `scrape_once` and `upload_once` are the two ticks
 //! the binary schedules. Owning delivery and upload together makes "ack
 //! exactly the rows that were sealed, and only on `Acked`" (ADR 0004) the
 //! only expressible call sequence; when to tick and what to log stay with
@@ -7,13 +7,13 @@
 use time::OffsetDateTime;
 
 use crate::delivery::{Delivery, DeliveryError, SealedBatch};
-use crate::sampler::{SamplerConfig, sample};
+use crate::scraper::{ScraperConfig, scrape_once};
 use crate::spool::UncarriableReport;
 use crate::uploader::{UploadConfig, UploadOutcome, upload};
 use metsuke_wire::envelope::VerifyingKey;
 
 pub struct Agent {
-    sampler: SamplerConfig,
+    scraper: ScraperConfig,
     delivery: Delivery,
     upload: UploadConfig,
     vkey: VerifyingKey,
@@ -40,13 +40,13 @@ pub enum UploadError {
 
 impl Agent {
     pub fn new(
-        sampler: SamplerConfig,
+        scraper: ScraperConfig,
         delivery: Delivery,
         upload: UploadConfig,
         vkey: VerifyingKey,
     ) -> Self {
         Agent {
-            sampler,
+            scraper,
             delivery,
             upload,
             vkey,
@@ -54,25 +54,25 @@ impl Agent {
         }
     }
 
-    /// One sample tick: scrape, probe, spool.
-    pub fn sample_once(&mut self) -> Result<(), DeliveryError> {
-        self.dropped_since_report += self.delivery.push(&sample(&self.sampler))?;
+    /// One scrape tick: read, probe, spool.
+    pub fn scrape_once(&mut self) -> Result<(), DeliveryError> {
+        self.dropped_since_report += self.delivery.push(&scrape_once(&self.scraper))?;
         Ok(())
     }
 
-    /// One upload tick: a batch of samples, then a batch of trace lines,
+    /// One upload tick: a batch of scrapes, then a batch of trace lines,
     /// each sealed, POSTed and acked only on `Acked`. `None` when both
     /// streams are empty. The last outcome is what the caller schedules on,
     /// and a batch that was not accepted ends the tick — backing off on the
-    /// samples and then pressing on with the lines would ignore the answer.
+    /// scrapes and then pressing on with the lines would ignore the answer.
     pub fn upload_once(&mut self) -> Result<Option<UploadOutcome>, UploadError> {
         let now = OffsetDateTime::now_utc();
         let taken = self
             .delivery
             .take_batch(now)
             .map_err(UploadError::NotAttempted)?;
-        let samples = self.send(taken)?;
-        if matches!(samples, None | Some(UploadOutcome::Acked(_))) {
+        let scrapes = self.send(taken)?;
+        if matches!(scrapes, None | Some(UploadOutcome::Acked(_))) {
             let taken = self
                 .delivery
                 .take_line_batch(now)
@@ -81,7 +81,7 @@ impl Agent {
                 return Ok(Some(lines));
             }
         }
-        Ok(samples)
+        Ok(scrapes)
     }
 
     /// POST one batch if there is one, acking its rows only on `Acked`.

@@ -45,7 +45,7 @@ pub struct Config {
     /// StateDirectory the shipped units create (nix/agent-module.nix).
     #[serde(default = "default_spool_path")]
     pub spool_path: PathBuf,
-    /// Sample spool size cap (semantics: `spool::SpoolConfig`).
+    /// Scrape spool size cap (semantics: `spool::SpoolConfig`).
     #[serde(default = "default_spool_max_bytes")]
     pub spool_max_bytes: u64,
     /// How long one spool write waits for the other connection to the file

@@ -6,12 +6,16 @@
 //! needs reads as dead code in the others.
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use metsuke::config::{Config, LogConfig};
 use metsuke::logselect::SelectConfig;
 use metsuke::logsource::{JournalConfig, JournalSource, LineSourceError};
-use metsuke_wire::envelope::{AgentId, Limits, PoolId, Provenance, SigningKey, TraceLine};
+use metsuke_wire::envelope::{
+    AgentId, Limits, Metric, PoolId, Provenance, Scrape, SigningKey, TraceLine,
+};
+use time::OffsetDateTime;
 
 /// The all-sevens test seed used across the suite.
 pub fn test_key() -> SigningKey {
@@ -36,6 +40,38 @@ pub fn test_provenance() -> Provenance {
         agent_id: test_agent_id(),
     }
 }
+
+/// One scrape, distinguishable from every other by its time and by the value of
+/// the one metric it carries. What the tests that need a row rather than a
+/// scrape of anything real spool.
+pub fn scrape_at(unix_secs: i64) -> Scrape {
+    Scrape {
+        scraped_at: OffsetDateTime::from_unix_timestamp(unix_secs).expect("a fixed instant"),
+        clock_offset_ms: None,
+        failure: None,
+        metrics: vec![Metric {
+            name: BLOCK_NUMBER.to_string(),
+            labels: BTreeMap::new(),
+            value: unix_secs.into(),
+            declared_type: Some("gauge".to_string()),
+        }],
+    }
+}
+
+/// The metric the recorded bodies are read by across the suite, as an integer.
+/// `None` when the scrape states no such metric — a failed scrape, or a body
+/// from before the node emitted it.
+pub fn block_number(scrape: &Scrape) -> Option<u64> {
+    scrape
+        .metrics
+        .iter()
+        .find(|metric| metric.name == BLOCK_NUMBER)?
+        .value
+        .as_u64()
+}
+
+/// The node's block-height gauge, as its PrometheusSimple backend names it.
+const BLOCK_NUMBER: &str = "cardano_node_metrics_blockNum_int";
 
 /// A trace line as the spool and the wire hold one: the node's object, parsed.
 pub fn trace_line(line: &str) -> TraceLine {

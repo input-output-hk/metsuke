@@ -1,4 +1,4 @@
-//! The SPO agent: sample cardano-node, spool, seal, upload. The wire
+//! The SPO agent: scrape cardano-node, spool, seal, upload. The wire
 //! contract it speaks lives in `metsuke-wire`.
 
 /// This agent build's version, as it rides in every envelope.
@@ -14,9 +14,9 @@ pub mod keys;
 pub mod logselect;
 pub mod logsource;
 pub mod logtail;
-pub mod sampler;
 pub mod schedule;
 pub mod scrape;
+pub mod scraper;
 pub mod sntp;
 pub mod spool;
 pub mod uploader;

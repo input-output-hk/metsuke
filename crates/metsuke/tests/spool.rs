@@ -1,15 +1,15 @@
 //! Spool durability tests (ticket metsuke-4zo.4): nothing is lost across
 //! restarts or server downtime, and rows leave only through ACK.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use metsuke::spool::{LogSpool, LogSpoolConfig, RowBudget, Spool, SpoolConfig, UncarriableReport};
-use metsuke_wire::envelope::{PayloadLine, Sample, TraceLine};
+use metsuke_wire::envelope::{Metric, PayloadLine, Scrape, TraceLine};
 use proptest::prelude::*;
-use time::OffsetDateTime;
 
 mod support;
-use support::{test_provenance, trace_line};
+use support::{scrape_at, test_provenance, trace_line};
 
 /// Wide enough that `outstanding` returns everything spooled: the byte budget
 /// is the caller's, and a test about durability is not a test about it.
@@ -28,20 +28,6 @@ fn whole_spool() -> RowBudget {
 /// to wait is a bug in the test rather than the lock wait being too short.
 const NO_CONTENTION: Duration = Duration::from_secs(1);
 
-fn sample_at(unix_secs: i64) -> Sample {
-    Sample {
-        sampled_at: OffsetDateTime::from_unix_timestamp(unix_secs).unwrap(),
-        block_height: Some(unix_secs as u64),
-        slot: None,
-        slot_in_epoch: None,
-        epoch: None,
-        sync_progress: None,
-        node_version: None,
-        node_revision: None,
-        clock_offset_ms: None,
-    }
-}
-
 /// What one row costs this file, as `spool::push_capped` stores it. For a line
 /// the spool wrote that is `PayloadLine::wire_bytes`; stated as text here for
 /// the tests that put a row in past `push`.
@@ -51,18 +37,18 @@ fn row_bytes(text: &str) -> u64 {
 
 /// A row as the spool stores it: the line it will be on the wire. What a cap or
 /// a budget is stated in here.
-fn stamped(sample: &Sample) -> PayloadLine {
-    PayloadLine::sample(sample, &test_provenance()).unwrap()
+fn stamped(scrape: &Scrape) -> PayloadLine {
+    PayloadLine::scrape(scrape, &test_provenance()).unwrap()
 }
 
 fn stamped_line(line: &TraceLine) -> PayloadLine {
     PayloadLine::trace_line(line, &test_provenance()).unwrap()
 }
 
-/// One `sample_at` row's cost, so a cap can be stated in rows a test can count
+/// One `scrape_at` row's cost, so a cap can be stated in rows a test can count
 /// without any test naming the serializer's byte count.
-fn sample_bytes() -> u64 {
-    stamped(&sample_at(1)).wire_bytes()
+fn scrape_bytes() -> u64 {
+    stamped(&scrape_at(1)).wire_bytes()
 }
 
 fn line_bytes(line: &TraceLine) -> u64 {
@@ -91,17 +77,17 @@ fn temp_log_config(dir: &tempfile::TempDir, max_bytes: u64) -> LogSpoolConfig {
 fn undelivered_rows_survive_restart() {
     let dir = tempfile::tempdir().unwrap();
     let config = temp_config(&dir, WHOLE_SPOOL);
-    let samples = [sample_at(1), sample_at(2)];
+    let scrapes = [scrape_at(1), scrape_at(2)];
     {
         let mut spool = Spool::open(&config).unwrap();
-        for sample in &samples {
-            spool.push(sample).unwrap();
+        for scrape in &scrapes {
+            spool.push(scrape).unwrap();
         }
     }
     let mut reopened = Spool::open(&config).unwrap();
     let rows = reopened.outstanding(whole_spool()).unwrap();
     let offered: Vec<_> = rows.into_iter().map(|row| row.line).collect();
-    assert_eq!(offered, samples.map(|sample| stamped(&sample)));
+    assert_eq!(offered, scrapes.map(|scrape| stamped(&scrape)));
 }
 
 #[test]
@@ -109,7 +95,7 @@ fn ack_deletes_only_the_acked_rows() {
     let dir = tempfile::tempdir().unwrap();
     let mut spool = Spool::open(&temp_config(&dir, WHOLE_SPOOL)).unwrap();
     for secs in 1..=3 {
-        spool.push(&sample_at(secs)).unwrap();
+        spool.push(&scrape_at(secs)).unwrap();
     }
     let rows = spool.outstanding(whole_spool()).unwrap();
     spool.ack(&[rows[0].id, rows[1].id]).unwrap();
@@ -121,9 +107,9 @@ fn ack_deletes_only_the_acked_rows() {
 #[test]
 fn size_cap_drops_oldest_on_push() {
     let dir = tempfile::tempdir().unwrap();
-    let mut spool = Spool::open(&temp_config(&dir, 3 * sample_bytes())).unwrap();
+    let mut spool = Spool::open(&temp_config(&dir, 3 * scrape_bytes())).unwrap();
     for secs in 1..=5 {
-        spool.push(&sample_at(secs)).unwrap();
+        spool.push(&scrape_at(secs)).unwrap();
     }
     let offered: Vec<_> = spool
         .outstanding(whole_spool())
@@ -133,19 +119,24 @@ fn size_cap_drops_oldest_on_push() {
         .collect();
     assert_eq!(
         offered,
-        [sample_at(3), sample_at(4), sample_at(5)].map(|sample| stamped(&sample))
+        [scrape_at(3), scrape_at(4), scrape_at(5)].map(|scrape| stamped(&scrape))
     );
 }
 
 // The cap is in bytes, not rows: rows of different sizes have to be counted by
-// what they cost. Two long node_version strings fill a cap that holds many
-// short rows.
+// what they cost. A node exposing many metrics fills a cap that holds many
+// scrapes of a node exposing one.
 #[test]
 fn the_cap_counts_bytes_rather_than_rows() {
-    let long = Sample {
-        node_version: Some("v".repeat(1024)),
-        ..sample_at(1)
-    };
+    let mut long = scrape_at(1);
+    long.metrics = (0..64)
+        .map(|index| Metric {
+            name: format!("cardano_node_metrics_metric_{index}_int"),
+            labels: BTreeMap::new(),
+            value: index.into(),
+            declared_type: None,
+        })
+        .collect();
     let long_bytes = stamped(&long).wire_bytes();
     let dir = tempfile::tempdir().unwrap();
     let mut spool = Spool::open(&temp_config(&dir, 2 * long_bytes)).unwrap();
@@ -160,10 +151,10 @@ fn the_cap_counts_bytes_rather_than_rows() {
 #[test]
 fn push_reports_the_rows_the_cap_dropped() {
     let dir = tempfile::tempdir().unwrap();
-    let mut spool = Spool::open(&temp_config(&dir, 2 * sample_bytes())).unwrap();
-    assert_eq!(spool.push(&sample_at(1)).unwrap(), 0);
-    assert_eq!(spool.push(&sample_at(2)).unwrap(), 0);
-    assert_eq!(spool.push(&sample_at(3)).unwrap(), 1);
+    let mut spool = Spool::open(&temp_config(&dir, 2 * scrape_bytes())).unwrap();
+    assert_eq!(spool.push(&scrape_at(1)).unwrap(), 0);
+    assert_eq!(spool.push(&scrape_at(2)).unwrap(), 0);
+    assert_eq!(spool.push(&scrape_at(3)).unwrap(), 1);
 }
 
 // The batch budget bounds what one upload costs in memory and on the wire, so
@@ -173,17 +164,17 @@ fn outstanding_stops_before_exceeding_the_byte_budget() {
     let dir = tempfile::tempdir().unwrap();
     let mut spool = Spool::open(&temp_config(&dir, WHOLE_SPOOL)).unwrap();
     for secs in 1..=5 {
-        spool.push(&sample_at(secs)).unwrap();
+        spool.push(&scrape_at(secs)).unwrap();
     }
     let offered: Vec<_> = spool
-        .outstanding(budget(2 * sample_bytes()))
+        .outstanding(budget(2 * scrape_bytes()))
         .unwrap()
         .into_iter()
         .map(|row| row.line)
         .collect();
     assert_eq!(
         offered,
-        [sample_at(1), sample_at(2)].map(|sample| stamped(&sample))
+        [scrape_at(1), scrape_at(2)].map(|scrape| stamped(&scrape))
     );
 }
 
@@ -195,15 +186,15 @@ fn a_row_costs_the_budget_what_it_costs_the_wire() {
     let dir = tempfile::tempdir().unwrap();
     let mut spool = Spool::open(&temp_config(&dir, WHOLE_SPOOL)).unwrap();
     for secs in 1..=5 {
-        spool.push(&sample_at(secs)).unwrap();
+        spool.push(&scrape_at(secs)).unwrap();
     }
     assert_eq!(
-        spool.outstanding(budget(2 * sample_bytes())).unwrap().len(),
+        spool.outstanding(budget(2 * scrape_bytes())).unwrap().len(),
         2
     );
     assert_eq!(
         spool
-            .outstanding(budget(2 * sample_bytes() - 1))
+            .outstanding(budget(2 * scrape_bytes() - 1))
             .unwrap()
             .len(),
         1
@@ -214,15 +205,15 @@ fn a_row_costs_the_budget_what_it_costs_the_wire() {
 fn outstanding_drops_the_head_row_over_budget_and_leaves_the_rest() {
     let dir = tempfile::tempdir().unwrap();
     let mut spool = Spool::open(&temp_config(&dir, WHOLE_SPOOL)).unwrap();
-    spool.push(&sample_at(1)).unwrap();
-    spool.push(&sample_at(2)).unwrap();
+    spool.push(&scrape_at(1)).unwrap();
+    spool.push(&scrape_at(2)).unwrap();
 
     assert!(spool.outstanding(budget(1)).unwrap().is_empty());
     let report = spool.take_uncarriable_report();
     assert_eq!(report.oversized, 1);
     // The budget the row had to clear, which is the whole line and its newline:
     // what the operator is asked to raise is measured the same way.
-    assert_eq!(report.largest_bytes, sample_bytes());
+    assert_eq!(report.largest_bytes, scrape_bytes());
     assert_eq!(
         spool.take_uncarriable_report(),
         UncarriableReport::default()
@@ -234,7 +225,7 @@ fn outstanding_drops_the_head_row_over_budget_and_leaves_the_rest() {
         .into_iter()
         .map(|row| row.line)
         .collect();
-    assert_eq!(surviving, [stamped(&sample_at(2))]);
+    assert_eq!(surviving, [stamped(&scrape_at(2))]);
 }
 
 #[test]
@@ -262,19 +253,19 @@ fn an_uncarriable_row_does_not_stall_the_rows_behind_it() {
 }
 
 // A row is stored as the line it will be on the wire, so what fields it holds
-// is not the spool's business: a row a later build's `Sample` would refuse
+// is not the spool's business: a row a later build's `Scrape` would refuse
 // still travels.
 #[test]
 fn a_stored_row_travels_whatever_its_fields_are() {
     let dir = tempfile::tempdir().unwrap();
     let config = temp_config(&dir, WHOLE_SPOOL);
     let mut spool = Spool::open(&config).unwrap();
-    // Past `push`, which is the only thing here that knows what a `Sample` is:
+    // Past `push`, which is the only thing here that knows what a `Scrape` is:
     // this stands for a row some other build of that struct wrote.
     let alien = r#"{"measured_by_another_build":true}"#;
     let file = rusqlite::Connection::open(&config.path).unwrap();
     file.execute(
-        "INSERT INTO samples (sample, bytes) VALUES (?1, ?2)",
+        "INSERT INTO scrapes (scrape, bytes) VALUES (?1, ?2)",
         rusqlite::params![alien, row_bytes(alien) as i64],
     )
     .unwrap();
@@ -315,103 +306,13 @@ fn open_migrates_a_fresh_database() {
     let config = temp_config(&dir, WHOLE_SPOOL);
     rusqlite::Connection::open(&config.path).unwrap();
     let mut spool = Spool::open(&config).unwrap();
-    spool.push(&sample_at(1)).unwrap();
-    assert_eq!(spool.discarded_by_upgrade(), 0);
+    spool.push(&scrape_at(1)).unwrap();
     assert_eq!(spool.outstanding(whole_spool()).unwrap().len(), 1);
     let raw = rusqlite::Connection::open(&config.path).unwrap();
     let version: u32 = raw
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 3);
-}
-
-// A spool written before rows were stamped (metsuke-jfb.11) holds lines with no
-// provenance. The server refuses a batch line by line for a missing stamp, so
-// such a row can never be delivered — keeping it would stall its stream until
-// the byte cap evicted it. The migration takes them, and the spool it leaves
-// takes new rows.
-#[test]
-fn migrating_a_spool_written_before_the_stamp_takes_its_unstamped_rows() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = temp_config(&dir, WHOLE_SPOOL);
-    {
-        let conn = rusqlite::Connection::open(&config.path).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE samples (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                sample TEXT NOT NULL
-            );
-            CREATE TABLE delivery (
-                id INTEGER PRIMARY KEY CHECK (id = 1),
-                counter INTEGER NOT NULL
-            );
-            INSERT INTO delivery (id, counter) VALUES (1, 0);",
-        )
-        .unwrap();
-        conn.pragma_update(None, "user_version", 1u32).unwrap();
-        for secs in 1..=3 {
-            conn.execute(
-                "INSERT INTO samples (sample) VALUES (?1)",
-                [serde_json::to_string(&sample_at(secs)).unwrap()],
-            )
-            .unwrap();
-        }
-    }
-    let mut spool = Spool::open(&config).unwrap();
-
-    // What the operator is told they lost: the three rows the upgrade took,
-    // not the three the schema change rewrote on the way there.
-    assert_eq!(spool.discarded_by_upgrade(), 3);
-    assert!(spool.outstanding(whole_spool()).unwrap().is_empty());
-    spool.push(&sample_at(4)).unwrap();
-    assert_eq!(
-        spool
-            .outstanding(whole_spool())
-            .unwrap()
-            .into_iter()
-            .map(|row| row.line)
-            .collect::<Vec<_>>(),
-        [stamped(&sample_at(4))]
-    );
-}
-
-// Text no build wrote as a payload line cannot be one, and the migration that
-// takes the unstamped rows has to reach it without `json_extract` raising on
-// the way past.
-#[test]
-fn migrating_takes_a_row_that_is_not_even_json() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = temp_config(&dir, WHOLE_SPOOL);
-    let stays = trace_line(r#"{"ns":"Consensus.LeiosKernel"}"#);
-    {
-        let mut lines = LogSpool::open(&temp_log_config(&dir, WHOLE_SPOOL)).unwrap();
-        lines.push(&stays).unwrap();
-    }
-    let foreign = "not one whole JSON object";
-    {
-        let file = rusqlite::Connection::open(&config.path).unwrap();
-        file.execute(
-            "INSERT INTO log_lines (line, bytes) VALUES (?1, ?2)",
-            rusqlite::params![foreign, row_bytes(foreign) as i64],
-        )
-        .unwrap();
-        // Back to before the stamp, so opening runs that migration over both
-        // rows rather than over neither.
-        file.pragma_update(None, "user_version", 2u32).unwrap();
-    }
-
-    let mut spool = Spool::open(&config).unwrap();
-
-    assert_eq!(spool.discarded_by_upgrade(), 1);
-    assert_eq!(
-        spool
-            .outstanding_lines(whole_spool())
-            .unwrap()
-            .into_iter()
-            .map(|row| row.line)
-            .collect::<Vec<_>>(),
-        [stamped_line(&stays)]
-    );
+    assert_eq!(version, 1);
 }
 
 // The trace-line half is written by its own connection and read by the upload
@@ -473,12 +374,12 @@ fn a_reader_holding_the_file_does_not_block_a_trace_line_push() {
 }
 
 // The two caps are independent: a trace stream filling its own does not evict
-// a sample, and both live in one file.
+// a scrape, and both live in one file.
 #[test]
 fn the_trace_line_cap_is_its_own() {
     let dir = tempfile::tempdir().unwrap();
     let mut spool = Spool::open(&temp_config(&dir, WHOLE_SPOOL)).unwrap();
-    spool.push(&sample_at(1)).unwrap();
+    spool.push(&scrape_at(1)).unwrap();
     let line = |index: u32| trace_line(&format!(r#"{{"ns":"line {index}"}}"#));
     let mut lines = LogSpool::open(&temp_log_config(&dir, line_bytes(&line(0)))).unwrap();
     for index in 0..5 {
@@ -496,7 +397,7 @@ proptest! {
 
     // ADR 0004: rows leave only through ACK, and an ACK deletes exactly the
     // acked rows. After random push/partial-ack interleavings, acking every
-    // outstanding row leaves zero sample rows — checked through the API and
+    // outstanding row leaves zero scrape rows — checked through the API and
     // again on the raw file, so a lying `outstanding()` can't hide orphans.
     #[test]
     fn write_ack_delete_leaves_no_orphan_rows(
@@ -504,12 +405,12 @@ proptest! {
         cap_rows in 1u64..50,
     ) {
         let dir = tempfile::tempdir().unwrap();
-        let config = temp_config(&dir, cap_rows * sample_bytes());
+        let config = temp_config(&dir, cap_rows * scrape_bytes());
         let mut spool = Spool::open(&config).unwrap();
         let mut pushed = 0i64;
         for (count, ack_pick) in batches {
             for _ in 0..count {
-                spool.push(&sample_at(pushed)).unwrap();
+                spool.push(&scrape_at(pushed)).unwrap();
                 pushed += 1;
             }
             let rows = spool.outstanding(whole_spool()).unwrap();
@@ -527,19 +428,19 @@ proptest! {
         drop(spool);
         let raw = rusqlite::Connection::open(&config.path).unwrap();
         let orphans: i64 = raw
-            .query_row("SELECT count(*) FROM samples", [], |row| row.get(0))
+            .query_row("SELECT count(*) FROM scrapes", [], |row| row.get(0))
             .unwrap();
         prop_assert_eq!(orphans, 0);
     }
 }
 
 #[test]
-fn pushed_sample_is_outstanding() {
+fn pushed_scrape_is_outstanding() {
     let dir = tempfile::tempdir().unwrap();
     let mut spool = Spool::open(&temp_config(&dir, WHOLE_SPOOL)).unwrap();
-    let sample = sample_at(1_000);
-    spool.push(&sample).unwrap();
+    let scrape = scrape_at(1_000);
+    spool.push(&scrape).unwrap();
     let rows = spool.outstanding(whole_spool()).unwrap();
     assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].line, stamped(&sample));
+    assert_eq!(rows[0].line, stamped(&scrape));
 }

@@ -3,16 +3,20 @@
 //! the recordings under tests/fixtures; the values live here so the recording
 //! stays the only copy of the bytes.
 
+use std::collections::BTreeMap;
+
+use serde_json::Number;
+
 use metsuke_wire::envelope::{
-    AgentId, Envelope, Payload, PayloadLine, PoolId, Provenance, Sample, SigningKey, TraceLine,
-    seal,
+    AgentId, Envelope, Failure, Metric, Payload, PayloadLine, PoolId, Provenance, Reason, Scrape,
+    SigningKey, TraceLine, seal,
 };
 use time::OffsetDateTime;
 
 fn main() {
     let shape = std::env::args()
         .nth(1)
-        .expect("usage: record-submission <samples|lines>");
+        .expect("usage: record-submission <scrapes|lines>");
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let at =
         OffsetDateTime::from_unix_timestamp(1_755_000_000).expect("a fixed instant is in range");
@@ -21,25 +25,48 @@ fn main() {
         agent_id: AgentId::slugify("relay-1").expect("a fixed name slugifies"),
     };
     // Every optional field is set, so a build that drops or renames one cannot
-    // reseal the recording unchanged.
+    // reseal the recording unchanged. Two scrape lines, because the two a
+    // scrape can be — metrics, and the reason there are none — render
+    // differently.
     let payload = match shape.as_str() {
-        "samples" => Payload::samples(vec![
-            PayloadLine::sample(
-                &Sample {
-                    sampled_at: at,
-                    block_height: Some(12_318_442),
-                    slot: Some(163_281_005),
-                    slot_in_epoch: Some(281_005),
-                    epoch: Some(587),
-                    sync_progress: Some(0.5),
-                    node_version: Some("11.0.1".to_string()),
-                    node_revision: Some("0e2b4b1a".to_string()),
+        "scrapes" => Payload::scrapes(
+            [
+                Scrape {
+                    scraped_at: at,
                     clock_offset_ms: Some(-3),
+                    failure: None,
+                    metrics: vec![
+                        Metric {
+                            name: "cardano_node_metrics_blockNum_int".to_string(),
+                            labels: BTreeMap::new(),
+                            value: 12_318_442.into(),
+                            declared_type: Some("gauge".to_string()),
+                        },
+                        // Labels, a float, and no declared type: the three
+                        // things the first metric does not pin.
+                        Metric {
+                            name: "cardano_node_metrics_density_real".to_string(),
+                            labels: BTreeMap::from([("era".to_string(), "Conway".to_string())]),
+                            value: Number::from_f64(0.5).expect("a finite float is a number"),
+                            declared_type: None,
+                        },
+                    ],
                 },
-                &provenance,
-            )
-            .expect("the recorded sample stamps"),
-        ]),
+                Scrape {
+                    scraped_at: at,
+                    clock_offset_ms: None,
+                    failure: Some(Failure {
+                        reason: Reason::Refused,
+                        detail: "the endpoint answered 503 (upstream is down)".to_string(),
+                    }),
+                    metrics: Vec::new(),
+                },
+            ]
+            .map(|scrape| {
+                PayloadLine::scrape(&scrape, &provenance).expect("the recorded scrape stamps")
+            })
+            .to_vec(),
+        ),
         // Two lines, so the framing between them is in the recording and not
         // only the one that terminates the payload.
         "lines" => Payload::trace_lines(

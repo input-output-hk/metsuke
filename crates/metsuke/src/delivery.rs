@@ -4,14 +4,14 @@
 //! expressible call sequence, and keeps SQLite row ids out of the main loop
 //! entirely.
 //!
-//! Samples and trace lines seal into separate envelopes because a schema
+//! Scrapes and trace lines seal into separate envelopes because a schema
 //! version names one payload shape (`envelope::Payload`). Both are taken from
 //! here, on one thread, so the two never race for a counter.
 
 use time::OffsetDateTime;
 
 use crate::spool::{RowBudget, Spool, SpoolError, SpooledRow, UncarriableReport};
-use metsuke_wire::envelope::{self, Envelope, Payload, PayloadLine, Sample, SigningKey};
+use metsuke_wire::envelope::{self, Envelope, Payload, PayloadLine, Scrape, SigningKey};
 
 pub struct Delivery {
     /// Also where the pool and agent a batch names come from: the spool stamped
@@ -41,7 +41,7 @@ pub struct SealedBatch {
 /// Which stream's rows a batch drew from, so `ack` deletes from the table it
 /// sealed rather than from whichever one the caller remembers.
 enum BatchRows {
-    Samples(Vec<i64>),
+    Scrapes(Vec<i64>),
     Lines(Vec<i64>),
 }
 
@@ -73,13 +73,13 @@ impl Delivery {
         }
     }
 
-    /// Append a sample to the spool. Returns how many rows the spool's cap
+    /// Append a scrape to the spool. Returns how many rows the spool's cap
     /// dropped to make room.
-    pub fn push(&mut self, sample: &Sample) -> Result<u64, DeliveryError> {
-        Ok(self.spool.push(sample)?)
+    pub fn push(&mut self, scrape: &Scrape) -> Result<u64, DeliveryError> {
+        Ok(self.spool.push(scrape)?)
     }
 
-    /// Seal one batch of outstanding samples, drawing (and persisting) the
+    /// Seal one batch of outstanding scrapes, drawing (and persisting) the
     /// next counter. `None` when nothing is spooled. Rows stay spooled
     /// until `ack`; a retry after a failed PUT simply takes a fresh batch.
     pub fn take_batch(
@@ -88,8 +88,8 @@ impl Delivery {
     ) -> Result<Option<SealedBatch>, DeliveryError> {
         let rows = self
             .spool
-            .outstanding(self.row_budget(now, Payload::samples(vec![]))?)?;
-        self.batch(now, rows, Payload::samples, BatchRows::Samples)
+            .outstanding(self.row_budget(now, Payload::scrapes(vec![]))?)?;
+        self.batch(now, rows, Payload::scrapes, BatchRows::Scrapes)
     }
 
     /// The same for outstanding trace lines.
@@ -178,7 +178,7 @@ impl Delivery {
     /// The server ACK'd this batch: delete exactly the rows it sealed.
     pub fn ack(&mut self, batch: SealedBatch) -> Result<(), DeliveryError> {
         match batch.rows {
-            BatchRows::Samples(ids) => self.spool.ack(&ids)?,
+            BatchRows::Scrapes(ids) => self.spool.ack(&ids)?,
             BatchRows::Lines(ids) => self.spool.ack_lines(&ids)?,
         }
         Ok(())

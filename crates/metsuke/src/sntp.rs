@@ -1,6 +1,6 @@
-//! Per-sample SNTP clock-offset probe (RFC 4330). One code path: a single
+//! Per-scrape SNTP clock-offset probe (RFC 4330). One code path: a single
 //! UDP exchange per configured server, first success wins; any failure
-//! yields a null offset, never an aborted sample.
+//! yields a null offset, never an aborted scrape.
 
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::time::Duration;

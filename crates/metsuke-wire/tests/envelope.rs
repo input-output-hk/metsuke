@@ -2,12 +2,15 @@
 //! rejection (ticket metsuke-4zo.1) and the container the two frames make
 //! (ticket metsuke-jfb.1).
 
+use std::collections::BTreeMap;
+
 use metsuke_wire::envelope::{
-    self, AgentId, CONTAINER_MAGIC, Envelope, HEADER_OFFSET, Limits, PROVENANCE_KEY, Payload,
-    PayloadLine, PoolId, Provenance, SCHEMA_VERSION_LINES, SCHEMA_VERSION_SAMPLES, Sample,
-    SigningKey, TraceLine,
+    self, AgentId, CONTAINER_MAGIC, Envelope, Failure, HEADER_OFFSET, Limits, Metric,
+    PROVENANCE_KEY, Payload, PayloadLine, PoolId, Provenance, Reason, SCHEMA_VERSION_LINES,
+    SCHEMA_VERSION_SCRAPES, Scrape, SigningKey, TraceLine,
 };
 use proptest::prelude::*;
+use serde_json::Number;
 use time::OffsetDateTime;
 
 // Wide enough for any generated envelope; the real limits are server config.
@@ -24,41 +27,52 @@ fn arb_timestamp() -> impl Strategy<Value = OffsetDateTime> {
     })
 }
 
-fn arb_sample() -> impl Strategy<Value = Sample> {
+/// One metric, generated the way a body states them: an integer or a float
+/// value, labels sometimes, a declared type sometimes.
+fn arb_metric() -> impl Strategy<Value = Metric> {
     (
-        arb_timestamp(),
-        any::<Option<u64>>(),
-        any::<Option<u64>>(),
-        any::<Option<u64>>(),
-        any::<Option<u64>>(),
-        proptest::option::of(-1.0e12f64..1.0e12),
-        any::<Option<String>>(),
-        any::<Option<String>>(),
-        any::<Option<i64>>(),
+        "[a-zA-Z_][a-zA-Z0-9_]{0,40}",
+        proptest::collection::btree_map("[a-z_]{1,8}", ".{0,16}", 0..4),
+        prop_oneof![
+            any::<u64>().prop_map(Number::from),
+            any::<i64>().prop_map(Number::from),
+            (-1.0e12f64..1.0e12)
+                .prop_map(|value| Number::from_f64(value).expect("a finite float is a number")),
+        ],
+        proptest::option::of(prop_oneof![Just("gauge"), Just("counter"), Just("info")]),
     )
-        .prop_map(
-            |(
-                sampled_at,
-                block_height,
-                slot,
-                slot_in_epoch,
-                epoch,
-                sync_progress,
-                node_version,
-                node_revision,
-                clock_offset_ms,
-            )| Sample {
-                sampled_at,
-                block_height,
-                slot,
-                slot_in_epoch,
-                epoch,
-                sync_progress,
-                node_version,
-                node_revision,
-                clock_offset_ms,
-            },
+        .prop_map(|(name, labels, value, declared_type)| Metric {
+            name,
+            labels,
+            value,
+            declared_type: declared_type.map(str::to_string),
+        })
+}
+
+fn arb_scrape() -> impl Strategy<Value = Scrape> {
+    // The two a scrape can be, never both: metrics, or the reason there are
+    // none.
+    let outcome = prop_oneof![
+        proptest::collection::vec(arb_metric(), 0..8).prop_map(|metrics| (None, metrics)),
+        (
+            prop_oneof![
+                Just(Reason::Unreachable),
+                Just(Reason::Refused),
+                Just(Reason::TooLarge),
+                Just(Reason::Unreadable),
+            ],
+            ".{0,32}",
         )
+            .prop_map(|(reason, detail)| (Some(Failure { reason, detail }), Vec::new())),
+    ];
+    (arb_timestamp(), any::<Option<i64>>(), outcome).prop_map(
+        |(scraped_at, clock_offset_ms, (failure, metrics))| Scrape {
+            scraped_at,
+            clock_offset_ms,
+            failure,
+            metrics,
+        },
+    )
 }
 
 fn arb_pool_id() -> impl Strategy<Value = PoolId> {
@@ -101,16 +115,16 @@ fn arb_envelope() -> impl Strategy<Value = Envelope> {
         arb_agent_version(),
         any::<u64>(),
         arb_timestamp(),
-        proptest::collection::vec(arb_sample(), 0..8),
+        proptest::collection::vec(arb_scrape(), 0..8),
     )
         .prop_map(
-            |(pool_id, agent_id, agent_version, counter, timestamp, samples)| {
+            |(pool_id, agent_id, agent_version, counter, timestamp, scrapes)| {
                 envelope_of(
                     Provenance { pool_id, agent_id },
                     agent_version,
                     counter,
                     timestamp,
-                    |stamp| samples_payload(&samples, stamp),
+                    |stamp| scrapes_payload(&scrapes, stamp),
                 )
             },
         )
@@ -226,26 +240,26 @@ proptest! {
     // without the other puts the two limits out of step.
     #[test]
     fn a_payload_costs_what_its_lines_charge(
-        samples in proptest::collection::vec(arb_sample(), 0..8),
+        scrapes in proptest::collection::vec(arb_scrape(), 0..8),
         lines in proptest::collection::vec(arb_trace_line(), 0..8),
     ) {
         let stamp = test_stamp();
-        let sample_lines: Vec<PayloadLine> = samples
+        let scrape_lines: Vec<PayloadLine> = scrapes
             .iter()
-            .map(|sample| PayloadLine::sample(sample, &stamp).unwrap())
+            .map(|scrape| PayloadLine::scrape(scrape, &stamp).unwrap())
             .collect();
         let trace_lines: Vec<PayloadLine> = lines
             .iter()
             .map(|line| PayloadLine::trace_line(line, &stamp).unwrap())
             .collect();
-        for lines in [sample_lines, trace_lines] {
+        for lines in [scrape_lines, trace_lines] {
             let charged: u64 = lines.iter().map(PayloadLine::wire_bytes).sum();
             let envelope = Envelope::new(
                 stamp.clone(),
                 "0.1.0".into(),
                 1,
                 OffsetDateTime::UNIX_EPOCH,
-                Payload::samples(lines),
+                Payload::scrapes(lines),
             );
             prop_assert_eq!(envelope::payload_lines(&envelope).len() as u64, charged);
         }
@@ -254,10 +268,10 @@ proptest! {
     // Both payload shapes make the same line; ADR 0010 says why that matters.
     #[test]
     fn every_payload_line_carries_the_batch_s_provenance(
-        samples in arb_envelope(),
+        scrapes in arb_envelope(),
         lines in arb_lines_envelope(),
     ) {
-        for envelope in [samples, lines] {
+        for envelope in [scrapes, lines] {
             let stated = serde_json::to_value(&envelope.provenance).unwrap();
             let body = String::from_utf8(envelope::payload_lines(&envelope)).unwrap();
             for line in body.lines() {
@@ -274,14 +288,14 @@ proptest! {
 #[test]
 fn a_stamped_line_names_the_pool_and_the_agent() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
-    let body = envelope::payload_lines(&one_sample_envelope(&key));
+    let body = envelope::payload_lines(&one_scrape_envelope(&key));
     let line: serde_json::Value =
         serde_json::from_slice(body.strip_suffix(b"\n").unwrap()).unwrap();
     let stamp = line[PROVENANCE_KEY].as_object().unwrap();
 
     assert_eq!(stamp.keys().collect::<Vec<_>>(), ["agent_id", "pool_id"]);
     // Beside its own fields, not instead of them.
-    assert!(line["sampled_at"].is_string());
+    assert!(line["scraped_at"].is_string());
 }
 
 // A line already using metsuke's one reserved key (ADR 0010) is not a line this
@@ -391,13 +405,13 @@ fn open_refuses_an_unstamped_line() {
 #[test]
 fn the_header_reads_back_without_a_decompressor() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
-    let env = empty_samples_envelope(&key);
+    let env = empty_scrapes_envelope(&key);
     let (bytes, _) = envelope::seal(&key, &env, 0).unwrap();
 
     let frames = envelope::split(&bytes, TEST_LIMITS.max_header_bytes).unwrap();
     let header: serde_json::Value = serde_json::from_slice(frames.header).unwrap();
 
-    assert_eq!(header["schema_version"], SCHEMA_VERSION_SAMPLES);
+    assert_eq!(header["schema_version"], SCHEMA_VERSION_SCRAPES);
     assert_eq!(header["pool_id"], env.provenance.pool_id.to_bech32());
     assert_eq!(header["counter"], env.counter);
 }
@@ -407,12 +421,12 @@ fn the_header_reads_back_without_a_decompressor() {
 #[test]
 fn read_header_answers_the_batch_s_own_account_of_itself() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
-    let env = empty_samples_envelope(&key);
+    let env = empty_scrapes_envelope(&key);
     let (bytes, _) = envelope::seal(&key, &env, 0).unwrap();
 
     let header = envelope::read_header(&bytes, TEST_LIMITS.max_header_bytes).unwrap();
 
-    assert_eq!(header.schema_version, SCHEMA_VERSION_SAMPLES);
+    assert_eq!(header.schema_version, SCHEMA_VERSION_SCRAPES);
     assert_eq!(header.provenance, env.provenance);
     assert_eq!(header.agent_version, env.agent_version);
     assert_eq!(header.counter, env.counter);
@@ -425,7 +439,7 @@ fn read_header_answers_the_batch_s_own_account_of_itself() {
 #[test]
 fn the_header_renders_the_same_bytes_as_it_always_has() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
-    let header = envelope::header_json(&empty_samples_envelope(&key)).unwrap();
+    let header = envelope::header_json(&empty_scrapes_envelope(&key)).unwrap();
     assert_eq!(
         String::from_utf8(header).unwrap(),
         r#"{"schema_version":1,"pool_id":"pool13vscgf9dwn0jt56u965wp99ychz6avktk3pyrye326f3xctz4nm","agent_id":"relay-1","agent_version":"0.1.0","counter":1,"timestamp":"1970-01-01T00:00:00Z"}"#
@@ -515,7 +529,7 @@ fn open_rejects_malformed_pool_id() {
     let (bytes, sig) = sealed_header(
         &key,
         serde_json::json!({
-            "schema_version": SCHEMA_VERSION_SAMPLES,
+            "schema_version": SCHEMA_VERSION_SCRAPES,
             "pool_id": "pool1notvalidbech32",
             "agent_id": "relay-1",
             "agent_version": "0.1.0",
@@ -596,7 +610,7 @@ fn pool_id_rejects_wrong_length() {
 #[test]
 fn open_rejects_oversized_payload() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
-    let env = one_sample_envelope(&key);
+    let env = one_scrape_envelope(&key);
     let (bytes, sig) = envelope::seal(&key, &env, 0).unwrap();
     let limits = Limits {
         max_decompressed_bytes: 8,
@@ -616,7 +630,7 @@ fn open_rejects_oversized_payload() {
 #[test]
 fn open_under_a_huge_limit_costs_only_the_payload() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
-    let env = empty_samples_envelope(&key);
+    let env = empty_scrapes_envelope(&key);
     let (bytes, sig) = envelope::seal(&key, &env, 0).unwrap();
     let limits = Limits {
         max_decompressed_bytes: 64 * 1024 * 1024 * 1024,
@@ -626,49 +640,52 @@ fn open_under_a_huge_limit_costs_only_the_payload() {
     assert_eq!(opened, env);
 }
 
-// Refused where the sample is still a sample. serde_json writes `null` for a
-// non-finite float rather than failing, so a stamp that let one through would
-// put a sample that never scraped the value on the wire — and by then the field
-// is text and nothing downstream can tell the two apart.
+// What `Metric::value` being a JSON number buys, at the one value that shows
+// it: 2^53 + 1 is the smallest integer an f64 cannot hold, so a value that went
+// through a float comes back one short.
 #[test]
-fn stamping_refuses_a_non_finite_sync_progress() {
-    let err = PayloadLine::sample(
-        &Sample {
-            sync_progress: Some(f64::NAN),
-            ..sample()
-        },
-        &test_stamp(),
-    )
-    .unwrap_err();
-    assert!(matches!(
-        err,
-        envelope::SealError::NonFiniteSyncProgress { .. }
-    ));
+fn a_counter_past_an_f64_s_exact_range_keeps_its_digits_through_seal_and_open() {
+    const ALLOCATED: u64 = (1u64 << 53) + 1;
+    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let mut counter = scrape();
+    counter.metrics[0] = Metric {
+        name: "rts_gc_bytes_allocated".to_string(),
+        labels: BTreeMap::new(),
+        value: ALLOCATED.into(),
+        declared_type: Some("counter".to_string()),
+    };
+    let envelope = test_envelope(&key, |stamp| scrapes_payload(&[counter], stamp));
+    let (bytes, sig) = envelope::seal(&key, &envelope, 0).unwrap();
+
+    let opened = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap();
+    let value = &opened.scrapes().unwrap()[0].metrics[0].value;
+    assert_eq!(value.as_u64(), Some(ALLOCATED));
+    assert_eq!(value.to_string(), ALLOCATED.to_string());
 }
 
 // What a consumer gets back out of a batch: the fields, not the bytes. The
 // only place a payload struct reads a payload line.
 #[test]
-fn a_consumer_reads_a_batch_s_samples_back_as_samples() {
+fn a_consumer_reads_a_batch_s_scrapes_back_as_scrapes() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
-    let (bytes, sig) = envelope::seal(&key, &one_sample_envelope(&key), 0).unwrap();
+    let (bytes, sig) = envelope::seal(&key, &one_scrape_envelope(&key), 0).unwrap();
     let opened = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap();
 
-    assert_eq!(opened.samples().unwrap(), [sample()]);
+    assert_eq!(opened.scrapes().unwrap(), [scrape()]);
 }
 
 // Asking a batch for the shape it does not carry names both versions rather
 // than reporting the fields the other schema happens not to have.
 #[test]
-fn reading_a_sample_batch_as_trace_lines_names_both_schemas() {
+fn reading_a_scrape_batch_as_trace_lines_names_both_schemas() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
-    let err = one_sample_envelope(&key).trace_lines().unwrap_err();
+    let err = one_scrape_envelope(&key).trace_lines().unwrap_err();
     assert!(
         matches!(
             err,
             envelope::ReadError::PayloadIsNot {
                 asked: SCHEMA_VERSION_LINES,
-                found: SCHEMA_VERSION_SAMPLES
+                found: SCHEMA_VERSION_SCRAPES
             }
         ),
         "expected both versions to be named, got: {err}"
@@ -734,7 +751,7 @@ fn parse_refuses_what_slugify_would_never_emit() {
 /// The bytes this build's sealing path produced for each payload shape,
 /// lowercase hex on one line. Provenance: tests/fixtures/recordings/README.md.
 const RECORDINGS: [&str; 2] = [
-    include_str!("fixtures/recordings/submission-samples.hex"),
+    include_str!("fixtures/recordings/submission-scrapes.hex"),
     include_str!("fixtures/recordings/submission-lines.hex"),
 ];
 
@@ -772,7 +789,7 @@ fn this_build_seals_the_recorded_submissions() {
 fn restamped(envelope: &Envelope) -> Envelope {
     let stamp = &envelope.provenance;
     let payload = match envelope.schema_version() {
-        SCHEMA_VERSION_SAMPLES => samples_payload(&envelope.samples().unwrap(), stamp),
+        SCHEMA_VERSION_SCRAPES => scrapes_payload(&envelope.scrapes().unwrap(), stamp),
         SCHEMA_VERSION_LINES => lines_payload(&envelope.trace_lines().unwrap(), stamp),
         found => panic!("a recording this build opened declared v{found}"),
     };
@@ -862,11 +879,11 @@ fn envelope_of(
     Envelope::new(provenance, agent_version, counter, timestamp, payload)
 }
 
-fn samples_payload(samples: &[Sample], stamp: &Provenance) -> Payload {
-    Payload::samples(
-        samples
+fn scrapes_payload(scrapes: &[Scrape], stamp: &Provenance) -> Payload {
+    Payload::scrapes(
+        scrapes
             .iter()
-            .map(|sample| PayloadLine::sample(sample, stamp).expect("a generated sample stamps"))
+            .map(|scrape| PayloadLine::scrape(scrape, stamp).expect("a generated scrape stamps"))
             .collect(),
     )
 }
@@ -903,26 +920,28 @@ fn test_envelope(key: &SigningKey, payload: impl FnOnce(&Provenance) -> Payload)
 
 /// The smallest envelope, for the tests that care about the container rather
 /// than what it holds.
-fn empty_samples_envelope(key: &SigningKey) -> Envelope {
-    test_envelope(key, |_| Payload::samples(vec![]))
+fn empty_scrapes_envelope(key: &SigningKey) -> Envelope {
+    test_envelope(key, |_| Payload::scrapes(vec![]))
 }
 
 /// One with a payload, for the tests that need the data frame to inflate to
 /// something.
-fn one_sample_envelope(key: &SigningKey) -> Envelope {
-    test_envelope(key, |stamp| samples_payload(&[sample()], stamp))
+fn one_scrape_envelope(key: &SigningKey) -> Envelope {
+    test_envelope(key, |stamp| scrapes_payload(&[scrape()], stamp))
 }
 
-fn sample() -> Sample {
-    Sample {
-        sampled_at: OffsetDateTime::UNIX_EPOCH,
-        block_height: None,
-        slot: None,
-        slot_in_epoch: None,
-        epoch: None,
-        sync_progress: None,
-        node_version: None,
-        node_revision: None,
+/// One scrape carrying one metric, so the tests that only need a payload line
+/// have the smallest one a real scrape produces.
+fn scrape() -> Scrape {
+    Scrape {
+        scraped_at: OffsetDateTime::UNIX_EPOCH,
         clock_offset_ms: None,
+        failure: None,
+        metrics: vec![Metric {
+            name: "cardano_node_metrics_blockNum_int".to_string(),
+            labels: BTreeMap::new(),
+            value: 5.into(),
+            declared_type: Some("gauge".to_string()),
+        }],
     }
 }

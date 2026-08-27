@@ -1,5 +1,5 @@
 //! The trace-line thread: follow the node's journal, keep what the selection
-//! rules want, spool it. It runs beside the binary's sample and upload ticks
+//! rules want, spool it. It runs beside the binary's scrape and upload ticks
 //! rather than inside them, because a trace stream is continuous and a tick is
 //! not. Nothing is shared across that boundary: this thread only appends to
 //! `log_lines`, and the upload loop is the only reader.

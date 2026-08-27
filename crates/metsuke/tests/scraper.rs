@@ -1,13 +1,16 @@
-//! Seam test for sample assembly (ticket metsuke-4zo.3): one `sample()`
+//! Seam test for row assembly (ticket metsuke-4zo.3): one `scrape_once()`
 //! call against a recorded metrics body and a scripted SNTP server yields
-//! a `Sample` carrying both the scraped metrics and the clock offset.
+//! a `Scrape` carrying both the node's metrics and the clock offset.
 
 use std::net::UdpSocket;
 use std::time::Duration;
 
-use metsuke::sampler::{SamplerConfig, sample};
 use metsuke::scrape::ScrapeConfig;
+use metsuke::scraper::{ScraperConfig, scrape_once};
 use metsuke::sntp::SntpConfig;
+
+mod support;
+use support::block_number;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -36,7 +39,7 @@ fn five_seconds_ahead_server() -> String {
 }
 
 #[tokio::test]
-async fn one_sample_carries_metrics_and_clock_offset() {
+async fn one_row_carries_metrics_and_clock_offset() {
     let metrics = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/metrics"))
@@ -46,7 +49,7 @@ async fn one_sample_carries_metrics_and_clock_offset() {
         )
         .mount(&metrics)
         .await;
-    let config = SamplerConfig {
+    let config = ScraperConfig {
         scrape: ScrapeConfig {
             metrics_url: format!("{}/metrics", metrics.uri()).try_into().unwrap(),
             timeout: Duration::from_secs(5),
@@ -57,12 +60,12 @@ async fn one_sample_carries_metrics_and_clock_offset() {
             timeout: Duration::from_secs(2),
         },
     };
-    let sample = tokio::task::spawn_blocking(move || sample(&config))
+    let row = tokio::task::spawn_blocking(move || scrape_once(&config))
         .await
-        .expect("sampler task panicked");
-    // Recorded-body field values: tests/scrape.rs.
-    assert_eq!(sample.block_height, Some(5));
-    let offset = sample.clock_offset_ms.expect("probe should succeed");
+        .expect("scraper task panicked");
+    // What the recorded body states: tests/scrape.rs.
+    assert_eq!(block_number(&row), Some(5));
+    let offset = row.clock_offset_ms.expect("probe should succeed");
     assert!(
         (4900..=5000).contains(&offset),
         "offset {offset} ms outside the expected 5 s band"

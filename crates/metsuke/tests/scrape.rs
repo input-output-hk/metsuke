@@ -4,8 +4,8 @@
 
 use std::time::Duration;
 
-use metsuke::scrape::{FetchError, Metric, Refused, ScrapeConfig, fetch, parse, scrape};
-use metsuke_wire::envelope::Sample;
+use metsuke::scrape::{FetchError, Refused, ScrapeConfig, fetch, parse, scrape};
+use metsuke_wire::envelope::{Metric, Reason, Scrape};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -21,7 +21,7 @@ fn config(metrics_url: String) -> ScrapeConfig {
     }
 }
 
-async fn scrape_config(config: ScrapeConfig) -> Sample {
+async fn scrape_config(config: ScrapeConfig) -> Scrape {
     tokio::task::spawn_blocking(move || scrape(&config))
         .await
         .expect("scrape task panicked")
@@ -34,7 +34,7 @@ async fn fetch_config(config: ScrapeConfig) -> Result<String, FetchError> {
 }
 
 /// Serve `body` on a wiremock endpoint and scrape it.
-async fn scrape_body(body: &str) -> Sample {
+async fn scrape_body(body: &str) -> Scrape {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/metrics"))
@@ -46,53 +46,65 @@ async fn scrape_body(body: &str) -> Sample {
     scrape_config(config(format!("{}/metrics", server.uri()))).await
 }
 
-// Expected values of the committed recording; the re-record script prints
-// the replacements.
-#[tokio::test]
-async fn recorded_chain_body_yields_field_values() {
-    let sample = scrape_body(RECORDED_CHAIN).await;
-    assert_eq!(sample.block_height, Some(5));
-    assert_eq!(sample.slot, Some(250));
-    assert_eq!(sample.slot_in_epoch, Some(250));
-    assert_eq!(sample.epoch, Some(0));
-    assert_eq!(sample.node_version.as_deref(), Some("11.1.0.164"));
-    assert_eq!(
-        sample.node_revision.as_deref(),
-        Some("c5f7d9121beb67e6d03d0632ae2bd3b76259728e")
-    );
-    // Why these two stay null: the scrape() doc.
-    assert_eq!(sample.sync_progress, None);
-    assert_eq!(sample.clock_offset_ms, None);
+/// A failed scrape: the reason it carries, having asserted the two things every
+/// one of them says.
+fn failure_of(scrape: &Scrape) -> Reason {
+    assert_eq!(scrape.metrics, [], "a failed scrape carries no metric");
+    assert_eq!(scrape.clock_offset_ms, None, "the scraper fills the offset");
+    scrape
+        .failure
+        .as_ref()
+        .expect("a failure names itself")
+        .reason
 }
 
-/// The node's first served body, before any chain metric is emitted: build
-/// info is already present, chain fields are null.
+// The whole recorded body reaches the row, which is what the endpoint returned
+// and not a selection of it. The count is derived; `parse`'s own tests are
+// where a metric's fields are asserted.
 #[tokio::test]
-async fn recorded_startup_body_yields_build_info_only() {
-    let sample = scrape_body(RECORDED_STARTUP).await;
-    assert_eq!(sample.block_height, None);
-    assert_eq!(sample.slot, None);
-    assert_eq!(sample.slot_in_epoch, None);
-    assert_eq!(sample.epoch, None);
-    assert_eq!(sample.node_version.as_deref(), Some("11.1.0.164"));
+async fn a_recorded_body_ships_every_metric_it_states() {
+    let scrape = scrape_body(RECORDED_CHAIN).await;
+    assert_eq!(scrape.metrics.len(), stated_metrics(RECORDED_CHAIN));
+    assert_eq!(scrape.failure, None);
+    assert_eq!(scrape.clock_offset_ms, None);
     assert_eq!(
-        sample.node_revision.as_deref(),
-        Some("c5f7d9121beb67e6d03d0632ae2bd3b76259728e")
+        named(&scrape.metrics, "cardano_node_metrics_blockNum_int")
+            .value
+            .as_u64(),
+        Some(5)
     );
+}
+
+/// The node's first served body, before any chain metric is emitted: fewer
+/// metrics than the chain recording has, and still a whole scrape.
+#[tokio::test]
+async fn a_recorded_startup_body_ships_the_metrics_it_has() {
+    let scrape = scrape_body(RECORDED_STARTUP).await;
+    assert_eq!(scrape.metrics.len(), stated_metrics(RECORDED_STARTUP));
+    assert!(scrape.metrics.len() < stated_metrics(RECORDED_CHAIN));
+    assert_eq!(scrape.failure, None);
 }
 
 // Loopback because `MetricsUrl` refuses anything else, and the discard port
 // because it is privileged, so no MockServer can take it (metsuke-4zo.18).
 #[tokio::test]
-async fn refused_endpoint_yields_all_nulls() {
-    let sample = scrape_config(config("http://127.0.0.1:9/metrics".into())).await;
-    assert_eq!(sample, all_null(sample.sampled_at));
+async fn an_endpoint_that_does_not_answer_ships_as_unreachable() {
+    let before = time::OffsetDateTime::now_utc();
+    let scrape = scrape_config(config("http://127.0.0.1:9/metrics".into())).await;
+    assert_eq!(failure_of(&scrape), Reason::Unreachable);
+    // The agent's own clock, not the node's: a failed scrape is the one row
+    // whose time nothing else could have stamped.
+    assert!(
+        (before..=time::OffsetDateTime::now_utc()).contains(&scrape.scraped_at),
+        "{} is outside the call",
+        scrape.scraped_at
+    );
 }
 
 // A refused connect returns at once, so it cannot show that the deadline is
 // the thing bounding a scrape: an endpoint that answers too late must.
 #[tokio::test]
-async fn endpoint_slower_than_the_timeout_yields_all_nulls() {
+async fn an_endpoint_slower_than_the_timeout_ships_as_a_failure() {
     let server = MockServer::start().await;
     let timeout = Duration::from_millis(200);
     Mock::given(method("GET"))
@@ -107,8 +119,8 @@ async fn endpoint_slower_than_the_timeout_yields_all_nulls() {
     let mut slow = config(format!("{}/metrics", server.uri()));
     slow.timeout = timeout;
     let started = std::time::Instant::now();
-    let sample = scrape_config(slow).await;
-    assert_eq!(sample, all_null(sample.sampled_at));
+    let scrape = scrape_config(slow).await;
+    assert_eq!(failure_of(&scrape), Reason::Unreachable);
     let elapsed = started.elapsed();
     assert!(
         elapsed >= timeout && elapsed < timeout * 10,
@@ -117,33 +129,33 @@ async fn endpoint_slower_than_the_timeout_yields_all_nulls() {
 }
 
 #[tokio::test]
-async fn http_error_yields_all_nulls() {
+async fn an_http_error_ships_as_refused() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/metrics"))
         .respond_with(ResponseTemplate::new(500))
         .mount(&server)
         .await;
-    let sample = scrape_config(config(format!("{}/metrics", server.uri()))).await;
-    assert_eq!(sample, all_null(sample.sampled_at));
+    let scrape = scrape_config(config(format!("{}/metrics", server.uri()))).await;
+    assert_eq!(failure_of(&scrape), Reason::Refused);
 }
 
 // A refused scrape stays a failed scrape even when the error page carries
 // something a metric parser would read.
 #[tokio::test]
-async fn http_error_carrying_metric_lines_yields_all_nulls() {
+async fn an_http_error_carrying_metric_lines_ships_no_metric() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/metrics"))
         .respond_with(ResponseTemplate::new(500).set_body_raw(RECORDED_CHAIN, "text/plain"))
         .mount(&server)
         .await;
-    let sample = scrape_config(config(format!("{}/metrics", server.uri()))).await;
-    assert_eq!(sample, all_null(sample.sampled_at));
+    let scrape = scrape_config(config(format!("{}/metrics", server.uri()))).await;
+    assert_eq!(failure_of(&scrape), Reason::Refused);
 }
 
 #[tokio::test]
-async fn oversized_body_yields_all_nulls() {
+async fn an_oversized_body_ships_as_too_large() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/metrics"))
@@ -155,43 +167,18 @@ async fn oversized_body_yields_all_nulls() {
         .await;
     let mut small = config(format!("{}/metrics", server.uri()));
     small.max_body_bytes = 16;
-    let sample = scrape_config(small).await;
-    assert_eq!(sample, all_null(sample.sampled_at));
+    let scrape = scrape_config(small).await;
+    assert_eq!(failure_of(&scrape), Reason::TooLarge);
 }
 
+// The endpoint answering with nothing is not a failure: the row says the
+// endpoint was read and stated no metric, which is what a consumer separates
+// from a refusal and from no row at all.
 #[tokio::test]
-async fn empty_body_yields_all_nulls() {
-    let sample = scrape_body("").await;
-    assert_eq!(sample, all_null(sample.sampled_at));
-}
-
-#[tokio::test]
-async fn build_info_without_revision_yields_version_only() {
-    let sample = scrape_body(include_str!(
-        "fixtures/edge-cases/build-info-missing-revision.prom"
-    ))
-    .await;
-    assert_eq!(sample.node_version.as_deref(), Some("99.0.0"));
-    assert_eq!(sample.node_revision, None);
-    assert_eq!(sample.block_height, Some(42));
-}
-
-#[tokio::test]
-async fn malformed_values_yield_nulls_per_field() {
-    let sample = scrape_body(include_str!("fixtures/edge-cases/malformed-values.prom")).await;
-    assert_eq!(sample.block_height, None);
-    assert_eq!(sample.slot, None);
-    assert_eq!(sample.epoch, None);
-    assert_eq!(sample.slot_in_epoch, Some(7));
-    assert_eq!(sample.node_version.as_deref(), Some("9"));
-    assert_eq!(sample.node_revision.as_deref(), Some("abc"));
-}
-
-#[tokio::test]
-async fn escaped_label_values_decode() {
-    let sample = scrape_body(include_str!("fixtures/edge-cases/escaped-labels.prom")).await;
-    assert_eq!(sample.node_version.as_deref(), Some("1\\2\n3"));
-    assert_eq!(sample.node_revision.as_deref(), Some("r"));
+async fn an_empty_body_ships_as_a_scrape_with_no_metrics_and_no_failure() {
+    let scrape = scrape_body("").await;
+    assert_eq!(scrape.metrics, []);
+    assert_eq!(scrape.failure, None);
 }
 
 /// Every line of an exposition body that is not a comment or blank states one
@@ -389,16 +376,22 @@ async fn an_endpoint_that_does_not_answer_is_named_apart_from_a_refusal() {
     assert!(matches!(error, FetchError::Unreachable(_)), "{error:?}");
 }
 
-fn all_null(sampled_at: time::OffsetDateTime) -> Sample {
-    Sample {
-        sampled_at,
-        block_height: None,
-        slot: None,
-        slot_in_epoch: None,
-        epoch: None,
-        sync_progress: None,
-        node_version: None,
-        node_revision: None,
-        clock_offset_ms: None,
-    }
+// The escapes and metacharacters a label value may carry (`labels_of`), on the
+// metric that carries twelve labels on a real node.
+#[test]
+fn escaped_label_values_decode() {
+    let scrape = parse(include_str!("fixtures/edge-cases/escaped-labels.prom"));
+    let build_info = named(&scrape.metrics, "cardano_node_metrics_cardano_build_info");
+    assert_eq!(
+        build_info.labels.get("version").map(String::as_str),
+        Some("1\\2\n3")
+    );
+    assert_eq!(
+        build_info.labels.get("extra").map(String::as_str),
+        Some("a\"b,c=d")
+    );
+    assert_eq!(
+        build_info.labels.get("revision").map(String::as_str),
+        Some("r")
+    );
 }

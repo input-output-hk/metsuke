@@ -1,5 +1,5 @@
 //! The agent binary: startup fails loudly, then two decoupled ticks —
-//! sample and upload — run forever on their configured cadences. Log lines
+//! scrape and upload — run forever on their configured cadences. Log lines
 //! carry sd-daemon `<level>` prefixes so journald records severities.
 
 use std::time::{Duration, Instant};
@@ -13,9 +13,9 @@ use metsuke::keys::{self, KeyError};
 use metsuke::logselect::{OutsideRoots, SelectConfig};
 use metsuke::logsource::{JournalSource, LineSourceError, PipeSource};
 use metsuke::logtail::{self, DrainEnd};
-use metsuke::sampler::SamplerConfig;
 use metsuke::schedule::{Schedule, ScheduleConfig};
 use metsuke::scrape::ScrapeConfig;
+use metsuke::scraper::ScraperConfig;
 use metsuke::sntp::SntpConfig;
 use metsuke::spool::{LogSpool, LogSpoolConfig, Spool, SpoolConfig, SpoolError};
 use metsuke::uploader::{UploadConfig, UploadOutcome, newer_version_available};
@@ -86,22 +86,15 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         busy_timeout,
         provenance: provenance.clone(),
     })?;
-    let discarded = spool.discarded_by_upgrade();
-    if discarded > 0 {
-        eprintln!(
-            "{WARNING}the spool upgrade discarded {discarded} rows written before rows carried \
-             a stamp; no server would have accepted them"
-        );
-    }
     let vkey = key.verifying_key();
     eprintln!(
-        "{INFO}metsuke {} on {agent_id} sampling {} for {}",
+        "{INFO}metsuke {} on {agent_id} scraping {} for {}",
         env!("CARGO_PKG_VERSION"),
         config.metrics_url,
         config.pool_id,
     );
     let mut agent = Agent::new(
-        SamplerConfig {
+        ScraperConfig {
             scrape: ScrapeConfig {
                 metrics_url: config.metrics_url.clone(),
                 timeout: Duration::from_secs(config.scrape_timeout_secs),
@@ -128,29 +121,29 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         start_trace_collection(log, &config.spool_path, busy_timeout, provenance)?;
     }
 
-    let sample_interval = Duration::from_secs(config.sample_interval_secs);
+    let scrape_interval = Duration::from_secs(config.sample_interval_secs);
     let schedule_config = ScheduleConfig {
         upload_interval: Duration::from_secs(config.upload_interval_secs),
         jitter_max: Duration::from_secs(config.upload_jitter_max_secs),
         backoff_max: Duration::from_secs(config.upload_backoff_max_secs),
     };
     let mut schedule = Schedule::new();
-    let mut next_sample = Instant::now();
+    let mut next_scrape = Instant::now();
     // First upload immediately: rows left over from the previous run retry
     // at startup (ADR 0004).
     let mut next_upload = Instant::now();
     loop {
         let now = Instant::now();
-        if now >= next_sample {
-            if let Err(error) = agent.sample_once() {
-                eprintln!("{ERR}sample not spooled: {error}");
+        if now >= next_scrape {
+            if let Err(error) = agent.scrape_once() {
+                eprintln!("{ERR}scrape not spooled: {error}");
             }
-            next_sample = now + sample_interval;
+            next_scrape = now + scrape_interval;
         }
         if now >= next_upload {
             next_upload = now + upload_tick(&mut agent, &mut schedule, &schedule_config);
         }
-        let wake = next_sample.min(next_upload);
+        let wake = next_scrape.min(next_upload);
         std::thread::sleep(wake.saturating_duration_since(Instant::now()));
     }
 }
@@ -202,7 +195,7 @@ fn start_trace_collection(
                 let mut spool = spool;
                 let mut source = PipeSource::spawn(&pipe);
                 // The pipe ends when the node exits, and this agent has nothing
-                // left to sample: the journald path respawns instead, because
+                // left to read: the journald path respawns instead, because
                 // there the stream ending says nothing about the node.
                 match logtail::drain(&mut source, &selection, &mut spool) {
                     Err(error) => {
@@ -232,7 +225,7 @@ fn upload_tick(agent: &mut Agent, schedule: &mut Schedule, config: &ScheduleConf
     let dropped = agent.take_dropped_report();
     if dropped > 0 {
         eprintln!(
-            "{WARNING}the sample spool cap dropped {dropped} rows since the last report; \
+            "{WARNING}the scrape spool cap dropped {dropped} rows since the last report; \
              uploads are not keeping up, or the server has been unreachable"
         );
     }
@@ -267,12 +260,12 @@ fn upload_tick(agent: &mut Agent, schedule: &mut Schedule, config: &ScheduleConf
             }
         }
         UploadOutcome::Retryable(reason) => {
-            eprintln!("{WARNING}upload failed, samples stay spooled: {reason}");
+            eprintln!("{WARNING}upload failed, scrapes stay spooled: {reason}");
         }
         UploadOutcome::Rejected { status, reason } => {
             eprintln!(
                 "{WARNING}server rejected the upload ({status}), \
-                 samples stay spooled, backing off: {reason}"
+                 scrapes stay spooled, backing off: {reason}"
             );
         }
     }

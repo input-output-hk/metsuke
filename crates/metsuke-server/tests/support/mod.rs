@@ -17,7 +17,7 @@ use metsuke_server::authority::Signed;
 use metsuke_server::config::{AbsolutePath, DeveloperConfig, HttpConfig, IngestConfig};
 use metsuke_server::developer::percent_decoded;
 use metsuke_wire::envelope::{
-    self, AgentId, Envelope, Payload, PayloadLine, PoolId, Provenance, Sample, Signature,
+    self, AgentId, Envelope, Metric, Payload, PayloadLine, PoolId, Provenance, Scrape, Signature,
     SigningKey, TraceLine, VerifyingKey,
 };
 use time::OffsetDateTime;
@@ -65,9 +65,9 @@ pub fn envelope_at(key: &SigningKey, counter: u64, now: OffsetDateTime) -> Envel
         key,
         counter,
         now,
-        Payload::samples(vec![
-            PayloadLine::sample(&test_sample(now), &provenance_of(key))
-                .expect("a test sample stamps"),
+        Payload::scrapes(vec![
+            PayloadLine::scrape(&test_scrape(now), &provenance_of(key))
+                .expect("a test scrape stamps"),
         ]),
     )
 }
@@ -80,17 +80,17 @@ pub fn provenance_of(key: &SigningKey) -> Provenance {
     }
 }
 
-pub fn test_sample(now: OffsetDateTime) -> Sample {
-    Sample {
-        sampled_at: now,
-        block_height: Some(12_345),
-        slot: None,
-        slot_in_epoch: None,
-        epoch: None,
-        sync_progress: None,
-        node_version: None,
-        node_revision: None,
+pub fn test_scrape(now: OffsetDateTime) -> Scrape {
+    Scrape {
+        scraped_at: now,
         clock_offset_ms: None,
+        failure: None,
+        metrics: vec![Metric {
+            name: "cardano_node_metrics_blockNum_int".to_string(),
+            labels: BTreeMap::new(),
+            value: 12_345.into(),
+            declared_type: Some("gauge".to_string()),
+        }],
     }
 }
 

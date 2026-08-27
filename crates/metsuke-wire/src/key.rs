@@ -6,7 +6,7 @@ use time::{Date, OffsetDateTime};
 use uuid::{NoContext, Timestamp, Uuid, Version};
 
 use crate::envelope::{
-    AgentId, AgentIdError, PoolId, SCHEMA_VERSION_LINES, SCHEMA_VERSION_SAMPLES,
+    AgentId, AgentIdError, PoolId, SCHEMA_VERSION_LINES, SCHEMA_VERSION_SCRAPES,
 };
 
 pub const KEY_PREFIX: &str = "v1/";
@@ -30,7 +30,7 @@ impl Kind {
     /// the version at all.
     pub fn of(schema_version: u32) -> Option<Kind> {
         match schema_version {
-            SCHEMA_VERSION_SAMPLES => Some(Kind::Metrics),
+            SCHEMA_VERSION_SCRAPES => Some(Kind::Metrics),
             SCHEMA_VERSION_LINES => Some(Kind::Logs),
             _ => None,
         }

@@ -100,7 +100,7 @@ fn truncated_reply_yields_none() {
     assert_eq!(probe(&config(vec![server])), None);
 }
 
-/// A server that never answers is a failed probe, not an aborted sample.
+/// A server that never answers is a failed probe, not an aborted scrape.
 #[test]
 fn silent_server_yields_none() {
     let silent = UdpSocket::bind("127.0.0.1:0").expect("bind loopback");

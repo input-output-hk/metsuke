@@ -23,7 +23,7 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # credential — see contrib/metsuke.service.
 # signing_key = "/etc/metsuke/pool.skey"
 
-# Cadences: sampling and uploading are independent.
+# Cadences: scraping and uploading are independent.
 # sample_interval_secs = 300
 # upload_interval_secs = 3600
 
@@ -31,7 +31,7 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # sntp_servers = ["time.cloudflare.com:123"]
 # sntp_timeout_secs = 5
 
-# SQLite spool: samples wait here until the server acks them. Oldest bytes
+# SQLite spool: scrapes wait here until the server acks them. Oldest bytes
 # beyond spool_max_bytes are dropped. spool_busy_timeout_secs is how long one
 # write waits for the other connection, which exists only with [log] below.
 # spool_path = "/var/lib/metsuke/spool.sqlite"

@@ -4,9 +4,11 @@
 //! unit whole, the agent version `build.rs` read, the field list from the wire
 //! types — and no edit here can document a default the agent does not ship.
 
+use std::collections::BTreeMap;
+
 use metsuke_wire::envelope::{
-    self, AgentId, Envelope, HEADER_SIGNATURE, HEADER_VKEY, Payload, PayloadLine, PoolId,
-    Provenance, Sample, SigningKey,
+    self, AgentId, Envelope, Failure, HEADER_SIGNATURE, HEADER_VKEY, Metric, Payload, PayloadLine,
+    PoolId, Provenance, Reason, Scrape, SigningKey,
 };
 use time::OffsetDateTime;
 
@@ -66,21 +68,40 @@ on the machine your node is on.</p>
 
 <h2>1. What leaves your machine</h2>
 
-<p>One upload is a plain JSON header, then your samples zstd compressed, one
+<p>One upload is a plain JSON header, then your scrapes zstd compressed, one
 JSON object per line, with a detached Ed25519 signature over the whole byte
 sequence. The header rides in a zstd skippable frame, so <code>zstd -d</code>
 on an upload hands back the lines and nothing else. This is an example of the
-whole thing. Nothing outside these fields is collected:</p>
+whole thing: two scrapes, the first cut down to two metrics where a real line
+carries every one your node exposes, the second a scrape that failed.</p>
 
 <pre>{envelope}</pre>
 
-<p>Every sampled field may be <code>null</code>. A scrape that failed is itself
-a signal, so the batch uploads either way.</p>
+<p>One line per scrape, and its <code>metrics</code> are every metric your node
+exposes on the endpoint you open in step 4 whose value JSON can hold — the same
+metric lines that command prints. Each entry carries the metric's
+<code>name</code>, its <code>labels</code> and its <code>value</code> as your
+node stated them, plus the <code>declared_type</code> its <code># TYPE</code>
+line gave where it had one. Nothing else on your machine is read: what the agent
+contributes about your machine is two facts of its own, <code>scraped_at</code>,
+the time it scraped, and <code>clock_offset_ms</code>, the offset its own NTP
+query measured.</p>
+
+<p>A scrape that failed is itself a signal, so the batch uploads either way: no
+metrics, and <code>failure</code> naming what stopped it. Its
+<code>reason</code> is one of {reasons}, and its <code>detail</code> is the
+message the agent had — the port, the status, or the size limit it was
+configured with.</p>
 
 <p>Every line names the pool and the machine that wrote it under
-<code>metsuke</code>, so one line read out of the archive on its own still says
-where it came from. Which batch it travelled in, and when that batch was sealed,
-are in the header. That is the only key metsuke claims on a line.</p>
+<code>metsuke</code> — <code>pool_id</code> and <code>agent_id</code>, the name
+you configure — so one line read out of the archive on its own still says where
+it came from. That is the only key metsuke claims on a line.</p>
+
+<p>The header carries those same two, and four more: <code>agent_version</code>,
+the build that scraped; <code>counter</code>, which batch of yours this is;
+<code>timestamp</code>, when the batch was sealed; and
+<code>schema_version</code>, which shape its lines are.</p>
 
 <p>If you do step 5, trace lines upload as their own batches: the same header
 with <code>schema_version</code> 2, and then the lines you selected, one per
@@ -141,7 +162,7 @@ step 5 looks applied, and not one trace line is ever collected.</p>
 
 <p>Restart the node, then check it answers:</p>
 
-<pre>curl -s {metrics_url} | head</pre>
+<pre>curl -s {metrics_url}</pre>
 
 <h2>5. Optional: let the node's traces out</h2>
 
@@ -232,7 +253,7 @@ journalctl -u metsuke -f</pre>
 
 <p>The first upload is attempted as soon as the agent starts, so you do not
 have to wait out a cadence to find out that something is wrong. A refused
-upload logs the server's reason and the samples stay spooled — nothing is lost
+upload logs the server's reason and the scrapes stay spooled — nothing is lost
 while you fix it, and they upload once it is fixed.</p>
 
 <h2>10. Staying up to date</h2>
@@ -243,10 +264,11 @@ older. To update, repeat step 6 and restart the service:</p>
 
 <pre>sudo systemctl restart metsuke</pre>
 
-<p>The spool is on disk, so queued samples survive the restart; nothing is
-sampled while the agent is down.</p>
+<p>The spool is on disk, so queued scrapes survive the restart; nothing is
+scraped while the agent is down.</p>
 "#,
         envelope = escape(&example_envelope()),
+        reasons = failure_reasons(),
         metadata = escape(&metadata_json()),
         backend = escape(&metrics.backend_config()),
         traces = escape(&trace_config()),
@@ -397,11 +419,17 @@ fn metadata_json() -> String {
 /// every build; the digits mean nothing beyond showing the format.
 const EXAMPLE_INSTANT: i64 = 1_780_000_000;
 
-/// One upload, rendered from the wire types themselves: a field this crate can
-/// receive but the page does not name is the drift this is here to prevent.
-/// The header is indented for reading — on the wire it is one line — and the
-/// payload follows it as the lines a decompressor hands back.
-fn example_envelope() -> String {
+/// The upload the page shows, built from the wire types themselves, so the
+/// example cannot show a shape the crate does not send.
+/// `the_page_renders_rows_whose_metrics_are_a_nested_list` reads the rows back
+/// out of the rendered page rather than restating them.
+///
+/// Two rows, because a scrape has two shapes and a field only the failed one
+/// carries would otherwise never reach the page. Two metrics in the first,
+/// where a real row carries every one the endpoint returned: the names are a
+/// node's, the values are not, and an operator checks the claim against their
+/// own endpoint with the command in step 4.
+pub fn example_submission() -> Envelope {
     let key = SigningKey::from_bytes(&[0u8; 32]);
     let at = OffsetDateTime::from_unix_timestamp(EXAMPLE_INSTANT)
         .expect("a fixed timestamp is in range");
@@ -409,28 +437,70 @@ fn example_envelope() -> String {
         pool_id: PoolId::from_cold_key(&key.verifying_key()),
         agent_id: AgentId::slugify("relay-1").expect("a fixed name slugifies"),
     };
-    let line = PayloadLine::sample(
-        &Sample {
-            sampled_at: at,
-            block_height: Some(12_318_442),
-            slot: Some(163_281_005),
-            slot_in_epoch: Some(281_005),
-            epoch: Some(587),
-            sync_progress: None,
-            node_version: Some("11.0.1".to_string()),
-            node_revision: Some("0e2b4b1a".to_string()),
+    let rows = [
+        Scrape {
+            scraped_at: at,
             clock_offset_ms: Some(-3),
+            failure: None,
+            metrics: vec![
+                Metric {
+                    name: "cardano_node_metrics_blockNum_int".to_string(),
+                    labels: BTreeMap::new(),
+                    value: 12_318_442.into(),
+                    declared_type: Some("gauge".to_string()),
+                },
+                Metric {
+                    name: "cardano_node_metrics_tipBlock".to_string(),
+                    labels: BTreeMap::from([("hash".to_string(), "0e2b4b1a".repeat(8))]),
+                    value: 1.into(),
+                    declared_type: Some("info".to_string()),
+                },
+            ],
         },
-        &provenance,
-    )
-    .expect("plain fields stamp");
-    let envelope = Envelope::new(
+        Scrape {
+            scraped_at: at + time::Duration::minutes(5),
+            clock_offset_ms: None,
+            failure: Some(Failure {
+                reason: Reason::Unreachable,
+                detail: "the endpoint did not answer: connection refused".to_string(),
+            }),
+            metrics: Vec::new(),
+        },
+    ];
+    Envelope::new(
         provenance.clone(),
         CLIENT_VERSION.to_string(),
         42,
         at,
-        Payload::samples(vec![line]),
-    );
+        Payload::scrapes(
+            rows.iter()
+                .map(|row| PayloadLine::scrape(row, &provenance).expect("plain fields stamp"))
+                .collect(),
+        ),
+    )
+}
+
+/// Every reason a failed scrape can give, as code spans, in the order
+/// `Reason::ALL` lists them. Rendered from that list, which the wire crate's
+/// own const assertion keeps complete, so a case the wire gains is a case the
+/// page names.
+fn failure_reasons() -> String {
+    let words: Vec<String> = Reason::ALL
+        .iter()
+        .map(|reason| {
+            let word = serde_json::to_value(reason).expect("a unit variant serializes");
+            let word = word.as_str().expect("as a string");
+            format!("<code>{}</code>", escape(word))
+        })
+        .collect();
+    words.join(", ")
+}
+
+/// That submission as the page prints it: the header indented for reading — on
+/// the wire it is one line — and the payload after it as the lines a
+/// decompressor hands back.
+fn example_envelope() -> String {
+    let envelope = example_submission();
     let header: serde_json::Value =
         serde_json::from_slice(&envelope::header_json(&envelope).expect("plain fields serialize"))
             .expect("a header is a JSON object");

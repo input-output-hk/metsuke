@@ -1,4 +1,4 @@
-//! The agent's only durability layer (ADR 0004): samples, trace lines,
+//! The agent's only durability layer (ADR 0004): scrapes, trace lines,
 //! delivery state, and schema migrations in one SQLite file. A row leaves on
 //! server ACK, as the oldest row past its stream's byte cap, or for being
 //! larger than a whole batch on its own (`outstanding_rows`); everything else is
@@ -8,20 +8,20 @@
 //! (`envelope::PayloadLine`), stamped on the way in; nothing here reads one back
 //! as the schema it came from. What that buys is ADR 0010.
 //!
-//! Both caps are in bytes rather than rows because a trace line and a sample
-//! are not the same size and a trace stream's rate is not the sampler's; a row
-//! count bounds neither the file nor the memory a batch costs.
+//! Both caps are in bytes rather than rows because a trace line and a scrape
+//! are not the same size and a trace stream's rate is not the scrape tick's; a
+//! row count bounds neither the file nor the memory a batch costs.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension};
 
-use metsuke_wire::envelope::{PayloadLine, Provenance, Sample, SealError, TraceLine};
+use metsuke_wire::envelope::{PayloadLine, Provenance, Scrape, SealError, TraceLine};
 
 pub struct SpoolConfig {
     pub path: PathBuf,
-    /// Newest sample bytes kept when the server is unreachable; oldest beyond
+    /// Newest scrape bytes kept when the server is unreachable; oldest beyond
     /// this are dropped on push (ADR 0004: degrade, don't fill the disk).
     pub max_bytes: u64,
     /// How long a write waits for the other connection to this file — the
@@ -35,7 +35,6 @@ pub struct Spool {
     conn: Connection,
     max_bytes: u64,
     provenance: Provenance,
-    discarded_by_upgrade: u64,
     /// Accumulated rather than returned per call, because the caller that has
     /// to say it is the upload loop and the deletes happen while a batch is
     /// being taken.
@@ -81,44 +80,26 @@ pub enum SpoolError {
     Stamp(#[from] SealError),
 }
 
-const MIGRATIONS: &[&str] = &[
-    "CREATE TABLE samples (
+/// One entry, and this is the release it ships with: a spool file only exists
+/// where this build has run, and no build has been released, so every state an
+/// earlier entry could have migrated from is one nothing can have written. Each
+/// entry added after v1 ships is real and never rewritten — that is what
+/// `sqlite::migrate` counts in `user_version`.
+const MIGRATIONS: &[&str] = &["CREATE TABLE scrapes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        sample TEXT NOT NULL
+        scrape TEXT NOT NULL,
+        bytes INTEGER NOT NULL
+    );
+    CREATE TABLE log_lines (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        line TEXT NOT NULL,
+        bytes INTEGER NOT NULL
     );
     CREATE TABLE delivery (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         counter INTEGER NOT NULL
     );
-    INSERT INTO delivery (id, counter) VALUES (1, 0);",
-    "ALTER TABLE samples ADD COLUMN bytes INTEGER NOT NULL DEFAULT 0;
-    UPDATE samples SET bytes = length(CAST(sample AS BLOB)) + 1;
-    CREATE TABLE log_lines (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        line TEXT NOT NULL,
-        bytes INTEGER NOT NULL
-    );",
-    // Rows are stored stamped from here on (metsuke-jfb.11). A row written
-    // before that carries no stamp, and the server refuses a batch line by line
-    // for a missing one, so such a row can never be delivered — keeping it only
-    // stalls its stream until the byte cap evicts it. Taking it costs no
-    // delivered data because no archive has received any yet.
-    //
-    // `json_valid` first: `json_extract` raises on text that is not JSON, and a
-    // row that is not JSON is not a wire line either. The path spells
-    // `PROVENANCE_KEY` a second time, SQL taking a literal;
-    // `migrating_takes_a_row_that_is_not_even_json` fails on a change to either
-    // alone, because the stamped row it keeps is matched by this path.
-    "DELETE FROM samples
-        WHERE json_valid(sample) = 0 OR json_extract(sample, '$.metsuke') IS NULL;
-    DELETE FROM log_lines
-        WHERE json_valid(line) = 0 OR json_extract(line, '$.metsuke') IS NULL;",
-];
-
-/// Which of `MIGRATIONS` deletes the unstamped rows, as
-/// `sqlite::Applied::version` numbers it: the only one whose row count is a
-/// backlog an operator is losing rather than a schema change.
-const STAMP_MIGRATION: u32 = 3;
+    INSERT INTO delivery (id, counter) VALUES (1, 0);"];
 
 /// The two streams, as the schema names them. Interpolated into SQL, so they
 /// are `&'static str` from here and never anything a caller supplies.
@@ -127,9 +108,9 @@ struct Stream {
     payload: &'static str,
 }
 
-const SAMPLES: Stream = Stream {
-    table: "samples",
-    payload: "sample",
+const SCRAPES: Stream = Stream {
+    table: "scrapes",
+    payload: "scrape",
 };
 
 const LINES: Stream = Stream {
@@ -142,16 +123,12 @@ const LINES: Stream = Stream {
 /// WAL because the file has two writers: under rollback journalling a reader
 /// takes a shared lock that blocks the trace-line writer, so the upload loop
 /// reading a batch would stall the stream for as long as it takes.
-fn open_spool(path: &PathBuf, busy_timeout: Duration) -> Result<(Connection, u64), SpoolError> {
+fn open_spool(path: &PathBuf, busy_timeout: Duration) -> Result<Connection, SpoolError> {
     let conn = Connection::open(path)?;
     conn.busy_timeout(busy_timeout)?;
     conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
-    let applied = metsuke_wire::sqlite::migrate(&conn, MIGRATIONS)?;
-    let discarded = applied
-        .iter()
-        .find(|migration| migration.version == STAMP_MIGRATION)
-        .map_or(0, |migration| migration.rows);
-    Ok((conn, discarded))
+    metsuke_wire::sqlite::migrate(&conn, MIGRATIONS)?;
+    Ok(conn)
 }
 
 /// Append one row and evict the oldest beyond `max_bytes`, in one transaction
@@ -278,32 +255,24 @@ fn clamp(bytes: u64) -> i64 {
 impl Spool {
     /// Open (creating if absent) and migrate the spool database.
     pub fn open(config: &SpoolConfig) -> Result<Self, SpoolError> {
-        let (conn, discarded_by_upgrade) = open_spool(&config.path, config.busy_timeout)?;
         Ok(Spool {
-            conn,
+            conn: open_spool(&config.path, config.busy_timeout)?,
             max_bytes: config.max_bytes,
             provenance: config.provenance.clone(),
             uncarriable_since_report: UncarriableReport::default(),
-            discarded_by_upgrade,
         })
     }
 
-    /// Rows `STAMP_MIGRATION` deleted when this spool was opened. Reported
-    /// rather than logged here, the way `take_uncarriable_report` is.
-    pub fn discarded_by_upgrade(&self) -> u64 {
-        self.discarded_by_upgrade
+    /// Stamp a scrape and append it. Returns how many rows the cap dropped.
+    pub fn push(&mut self, scrape: &Scrape) -> Result<u64, SpoolError> {
+        let line = PayloadLine::scrape(scrape, &self.provenance)?;
+        push_capped(&mut self.conn, &SCRAPES, &line, self.max_bytes)
     }
 
-    /// Stamp a sample and append it. Returns how many rows the cap dropped.
-    pub fn push(&mut self, sample: &Sample) -> Result<u64, SpoolError> {
-        let line = PayloadLine::sample(sample, &self.provenance)?;
-        push_capped(&mut self.conn, &SAMPLES, &line, self.max_bytes)
-    }
-
-    /// Undelivered sample lines, oldest first, within the budget. A head row
+    /// Undelivered scrape lines, oldest first, within the budget. A head row
     /// that alone exceeds it is dropped here (`outstanding_rows`).
     pub fn outstanding(&mut self, budget: RowBudget) -> Result<Vec<SpooledRow>, SpoolError> {
-        self.taken(&SAMPLES, budget)
+        self.taken(&SCRAPES, budget)
     }
 
     /// The same for trace lines, which are written by the trace-line thread's
@@ -352,7 +321,7 @@ impl Spool {
     }
 
     pub fn ack(&mut self, ids: &[i64]) -> Result<(), SpoolError> {
-        delete_rows(&mut self.conn, &SAMPLES, ids)
+        delete_rows(&mut self.conn, &SCRAPES, ids)
     }
 
     pub fn ack_lines(&mut self, ids: &[i64]) -> Result<(), SpoolError> {
@@ -365,7 +334,7 @@ pub struct LogSpoolConfig {
     /// database, not one per producer.
     pub path: PathBuf,
     /// Newest trace-line bytes kept. Its own cap, because the trace stream's
-    /// volume has nothing to do with the sampler's cadence.
+    /// volume has nothing to do with the scrape tick's cadence.
     pub max_bytes: u64,
     pub busy_timeout: Duration,
     /// The same stamp `SpoolConfig` carries: both writers store wire lines, and
@@ -383,11 +352,8 @@ pub struct LogSpool {
 
 impl LogSpool {
     pub fn open(config: &LogSpoolConfig) -> Result<Self, SpoolError> {
-        // The upgrade's discard count is `Spool::discarded_by_upgrade`: the
-        // agent opens that half first, so this one migrates nothing.
-        let (conn, _) = open_spool(&config.path, config.busy_timeout)?;
         Ok(LogSpool {
-            conn,
+            conn: open_spool(&config.path, config.busy_timeout)?,
             max_bytes: config.max_bytes,
             provenance: config.provenance.clone(),
         })

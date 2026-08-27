@@ -121,49 +121,55 @@ let
     AWS_SECRET_ACCESS_KEY=${secretAccessKey}
   '';
 
-  # Every trace line the bucket holds, one per output line. The object is the
-  # raw signed body and nothing else (ADR 0005), so reading it back is od, zstd
-  # and jq: no metsuke code is on this side of the assertion, which is what lets
-  # it say the archive carries the node's lines rather than that metsuke agrees
-  # with itself. Objects that are not a trace-line envelope drop out at the
-  # schema version.
-  archivedLines = pkgs.writeShellScript "archived-trace-lines" ''
-    set -euo pipefail
-    export PATH=${
-      pkgs.lib.makeBinPath [
-        pkgs.awscli2
-        pkgs.zstd
-        pkgs.jq
-        pkgs.coreutils
-        pkgs.findutils
-      ]
-    }
-    set -a
-    . ${awsEnvironment}
-    set +a
-    export AWS_DEFAULT_REGION=${region}
-    rm -rf /tmp/archive
-    mkdir -p /tmp/archive
-    aws --endpoint-url http://127.0.0.1:${toString s3Port} \
-      s3 sync s3://${bucket}/${keyPrefix} /tmp/archive >/dev/null
-    find /tmp/archive -name '*.jsonl.zst' -print0 |
-      while IFS= read -r -d "" object; do
-        # The header rides uncompressed in a leading skippable frame: its
-        # length is the u32 at offset 4, and the JSON follows at offset 8. No
-        # decompressor is involved in reading it, which is the point of the
-        # frame. `zstd -dcq` then skips it and emits the payload alone — for
-        # schema 2, the node's trace lines with their provenance.
-        #
-        # The offsets are `envelope::HEADER_OFFSET` restated in shell, because
-        # this side of the assertion runs no metsuke code. Nothing keeps them
-        # in step: a container whose prefix changes shape changes them here.
-        length=$(od --address-radix=n --format=u4 --skip-bytes=4 --read-bytes=4 "$object" | tr -d ' ')
-        header=$(tail -c +9 "$object" | head -c "$length")
-        if [ "$(jq -r .schema_version <<<"$header")" = 2 ]; then
-          zstd -dcq "$object"
-        fi
-      done
-  '';
+  # Every payload line the bucket holds for one schema, one per output line. The
+  # object is the raw signed body and nothing else (ADR 0005), so reading it back
+  # is od, zstd and jq: no metsuke code is on this side of the assertion, which
+  # is what lets it say the archive carries the node's own metrics and lines
+  # rather than that metsuke agrees with itself. Objects declaring another schema
+  # drop out at the version.
+  archivedPayload =
+    schema:
+    pkgs.writeShellScript "archived-payload-v${toString schema}" ''
+      set -euo pipefail
+      export PATH=${
+        pkgs.lib.makeBinPath [
+          pkgs.awscli2
+          pkgs.zstd
+          pkgs.jq
+          pkgs.coreutils
+          pkgs.findutils
+        ]
+      }
+      set -a
+      . ${awsEnvironment}
+      set +a
+      export AWS_DEFAULT_REGION=${region}
+      rm -rf /tmp/archive
+      mkdir -p /tmp/archive
+      aws --endpoint-url http://127.0.0.1:${toString s3Port} \
+        s3 sync s3://${bucket}/${keyPrefix} /tmp/archive >/dev/null
+      find /tmp/archive -name '*.jsonl.zst' -print0 |
+        while IFS= read -r -d "" object; do
+          # The header rides uncompressed in a leading skippable frame: its
+          # length is the u32 at offset 4, and the JSON follows at offset 8. No
+          # decompressor is involved in reading it, which is the point of the
+          # frame. `zstd -dcq` then skips it and emits the payload alone: for
+          # schema 1 the scrape rows, for schema 2 the node's trace lines, each
+          # with its provenance.
+          #
+          # The offsets are `envelope::HEADER_OFFSET` restated in shell, because
+          # this side of the assertion runs no metsuke code. Nothing keeps them
+          # in step: a container whose prefix changes shape changes them here.
+          length=$(od --address-radix=n --format=u4 --skip-bytes=4 --read-bytes=4 "$object" | tr -d ' ')
+          header=$(tail -c +9 "$object" | head -c "$length")
+          if [ "$(jq -r .schema_version <<<"$header")" = ${toString schema} ]; then
+            zstd -dcq "$object"
+          fi
+        done
+    '';
+
+  archivedScrapes = archivedPayload 1;
+  archivedLines = archivedPayload 2;
 
   # The chain is the demo's and the tracing is the recording's, so the node boots
   # as an operator who has not reached step 4 yet.
@@ -369,7 +375,7 @@ let
             # how long the retry that follows takes (ADR 0004).
             upload_interval_secs = 5;
             upload_jitter_max_secs = 0;
-            # A name no test network can resolve would cost every sample the SNTP
+            # A name no test network can resolve would cost every scrape the SNTP
             # timeout.
             sntp_servers = [ ];
             # The node writes its traces to the journal, so this is where the
@@ -482,6 +488,17 @@ let
               " --query 'Contents[].Key' --output text"
           )
           assert "-${poolId}-${agentId}-metrics.jsonl.zst" in listing, listing
+          # And the object holds the scrape rather than only being named for it:
+          # a metric the node's own endpoint states, read back with zstd and jq
+          # and no metsuke code. build_info because the node serves it from its
+          # first body, before it has a chain to report a height for.
+          # `grep -c` for the same reason the trace-line subtest below gives.
+          e2e.wait_until_succeeds(
+              "${archivedScrapes} |"
+              " grep -cF '\"name\":\"cardano_node_metrics_cardano_build_info\"'"
+              " >/dev/null",
+              timeout = timedelta(minutes = 5),
+          )
 
       with subtest("a second machine reporting for the same pool also lands"):
           # The motivating bug: one pool, two agents. Nothing here is keyed per

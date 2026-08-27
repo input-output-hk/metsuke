@@ -8,7 +8,7 @@ use metsuke_server::http::status_for;
 use metsuke_server::intake::{IngestError, Intake, Rejection};
 use metsuke_wire::envelope::{
     CONTAINER_MAGIC, ContainerError, Envelope, PoolId, SCHEMA_VERSION_LINES,
-    SCHEMA_VERSION_SAMPLES, SigningKey,
+    SCHEMA_VERSION_SCRAPES, SigningKey,
 };
 
 mod support;
@@ -266,7 +266,7 @@ fn tampered_body_is_rejected() {
 fn a_data_frame_that_is_not_zstd_is_archived_unread() {
     let key = test_key();
     let (intake, _dir) = intake_for(&[pool_of(&key)]);
-    let header = header(&key, SCHEMA_VERSION_SAMPLES).to_string();
+    let header = header(&key, SCHEMA_VERSION_SCRAPES).to_string();
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&CONTAINER_MAGIC.to_le_bytes());
     bytes.extend_from_slice(&(header.len() as u32).to_le_bytes());
@@ -432,7 +432,7 @@ fn a_schema_version_with_no_key_segment_is_refused() {
 }
 
 // The trace-line schema goes through the same chain and is filed as logs: the
-// developers' data arrives by the path the samples already take (ADR 0005).
+// developers' data arrives by the path the scrapes already take (ADR 0005).
 #[test]
 fn a_trace_line_upload_is_accepted_and_filed_as_logs() {
     let key = test_key();
@@ -460,7 +460,7 @@ fn a_trace_line_upload_is_accepted_and_filed_as_logs() {
 
 // A store that cannot store is the server's failure, not the client's: it
 // must not come back as a rejection the operator would chase (ADR 0004 —
-// no ACK, so the client keeps the samples spooled).
+// no ACK, so the client keeps the scrapes spooled).
 #[test]
 fn archive_failure_is_not_a_rejection() {
     let key = test_key();

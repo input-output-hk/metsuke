@@ -6,6 +6,7 @@
 //! needs reads as dead code in the others.
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::net::TcpListener;
 use std::num::{NonZeroU32, NonZeroU64};
@@ -21,8 +22,8 @@ use metsuke_server::instructions;
 use metsuke_server::intake::Intake;
 use metsuke_server::serve;
 use metsuke_wire::envelope::{
-    AgentId, Envelope, Payload, PayloadLine, PoolId, Provenance, Sample, Signature, SigningKey,
-    seal,
+    AgentId, Envelope, Metric, Payload, PayloadLine, PoolId, Provenance, Scrape, Signature,
+    SigningKey, seal,
 };
 use time::OffsetDateTime;
 
@@ -199,8 +200,8 @@ fn seeded(root: &Path, index: usize) -> Object {
         agent_id: agent_id.clone(),
     };
     let payload = match kind {
-        Kind::Metrics => Payload::samples(vec![
-            PayloadLine::sample(&sample(stamped), &provenance).expect("a sample stamps"),
+        Kind::Metrics => Payload::scrapes(vec![
+            PayloadLine::scrape(&scrape(stamped), &provenance).expect("a scrape stamps"),
         ]),
         Kind::Logs => Payload::trace_lines(vec![PayloadLine::spooled(
             serde_json::json!({"ns": "Test", "metsuke": {"pool_id": pool_id, "agent_id": agent_id}})
@@ -226,17 +227,17 @@ fn seeded(root: &Path, index: usize) -> Object {
     }
 }
 
-fn sample(now: OffsetDateTime) -> Sample {
-    Sample {
-        sampled_at: now,
-        block_height: Some(1),
-        slot: None,
-        slot_in_epoch: None,
-        epoch: None,
-        sync_progress: None,
-        node_version: None,
-        node_revision: None,
+fn scrape(now: OffsetDateTime) -> Scrape {
+    Scrape {
+        scraped_at: now,
         clock_offset_ms: None,
+        failure: None,
+        metrics: vec![Metric {
+            name: "cardano_node_metrics_blockNum_int".to_string(),
+            labels: BTreeMap::new(),
+            value: 1.into(),
+            declared_type: Some("gauge".to_string()),
+        }],
     }
 }
 

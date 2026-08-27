@@ -10,16 +10,9 @@ use serde_json::Number;
 use time::OffsetDateTime;
 
 use crate::endpoint::MetricsUrl;
-use metsuke_wire::envelope::Sample;
+use metsuke_wire::envelope::{Failure, Metric, Reason, Scrape};
 use metsuke_wire::http;
-
-/// Metric names as emitted by the Leios node's PrometheusSimple backend,
-/// frozen against the recorded fixtures under tests/fixtures/recordings/.
-const BLOCK_HEIGHT: &str = "cardano_node_metrics_blockNum_int";
-const SLOT: &str = "cardano_node_metrics_slotNum_int";
-const SLOT_IN_EPOCH: &str = "cardano_node_metrics_slotInEpoch_int";
-const EPOCH: &str = "cardano_node_metrics_epoch_int";
-const BUILD_INFO: &str = "cardano_node_metrics_cardano_build_info";
+use metsuke_wire::journal::WARNING;
 
 pub struct ScrapeConfig {
     pub metrics_url: MetricsUrl,
@@ -29,14 +22,34 @@ pub struct ScrapeConfig {
     pub max_body_bytes: u64,
 }
 
-/// Scrape once. `clock_offset_ms` stays null here — the sampler fills it
-/// from the SNTP probe. `sync_progress` also stays null: the
-/// Leios PrometheusSimple endpoint exposes no sync-progress metric (see the
-/// recorded fixtures), so v1 has nothing to fill it from.
-pub fn scrape(config: &ScrapeConfig) -> Sample {
-    let sampled_at = OffsetDateTime::now_utc();
-    let body = fetch(config).ok();
-    sample_from_body(sampled_at, body.as_deref())
+/// Scrape once. `clock_offset_ms` stays null here — `scraper` fills it from
+/// the SNTP probe. A refused line and a failed fetch are both reported to the
+/// journal as well as shipped: the row reaches a consumer, the warning reaches
+/// the operator who can do something about it.
+pub fn scrape(config: &ScrapeConfig) -> Scrape {
+    let scraped_at = OffsetDateTime::now_utc();
+    let (metrics, failure) = match fetch(config) {
+        Ok(body) => {
+            let ParsedBody { metrics, refused } = parse(&body);
+            if let Some(first) = refused.first() {
+                eprintln!(
+                    "{WARNING}{} of the node's metric lines did not ship, the first: {first}",
+                    refused.len()
+                );
+            }
+            (metrics, None)
+        }
+        Err(error) => {
+            eprintln!("{WARNING}the scrape failed and ships as one: {error}");
+            (Vec::new(), Some(Failure::from(&error)))
+        }
+    };
+    Scrape {
+        scraped_at,
+        clock_offset_ms: None,
+        failure,
+        metrics,
+    }
 }
 
 /// Why a body did not arrive. Kept apart because they call for different
@@ -52,6 +65,22 @@ pub enum FetchError {
     TooLarge { limit: u64 },
     #[error("the answer's body did not read: {0}")]
     Unreadable(#[source] ureq::Error),
+}
+
+/// The wire's account of a failed fetch: which case it was, and the message
+/// this agent had for it.
+impl From<&FetchError> for Failure {
+    fn from(error: &FetchError) -> Failure {
+        Failure {
+            reason: match error {
+                FetchError::Unreachable(_) => Reason::Unreachable,
+                FetchError::Refused(_) => Reason::Refused,
+                FetchError::TooLarge { .. } => Reason::TooLarge,
+                FetchError::Unreadable(_) => Reason::Unreadable,
+            },
+            detail: error.to_string(),
+        }
+    }
 }
 
 /// One body off the endpoint, or why there is none.
@@ -84,26 +113,17 @@ pub struct ParsedBody {
 /// A line that reached no metric, carrying what a caller needs to name it.
 /// The two are apart because they say different things about the node: one
 /// stated a value nothing can hold, the other wrote something no metric is.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, thiserror::Error)]
 pub enum Refused {
+    #[error("{name} stated {value}, which is not a number JSON can hold")]
     NonFinite { name: String, value: String },
+    #[error("{line:?} states no metric")]
     Unreadable { line: String },
 }
 
-/// One exposition line: what the endpoint called it, what it carried, and the
-/// type the body declared for it — some metrics arrive with no `# TYPE` line.
-#[derive(Debug, PartialEq)]
-pub struct Metric {
-    pub name: String,
-    pub labels: BTreeMap<String, String>,
-    pub value: Number,
-    pub declared_type: Option<String>,
-}
-
 /// Every metric an exposition body states, one per line — this endpoint groups
-/// nothing under a shared name. Values keep the shape the body wrote them in:
-/// an integer stays an integer, so a counter past an f64's exact range keeps
-/// its digits.
+/// nothing under a shared name. Values keep the shape the body wrote them in,
+/// which is what `envelope::Metric` holds them as.
 pub fn parse(body: &str) -> ParsedBody {
     let types = declared_types(body);
     let mut metrics = Vec::new();
@@ -187,45 +207,6 @@ fn labels_of(s: &str) -> Option<(BTreeMap<String, String>, &str)> {
         let (value, after) = take_quoted(after.strip_prefix('"')?)?;
         labels.insert(name.to_string(), value);
         rest = after.strip_prefix(',').unwrap_or(after);
-    }
-}
-
-/// A `None` body means the fetch itself failed.
-fn sample_from_body(sampled_at: OffsetDateTime, body: Option<&str>) -> Sample {
-    let (node_version, node_revision) = body.map(build_info).unwrap_or_default();
-    Sample {
-        sampled_at,
-        block_height: body.and_then(|b| int_metric(b, BLOCK_HEIGHT)),
-        slot: body.and_then(|b| int_metric(b, SLOT)),
-        slot_in_epoch: body.and_then(|b| int_metric(b, SLOT_IN_EPOCH)),
-        epoch: body.and_then(|b| int_metric(b, EPOCH)),
-        sync_progress: None,
-        node_version,
-        node_revision,
-        clock_offset_ms: None,
-    }
-}
-
-/// The value of a label-less integer gauge, by exact metric name.
-fn int_metric(body: &str, name: &str) -> Option<u64> {
-    body.lines().find_map(|line| {
-        let rest = line.strip_prefix(name)?;
-        // The space rejects longer names sharing `name` as a prefix, and
-        // labelled variants (which would continue with `{`).
-        let value = rest.strip_prefix(' ')?;
-        value.trim().parse().ok()
-    })
-}
-
-/// `version` and `revision` labels of the build-info metric.
-fn build_info(body: &str) -> (Option<String>, Option<String>) {
-    let labels = body.lines().find_map(|line| {
-        let rest = line.strip_prefix(BUILD_INFO)?.strip_prefix('{')?;
-        labels_of(rest).map(|(labels, _)| labels)
-    });
-    match labels {
-        Some(mut labels) => (labels.remove("version"), labels.remove("revision")),
-        None => (None, None),
     }
 }
 

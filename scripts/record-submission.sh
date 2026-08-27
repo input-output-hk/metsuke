@@ -10,7 +10,7 @@ recordings="$repository/crates/metsuke-wire/tests/fixtures/recordings"
 scratch="$(mktemp -d)"
 trap 'rm -rf "$scratch"' EXIT
 
-for shape in samples lines; do
+for shape in scrapes lines; do
   # Into the scratch first: writing the fixture directly would truncate it
   # before the build that has to succeed to replace it has said anything.
   cargo run --quiet --manifest-path "$repository/Cargo.toml" \

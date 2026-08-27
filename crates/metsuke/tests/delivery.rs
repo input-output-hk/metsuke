@@ -7,12 +7,12 @@ use std::time::Duration;
 use metsuke::delivery::Delivery;
 use metsuke::spool::{LogSpool, LogSpoolConfig, Spool, SpoolConfig};
 use metsuke_wire::envelope::{
-    self, Limits, Payload, PayloadLine, PoolId, Provenance, Sample, SigningKey, TraceLine,
+    self, Limits, Payload, PayloadLine, PoolId, Provenance, Scrape, SigningKey, TraceLine,
 };
 use time::OffsetDateTime;
 
 mod support;
-use support::{TEST_LIMITS, test_key, test_provenance, trace_line};
+use support::{TEST_LIMITS, scrape_at, test_key, test_provenance, trace_line};
 
 /// Wide enough that no cap in the spool or the batch fires unless a test asks
 /// for one.
@@ -20,30 +20,16 @@ const UNBOUNDED: u64 = 64 * 1024 * 1024;
 
 const NO_CONTENTION: Duration = Duration::from_secs(1);
 
-/// The samples an opened batch carries, so a test that is about delivery does
+/// The scrapes an opened batch carries, so a test that is about delivery does
 /// not carry the schema check with it.
-fn samples_of(envelope: &envelope::Envelope) -> Vec<Sample> {
-    envelope.samples().expect("a sample batch carries samples")
+fn scrapes_of(envelope: &envelope::Envelope) -> Vec<Scrape> {
+    envelope.scrapes().expect("a scrape batch carries scrapes")
 }
 
 fn lines_of(envelope: &envelope::Envelope) -> Vec<TraceLine> {
     envelope
         .trace_lines()
         .expect("a trace-line batch carries lines")
-}
-
-fn sample_at(unix_secs: i64) -> Sample {
-    Sample {
-        sampled_at: OffsetDateTime::from_unix_timestamp(unix_secs).unwrap(),
-        block_height: Some(unix_secs as u64),
-        slot: None,
-        slot_in_epoch: None,
-        epoch: None,
-        sync_progress: None,
-        node_version: None,
-        node_revision: None,
-        clock_offset_ms: None,
-    }
 }
 
 fn temp_delivery(dir: &tempfile::TempDir, key: &SigningKey) -> Delivery {
@@ -80,13 +66,13 @@ fn temp_log_spool(dir: &tempfile::TempDir) -> LogSpool {
 // own call (`open` with the verifying key) accepts, and an ack empties the
 // spool.
 #[test]
-fn pushed_samples_seal_verify_and_ack_drains_the_spool() {
+fn pushed_scrapes_seal_verify_and_ack_drains_the_spool() {
     let dir = tempfile::tempdir().unwrap();
     let key = test_key();
     let mut delivery = temp_delivery(&dir, &key);
-    let samples = [sample_at(1), sample_at(2)];
-    for sample in &samples {
-        delivery.push(sample).unwrap();
+    let scrapes = [scrape_at(1), scrape_at(2)];
+    for scrape in &scrapes {
+        delivery.push(scrape).unwrap();
     }
     let batch = delivery
         .take_batch(OffsetDateTime::UNIX_EPOCH)
@@ -99,7 +85,7 @@ fn pushed_samples_seal_verify_and_ack_drains_the_spool() {
         TEST_LIMITS,
     )
     .unwrap();
-    assert_eq!(samples_of(&opened), samples);
+    assert_eq!(scrapes_of(&opened), scrapes);
     assert_eq!(
         opened.provenance.pool_id,
         PoolId::from_cold_key(&key.verifying_key())
@@ -113,14 +99,14 @@ fn pushed_samples_seal_verify_and_ack_drains_the_spool() {
     );
 }
 
-// A failed PUT means no ack: the retry offers the same samples again but
+// A failed PUT means no ack: the retry offers the same scrapes again but
 // under a fresh counter — a counter value is never handed out twice.
 #[test]
 fn unacked_batch_is_retaken_with_a_fresh_counter() {
     let dir = tempfile::tempdir().unwrap();
     let key = test_key();
     let mut delivery = temp_delivery(&dir, &key);
-    delivery.push(&sample_at(1)).unwrap();
+    delivery.push(&scrape_at(1)).unwrap();
     let open = |batch: &metsuke::delivery::SealedBatch| {
         envelope::open(
             &key.verifying_key(),
@@ -139,7 +125,7 @@ fn unacked_batch_is_retaken_with_a_fresh_counter() {
         .unwrap()
         .unwrap();
     let (first, retry) = (open(&first), open(&retry));
-    assert_eq!(samples_of(&first), samples_of(&retry));
+    assert_eq!(scrapes_of(&first), scrapes_of(&retry));
     assert!(retry.counter > first.counter);
 }
 
@@ -162,7 +148,7 @@ fn empty_spool_yields_no_batch() {
     );
 }
 
-// Trace lines take the same path as samples and come out as a schema v2
+// Trace lines take the same path as scrapes and come out as a schema v2
 // envelope the server's own call opens, with the lines field for field.
 #[test]
 fn spooled_trace_lines_seal_as_their_own_envelope() {
@@ -200,7 +186,7 @@ fn spooled_trace_lines_seal_as_their_own_envelope() {
     );
 }
 
-// Acking a trace-line batch must not touch a spooled sample, and vice versa:
+// Acking a trace-line batch must not touch a spooled scrape, and vice versa:
 // the two streams share one file and one counter, nothing else.
 #[test]
 fn acking_one_stream_leaves_the_other_spooled() {
@@ -208,7 +194,7 @@ fn acking_one_stream_leaves_the_other_spooled() {
     let key = test_key();
     let mut delivery = temp_delivery(&dir, &key);
     let mut lines = temp_log_spool(&dir);
-    delivery.push(&sample_at(1)).unwrap();
+    delivery.push(&scrape_at(1)).unwrap();
     lines.push(&trace_line(r#"{"ns":"one line"}"#)).unwrap();
 
     let batch = delivery
@@ -217,18 +203,18 @@ fn acking_one_stream_leaves_the_other_spooled() {
         .unwrap();
     delivery.ack(batch).unwrap();
 
-    let samples = delivery
+    let scrapes = delivery
         .take_batch(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
-        .expect("the sample is still spooled");
+        .expect("the scrape is still spooled");
     let opened = envelope::open(
         &key.verifying_key(),
-        &samples.wire_bytes,
-        &samples.signature,
+        &scrapes.wire_bytes,
+        &scrapes.signature,
         TEST_LIMITS,
     )
     .unwrap();
-    assert_eq!(samples_of(&opened), [sample_at(1)]);
+    assert_eq!(scrapes_of(&opened), [scrape_at(1)]);
 }
 
 /// An envelope of `payload`'s shape with nothing in it, at the widest counter a
@@ -255,8 +241,8 @@ fn framing_bytes(key: &SigningKey, payload: Payload) -> u64 {
 
 /// What one row costs a batch, measured off the line itself
 /// (`envelope::PayloadLine::wire_bytes`).
-fn sample_row_bytes(sample: &Sample) -> u64 {
-    PayloadLine::sample(sample, &test_provenance())
+fn scrape_row_bytes(scrape: &Scrape) -> u64 {
+    PayloadLine::scrape(scrape, &test_provenance())
         .unwrap()
         .wire_bytes()
 }
@@ -281,11 +267,11 @@ fn a_batch_stops_at_the_configured_budget_and_the_rest_is_retaken() {
     let key = test_key();
     // One row's full cost (`spool::RowBudget`); the framing is spent before any
     // row is.
-    let one = sample_row_bytes(&sample_at(1));
-    let cap = framing_bytes(&key, Payload::samples(vec![])) + 2 * one;
+    let one = scrape_row_bytes(&scrape_at(1));
+    let cap = framing_bytes(&key, Payload::scrapes(vec![])) + 2 * one;
     let mut delivery = delivery_with_batch_cap(&dir, &key, cap);
     for secs in 1..=5 {
-        delivery.push(&sample_at(secs)).unwrap();
+        delivery.push(&scrape_at(secs)).unwrap();
     }
     let open = |batch: &metsuke::delivery::SealedBatch| {
         envelope::open(
@@ -301,14 +287,14 @@ fn a_batch_stops_at_the_configured_budget_and_the_rest_is_retaken() {
         .take_batch(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .unwrap();
-    assert_eq!(samples_of(&open(&first)), [sample_at(1), sample_at(2)]);
+    assert_eq!(scrapes_of(&open(&first)), [scrape_at(1), scrape_at(2)]);
     delivery.ack(first).unwrap();
 
     let second = delivery
         .take_batch(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .unwrap();
-    assert_eq!(samples_of(&open(&second)), [sample_at(3), sample_at(4)]);
+    assert_eq!(scrapes_of(&open(&second)), [scrape_at(3), scrape_at(4)]);
 }
 
 // metsuke-4zo.96: the budget bounds the whole sealed body, framing and
@@ -328,7 +314,7 @@ fn no_batch_seals_a_body_past_the_budget() {
     let mut delivery = delivery_with_batch_cap(&dir, &key, cap);
     let mut lines = temp_log_spool(&dir);
     for secs in 1..=200 {
-        delivery.push(&sample_at(secs)).unwrap();
+        delivery.push(&scrape_at(secs)).unwrap();
         lines.push(&line).unwrap();
     }
     let open = |batch: &metsuke::delivery::SealedBatch| {
@@ -341,11 +327,11 @@ fn no_batch_seals_a_body_past_the_budget() {
         .unwrap()
     };
 
-    let samples = open(&delivery.take_batch(test_now()).unwrap().unwrap());
+    let scrapes = open(&delivery.take_batch(test_now()).unwrap().unwrap());
     let traces = open(&delivery.take_line_batch(test_now()).unwrap().unwrap());
 
-    assert!(!samples_of(&samples).is_empty() && !lines_of(&traces).is_empty());
-    assert!(body_bytes(&samples) <= cap, "{}", body_bytes(&samples));
+    assert!(!scrapes_of(&scrapes).is_empty() && !lines_of(&traces).is_empty());
+    assert!(body_bytes(&scrapes) <= cap, "{}", body_bytes(&scrapes));
     assert!(body_bytes(&traces) <= cap, "{}", body_bytes(&traces));
 }
 
@@ -448,7 +434,7 @@ fn the_spool_charges_a_row_what_the_server_inflates_for_it() {
     let mut delivery = temp_delivery(&dir, &key);
     let mut lines = temp_log_spool(&dir);
     for secs in 1..=5 {
-        delivery.push(&sample_at(secs)).unwrap();
+        delivery.push(&scrape_at(secs)).unwrap();
         lines
             .push(&trace_line(&format!(
                 r#"{{"at":"2026-08-25T18:19:38.018453907Z","ns":"Consensus.LeiosKernel","data":{{"msg":"\"quoted\" {secs}"}}}}"#
@@ -456,7 +442,7 @@ fn the_spool_charges_a_row_what_the_server_inflates_for_it() {
             .unwrap();
     }
     let charged = [
-        charged_bytes(&dir, "samples"),
+        charged_bytes(&dir, "scrapes"),
         charged_bytes(&dir, "log_lines"),
     ];
     let batches = [

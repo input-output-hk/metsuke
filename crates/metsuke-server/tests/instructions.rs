@@ -2,11 +2,13 @@
 //! than wording: each test moves a value in the file that owns it and asserts
 //! the page moved with it (`instructions` says why that is the point).
 
-use metsuke_server::instructions;
-use metsuke_wire::envelope::{self, HEADER_SIGNATURE, HEADER_VKEY};
+use std::collections::BTreeMap;
 
-mod support;
-use support::{envelope_for, test_key};
+use metsuke_server::instructions;
+use metsuke_wire::envelope::{
+    self, Failure, HEADER_SIGNATURE, HEADER_VKEY, Metric, Reason, Scrape,
+};
+use time::OffsetDateTime;
 
 /// The steps the ticket's outline fixes, in order.
 const SECTIONS: [&str; 10] = [
@@ -35,28 +37,119 @@ fn every_outline_section_is_present_and_in_order() {
 }
 
 /// The acceptance criterion: what leaves the box is named field for field.
-/// Derived from the bytes the wire crate seals rather than a list written here,
-/// so a v1 field added to `Sample` fails this until the page names it.
+///
+/// The row is built here rather than read off the page, and by a struct literal
+/// rather than a list of names: a field added to the wire fails to compile until
+/// it is written here, and then fails this until the page's prose names it. A
+/// field only a failed scrape carries counts, which is why `failure` is set.
 #[test]
 fn every_v1_field_appears_on_the_page() {
-    let page = instructions::page();
-    let envelope = envelope_for(&test_key(), 1);
-    let header: serde_json::Value =
-        serde_json::from_slice(&envelope::header_json(&envelope).unwrap()).unwrap();
-    let lines = envelope::payload_lines(&envelope);
-    let sample: serde_json::Value =
-        serde_json::from_slice(lines.strip_suffix(b"\n").unwrap()).unwrap();
+    // The prose, not the page: the embedded example is rendered from these same
+    // types, so a field would appear in it with nothing written about it.
+    let prose = prose(&instructions::page());
+    let row = serde_json::to_value(Scrape {
+        scraped_at: OffsetDateTime::UNIX_EPOCH,
+        clock_offset_ms: Some(0),
+        failure: Some(Failure {
+            reason: Reason::Unreachable,
+            detail: String::new(),
+        }),
+        metrics: vec![Metric {
+            name: String::new(),
+            labels: BTreeMap::new(),
+            value: 0.into(),
+            declared_type: None,
+        }],
+    })
+    .unwrap();
+    let header: serde_json::Value = serde_json::from_slice(
+        &envelope::header_json(&instructions::example_submission()).unwrap(),
+    )
+    .unwrap();
     let fields = header
         .as_object()
         .unwrap()
         .keys()
-        .chain(sample.as_object().unwrap().keys());
+        .chain(row.as_object().unwrap().keys())
+        .chain(row["failure"].as_object().unwrap().keys())
+        .chain(row["metrics"][0].as_object().unwrap().keys());
     for field in fields {
+        // As a code span, so a field name is named rather than happening to be
+        // a substring of a sentence: `name`, `value` and `detail` are all
+        // ordinary words on this page.
+        let span = format!("<code>{field}</code>");
         assert!(
-            page.contains(field),
-            "the page never names the v1 field {field:?}"
+            prose.contains(&span),
+            "the page's prose never names the v1 field {field:?}"
         );
     }
+}
+
+/// The shape a rewards-program developer reads: the agent's own two facts, the
+/// failure that is absent when there was none, and the metrics as a list, so
+/// one UNNEST reaches a metric and nothing is packed inside a string.
+#[test]
+fn the_page_renders_rows_whose_metrics_are_a_nested_list() {
+    let rows = rendered_rows(&instructions::page());
+    for row in &rows {
+        let mut keys: Vec<&str> = row
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "clock_offset_ms",
+                "failure",
+                "metrics",
+                "metsuke",
+                "scraped_at"
+            ]
+        );
+        assert!(row["metrics"].is_array(), "metrics is not a list: {row}");
+    }
+    let metrics = rows[0]["metrics"].as_array().unwrap();
+    assert!(metrics.len() > 1, "one metric shows no list: {metrics:?}");
+    assert!(metrics[0]["name"].is_string());
+    assert!(metrics[0]["labels"].is_object());
+    assert!(metrics[0]["value"].is_number());
+    // The failed row is the one carrying `failure`'s own fields.
+    assert!(rows[1]["metrics"].as_array().unwrap().is_empty());
+    assert!(rows[1]["failure"]["reason"].is_string());
+}
+
+/// The payload lines the page prints, read back out of the page: the example
+/// block is the header, a blank line, then one row per line.
+fn rendered_rows(page: &str) -> Vec<serde_json::Value> {
+    let example = snippets(page)
+        .into_iter()
+        .next()
+        .expect("the page carries the example submission");
+    let (_header, rows) = example
+        .split_once("\n\n")
+        .expect("the example separates its header from its rows");
+    rows.lines()
+        .map(|line| serde_json::from_str(line).expect("a payload line is JSON"))
+        .collect()
+}
+
+/// The page with every `<pre>` block dropped: what it says, rather than what it
+/// shows.
+fn prose(page: &str) -> String {
+    let mut prose = String::new();
+    let mut rest = page;
+    while let Some((before, block)) = rest.split_once("<pre>") {
+        prose.push_str(before);
+        rest = block
+            .split_once("</pre>")
+            .expect("every <pre> block is closed")
+            .1;
+    }
+    prose.push_str(rest);
+    prose
 }
 
 /// The headers an operator's proxy has to pass through are the same two the

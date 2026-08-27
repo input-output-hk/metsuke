@@ -423,7 +423,7 @@ fn a_pool_over_its_rate_limit_gets_429() {
 }
 
 /// An archive that cannot store must answer 5xx, or the agent acks and
-/// deletes spooled samples that were never written (ADR 0004).
+/// deletes spooled scrapes that were never written (ADR 0004).
 #[test]
 fn an_unwritable_archive_answers_503() {
     let key = test_key();
@@ -460,7 +460,7 @@ fn refusing_endpoint() -> (String, Arc<AtomicUsize>) {
 
 /// The S3 archive on the ingest path: a PUT that will not land, retried as
 /// configured, must reach the client as 503 with the counter unspent, or the
-/// agent acks samples the bucket never took (ADR 0004).
+/// agent acks scrapes the bucket never took (ADR 0004).
 #[test]
 fn an_s3_put_that_fails_after_its_retry_answers_503_and_spends_no_counter() {
     let key = test_key();

@@ -32,7 +32,7 @@ fn minimal_log_section() -> String {
     "[log]\nsource = \"journald\"\njournal_unit = \"cardano-node\"\njournalctl_path = \"/usr/bin/journalctl\"".to_string()
 }
 
-// Defaults per the spec: sample every 5 minutes, upload every hour,
+// Defaults per the spec: scrape every 5 minutes, upload every hour,
 // SNTP against time.cloudflare.com.
 #[test]
 fn minimal_config_parses_with_shipped_defaults() {
@@ -145,7 +145,7 @@ fn the_retired_min_severity_key_fails_loudly() {
     );
 }
 
-// Acceptance: sample and upload cadences are independent configuration —
+// Acceptance: scrape and upload cadences are independent configuration —
 // setting one leaves the other at its default.
 #[test]
 fn sample_and_upload_cadences_are_independent() {

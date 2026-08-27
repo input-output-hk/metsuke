@@ -57,7 +57,7 @@ let
   };
 
   metricsUrl = "http://127.0.0.1:${toString metricsPort}/metrics";
-  # Nothing listens: the upload is expected to fail and the samples to stay
+  # Nothing listens: the upload is expected to fail and the scrapes to stay
   # spooled, which is what ADR 0004 asks for.
   uploadUrl = "http://127.0.0.1:1/v1/submit";
 
@@ -132,7 +132,7 @@ pkgs.testers.runNixOSTest {
         metrics_url = metricsUrl;
         upload_url = uploadUrl;
         sample_interval_secs = 1;
-        # A name no test network can resolve would cost every sample the SNTP
+        # A name no test network can resolve would cost every scrape the SNTP
         # timeout.
         sntp_servers = [ ];
       };
@@ -225,14 +225,14 @@ pkgs.testers.runNixOSTest {
     start_all()
 
     def spooled(machine):
-        """Samples reached the spool.
+        """Scrapes reached the spool.
 
         -readonly is not a detail: this runs as root, and a plain sqlite3
         creates the file when it is not there yet. That would hand the service
         a root-owned empty database and it would fail its next open.
         """
         machine.wait_until_succeeds(
-            "test 0 -lt \"$(sqlite3 -readonly /var/lib/metsuke/spool.sqlite 'select count(*) from samples')\""
+            "test 0 -lt \"$(sqlite3 -readonly /var/lib/metsuke/spool.sqlite 'select count(*) from scrapes')\""
         )
 
     def confined(machine, unit, state, reads_journal = False):
@@ -277,11 +277,11 @@ pkgs.testers.runNixOSTest {
     pool.wait_for_unit("metrics-endpoint.service")
     pool.wait_for_open_port(${toString metricsPort}, addr = "127.0.0.1")
 
-    with subtest("the agent samples the loopback endpoint"):
+    with subtest("the agent scrapes the loopback endpoint"):
         pool.wait_for_unit("metsuke.service")
-        # It read the credential and named the endpoint it is sampling.
+        # It read the credential and named the endpoint it is scraping.
         pool.wait_until_succeeds(
-            "journalctl -u metsuke.service | grep -q 'sampling http://127.0.0.1:${toString metricsPort}/metrics'"
+            "journalctl -u metsuke.service | grep -q 'scraping http://127.0.0.1:${toString metricsPort}/metrics'"
         )
         # It scraped and spooled, which is the only thing it may write.
         spooled(pool)
