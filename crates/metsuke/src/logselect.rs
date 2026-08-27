@@ -26,10 +26,7 @@ impl SelectConfig {
     /// (metsuke-4zo.99).
     pub fn new(roots: &[String], namespaces: Vec<String>) -> Result<SelectConfig, OutsideRoots> {
         for namespace in &namespaces {
-            if !roots
-                .iter()
-                .any(|root| namespace.starts_with(root.as_str()))
-            {
+            if !roots.iter().any(|root| is_under(namespace, root)) {
                 return Err(OutsideRoots {
                     namespace: namespace.clone(),
                     roots: roots.join(", "),
@@ -69,6 +66,15 @@ impl<'a> Fields<'a> {
     }
 }
 
+/// Whether `candidate` is `prefix` or sits under it, by segment: `Consensus.Leios`
+/// reaches neither `Consensus.LeiosPeer` nor anything else, so a rule names a
+/// namespace the node emits or it selects nothing.
+fn is_under(candidate: &str, prefix: &str) -> bool {
+    candidate
+        .strip_prefix(prefix)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+}
+
 pub fn select(config: &SelectConfig, line: &str) -> Selection {
     let line = match TraceLine::parse(line) {
         Ok(line) => line,
@@ -79,7 +85,7 @@ pub fn select(config: &SelectConfig, line: &str) -> Selection {
         config
             .namespaces
             .iter()
-            .any(|prefix| namespace.starts_with(prefix.as_str()))
+            .any(|rule| is_under(namespace, rule))
     });
     match kept {
         true => Selection::Ship(line),

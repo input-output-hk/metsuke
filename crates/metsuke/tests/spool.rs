@@ -242,7 +242,7 @@ fn an_uncarriable_row_does_not_stall_the_rows_behind_it() {
     let dir = tempfile::tempdir().unwrap();
     let mut spool = Spool::open(&temp_config(&dir, WHOLE_SPOOL)).unwrap();
     let mut lines = LogSpool::open(&temp_log_config(&dir, WHOLE_SPOOL)).unwrap();
-    let carriable = trace_line(r#"{"ns":"Consensus.Leios"}"#);
+    let carriable = trace_line(r#"{"ns":"Consensus.LeiosKernel"}"#);
     let oversized = trace_line(&format!(
         r#"{{"ns":"{}"}}"#,
         "x".repeat(4 * line_bytes(&carriable) as usize)
@@ -382,7 +382,7 @@ fn migrating_a_spool_written_before_the_stamp_takes_its_unstamped_rows() {
 fn migrating_takes_a_row_that_is_not_even_json() {
     let dir = tempfile::tempdir().unwrap();
     let config = temp_config(&dir, WHOLE_SPOOL);
-    let stays = trace_line(r#"{"ns":"Consensus.Leios"}"#);
+    let stays = trace_line(r#"{"ns":"Consensus.LeiosKernel"}"#);
     {
         let mut lines = LogSpool::open(&temp_log_config(&dir, WHOLE_SPOOL)).unwrap();
         lines.push(&stays).unwrap();

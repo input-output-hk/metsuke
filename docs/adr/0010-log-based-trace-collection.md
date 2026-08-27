@@ -3,7 +3,8 @@
 Status: accepted (2026-08-27). Supersedes ADR 0007.
 Amended by metsuke-jfb.11, which moved where a line's stamp is applied, by
 metsuke-jfb.19, which dropped severity as a selection rule, and by
-metsuke-4zo.98, which settled what the archive says about lost lines: nothing.
+metsuke-4zo.98, which settled what the archive says about lost lines: nothing,
+and by metsuke-4zo.107, which made a prefix match on segment boundaries.
 
 ## Context
 
@@ -17,7 +18,8 @@ The rewards-program developers asked for the distributions of announcement
 receipt, of EB body and closure receipt, of quorum, of `LeiosNotVoted` and of RB
 adoption, plus every trace at error, warning or notice severity — the one ask
 metsuke-jfb.19 drops. Every distribution maps to a namespace the node emits, all
-under `Consensus.Leios` except RB adoption, which is two namespaces:
+under `Consensus.LeiosKernel` and `Consensus.LeiosPeer` except RB adoption,
+which is neither:
 `ChainDB.AddBlockEvent.AddedToCurrentChain` and `Forge.Loop.AdoptedBlock`. They
 compute the distributions themselves, and said their list is incomplete.
 None of it is answerable from the Prometheus endpoint: one scrape is a periodic
@@ -37,6 +39,13 @@ what it selects. The journal source follows `journalctl --follow`; the pipe
 source reads the node's own stdout and tees it through untouched.
 It parses the line as a JSON object and reads `ns` off its top level and nothing
 else; a line the parse refuses declares no namespace, so no rule reaches it.
+
+A prefix matches on segment boundaries, at both seams: a rule against the
+`namespace_roots` ceiling and a line's namespace against a rule. A rule that
+stops mid-segment selects nothing rather than whatever shares its letters, so an
+entry names a namespace or an ancestor of one and never a fragment. The roots
+are spelled without a trailing dot, because the boundary is the rule's rather
+than the spelling's (metsuke-4zo.107).
 
 Severity is not a rule. A namespace's severity is assigned by the node's own
 `TraceOptions`, so what a line carries in `sev` states what its operator

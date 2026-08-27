@@ -172,7 +172,7 @@ fn spooled_trace_lines_seal_as_their_own_envelope() {
     let mut lines = temp_log_spool(&dir);
     let recorded = [
         r#"{"at":"2026-08-25T18:19:38.019429126Z"}"#,
-        r#"{"ns":"Consensus.Leios","sev":"Notice"}"#,
+        r#"{"ns":"Consensus.LeiosKernel","sev":"Notice"}"#,
     ]
     .map(trace_line);
     for line in &recorded {
@@ -451,7 +451,7 @@ fn the_spool_charges_a_row_what_the_server_inflates_for_it() {
         delivery.push(&sample_at(secs)).unwrap();
         lines
             .push(&trace_line(&format!(
-                r#"{{"at":"2026-08-25T18:19:38.018453907Z","ns":"Consensus.Leios","data":{{"msg":"\"quoted\" {secs}"}}}}"#
+                r#"{{"at":"2026-08-25T18:19:38.018453907Z","ns":"Consensus.LeiosKernel","data":{{"msg":"\"quoted\" {secs}"}}}}"#
             )))
             .unwrap();
     }

@@ -288,7 +288,7 @@ fn a_stamped_line_names_the_pool_and_the_agent() {
 // can stamp.
 #[test]
 fn a_line_declaring_the_reserved_key_is_refused() {
-    let line = format!(r#"{{"ns":"Consensus.Leios","{PROVENANCE_KEY}":"mine"}}"#);
+    let line = format!(r#"{{"ns":"Consensus.LeiosKernel","{PROVENANCE_KEY}":"mine"}}"#);
     assert!(matches!(
         TraceLine::parse(&line),
         Err(envelope::TraceLineError::ReservedKey)
@@ -301,7 +301,7 @@ fn a_line_that_is_not_one_whole_object_is_refused() {
         "not json",
         "[1,2]",
         r#""a string""#,
-        r#"{"ns":"Consensus.Leios""#,
+        r#"{"ns":"Consensus.LeiosKernel""#,
         r#"{"a":1}{"b":2}"#,
     ] {
         assert!(
@@ -332,7 +332,7 @@ fn open_refuses_a_line_stamped_with_another_batch() {
         pool_id,
         agent_id: AgentId::parse("other-relay").unwrap(),
     };
-    let line = serde_json::json!({"ns": "Consensus.Leios", PROVENANCE_KEY: elsewhere});
+    let line = serde_json::json!({"ns": "Consensus.LeiosKernel", PROVENANCE_KEY: elsewhere});
     let (bytes, sig) = sealed_header(
         &key,
         serde_json::json!({
@@ -362,7 +362,7 @@ fn open_refuses_an_unstamped_line() {
         pool_id,
         agent_id: AgentId::parse("relay-1").unwrap(),
     };
-    let stamped = serde_json::json!({"ns": "Consensus.Leios", PROVENANCE_KEY: stamp});
+    let stamped = serde_json::json!({"ns": "Consensus.LeiosKernel", PROVENANCE_KEY: stamp});
     let (bytes, sig) = sealed_header(
         &key,
         serde_json::json!({
@@ -373,7 +373,7 @@ fn open_refuses_an_unstamped_line() {
             "counter": 1,
             "timestamp": "1970-01-01T00:00:00Z",
         }),
-        format!("{stamped}\n{{\"ns\":\"Consensus.Leios\"}}\n").as_bytes(),
+        format!("{stamped}\n{{\"ns\":\"Consensus.LeiosKernel\"}}\n").as_bytes(),
     );
     let err = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap_err();
     assert!(

@@ -76,12 +76,14 @@ upload_url = "https://metsuke.example.org/v1/submit"
 #
 # namespaces are prefixes and are the whole selection rule; namespace_roots is
 # this host's ceiling on them — a namespaces entry outside it is refused at
-# startup. Why severity is not a second rule: docs/adr/0010.
+# startup. Both match on segment boundaries, so an entry names a namespace the
+# node emits or an ancestor of one, never a fragment of a name. Why severity is
+# not a second rule: docs/adr/0010.
 # [log]
 # source = "journald"
 # journal_unit = "cardano-node"
 # journalctl_path = "/usr/bin/journalctl"
-# namespace_roots = ["Consensus.", "ChainDB.", "Forge."]
-# namespaces = ["Consensus.Leios", "ChainDB.AddBlockEvent.AddedToCurrentChain", "Forge.Loop.AdoptedBlock"]
+# namespace_roots = ["Consensus", "ChainDB", "Forge"]
+# namespaces = ["Consensus.LeiosKernel", "Consensus.LeiosPeer", "ChainDB.AddBlockEvent.AddedToCurrentChain", "Forge.Loop.AdoptedBlock"]
 # log_max_bytes = 268435456
 # respawn_backoff_secs = 30

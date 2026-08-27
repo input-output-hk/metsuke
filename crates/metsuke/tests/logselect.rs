@@ -90,7 +90,7 @@ fn a_warning_outside_the_namespaces_is_dropped() {
 #[test]
 fn a_listed_namespace_ships_at_any_severity() {
     let rules = SelectConfig::new(
-        &["LeiosNotify.".to_string()],
+        &["LeiosNotify".to_string()],
         vec!["LeiosNotify.Remote".to_string()],
     )
     .unwrap();
@@ -100,6 +100,25 @@ fn a_listed_namespace_ships_at_any_severity() {
     );
     assert_eq!(severity_of(&trace_line(debug)), "Debug");
     assert_eq!(select(&rules, debug), ship(debug));
+}
+
+// A rule that stops mid-segment names no namespace, so it selects nothing —
+// which is what the shipped default did before metsuke-4zo.107 named the two
+// prefixes the node emits.
+#[test]
+fn a_rule_stopping_mid_segment_selects_nothing() {
+    let rules = SelectConfig::new(
+        &shipped_log_config().namespace_roots,
+        vec!["Consensus.Leios".to_string()],
+    )
+    .unwrap();
+    let kernel = line_with(LEIOS_WINDOW, r#""ns":"Consensus.LeiosKernel.Certified""#);
+    assert_eq!(select(&rules, kernel), Selection::Skip);
+    assert!(
+        LEIOS_WINDOW
+            .lines()
+            .all(|line| select(&rules, line) == Selection::Skip)
+    );
 }
 
 // The ceiling metsuke-4zo.99 will check a server-pushed rule against. It binds
@@ -115,6 +134,15 @@ fn a_namespace_outside_the_roots_is_refused() {
     assert!(
         error.to_string().contains("Reflection"),
         "the refusal must name the namespace, got: {error}"
+    );
+    // The ceiling matches by segment too: a name a root is a prefix of
+    // mid-segment is outside it.
+    assert!(
+        SelectConfig::new(
+            &shipped_log_config().namespace_roots,
+            vec!["ConsensusOther.Thing".to_string()],
+        )
+        .is_err()
     );
 }
 

@@ -85,11 +85,12 @@ fn a_log_section_naming_only_the_host_s_paths_takes_the_shipped_defaults() {
     let toml = format!("{}\n{}\n", minimal_toml(), minimal_log_section());
     let log = Config::from_toml(&toml).unwrap().log.unwrap();
     assert_eq!(journal(&log).journal_unit, "cardano-node");
-    assert_eq!(log.namespace_roots, ["Consensus.", "ChainDB.", "Forge."]);
+    assert_eq!(log.namespace_roots, ["Consensus", "ChainDB", "Forge"]);
     assert_eq!(
         log.namespaces,
         [
-            "Consensus.Leios",
+            "Consensus.LeiosKernel",
+            "Consensus.LeiosPeer",
             "ChainDB.AddBlockEvent.AddedToCurrentChain",
             "Forge.Loop.AdoptedBlock",
         ]

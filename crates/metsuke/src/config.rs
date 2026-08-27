@@ -230,9 +230,9 @@ fn default_upload_batch_max_bytes() -> u64 {
 /// a ceiling is to leave room under it while still naming a bound.
 fn default_log_namespace_roots() -> Vec<String> {
     vec![
-        "Consensus.".to_string(),
-        "ChainDB.".to_string(),
-        "Forge.".to_string(),
+        "Consensus".to_string(),
+        "ChainDB".to_string(),
+        "Forge".to_string(),
     ]
 }
 
@@ -241,7 +241,8 @@ fn default_log_namespace_roots() -> Vec<String> {
 /// docs/adr/0010.
 fn default_log_namespaces() -> Vec<String> {
     vec![
-        "Consensus.Leios".to_string(),
+        "Consensus.LeiosKernel".to_string(),
+        "Consensus.LeiosPeer".to_string(),
         "ChainDB.AddBlockEvent.AddedToCurrentChain".to_string(),
         "Forge.Loop.AdoptedBlock".to_string(),
     ]
