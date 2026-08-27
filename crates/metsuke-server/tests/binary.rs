@@ -1129,23 +1129,27 @@ fn a_declared_body_far_over_the_cap_neither_allocates_nor_stalls() {
     assert_eq!(server.post(&key, &envelope_now(&key, 2)).0, 200);
 }
 
-/// The other half of metsuke-a3a, against `read_timeout_secs`. The body has to
+/// The other half of metsuke-a3a, against `read_timeout_ms`. The body has to
 /// keep arriving and the clock is what says it did: a body that merely stops
 /// would be refused by a narrower bound too.
 #[test]
 fn a_body_that_keeps_trickling_is_cut_off_at_the_read_timeout() {
     let key = test_key();
-    // Wide enough that the margin survives a loaded machine: `sleep`
-    // overshoots, so a short bound is what a slow run eats into first.
-    let bound = 3;
+    // What the bound has to be wide enough for is `every` landing inside it
+    // repeatedly: a trickle whose interval overshoots the bound is a stalled
+    // body, which is the case this one exists to be distinguished from. Ten
+    // intervals to the bound leaves that margin to the scheduler.
+    let bound = Duration::from_millis(1000);
     let server = Server::start_with(&[pool_of(&key)], |config, _| {
         config.http = http_toml(&HttpConfig {
-            read_timeout_secs: nonzero_u64(bound),
+            read_timeout_ms: nonzero_u64(bound.as_millis() as u64),
             ..permissive_http()
         });
     });
-    let every = Duration::from_millis(400);
-    let attempts = 16;
+    let every = Duration::from_millis(100);
+    // Past the bound even if every sleep overshoots, so the trickle is always
+    // cut rather than running out of attempts.
+    let attempts = 30;
 
     let mut trickling = Raw::connect(&server);
     let started = std::time::Instant::now();
@@ -1165,12 +1169,12 @@ fn a_body_that_keeps_trickling_is_cut_off_at_the_read_timeout() {
 
     // Elapsed time rather than a count of bytes: `sleep` overshoots, so a
     // loaded run eats a count's margin and not a clock's
-    // (`config::HttpConfig::read_timeout_secs`).
+    // (`config::HttpConfig::read_timeout_ms`).
     let cut_after =
         cut_after.unwrap_or_else(|| panic!("the trickle was never cut, {landed} bytes landed"));
     assert!(
-        cut_after >= Duration::from_secs(bound),
-        "the trickle was cut after {cut_after:?}, inside the {bound}s bound"
+        cut_after >= bound,
+        "the trickle was cut after {cut_after:?}, inside the {bound:?} bound"
     );
     let answer = trickling.answer();
     assert!(answer.starts_with("HTTP/1.1 408"), "got: {answer:.80}");
@@ -1328,14 +1332,15 @@ fn a_download_left_unread_stalls_no_upload() {
     assert_eq!(ingest.within(PROMPTLY), 200);
 }
 
-/// And it does not hold it indefinitely: `write_timeout_secs` is what takes the
+/// And it does not hold it indefinitely: `write_timeout_ms` is what takes the
 /// slot back from a client that stopped reading.
 #[test]
 fn a_download_nobody_reads_is_cut_off_at_the_write_timeout() {
     let key = test_key();
+    let bound = Duration::from_millis(300);
     let server = Server::start_with(&[pool_of(&key)], |config, _| {
         config.http = http_toml(&HttpConfig {
-            write_timeout_secs: nonzero_u64(1),
+            write_timeout_ms: nonzero_u64(bound.as_millis() as u64),
             ..permissive_http()
         });
     });
@@ -1344,8 +1349,9 @@ fn a_download_nobody_reads_is_cut_off_at_the_write_timeout() {
 
     // The bound is a clock with nothing to wait on but itself. Reading before
     // it expires would unblock the write and let the download finish, which is
-    // exactly the outcome this has to tell apart.
-    std::thread::sleep(Duration::from_secs(3));
+    // exactly the outcome this has to tell apart. Twice the bound, so the
+    // timeout has fired even where the sleep returns early.
+    std::thread::sleep(bound * 2);
     let (closed, delivered) = download.delivered(PATIENCE);
 
     assert!(closed, "the server kept the connection open");
@@ -1382,8 +1388,13 @@ fn a_connection_past_the_concurrency_cap_waits_for_a_slot() {
     let mut waiting = Raw::connect(&server);
     waiting.send(page.as_bytes());
 
+    // Proving an absence, so this is a wait with nothing to shorten it. It only
+    // has to outlast the microseconds a broken semaphore would serve in, and it
+    // has to stay well under `permissive_http`'s idle bound — past that the
+    // holding connection lets the slot go on its own and the absence means
+    // nothing.
     assert!(
-        waiting.head_within(Duration::from_secs(2)).is_none(),
+        waiting.head_within(Duration::from_millis(500)).is_none(),
         "the second connection was served while the cap was full"
     );
     // And it is waiting in the kernel's backlog, not in the process
@@ -1402,13 +1413,13 @@ fn a_connection_past_the_concurrency_cap_waits_for_a_slot() {
 }
 
 /// A connection that asks for nothing is closed rather than kept: without
-/// `idle_timeout_secs` it would hold its slot until the client felt like
+/// `idle_timeout_ms` it would hold its slot until the client felt like
 /// giving it back.
 #[test]
 fn a_connection_that_sends_no_request_is_closed_at_the_idle_timeout() {
     let server = Server::start_with(&[pool_of(&test_key())], |config, _| {
         config.http = http_toml(&HttpConfig {
-            idle_timeout_secs: nonzero_u64(1),
+            idle_timeout_ms: nonzero_u64(200),
             ..permissive_http()
         });
     });

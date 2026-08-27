@@ -196,9 +196,9 @@ pub fn server_toml(dir: &Path, allowed: &[PoolId]) -> ServerToml {
 /// rather than hanging it.
 pub fn permissive_http() -> HttpConfig {
     HttpConfig {
-        idle_timeout_secs: nonzero_u64(10),
-        read_timeout_secs: nonzero_u64(10),
-        write_timeout_secs: nonzero_u64(10),
+        idle_timeout_ms: nonzero_u64(10_000),
+        read_timeout_ms: nonzero_u64(10_000),
+        write_timeout_ms: nonzero_u64(10_000),
         max_concurrent_requests: nonzero_u32(64),
     }
 }
@@ -208,16 +208,16 @@ pub fn permissive_http() -> HttpConfig {
 /// compile.
 pub fn http_toml(config: &HttpConfig) -> String {
     let HttpConfig {
-        idle_timeout_secs,
-        read_timeout_secs,
-        write_timeout_secs,
+        idle_timeout_ms,
+        read_timeout_ms,
+        write_timeout_ms,
         max_concurrent_requests,
     } = config;
     format!(
         "[http]
-idle_timeout_secs = {idle_timeout_secs}
-read_timeout_secs = {read_timeout_secs}
-write_timeout_secs = {write_timeout_secs}
+idle_timeout_ms = {idle_timeout_ms}
+read_timeout_ms = {read_timeout_ms}
+write_timeout_ms = {write_timeout_ms}
 max_concurrent_requests = {max_concurrent_requests}
 "
     )
@@ -357,7 +357,7 @@ pub fn example_s3_archive(endpoint: &str, put_retries: u32) -> String {
             Some(("put_retries", _)) => format!("put_retries = {put_retries}"),
             // A test waits on these, so the operator-facing values would stall
             // the suite.
-            Some(("request_timeout_secs", _)) => "request_timeout_secs = 5".to_string(),
+            Some(("request_timeout_ms", _)) => "request_timeout_ms = 5000".to_string(),
             Some(("put_retry_backoff_ms", _)) => "put_retry_backoff_ms = 10".to_string(),
             _ => line.to_string(),
         })

@@ -96,9 +96,9 @@ async fn accept<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
     limits: HttpConfig,
     serving: Arc<Serving<A>>,
 ) -> Result<std::convert::Infallible, io::Error> {
-    let idle = seconds(limits.idle_timeout_secs.get());
-    let write_timeout = seconds(limits.write_timeout_secs.get());
-    let read_timeout = seconds(limits.read_timeout_secs.get());
+    let idle = millis(limits.idle_timeout_ms.get());
+    let write_timeout = millis(limits.write_timeout_ms.get());
+    let read_timeout = millis(limits.read_timeout_ms.get());
     let slots = Arc::new(Semaphore::new(limits.max_concurrent_requests.get() as usize));
     loop {
         // The permit is taken before the accept, not after: past the cap the
@@ -149,7 +149,7 @@ async fn accept<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
                     service,
                 )
                 .await;
-            // An idle connection reaching `idle_timeout_secs` is the configured
+            // An idle connection reaching `idle_timeout_ms` is the configured
             // behaviour and no news. Everything else is: a connection that
             // ended early may have lost an ack, and an agent that never saw
             // one sends the batch again.
@@ -191,8 +191,8 @@ fn one_connection(error: &io::Error) -> bool {
     )
 }
 
-fn seconds(count: u64) -> Duration {
-    Duration::from_secs(count)
+fn millis(count: u64) -> Duration {
+    Duration::from_millis(count)
 }
 
 /// Decode, answer, encode.
@@ -448,7 +448,7 @@ impl Body for Streamed {
 }
 
 /// A connection whose writes have to make progress, because hyper has no write
-/// timeout of its own (`config::HttpConfig::write_timeout_secs`).
+/// timeout of its own (`config::HttpConfig::write_timeout_ms`).
 struct WriteDeadline {
     stream: TcpStream,
     limit: Duration,

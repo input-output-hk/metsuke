@@ -33,14 +33,14 @@ pub struct HttpConfig {
     /// How long a connection may take to deliver a complete request head. It
     /// is also the keep-alive bound, because a connection waiting for its next
     /// request is a connection that has delivered no head yet.
-    pub idle_timeout_secs: NonZeroU64,
+    pub idle_timeout_ms: NonZeroU64,
     /// Deadline for the whole request body, not for one read of it. A client
     /// trickling a byte at a time renews any per-read deadline forever
     /// (metsuke-a3a), so the bound has to be on the body.
-    pub read_timeout_secs: NonZeroU64,
+    pub read_timeout_ms: NonZeroU64,
     /// How long a write may make no progress, which is what a client that has
     /// stopped reading its answer costs.
-    pub write_timeout_secs: NonZeroU64,
+    pub write_timeout_ms: NonZeroU64,
     /// Connections served at once, held from accept to close. HTTP/1.1 carries
     /// one request per connection at a time, so this is the request cap too.
     pub max_concurrent_requests: NonZeroU32,
@@ -117,7 +117,7 @@ pub struct S3Config {
     /// (`archive::ObjectStream`).
     pub endpoint: Url,
     /// Deadline for one S3 request.
-    pub request_timeout_secs: NonZeroU64,
+    pub request_timeout_ms: NonZeroU64,
     /// How long a presigned URL stays usable. Separate from the deadline:
     /// tightening the ops timeout would otherwise shrink signature validity to
     /// the same window, and clock skew against the endpoint then rejects every

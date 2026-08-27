@@ -489,6 +489,11 @@ fn the_trace_line_cap_is_its_own() {
 }
 
 proptest! {
+    // Each case opens a fresh SQLite file in its own tempdir and drives a
+    // random push/ack interleaving through it, so the cases cost file I/O
+    // rather than CPU. The regression file replays what has already failed.
+    #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
+
     // ADR 0004: rows leave only through ACK, and an ACK deletes exactly the
     // acked rows. After random push/partial-ack interleavings, acking every
     // outstanding row leaves zero sample rows — checked through the API and

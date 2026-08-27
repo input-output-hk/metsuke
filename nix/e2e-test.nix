@@ -386,15 +386,15 @@ let
           settings = {
             listen = "127.0.0.1:${toString listenPort}";
             http = {
-              idle_timeout_secs = 30;
-              read_timeout_secs = 60;
-              write_timeout_secs = 60;
+              idle_timeout_ms = 30000;
+              read_timeout_ms = 60000;
+              write_timeout_ms = 60000;
               max_concurrent_requests = 64;
             };
             archive.s3 = {
               inherit bucket region;
               endpoint = "http://127.0.0.1:${toString s3Port}";
-              request_timeout_secs = 30;
+              request_timeout_ms = 30000;
               signature_validity_secs = 300;
               put_retries = 1;
               put_retry_backoff_ms = 500;

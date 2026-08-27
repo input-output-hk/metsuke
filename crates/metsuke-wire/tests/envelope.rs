@@ -138,7 +138,16 @@ fn arb_lines_envelope() -> impl Strategy<Value = Envelope> {
         )
 }
 
+/// The three properties that seal and open a whole envelope per case. Each one
+/// costs a zstd compression and an Ed25519 sign-and-verify, which is most of
+/// this file's runtime; the rest of the block below runs at proptest's default.
+/// The regression files replay past failures whatever this says, so a shrunk
+/// case count does not drop a case that has already caught something.
+const SEALING: u32 = 64;
+
 proptest! {
+    #![proptest_config(ProptestConfig { cases: SEALING, ..ProptestConfig::default() })]
+
     #[test]
     fn seal_open_roundtrip(env in arb_envelope(), seed in any::<[u8; 32]>(), level in 0i32..=5) {
         let key = SigningKey::from_bytes(&seed);
@@ -164,17 +173,6 @@ proptest! {
         prop_assert!(matches!(err, envelope::OpenError::Signature(_)));
     }
 
-    // The id an agent reports under survives being made from any name at all,
-    // and comes back out of the strict reader unchanged.
-    #[test]
-    fn a_slugified_name_is_an_agent_id(name in "(?s).{0,32}") {
-        let Ok(slug) = AgentId::slugify(&name) else {
-            prop_assert!(!name.chars().any(|c| c.is_ascii_alphanumeric()));
-            return Ok(());
-        };
-        prop_assert_eq!(AgentId::parse(slug.as_str()).unwrap(), slug);
-    }
-
     // The v2 payload rides the same seal/open pair: the lines come back in
     // order and field for field, however many of them there are.
     #[test]
@@ -187,6 +185,19 @@ proptest! {
         let (bytes, sig) = envelope::seal(&key, &env, level).unwrap();
         let opened = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap();
         prop_assert_eq!(env, opened);
+    }
+}
+
+proptest! {
+    // The id an agent reports under survives being made from any name at all,
+    // and comes back out of the strict reader unchanged.
+    #[test]
+    fn a_slugified_name_is_an_agent_id(name in "(?s).{0,32}") {
+        let Ok(slug) = AgentId::slugify(&name) else {
+            prop_assert!(!name.chars().any(|c| c.is_ascii_alphanumeric()));
+            return Ok(());
+        };
+        prop_assert_eq!(AgentId::parse(slug.as_str()).unwrap(), slug);
     }
 
     // The first frame is a skippable frame whatever the envelope holds, and

@@ -59,7 +59,7 @@ impl S3Archive {
             endpoint: config.endpoint.clone(),
             reason: error.to_string(),
         })?;
-        let agent = http::agent(Duration::from_secs(config.request_timeout_secs.get()));
+        let agent = http::agent(Duration::from_millis(config.request_timeout_ms.get()));
         Ok(S3Archive {
             bucket,
             credentials,

@@ -4,6 +4,10 @@
 # contrib/metsuke.service itself, so what a host that is not NixOS copies is
 # executed and not only diffed. A submission travelling from one unit to the
 # other is not here — that is e2e-test.nix.
+#
+# Every node here needs a booted machine to say anything. That the module
+# renders a config the server accepts needs no machine, and is
+# checks.server-config.
 {
   pkgs,
   agentModule,
@@ -57,63 +61,54 @@ let
   # spooled, which is what ADR 0004 asks for.
   uploadUrl = "http://127.0.0.1:1/v1/submit";
 
-  # What `environmentFile` is for. No bucket is reached, so the values only
-  # have to be present.
-  awsEnvironment = pkgs.writeText "aws-environment" ''
-    AWS_ACCESS_KEY_ID=not-a-real-key
-    AWS_SECRET_ACCESS_KEY=not-a-real-secret
-  '';
+  # The one archive kind a booted server is needed for. That the module renders
+  # a config the server accepts is checks.server-config's, for both kinds and
+  # without a VM; what only a machine can show is the confinement below, and
+  # the credential systemd hands over to reach it.
+  hubNode = {
+    imports = [ serverModule ];
 
-  # One server, one archive: the two nodes below differ in that and nothing
-  # else, so every other limit is stated once.
-  serverNode =
-    {
-      archive,
-      environmentFile ? null,
-    }:
-    {
-      imports = [ serverModule ];
+    environment.etc."metsuke-server/developer-password" = {
+      source = password;
+      mode = "0400";
+    };
 
-      environment.etc."metsuke-server/developer-password" = {
-        source = password;
-        mode = "0400";
-      };
-
-      services.metsuke-server = {
-        enable = true;
-        inherit environmentFile;
-        developerPasswordFile = "/etc/metsuke-server/developer-password";
-        settings = {
-          inherit archive;
-          listen = "127.0.0.1:${toString listenPort}";
-          http = {
-            idle_timeout_secs = 30;
-            read_timeout_secs = 60;
-            write_timeout_secs = 60;
-            max_concurrent_requests = 64;
-          };
-          # Every limit the server refuses to start without, set through the
-          # module: an option whose name has drifted from the Rust field
-          # renders a key the server then refuses, which is what this listing
-          # catches.
-          ingest = {
-            allowlist.${poolId} = "MUSA-0000";
-            max_body_bytes = 1048576;
-            max_header_bytes = 4096;
-            rate_limit_uploads = 24;
-            rate_limit_uploads_total = 240;
-            rate_limit_window_secs = 3600;
-          };
-          developer = {
-            user = "metsuke-dev";
-            list_max_rows = 1000;
-          };
+    services.metsuke-server = {
+      enable = true;
+      developerPasswordFile = "/etc/metsuke-server/developer-password";
+      settings = {
+        archive.filesystem.root = "${stateDirectory}/archive";
+        listen = "127.0.0.1:${toString listenPort}";
+        http = {
+          idle_timeout_ms = 30000;
+          read_timeout_ms = 60000;
+          write_timeout_ms = 60000;
+          max_concurrent_requests = 64;
+        };
+        ingest = {
+          allowlist.${poolId} = "MUSA-0000";
+          max_body_bytes = 1048576;
+          max_header_bytes = 4096;
+          rate_limit_uploads = 24;
+          rate_limit_uploads_total = 240;
+          rate_limit_window_secs = 3600;
+        };
+        developer = {
+          user = "metsuke-dev";
+          list_max_rows = 1000;
         };
       };
     };
+  };
 in
 pkgs.testers.runNixOSTest {
   name = "metsuke-units";
+
+  # No node here reaches another, and none reaches off the machine: every URL
+  # above is loopback and `sntp_servers` is empty. A DHCP lease would still be
+  # what `network-online.target` waits for, and dhcpcd's ARP probe of the
+  # offered address costs ~5 s that both units then wait out before starting.
+  defaults.networking.useDHCP = false;
 
   nodes.pool = {
     imports = [ agentModule ];
@@ -221,27 +216,14 @@ pkgs.testers.runNixOSTest {
     ];
   };
 
-  nodes.hub = serverNode { archive.filesystem.root = "${stateDirectory}/archive"; };
-
-  # The other archive kind. Nothing is served over it — startup touches no
-  # bucket — so what this node proves is that the module renders an `[archive]`
-  # the server accepts, which the filesystem node cannot show for the S3 fields
-  # it does not set.
-  nodes.hubs3 = serverNode {
-    environmentFile = awsEnvironment;
-    archive.s3 = {
-      bucket = "cardano-playground-metsuke";
-      region = "eu-central-1";
-      endpoint = "http://127.0.0.1:1";
-      request_timeout_secs = 30;
-      signature_validity_secs = 300;
-      put_retries = 1;
-      put_retry_backoff_ms = 500;
-      list_max_pages = 1000;
-    };
-  };
+  nodes.hub = hubNode;
 
   testScript = ''
+    # The four nodes are independent — nothing here sends a submission from one
+    # to another, which is e2e-test.nix's job. Booted on first reference they
+    # boot one after another, and the boots are most of this test's runtime.
+    start_all()
+
     def spooled(machine):
         """Samples reached the spool.
 
@@ -378,9 +360,5 @@ pkgs.testers.runNixOSTest {
 
     with subtest("the server holds nothing ADR 0007 refuses"):
         confined(hub, "metsuke-server.service", "${stateDirectory}")
-
-    with subtest("the same server starts on the module's S3 archive"):
-        hubs3.wait_for_unit("metsuke-server.service")
-        hubs3.wait_for_open_port(${toString listenPort}, addr = "127.0.0.1")
   '';
 }

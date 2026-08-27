@@ -76,13 +76,13 @@ fn an_archive_without_a_kind_is_refused() {
 
 /// The fields typed `NonZero`, so zero and absence are the same refusal.
 const NONZERO_FIELDS: [&str; 14] = [
-    "idle_timeout_secs",
-    "read_timeout_secs",
-    "write_timeout_secs",
+    "idle_timeout_ms",
+    "read_timeout_ms",
+    "write_timeout_ms",
     "max_concurrent_requests",
     "list_max_rows",
     "rate_limit_window_secs",
-    "request_timeout_secs",
+    "request_timeout_ms",
     "signature_validity_secs",
     "put_retry_backoff_ms",
     "list_max_pages",
@@ -139,7 +139,7 @@ fn a_pool_id_that_is_not_bech32_is_refused() {
     assert!(ServerConfig::from_toml(&broken).is_err());
 }
 /// Zero is the same deployment mistake as an absent value, and it is the more
-/// dangerous one: `request_timeout_secs = 0` builds an agent that fails every
+/// dangerous one: `request_timeout_ms = 0` builds an agent that fails every
 /// PUT, so every upload becomes a 503 nobody can trace to this file.
 #[test]
 fn a_field_where_zero_means_nothing_is_refused() {
@@ -164,7 +164,7 @@ fn a_refused_value_is_pointed_at_by_its_own_line() {
         .to_string();
     assert!(error.contains("max_body_bytes = 0"), "got: {error}");
 
-    let error = ServerConfig::from_toml(&with("request_timeout_secs", "0"))
+    let error = ServerConfig::from_toml(&with("request_timeout_ms", "0"))
         .unwrap_err()
         .to_string();
     assert!(error.contains("[archive]"), "got: {error}");

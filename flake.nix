@@ -296,6 +296,12 @@
 
             allowlist = (import ./nix/allowlist.nix { inherit pkgs; }).tests;
 
+            server-config = import ./nix/server-config-test.nix {
+              inherit pkgs;
+              serverModule = self.nixosModules.metsuke-server;
+              server = config.packages.metsuke-server;
+            };
+
             static-x86_64-linux = linksNothing config.packages.metsuke-static-x86_64-linux;
             static-aarch64-linux = linksNothing config.packages.metsuke-static-aarch64-linux;
 
@@ -421,6 +427,9 @@
               pkgs.cargo-deny
               pkgs.cargo-llvm-cov
               config.treefmt.build.wrapper
+              # The justfile's recipes and the reporter they call.
+              pkgs.just
+              pkgs.nushell
             ];
 
             # cargo-llvm-cov looks for these next to the rustc that built the

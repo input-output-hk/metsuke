@@ -44,7 +44,7 @@ let
           bucket = required types.str;
           region = required types.str;
           endpoint = required types.str;
-          request_timeout_secs = positive;
+          request_timeout_ms = positive;
           signature_validity_secs = positive;
           put_retries = mkOption { type = types.ints.unsigned; };
           put_retry_backoff_ms = positive;
@@ -114,9 +114,9 @@ in
           http = mkOption {
             type = types.submodule {
               options = {
-                idle_timeout_secs = positive;
-                read_timeout_secs = positive;
-                write_timeout_secs = positive;
+                idle_timeout_ms = positive;
+                read_timeout_ms = positive;
+                write_timeout_ms = positive;
                 max_concurrent_requests = positive;
               };
             };

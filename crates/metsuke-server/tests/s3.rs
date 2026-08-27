@@ -173,7 +173,12 @@ fn credentials() -> Credentials {
 
 /// Long enough that no test waits on it, short enough that the one test
 /// measuring it does not stall the suite.
-const TIMEOUT: Duration = Duration::from_secs(1);
+const TIMEOUT: Duration = Duration::from_millis(200);
+
+/// How long a presigned URL stays usable, which no test here measures — it is
+/// not `TIMEOUT` because that one is now shorter than the second this is
+/// counted in.
+const SIGNATURE_VALIDITY_SECS: u64 = 300;
 
 /// The bucket every test configures, and the path segment the fake strips to
 /// recover an object key.
@@ -188,8 +193,8 @@ fn config_for(endpoint: &str, put_retries: u32) -> S3Config {
         bucket: BUCKET.to_string(),
         region: "test-region".to_string(),
         endpoint: endpoint.parse().expect("the fake endpoint is a URL"),
-        request_timeout_secs: nonzero_u64(TIMEOUT.as_secs()),
-        signature_validity_secs: nonzero_u64(TIMEOUT.as_secs()),
+        request_timeout_ms: nonzero_u64(TIMEOUT.as_millis() as u64),
+        signature_validity_secs: nonzero_u64(SIGNATURE_VALIDITY_SECS),
         put_retries,
         put_retry_backoff_ms: nonzero_u64(RETRY_BACKOFF.as_millis() as u64),
         list_max_pages: nonzero_u32(10),

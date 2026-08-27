@@ -6,3 +6,4 @@
 /scratch
 /devnet/.devnet
 /.claude/settings.local.json
+/.test-logs
