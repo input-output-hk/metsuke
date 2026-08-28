@@ -1,0 +1,112 @@
+# TYPE cardano_node_metrics_Mem_resident_int gauge
+cardano_node_metrics_Mem_resident_int 113983488
+# TYPE cardano_node_metrics_forging_enabled_int gauge
+cardano_node_metrics_forging_enabled_int 0
+# TYPE rts_gc_init_cpu_ms counter
+rts_gc_init_cpu_ms 1
+# TYPE rts_gc_par_tot_bytes_copied gauge
+rts_gc_par_tot_bytes_copied 28665152
+# TYPE cardano_node_metrics_cardano_version_patch_int gauge
+cardano_node_metrics_cardano_version_patch_int 0
+# TYPE cardano_node_metrics_cardano_build_info info
+cardano_node_metrics_cardano_build_info{version_major="11",version_minor="1",version_patch="0",version="11.1.0.164",revision="c5f7d9121beb67e6d03d0632ae2bd3b76259728e",compiler_name="ghc",compiler_version="9.6.7",compiler_version_major="9",compiler_version_minor="6",compiler_version_patch="7",architecture="x86_64",os_name="linux"} 1
+# TYPE rts_gc_par_balanced_bytes_copied gauge
+rts_gc_par_balanced_bytes_copied 24588224
+# TYPE rts_gc_current_bytes_slop gauge
+rts_gc_current_bytes_slop 1145984
+# TYPE rts_gc_cumulative_bytes_used counter
+rts_gc_cumulative_bytes_used 36530488
+# TYPE cardano_node_metrics_Stat_fsRd_int gauge
+cardano_node_metrics_Stat_fsRd_int 0
+# TYPE rts_gc_par_max_bytes_copied gauge
+rts_gc_par_max_bytes_copied 16366016
+# TYPE cardano_node_metrics_cardano_version_major_int gauge
+cardano_node_metrics_cardano_version_major_int 11
+# TYPE rts_gc_nm_max_elapsed_ms counter
+rts_gc_nm_max_elapsed_ms 0
+# TYPE cardano_node_metrics_cardano_version_minor_int gauge
+cardano_node_metrics_cardano_version_minor_int 1
+# TYPE rts_gc_nm_sync_cpu_ms counter
+rts_gc_nm_sync_cpu_ms 0
+# TYPE cardano_node_metrics_Stat_blkIOticks_int gauge
+cardano_node_metrics_Stat_blkIOticks_int 0
+# TYPE cardano_node_metrics_haskell_compiler_patch_int gauge
+cardano_node_metrics_haskell_compiler_patch_int 7
+# TYPE rts_gc_peak_megabytes_allocated gauge
+rts_gc_peak_megabytes_allocated 65
+# TYPE rts_gc_nm_cpu_ms counter
+rts_gc_nm_cpu_ms 0
+# TYPE rts_gc_nm_elapsed_ms counter
+rts_gc_nm_elapsed_ms 0
+# TYPE cardano_node_metrics_RTS_mutticks_int gauge
+cardano_node_metrics_RTS_mutticks_int 202
+# TYPE rts_gc_mutator_cpu_ms counter
+rts_gc_mutator_cpu_ms 2909
+# TYPE cardano_node_metrics_Stat_cputicks_int gauge
+cardano_node_metrics_Stat_cputicks_int 210
+# TYPE cardano_node_metrics_RTS_alloc_int gauge
+cardano_node_metrics_RTS_alloc_int 6523007696
+# TYPE cardano_node_metrics_RTS_gcLiveBytes_int gauge
+cardano_node_metrics_RTS_gcLiveBytes_int 28132208
+# TYPE rts_gc_max_bytes_slop gauge
+rts_gc_max_bytes_slop 917600
+# TYPE cardano_node_metrics_Stat_netRd_int gauge
+cardano_node_metrics_Stat_netRd_int 0
+# TYPE cardano_node_metrics_basicInfo info
+cardano_node_metrics_basicInfo{nodeStartTime="2026-08-28 01:08:59.136649045 UTC"} 1
+# TYPE cardano_node_metrics_RTS_gcMajorNum_int gauge
+cardano_node_metrics_RTS_gcMajorNum_int 6
+# TYPE rts_gc_gc_wall_ms counter
+rts_gc_gc_wall_ms 192
+# TYPE rts_gc_cpu_ms counter
+rts_gc_cpu_ms 3000
+# TYPE cardano_node_metrics_Stat_netWr_int gauge
+cardano_node_metrics_Stat_netWr_int 0
+# TYPE rts_gc_wall_ms counter
+rts_gc_wall_ms 3010
+# TYPE cardano_node_metrics_RTS_threads_int gauge
+cardano_node_metrics_RTS_threads_int 9
+# TYPE rts_gc_nm_sync_elapsed_ms counter
+rts_gc_nm_sync_elapsed_ms 0
+# TYPE rts_gc_mutator_wall_ms counter
+rts_gc_mutator_wall_ms 2818
+# TYPE rts_gc_bytes_allocated counter
+rts_gc_bytes_allocated 7214623392
+# TYPE cardano_node_metrics_RTS_gcHeapBytes_int gauge
+cardano_node_metrics_RTS_gcHeapBytes_int 67108864
+# TYPE rts_gc_nm_sync_max_elapsed_ms counter
+rts_gc_nm_sync_max_elapsed_ms 0
+# TYPE rts_gc_max_bytes_used gauge
+rts_gc_max_bytes_used 16719776
+# TYPE rts_gc_gc_cpu_ms counter
+rts_gc_gc_cpu_ms 91
+# TYPE rts_gc_max_large_bytes_used gauge
+rts_gc_max_large_bytes_used 6776232
+# TYPE rts_gc_par_avg_bytes_copied gauge
+rts_gc_par_avg_bytes_copied 28665152
+# TYPE rts_gc_num_bytes_usage_samples counter
+rts_gc_num_bytes_usage_samples 6
+# TYPE cardano_node_metrics_RTS_gcMinorNum_int gauge
+cardano_node_metrics_RTS_gcMinorNum_int 217
+# TYPE rts_gc_bytes_copied counter
+rts_gc_bytes_copied 138008504
+# TYPE rts_gc_num_gcs counter
+rts_gc_num_gcs 246
+# TYPE cardano_node_metrics_RTS_gcticks_int gauge
+cardano_node_metrics_RTS_gcticks_int 9
+cardano_node_metrics_blockReplayProgress_real 9.645251834154175
+# TYPE cardano_node_metrics_node_start_time_int gauge
+cardano_node_metrics_node_start_time_int 1787879340
+# TYPE rts_gc_current_bytes_used gauge
+rts_gc_current_bytes_used 29016960
+# TYPE cardano_node_metrics_haskell_compiler_major_int gauge
+cardano_node_metrics_haskell_compiler_major_int 9
+# TYPE cardano_node_metrics_Stat_fsWr_int gauge
+cardano_node_metrics_Stat_fsWr_int 0
+# TYPE rts_gc_max_compact_bytes_used gauge
+rts_gc_max_compact_bytes_used 0
+# TYPE rts_gc_init_wall_ms counter
+rts_gc_init_wall_ms 1
+# TYPE cardano_node_metrics_haskell_compiler_minor_int gauge
+cardano_node_metrics_haskell_compiler_minor_int 6
+# EOF

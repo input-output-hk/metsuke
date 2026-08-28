@@ -12,6 +12,10 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 const RECORDED_CHAIN: &str = include_str!("fixtures/recordings/leios-node.prom");
 const RECORDED_STARTUP: &str = include_str!("fixtures/recordings/leios-node-startup.prom");
 const RECORDED_TESTNET_BP: &str = include_str!("fixtures/recordings/leios-testnet-bp.prom");
+const RECORDED_RELAY_BOOTSTRAP: &str =
+    include_str!("fixtures/recordings/leios-testnet-relay-bootstrap.prom");
+const RECORDED_RELAY_REPLAY: &str =
+    include_str!("fixtures/recordings/leios-testnet-relay-replay.prom");
 
 fn config(metrics_url: String) -> ScrapeConfig {
     ScrapeConfig {
@@ -189,6 +193,10 @@ fn stated_metrics(body: &str) -> usize {
         .count()
 }
 
+fn has(metrics: &[Metric], name: &str) -> bool {
+    metrics.iter().any(|metric| metric.name == name)
+}
+
 fn named<'a>(metrics: &'a [Metric], name: &str) -> &'a Metric {
     metrics
         .iter()
@@ -236,6 +244,71 @@ fn a_metric_the_body_typed_carries_its_type_and_an_untyped_one_none() {
         .declared_type,
         None
     );
+}
+
+// Both cassettes are the same node and the same build, so a metric in one and
+// not the other is its state talking.
+#[test]
+fn the_metric_set_follows_the_node_state() {
+    let bootstrap = parse(RECORDED_RELAY_BOOTSTRAP);
+    let replay = parse(RECORDED_RELAY_REPLAY);
+    assert_eq!(bootstrap.refused, []);
+    assert_eq!(replay.refused, []);
+
+    assert!(has(
+        &replay.metrics,
+        "cardano_node_metrics_blockReplayProgress_real"
+    ));
+    assert!(!has(&replay.metrics, "cardano_node_metrics_blockNum_int"));
+    assert!(!has(&replay.metrics, "cardano_node_metrics_tipBlock"));
+
+    assert!(has(&bootstrap.metrics, "cardano_node_metrics_blockNum_int"));
+    assert!(!has(
+        &bootstrap.metrics,
+        "cardano_node_metrics_blockReplayProgress_real"
+    ));
+    assert!(replay.metrics.len() < bootstrap.metrics.len());
+}
+
+// The labels name the block and whoever issued it, so the tip has to be one
+// the node took from a peer.
+#[test]
+fn the_bootstrap_cassette_carries_a_labelled_tip() {
+    let scrape = parse(RECORDED_RELAY_BOOTSTRAP);
+    assert_eq!(
+        scrape.metrics.len(),
+        stated_metrics(RECORDED_RELAY_BOOTSTRAP)
+    );
+    let tip = named(&scrape.metrics, "cardano_node_metrics_tipBlock");
+    assert_eq!(tip.labels.len(), 3);
+    for label in ["hash", "parent_hash", "issuer_verification_key_hash"] {
+        assert!(tip.labels.contains_key(label), "the tip states {label}");
+    }
+}
+
+#[test]
+fn only_the_block_producer_states_forge_counters() {
+    let forge_counters = |body| {
+        parse(body)
+            .metrics
+            .into_iter()
+            .filter(|metric| metric.name.starts_with("cardano_node_metrics_Forge_"))
+            .count()
+    };
+    assert_eq!(forge_counters(RECORDED_RELAY_BOOTSTRAP), 0);
+    assert_eq!(forge_counters(RECORDED_RELAY_REPLAY), 0);
+    assert!(forge_counters(RECORDED_TESTNET_BP) > 0);
+
+    let enabled = |body| {
+        named(
+            &parse(body).metrics,
+            "cardano_node_metrics_forging_enabled_int",
+        )
+        .value
+        .as_u64()
+    };
+    assert_eq!(enabled(RECORDED_RELAY_BOOTSTRAP), Some(0));
+    assert_eq!(enabled(RECORDED_TESTNET_BP), Some(1));
 }
 
 #[test]

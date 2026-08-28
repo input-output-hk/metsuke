@@ -188,9 +188,11 @@ let
           pkgs.jq
         ];
       }
-      # Genesis beside config.json, the YAML through yq, the topology template
-      # taken as it is: scripts/record-scrape-fixtures.sh says why each of the
-      # three has to be done that way. Genesis paths go absolute because the node
+      # Genesis beside config.json because the demo's config addresses those
+      # files as ./<era>-genesis.json; the YAML through yq because cardano-node
+      # reads JSON too and plain jq cannot otherwise address the empty-string
+      # TraceOptions key; the topology template as it is because this node has
+      # no peers to fill into it. Genesis paths go absolute because the node
       # reads a copy of this config from `configPath`, not from here.
       ''
         mkdir -p $out

@@ -1,15 +1,26 @@
 #!/usr/bin/env bash
 #
 # Re-record the PrometheusSimple cassette fixtures under
-# crates/metsuke/tests/fixtures/recordings/ from a real Leios node: a single
-# forging node on the proto-devnet genesis, scraped over loopback. When to
-# run and what to commit with the output: tests/fixtures/README.md.
+# crates/metsuke/tests/fixtures/recordings/ from a relay on the public Leios
+# testnet, in the two node states whose metric sets differ. When to run and
+# what to commit with the output: crates/metsuke/tests/fixtures/README.md.
+#
+# A relay against a real chain with real peers is the point: a metric absent
+# from one of these bodies is evidence the node did not emit it, not an
+# artefact of a devnet that structurally cannot reach the state.
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 recordings="$repo/crates/metsuke/tests/fixtures/recordings"
-metrics_port=12798
-metrics_url="http://127.0.0.1:$metrics_port/metrics"
+
+# How far the first run syncs before it is restarted. The replay body only
+# exists while the node is rebuilding its ledger from a snapshot older than
+# its chain, so the wider that gap the wider the window to scrape it in.
+SYNC_BLOCKS="${SYNC_BLOCKS:-20000}"
+PORT="${PORT:-3010}"
+# The port the testnet config's PrometheusSimple backend already names, so
+# moving the endpoint means editing that config, not this line.
+metrics_url="http://127.0.0.1:12798/metrics"
 
 need() {
   for cmd in "$@"; do
@@ -22,7 +33,7 @@ need() {
 need nix jq curl
 
 # The Leios source pinned in flake.nix, and the patched cardano-node rev its
-# own lock file pins — the same binary the proto-devnet demo runs.
+# own lock file pins — the same binary the testnet relay package runs.
 leios_rev=$(jq -r '.nodes."cardano-node-leios".locked.rev' "$repo/flake.lock")
 leios_src=$(nix flake prefetch --json "github:input-output-hk/ouroboros-leios/$leios_rev" | jq -r .storePath)
 node_rev=$(jq -r '.nodes."cardano-node-leios".locked.rev' "$leios_src/flake.lock")
@@ -30,101 +41,141 @@ node_rev=$(jq -r '.nodes."cardano-node-leios".locked.rev' "$leios_src/flake.lock
 echo "leios: $leios_rev"
 echo "cardano-node: $node_rev"
 
-workdir=$(mktemp -d /tmp/metsuke-record.XXXXXX)
+workdir=$(mktemp -d "${RECORD_WORKDIR:-/tmp}/metsuke-record.XXXXXX")
 node_out="$workdir/cardano-node"
 nix build "github:intersectmbo/cardano-node/$node_rev#cardano-node" \
   --accept-flake-config -o "$node_out"
 
-devnet="$leios_src/demo/proto-devnet"
+# The relay's own scripts, made writable so its pin-config.sh can write the
+# config dir it addresses relative to itself.
+cp -r "$leios_src/testnet" "$workdir/testnet"
+chmod -R u+w "$workdir/testnet"
 
-# Genesis with a fresh start time, so the node forges from slot 0 now. The
-# node config addresses genesis files as ./<era>-genesis.json, so they sit
-# next to config.json.
-cp "$devnet/config/genesis/"*.json "$workdir/"
-chmod u+w "$workdir/"*.json
-start_epoch=$(date +%s)
-start_iso=$(date -u -d "@$start_epoch" +"%Y-%m-%dT%H:%M:%SZ")
-jq --argjson time "$start_epoch" '.startTime = $time' \
-  "$devnet/config/genesis/byron-genesis.json" >"$workdir/byron-genesis.json"
-jq --arg time "$start_iso" '.systemStart = $time' \
-  "$devnet/config/genesis/shelley-genesis.json" >"$workdir/shelley-genesis.json"
+# Refreshed from the deployed network, not taken as pinned. The snapshot in
+# the tag is of whichever testnet was deployed when it was cut; against a
+# rolled network every peer's headers fail validation at slot 0
+# (NoCounterForKeyHashOCERT) and no chain metric is ever emitted. The node
+# binary is pinned and the chain is not, so a re-recording is of whatever the
+# network was that day.
+"$workdir/testnet/pin-config.sh"
 
-# The demo's node config with only a loopback PrometheusSimple backend.
-# Converted to JSON (cardano-node's YAML parser reads JSON) so plain jq can
-# address the empty-string TraceOptions key.
-nix shell nixpkgs#yq-go --command yq -o=json . "$devnet/config/config.yaml" |
-  jq --arg backend "PrometheusSimple 127.0.0.1 $metrics_port" \
-    '.TraceOptionNodeName = "recorder" | .TraceOptions."".backends = [$backend]' \
-    >"$workdir/config.json"
+node_dir="$workdir/node"
 
-# No peers: a lone pool forges its own leader slots, which is all the
-# recording needs.
-jq '.' "$devnet/config/topology.template.json" >"$workdir/topology.json"
+# Job control in a script, so each background job leads its own process group.
+# run-node.sh runs cardano-node in a pipeline under itself; signalling the
+# script alone leaves the node holding the database lock, and the restart
+# below then dies on that lock while the first node keeps writing the same
+# log — a failure that reads as a healthy run.
+set -m
 
-cp -r "$devnet/config/pools-keys/pool1" "$workdir/keys"
-chmod u+w -R "$workdir/keys"
-chmod 400 "$workdir/keys"/*.skey
-
-# cwd is $workdir: the config's relative leios.db lands there, not in the repo.
-cd "$workdir"
-"$node_out/bin/cardano-node" run \
-  --config "$workdir/config.json" \
-  --topology "$workdir/topology.json" \
-  --database-path "$workdir/db" \
-  --socket-path "$workdir/node.socket" \
-  --host-addr 127.0.0.1 \
-  --port 3001 \
-  --shelley-vrf-key "$workdir/keys/vrf.skey" \
-  --shelley-kes-key "$workdir/keys/kes.skey" \
-  --shelley-bls-key "$workdir/keys/bls.skey" \
-  --shelley-operational-certificate "$workdir/keys/opcert.cert" \
-  >"$workdir/node.log" 2>&1 &
-node_pid=$!
-trap 'kill "$node_pid" 2>/dev/null || true' EXIT
-
-# First successful scrape: the endpoint is up but chain metrics have not been
-# emitted yet — the real "metric missing" body.
-startup=""
-for _ in $(seq 60); do
-  if startup=$(curl -sf "$metrics_url"); then
-    break
-  fi
-  kill -0 "$node_pid" || {
-    echo "error: cardano-node exited, see $workdir/node.log" >&2
-    exit 1
-  }
-  sleep 2
-done
-[ -n "$startup" ] || {
-  echo "error: no scrape within 120s, see $workdir/node.log" >&2
-  exit 1
+# leios-testnet-relay's entrypoint starts a TUI under process-compose and dies
+# without a tty; run-node.sh underneath it is the node on its own. It appends
+# to node.log, so one file spans both runs.
+start_node() {
+  CARDANO_NODE="$node_out/bin/cardano-node" \
+    SOURCE_DIR="$workdir/testnet" \
+    WORKING_DIR="$node_dir" \
+    PORT="$PORT" \
+    "$workdir/testnet/run-node.sh" >"$workdir/runner.log" 2>&1 &
+  node_pid=$!
 }
-if grep -q cardano_node_metrics_blockNum_int <<<"$startup"; then
-  echo "warning: chain metrics already present at first scrape; keeping the old startup fixture" >&2
-else
-  printf '%s' "$startup" >"$recordings/leios-node-startup.prom"
-  echo "recorded: leios-node-startup.prom"
-fi
+stop_node() {
+  [ -n "${node_pid:-}" ] || return 0
+  kill -- -"$node_pid" 2>/dev/null || true
+  wait "$node_pid" 2>/dev/null || true
+  # The endpoint answering is the node still holding its ports and its
+  # database; a restart that races it fails on the lock.
+  local deadline=$((SECONDS + 60))
+  while curl -sf -m 3 "$metrics_url" >/dev/null 2>&1; do
+    [ "$SECONDS" -lt "$deadline" ] || {
+      echo "error: the endpoint still answers 60s after the kill" >&2
+      exit 1
+    }
+    sleep 1
+  done
+}
+trap 'stop_node' EXIT
 
-# Forged chain: wait until the chain metrics appear, then a few more blocks
-# so height, slot, and epoch carry distinct non-zero values.
-for _ in $(seq 120); do
-  body=$(curl -sf "$metrics_url" || true)
-  height=$(sed -n 's/^cardano_node_metrics_blockNum_int //p' <<<"$body")
-  if [ -n "$height" ] && [ "$height" -ge 5 ]; then
-    printf '%s' "$body" >"$recordings/leios-node.prom"
-    echo "recorded: leios-node.prom"
-    break
+# Metric present in the body, by name. The endpoint emits no HELP and only
+# some TYPE lines, so a name match has to be anchored to the start of a line.
+has_metric() { grep -q "^$1[ {]" <<<"$2"; }
+
+# Lines stating a metric, which is what tests/scrape.rs counts: a here-string
+# adds the trailing newline the body does not carry, so counting comments out
+# alone reports one metric too many.
+count_metrics() { grep -cvE '^#|^[[:space:]]*$'; }
+
+# Scrape until $2 says the body is the wanted one, or $1 seconds pass. Prints
+# the body it stopped on. Runs under `$( )`, where `exit` would only leave the
+# subshell and let the caller report a timeout that did not happen: 1 is the
+# timeout, 2 is the relay dying under it, and the caller separates them.
+scrape_until() {
+  local deadline=$((SECONDS + $1)) predicate=$2 body
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    body=$(curl -sf -m 3 "$metrics_url" || true)
+    if [ -n "$body" ] && "$predicate" "$body"; then
+      printf '%s' "$body"
+      return 0
+    fi
+    kill -0 "$node_pid" 2>/dev/null || return 2
+    sleep 1
+  done
+  return 1
+}
+
+# The message for whichever way scrape_until gave up, so the specific reason
+# is the only one printed.
+gave_up() {
+  if [ "$1" -eq 2 ]; then
+    echo "error: the relay exited, see $node_dir/node.log" >&2
+  else
+    echo "error: $2, see $node_dir/node.log" >&2
   fi
-  sleep 5
-done
-[ -n "${height:-}" ] && [ "$height" -ge 5 ] || {
-  echo "error: chain metrics never reached height 5, see $workdir/node.log" >&2
   exit 1
 }
 
 echo
-echo "expected values for tests/scrape.rs:"
-grep -E '^cardano_node_metrics_(blockNum|slotNum|slotInEpoch|epoch)_int ' \
-  "$recordings/leios-node.prom"
-grep -oE 'version="[^"]*"|revision="[^"]*"' "$recordings/leios-node.prom" | head -2
+echo "== bootstrapping: syncing from the bootstrap peers =="
+start_node
+
+# The threshold body, which is also what leaves the restart below something to
+# replay. Not "the first body before any chain metric": the node adopts its
+# first block about a second after the tracing system comes up, so against the
+# live network that body is a race.
+bootstrapping() {
+  local height
+  height=$(sed -n 's/^cardano_node_metrics_blockNum_int //p' <<<"$1")
+  [ -n "$height" ] && [ "$height" -ge "$SYNC_BLOCKS" ]
+}
+echo "syncing to block $SYNC_BLOCKS"
+bootstrap=$(scrape_until 3600 bootstrapping) ||
+  gave_up $? "never reached block $SYNC_BLOCKS"
+# A caught-up node is a third state, and its body is not what this cassette
+# claims to be.
+if grep -q 'CaughtUp' "$node_dir/node.log"; then
+  echo "error: caught up before block $SYNC_BLOCKS; raise SYNC_BLOCKS" >&2
+  exit 1
+fi
+printf '%s' "$bootstrap" >"$recordings/leios-testnet-relay-bootstrap.prom"
+echo "recorded: leios-testnet-relay-bootstrap.prom ($(count_metrics <<<"$bootstrap") metrics," \
+  "block $(sed -n 's/^cardano_node_metrics_blockNum_int //p' <<<"$bootstrap"))"
+
+echo
+echo "== replay: restarted onto the database it just built =="
+stop_node
+start_node
+
+# Ledger replay is the only state that emits blockReplayProgress, and it ends
+# when the node catches up to its own chain.
+replaying() { has_metric cardano_node_metrics_blockReplayProgress_real "$1"; }
+replay=$(scrape_until 300 replaying) ||
+  gave_up $? "blockReplayProgress never appeared within 300s"
+printf '%s' "$replay" >"$recordings/leios-testnet-relay-replay.prom"
+echo "recorded: leios-testnet-relay-replay.prom ($(count_metrics <<<"$replay") metrics)"
+
+echo
+# tests/scrape.rs pins no value out of these two bodies — it asserts which
+# metrics each state has, and the counts it derives. The literals it does pin
+# come from the hand-captured block producer, which this script never touches.
+echo "recorded $(count_metrics <"$recordings/leios-testnet-relay-bootstrap.prom") metrics" \
+  "bootstrapping, $(count_metrics <"$recordings/leios-testnet-relay-replay.prom") replaying"
