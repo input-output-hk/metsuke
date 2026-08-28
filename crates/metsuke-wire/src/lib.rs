@@ -5,6 +5,8 @@
 //! dependency never becomes a server dependency.
 
 pub mod envelope;
+#[cfg(feature = "fixtures")]
+pub mod fixtures;
 pub mod hex;
 pub mod http;
 pub mod journal;

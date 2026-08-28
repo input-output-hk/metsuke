@@ -6,7 +6,6 @@
 //! needs reads as dead code in the others.
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::net::TcpListener;
 use std::num::{NonZeroU32, NonZeroU64};
@@ -22,9 +21,10 @@ use metsuke_server::instructions;
 use metsuke_server::intake::Intake;
 use metsuke_server::serve;
 use metsuke_wire::envelope::{
-    AgentId, Envelope, Metric, Payload, PayloadLine, PoolId, Provenance, Scrape, Signature,
-    SigningKey, seal,
+    AgentId, Envelope, Payload, PayloadLine, PoolId, Provenance, Scrape, Signature, SigningKey,
+    seal,
 };
+use metsuke_wire::fixtures;
 use time::OffsetDateTime;
 
 /// The one account the routes authenticate.
@@ -228,17 +228,7 @@ fn seeded(root: &Path, index: usize) -> Object {
 }
 
 fn scrape(now: OffsetDateTime) -> Scrape {
-    Scrape {
-        scraped_at: now,
-        clock_offset_ms: None,
-        failure: None,
-        metrics: vec![Metric {
-            name: "cardano_node_metrics_blockNum_int".to_string(),
-            labels: BTreeMap::new(),
-            value: 1.into(),
-            declared_type: Some("gauge".to_string()),
-        }],
-    }
+    fixtures::block_number_scrape(now, 1)
 }
 
 /// Ingest limits wide enough that no test reaches one: nothing here submits,

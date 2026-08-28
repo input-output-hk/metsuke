@@ -6,15 +6,13 @@
 //! needs reads as dead code in the others.
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use metsuke::config::{Config, LogConfig};
 use metsuke::logselect::SelectConfig;
 use metsuke::logsource::{JournalConfig, JournalSource, LineSourceError};
-use metsuke_wire::envelope::{
-    AgentId, Limits, Metric, PoolId, Provenance, Scrape, SigningKey, TraceLine,
-};
+use metsuke_wire::envelope::{AgentId, Limits, PoolId, Provenance, Scrape, SigningKey, TraceLine};
+use metsuke_wire::fixtures;
 use time::OffsetDateTime;
 
 /// The all-sevens test seed used across the suite.
@@ -41,21 +39,13 @@ pub fn test_provenance() -> Provenance {
     }
 }
 
-/// One scrape, distinguishable from every other by its time and by the value of
-/// the one metric it carries. What the tests that need a row rather than a
-/// scrape of anything real spool.
+/// A shared fixture scrape whose metric value is its own timestamp, so a row
+/// spooled here is distinguishable from every other by either half.
 pub fn scrape_at(unix_secs: i64) -> Scrape {
-    Scrape {
-        scraped_at: OffsetDateTime::from_unix_timestamp(unix_secs).expect("a fixed instant"),
-        clock_offset_ms: None,
-        failure: None,
-        metrics: vec![Metric {
-            name: BLOCK_NUMBER.to_string(),
-            labels: BTreeMap::new(),
-            value: unix_secs.into(),
-            declared_type: Some("gauge".to_string()),
-        }],
-    }
+    fixtures::block_number_scrape(
+        OffsetDateTime::from_unix_timestamp(unix_secs).expect("a fixed instant"),
+        u64::try_from(unix_secs).expect("the suite's instants are past the epoch"),
+    )
 }
 
 /// The metric the recorded bodies are read by across the suite, as an integer.
@@ -65,13 +55,10 @@ pub fn block_number(scrape: &Scrape) -> Option<u64> {
     scrape
         .metrics
         .iter()
-        .find(|metric| metric.name == BLOCK_NUMBER)?
+        .find(|metric| metric.name == fixtures::BLOCK_NUMBER)?
         .value
         .as_u64()
 }
-
-/// The node's block-height gauge, as its PrometheusSimple backend names it.
-const BLOCK_NUMBER: &str = "cardano_node_metrics_blockNum_int";
 
 /// A trace line as the spool and the wire hold one: the node's object, parsed.
 pub fn trace_line(line: &str) -> TraceLine {

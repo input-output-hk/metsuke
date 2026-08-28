@@ -27,5 +27,14 @@ ureq = { version = "3.4.0", default-features = false }
 uuid = { version = "1.25.0", features = ["v7"] }
 zstd = "0.13.3"
 
+[features]
+# `fixtures`: test-only Scrape values every crate's suite shares. Only a
+# dev-dependency names it, and resolver 2 keeps dev-dependency features out of
+# a normal build, so no shipped binary carries the module.
+fixtures = []
+
 [dev-dependencies]
+# This crate's own tests, on itself, for `fixtures`: a crate cannot enable one
+# of its features for its own test targets any other way.
+metsuke-wire = { path = ".", features = ["fixtures"] }
 proptest = "1.11.0"

@@ -53,6 +53,7 @@ blake2 = "0.10.6"
 ed25519-dalek = "3.0.0"
 
 [dev-dependencies]
+metsuke-wire = { path = "../metsuke-wire", features = ["fixtures"] }
 proptest = "1.11.0"
 tempfile = "3.27.0"
 # The S3 endpoint doubles the archive suite runs against. Only a test serves

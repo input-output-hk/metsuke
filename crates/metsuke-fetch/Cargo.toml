@@ -19,6 +19,7 @@ thiserror = "2.0.20"
 ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
 
 [dev-dependencies]
+metsuke-wire = { path = "../metsuke-wire", features = ["fixtures"] }
 # tests/support/mod.rs says what the server is doing here.
 metsuke-server = { path = "../metsuke-server" }
 tempfile = "3.27.0"

@@ -17,9 +17,10 @@ use metsuke_server::authority::Signed;
 use metsuke_server::config::{AbsolutePath, DeveloperConfig, HttpConfig, IngestConfig};
 use metsuke_server::developer::percent_decoded;
 use metsuke_wire::envelope::{
-    self, AgentId, Envelope, Metric, Payload, PayloadLine, PoolId, Provenance, Scrape, Signature,
+    self, AgentId, Envelope, Payload, PayloadLine, PoolId, Provenance, Scrape, Signature,
     SigningKey, TraceLine, VerifyingKey,
 };
+use metsuke_wire::fixtures;
 use time::OffsetDateTime;
 
 /// The all-sevens test seed, matching the agent suite.
@@ -81,17 +82,7 @@ pub fn provenance_of(key: &SigningKey) -> Provenance {
 }
 
 pub fn test_scrape(now: OffsetDateTime) -> Scrape {
-    Scrape {
-        scraped_at: now,
-        clock_offset_ms: None,
-        failure: None,
-        metrics: vec![Metric {
-            name: "cardano_node_metrics_blockNum_int".to_string(),
-            labels: BTreeMap::new(),
-            value: 12_345.into(),
-            declared_type: Some("gauge".to_string()),
-        }],
-    }
+    fixtures::block_number_scrape(now, 12_345)
 }
 
 /// The schema v2 envelope an agent collecting trace lines sends.

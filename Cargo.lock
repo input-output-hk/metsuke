@@ -1019,6 +1019,7 @@ dependencies = [
  "bech32",
  "blake2",
  "ed25519-dalek",
+ "metsuke-wire",
  "proptest",
  "rusqlite",
  "serde",

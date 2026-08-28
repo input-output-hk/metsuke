@@ -9,6 +9,7 @@ use metsuke_wire::envelope::{
     PROVENANCE_KEY, Payload, PayloadLine, PoolId, Provenance, Reason, SCHEMA_VERSION_LINES,
     SCHEMA_VERSION_SCRAPES, Scrape, SigningKey, TraceLine,
 };
+use metsuke_wire::fixtures;
 use proptest::prelude::*;
 use serde_json::Number;
 use time::OffsetDateTime;
@@ -933,15 +934,5 @@ fn one_scrape_envelope(key: &SigningKey) -> Envelope {
 /// One scrape carrying one metric, so the tests that only need a payload line
 /// have the smallest one a real scrape produces.
 fn scrape() -> Scrape {
-    Scrape {
-        scraped_at: OffsetDateTime::UNIX_EPOCH,
-        clock_offset_ms: None,
-        failure: None,
-        metrics: vec![Metric {
-            name: "cardano_node_metrics_blockNum_int".to_string(),
-            labels: BTreeMap::new(),
-            value: 5.into(),
-            declared_type: Some("gauge".to_string()),
-        }],
-    }
+    fixtures::block_number_scrape(OffsetDateTime::UNIX_EPOCH, 5)
 }
