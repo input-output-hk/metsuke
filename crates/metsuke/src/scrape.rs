@@ -22,7 +22,7 @@ pub struct ScrapeConfig {
     pub max_body_bytes: u64,
 }
 
-/// Scrape once. `clock_offset_ms` stays null here — `scraper` fills it from
+/// Scrape once. `clock_offset_ms` stays null here. `scraper` fills it from
 /// the SNTP probe. A refused line and a failed fetch are both reported to the
 /// journal as well as shipped: the row reaches a consumer, the warning reaches
 /// the operator who can do something about it.
@@ -121,7 +121,7 @@ pub enum Refused {
     Unreadable { line: String },
 }
 
-/// Every metric an exposition body states, one per line — this endpoint groups
+/// Every metric an exposition body states, one per line. This endpoint groups
 /// nothing under a shared name. Values keep the shape the body wrote them in,
 /// which is what `envelope::Metric` holds them as.
 pub fn parse(body: &str) -> ParsedBody {

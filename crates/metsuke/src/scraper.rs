@@ -12,7 +12,7 @@ pub struct ScraperConfig {
 }
 
 /// One complete row: the scrape with `clock_offset_ms` filled from the SNTP
-/// probe. Never errors — neither half has a failure a row cannot carry.
+/// probe. Never errors: neither half has a failure a row cannot carry.
 pub fn scrape_once(config: &ScraperConfig) -> Scrape {
     let mut row = scrape::scrape(&config.scrape);
     row.clock_offset_ms = probe(&config.sntp);

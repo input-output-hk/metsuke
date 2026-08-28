@@ -602,7 +602,7 @@ fn elements(xml: &str, tag: &str) -> Vec<String> {
 
 /// A listing naming `keys`, in the envelope a real endpoint sent: the recorded
 /// answer with its `<Contents>` block repeated once per key. Only the keys are
-/// the test's — the namespace, the encoding and the fields around them are the
+/// the test's. The namespace, the encoding and the fields around them are the
 /// recording's.
 pub fn listing_of(keys: &[String]) -> Reply {
     let recorded = Reply::recorded("list-all");

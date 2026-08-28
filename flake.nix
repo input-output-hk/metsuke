@@ -154,7 +154,7 @@
           };
 
           # What the suites reach for beside the crates: `checks.test` says why
-          # each is here. Every way the suite is run needs them — the sandboxed
+          # each is here. Every way the suite is run needs them: the sandboxed
           # checks, a per-crate run, and `just test` in the devShell.
           suiteTools = [
             pkgs.duckdb

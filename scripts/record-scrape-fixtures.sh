@@ -33,7 +33,7 @@ need() {
 need nix jq curl
 
 # The Leios source pinned in flake.nix, and the patched cardano-node rev its
-# own lock file pins — the same binary the testnet relay package runs.
+# own lock file pins, the same binary the testnet relay package runs.
 leios_rev=$(jq -r '.nodes."cardano-node-leios".locked.rev' "$repo/flake.lock")
 leios_src=$(nix flake prefetch --json "github:input-output-hk/ouroboros-leios/$leios_rev" | jq -r .storePath)
 node_rev=$(jq -r '.nodes."cardano-node-leios".locked.rev' "$leios_src/flake.lock")
@@ -65,7 +65,7 @@ node_dir="$workdir/node"
 # run-node.sh runs cardano-node in a pipeline under itself; signalling the
 # script alone leaves the node holding the database lock, and the restart
 # below then dies on that lock while the first node keeps writing the same
-# log — a failure that reads as a healthy run.
+# log, a failure that reads as a healthy run.
 set -m
 
 # leios-testnet-relay's entrypoint starts a TUI under process-compose and dies
@@ -174,7 +174,7 @@ printf '%s' "$replay" >"$recordings/leios-testnet-relay-replay.prom"
 echo "recorded: leios-testnet-relay-replay.prom ($(count_metrics <<<"$replay") metrics)"
 
 echo
-# tests/scrape.rs pins no value out of these two bodies — it asserts which
+# tests/scrape.rs pins no value out of these two bodies. It asserts which
 # metrics each state has, and the counts it derives. The literals it does pin
 # come from the hand-captured block producer, which this script never touches.
 echo "recorded $(count_metrics <"$recordings/leios-testnet-relay-bootstrap.prom") metrics" \

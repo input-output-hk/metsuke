@@ -25,9 +25,8 @@ fn main() {
         agent_id: AgentId::slugify("relay-1").expect("a fixed name slugifies"),
     };
     // Every optional field is set, so a build that drops or renames one cannot
-    // reseal the recording unchanged. Two scrape lines, because the two a
-    // scrape can be — metrics, and the reason there are none — render
-    // differently.
+    // reseal the recording unchanged. Two scrape lines, because a scrape's two
+    // shapes render differently: metrics, and the reason there are none.
     let payload = match shape.as_str() {
         "scrapes" => Payload::scrapes(
             [

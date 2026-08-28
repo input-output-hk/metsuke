@@ -24,7 +24,7 @@ pub struct SpoolConfig {
     /// Newest scrape bytes kept when the server is unreachable; oldest beyond
     /// this are dropped on push (ADR 0004: degrade, don't fill the disk).
     pub max_bytes: u64,
-    /// How long a write waits for the other connection to this file — the
+    /// How long a write waits for the other connection to this file. The
     /// trace-line writer and the upload loop are separate threads.
     pub busy_timeout: Duration,
     /// What every row this spool stores is stamped with (`Spool::provenance`).
@@ -83,7 +83,7 @@ pub enum SpoolError {
 /// One entry, and this is the release it ships with: a spool file only exists
 /// where this build has run, and no build has been released, so every state an
 /// earlier entry could have migrated from is one nothing can have written. Each
-/// entry added after v1 ships is real and never rewritten — that is what
+/// entry added after v1 ships is real and never rewritten. That is what
 /// `sqlite::migrate` counts in `user_version`.
 const MIGRATIONS: &[&str] = &["CREATE TABLE scrapes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -192,7 +192,7 @@ struct Outstanding {
 /// later row's running sum starts at its bytes, leaving it at the head stalls
 /// the whole stream behind it until the spool's own cap evicts it. Deleting it
 /// is the same trade the byte cap makes (ADR 0004), so it is accounted the same
-/// way — `Spool::take_uncarriable_report`.
+/// way, in `Spool::take_uncarriable_report`.
 ///
 /// Only the head, never every row over the budget: a budget under one row's
 /// size is a misconfiguration, and the one that deletes by size empties the

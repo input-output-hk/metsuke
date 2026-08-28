@@ -1,7 +1,7 @@
 //! The production archive: one PUT per accepted submission, synchronous
 //! before the ACK (ADR 0004).
 //!
-//! Requests are presigned because that is the seam rusty-s3 offers — it
+//! Requests are presigned because that is the seam rusty-s3 offers. It
 //! returns a signed URL, and ureq has no hook for signing headers as they go
 //! out.
 

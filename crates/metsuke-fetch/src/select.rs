@@ -1,7 +1,7 @@
 //! Which of the listed keys a run is about, past the prefix the server filters
 //! on. The pool, the agent and the kind are segments of the key
 //! (`metsuke_wire::key::ObjectName`) and sit after the id, so no literal prefix
-//! selects them — read off the key here, they still cost no download.
+//! selects them. Read off the key here, they still cost no download.
 
 use metsuke_wire::envelope::{AgentId, PoolId};
 use metsuke_wire::key::{Kind, ObjectName};
@@ -41,7 +41,7 @@ impl std::fmt::Display for Selection {
 /// What a key is to a selection. `Unnameable` is its own answer rather than a
 /// `No`: it is not the filters passing over an object but this build having no
 /// reading of the key at all, and the download route refuses such a key anyway
-/// (`metsuke_server::archive::FilesystemArchive::reader`) — so a sync that took
+/// (`metsuke_server::archive::FilesystemArchive::reader`), so a sync that took
 /// it as an object would stall at it every run.
 #[derive(Debug, PartialEq)]
 pub enum Selected {

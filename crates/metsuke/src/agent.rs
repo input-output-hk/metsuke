@@ -63,7 +63,7 @@ impl Agent {
     /// One upload tick: a batch of scrapes, then a batch of trace lines,
     /// each sealed, POSTed and acked only on `Acked`. `None` when both
     /// streams are empty. The last outcome is what the caller schedules on,
-    /// and a batch that was not accepted ends the tick — backing off on the
+    /// and a batch that was not accepted ends the tick. Backing off on the
     /// scrapes and then pressing on with the lines would ignore the answer.
     pub fn upload_once(&mut self) -> Result<Option<UploadOutcome>, UploadError> {
         let now = OffsetDateTime::now_utc();

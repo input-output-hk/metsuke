@@ -1,6 +1,6 @@
 //! Ingest pipeline tests: one submission in, one archived object and an ACK
-//! out, and each of the three checks — allowlist, key-belongs-to-pool,
-//! signature — rejecting on its own with its own reason.
+//! out, and each of the three checks (allowlist, key-belongs-to-pool,
+//! signature) rejecting on its own with its own reason.
 
 use metsuke_server::archive::{FilesystemArchive, List, ObjectName};
 use metsuke_server::config::IngestConfig;
@@ -261,7 +261,7 @@ fn tampered_body_is_rejected() {
 }
 
 // Acceptance: the server never decompresses. A data frame that is not zstd at
-// all is archived unread — the signature says the pool sent these bytes, and
+// all is archived unread. The signature says the pool sent these bytes, and
 // what is inside them is the consumer's problem, not this server's.
 #[test]
 fn a_data_frame_that_is_not_zstd_is_archived_unread() {
@@ -343,7 +343,7 @@ fn the_shared_budget_refuses_a_pool_inside_its_own_limit() {
 }
 
 // The container check is first: a body that is not a submission is refused
-// before the allowlist, the limiter or any cryptography — so a pool that is
+// before the allowlist, the limiter or any cryptography, so a pool that is
 // not allowlisted still hears about the framing rather than the allowlist.
 #[test]
 fn a_body_that_is_not_a_container_is_refused_before_the_allowlist() {
@@ -415,7 +415,7 @@ fn a_header_frame_that_does_not_read_is_refused() {
 
 // Not schema gating: the key scheme needs a <metrics|logs> segment
 // (archive::Kind), and a version this build has no Kind for has nothing to
-// put there. The refusal names that — a key that cannot be formed — not the
+// put there. The refusal names that: a key that cannot be formed, not the
 // schema version as such.
 #[test]
 fn a_schema_version_with_no_key_segment_is_refused() {
@@ -464,7 +464,7 @@ fn a_trace_line_upload_is_accepted_and_filed_as_logs() {
 }
 
 // A store that cannot store is the server's failure, not the client's: it
-// must not come back as a rejection the operator would chase (ADR 0004 —
+// must not come back as a rejection the operator would chase (ADR 0004:
 // no ACK, so the client keeps the scrapes spooled). What it answers with, and
 // what that body may not carry, is tests/http.rs.
 #[test]

@@ -9,7 +9,7 @@ use serde::Deserialize;
 use metsuke_wire::envelope::SigningKey;
 use metsuke_wire::hex::{self, HexError};
 
-/// CBOR major type 2 (byte string), length 32 — the prefix cardano-cli puts
+/// CBOR major type 2 (byte string), length 32, the prefix cardano-cli puts
 /// before a raw Ed25519 seed in `cborHex`. Matching it as a literal keeps
 /// CBOR out of the runtime (ADR 0001).
 const SEED_PREFIX: &str = "5820";

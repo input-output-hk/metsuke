@@ -99,7 +99,7 @@ pub trait List {
 
     /// Hand every object key held to `visit`, in no particular order, as the
     /// listing produces them. A visitor rather than a `Vec` so that a caller
-    /// folding the listing down — `rebuild` keeps one name per pool — never
+    /// folding the listing down (`rebuild` keeps one name per pool) never
     /// holds a whole bucket's keys at once.
     ///
     /// `E` is the caller's own error, so a visitor that fails for its own
@@ -131,7 +131,7 @@ pub trait List {
 }
 
 /// The inverse of `Store::store`, read by `verify::audit`. Separate from
-/// `Store` because storing and reading back are different privileges — the
+/// `Store` because storing and reading back are different privileges. The
 /// ingest path never fetches.
 pub trait Fetch {
     fn fetch(&self, key: &str) -> Result<FetchedObject, ArchiveError>;
@@ -144,7 +144,7 @@ pub trait Fetch {
 /// downloading does not need it.
 pub trait Bytes {
     /// The object open for reading. A reader rather than a `Vec` because
-    /// nothing bounds an object already in the archive — one written under an
+    /// nothing bounds an object already in the archive. One written under an
     /// older, wider limit is read whole otherwise (metsuke-4zo.72).
     fn reader(&self, key: &str) -> Result<ObjectStream, ArchiveError>;
 }
@@ -156,7 +156,7 @@ pub trait Bytes {
 pub struct ObjectStream {
     /// What it is being read from. A read that fails once the answer has
     /// started can only be reported to the log, and this is what names it
-    /// there — the download knows no client beyond the one credential.
+    /// there. The download knows no client beyond the one credential.
     pub key: String,
     pub length: u64,
     pub reader: Box<dyn io::Read + Send>,
@@ -276,7 +276,7 @@ impl List for FilesystemArchive {
         // Only a root that is not there yet is an empty archive. A root that
         // exists and cannot be read must fail: reported as empty it would
         // rebuild an index short of every object the archive still holds. What
-        // a *mistyped* root means is the caller's to judge —
+        // a *mistyped* root means is the caller's to judge, in
         // `rebuild::EmptyArchive`.
         if let Err(error) = fs::read_dir(&self.root) {
             return match error.kind() {

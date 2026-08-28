@@ -1,6 +1,6 @@
 //! Batch delivery: the only path from spooled rows to a sealed upload.
-//! Owning the spool and the signing key makes one ordering — counter persisted
-//! before sealing, ack only for the rows that were sealed — the only
+//! Owning the spool and the signing key makes one ordering (counter persisted
+//! before sealing, ack only for the rows that were sealed) the only
 //! expressible call sequence, and keeps SQLite row ids out of the main loop
 //! entirely.
 //!

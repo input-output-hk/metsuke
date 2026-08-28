@@ -1,6 +1,6 @@
-//! The agent binary: startup fails loudly, then two decoupled ticks —
-//! scrape and upload — run forever on their configured cadences. Log lines
-//! carry sd-daemon `<level>` prefixes so journald records severities.
+//! The agent binary: startup fails loudly, then two decoupled ticks, scrape
+//! and upload, run forever on their configured cadences. Log lines carry
+//! sd-daemon `<level>` prefixes so journald records severities.
 
 use std::time::{Duration, Instant};
 

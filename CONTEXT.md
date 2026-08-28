@@ -64,7 +64,7 @@ _Avoid_: counter, nonce, offset
 
 **Allowlist**:
 The set of **Pools** the rewards program accepts **Submissions** from. Separate
-from, and prior to, the signature: a **Pool** off it is refused before any
+from, and prior to, the signature. A **Pool** off it is refused before any
 cryptography runs.
 _Avoid_: whitelist, roster, participants
 
@@ -102,8 +102,8 @@ _Avoid_: user, consumer, analyst, client
 > **Dev:** "Two relays are reporting for one pool. How do we tell their
 > **Submissions** apart?"
 >
-> **Domain expert:** "By **Agent ID**. Both sign with the same **Cold Key** —
-> that is the pool's identity and there is only one — so the **Agent ID** is
+> **Domain expert:** "By **Agent ID**. Both sign with the same **Cold Key**.
+> That is the pool's identity and there is only one, so the **Agent ID** is
 > what says which machine. Their **Sequence Numbers** run independently."
 >
 > **Dev:** "So a gap in one relay's numbers means we lost a **Submission**?"

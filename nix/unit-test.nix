@@ -3,7 +3,7 @@
 # none of the privileges ADR 0007 refuses. The `bare` node runs
 # contrib/metsuke.service itself, so what a host that is not NixOS copies is
 # executed and not only diffed. A submission travelling from one unit to the
-# other is not here — that is e2e-test.nix.
+# other is not here. That is e2e-test.nix.
 #
 # Every node here needs a booted machine to say anything. That the module
 # renders a config the server accepts needs no machine, and is
@@ -219,7 +219,7 @@ pkgs.testers.runNixOSTest {
   nodes.hub = hubNode;
 
   testScript = ''
-    # The four nodes are independent — nothing here sends a submission from one
+    # The four nodes are independent. Nothing here sends a submission from one
     # to another, which is e2e-test.nix's job. Booted on first reference they
     # boot one after another, and the boots are most of this test's runtime.
     start_all()
@@ -240,7 +240,7 @@ pkgs.testers.runNixOSTest {
 
         `reads_journal` is ADR 0010's whole privilege delta: the group, and
         the /proc journalctl reads the boot id out of. False is ADR 0007's
-        posture, and both directives are read back either way — a grant
+        posture, and both directives are read back either way. A grant
         nobody decided on and a grant that was decided and then dropped are
         the same red.
         """
@@ -343,7 +343,7 @@ pkgs.testers.runNixOSTest {
     with subtest("the contrib unit runs the agent on a host that is not NixOS"):
         bare.wait_for_unit("metrics-endpoint.service")
         bare.wait_for_open_port(${toString metricsPort}, addr = "127.0.0.1")
-        # /run rather than /etc, which is read-only here — and which is also
+        # /run rather than /etc, which is read-only here, and which is also
         # why [Install] stays unexercised: `systemctl enable` writes there.
         bare.succeed("cp /etc/metsuke/metsuke.service /run/systemd/system/metsuke.service")
         bare.succeed("systemctl daemon-reload")

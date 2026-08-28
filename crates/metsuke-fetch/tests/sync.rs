@@ -153,7 +153,7 @@ fn objects_land_under_the_keys_they_are_filed_as() {
 }
 
 /// duckdb reads the objects where they landed, with no unpacking step, under
-/// the read the tool prints (`recipe`) — and the kind narrows that read to the
+/// the read the tool prints (`recipe`), and the kind narrows that read to the
 /// objects filed under it, which is a claim about real names on disk.
 #[test]
 fn duckdb_reads_the_downloaded_objects_where_they_landed() {
@@ -363,7 +363,7 @@ fn a_prefix_selects_a_day_without_downloading() {
 }
 
 /// The pool, the agent and the kind sit after the id in the key, so no prefix
-/// selects them — read off the key, they still cost no download.
+/// selects them. Read off the key, they still cost no download.
 #[test]
 fn the_pool_the_agent_and_the_kind_each_select_off_the_key() {
     let server = Server::with_objects(3, 100);

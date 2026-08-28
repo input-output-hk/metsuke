@@ -1,6 +1,6 @@
 # metsuke agent configuration. Copy to /etc/metsuke/config.toml and set the
 # three required values; every commented line shows a default (pinned to the
-# code by a test — see crates/metsuke/tests/config.rs).
+# code by a test in crates/metsuke/tests/config.rs).
 
 # Required: your pool id, bech32.
 pool_id = "pool1CHANGEME"
@@ -57,7 +57,7 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # compression_level = 0
 
 # Trace-line collection, off unless this whole section is present. It reads the
-# node's journal, which the unit has to be allowed to do — the instructions
+# node's journal, which the unit has to be allowed to do. The instructions
 # page says which two directives change, and the NixOS module makes both when
 # this section is set (docs/adr/0010). The node also has to be configured to
 # write these traces at all: that step is on the instructions page too.
@@ -75,7 +75,7 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # does not render this source: the unit it writes has no node upstream of it.
 #
 # namespaces are prefixes and are the whole selection rule; namespace_roots is
-# this host's ceiling on them — a namespaces entry outside it is refused at
+# this host's ceiling on them, and a namespaces entry outside it is refused at
 # startup. Both match on segment boundaries, so an entry names a namespace the
 # node emits or an ancestor of one, never a fragment of a name. Why severity is
 # not a second rule: docs/adr/0010.

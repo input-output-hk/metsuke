@@ -39,8 +39,8 @@ pub fn replacing<T>(
     }
 }
 
-/// The staging file's own path. A destination that names no file — a bare `/`,
-/// or a path ending in `..` — is refused here: defaulted, the staging file
+/// The staging file's own path. A destination that names no file is refused
+/// here: a bare `/`, or a path ending in `..`. Defaulted, the staging file
 /// would land somewhere the caller never named.
 fn staging(path: &Path) -> io::Result<PathBuf> {
     let name = path.file_name().ok_or_else(|| {

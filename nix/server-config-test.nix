@@ -4,7 +4,7 @@
 # check rather than a hydraJob then runs it where runNixOSTest cannot for want
 # of /dev/kvm (flake.nix says why that matters).
 #
-# The credential half is not here — the file the module points `password_file`
+# The credential half is not here. The file the module points `password_file`
 # at is written by systemd, so the unit test's `hub` node is what covers it.
 {
   pkgs,

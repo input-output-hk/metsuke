@@ -3,7 +3,7 @@
 //!
 //! Nothing here decompresses either. What ingest filed an object under is what
 //! its signature and its header frame say, so that is what re-deriving the key
-//! checks — the payload is the consumer's to read.
+//! checks. The payload is the consumer's to read.
 
 use metsuke_wire::envelope::{Header, read_header};
 
@@ -102,7 +102,7 @@ pub enum AuditError {
 
 /// Fetch and re-verify every object in the archive.
 ///
-/// A listing that cannot be read stops the audit — a short listing would
+/// A listing that cannot be read stops the audit. A short listing would
 /// otherwise report a clean bucket it never looked at. One object that cannot
 /// be read or does not verify stops nothing: the point is to find all of them.
 pub fn audit(archive: &(impl List + Fetch), max_header_bytes: u64) -> Result<Audit, AuditError> {

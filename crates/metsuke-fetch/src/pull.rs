@@ -1,6 +1,7 @@
 //! The archive-pull routes as a client (`metsuke_wire::http`): one page of
-//! keys, one object's bytes. Nothing here writes a file or reads a cursor — a
-//! request and what came back, so `sync` is testable as the loop it is.
+//! keys, one object's bytes. Nothing here writes a file or reads a cursor.
+//! There is only a request and what came back, so `sync` is testable as the
+//! loop it is.
 
 use std::io;
 use std::time::Duration;

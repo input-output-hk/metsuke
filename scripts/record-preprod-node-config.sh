@@ -6,7 +6,7 @@
 # Recorded rather than fetched at build time: upstream rewrites this file
 # whenever the environment is redeployed, and a recording is something you can
 # diff. Re-run when the environment moves, and read the diff before committing
-# it — a namespace that left the file is a namespace the merge assertions in
+# it. A namespace that left the file is a namespace the merge assertions in
 # nix/e2e-test.nix no longer cover.
 set -euo pipefail
 

@@ -135,8 +135,8 @@ impl Server {
         std::fs::set_permissions(&path, permissions).expect("permissions change");
     }
 
-    /// An object under a key no `ObjectName::parse` reads — what something
-    /// other than this server would leave in the bucket.
+    /// An object under a key no `ObjectName::parse` reads, which is what
+    /// something other than this server would leave in the bucket.
     pub fn seed_foreign(&self, key: &str, bytes: &[u8]) {
         let path = self.root.join(key);
         std::fs::create_dir_all(path.parent().expect("a key has a folder"))

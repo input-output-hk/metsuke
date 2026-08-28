@@ -77,7 +77,7 @@ fn run() -> Result<(), Fatal> {
         report.objects, report.passed, report.unnameable
     );
     // Printed rather than left to the reader, because the read a consumer
-    // reaches for first is lossy here — docs/reading-the-archive.md.
+    // reaches for first is lossy here. See docs/reading-the-archive.md.
     if let Some(read) = read {
         eprintln!("read them with: duckdb -c \"select * from {read}\"");
     }

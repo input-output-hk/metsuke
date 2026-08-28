@@ -220,7 +220,7 @@ impl Upload {
 }
 
 /// Long enough for an answer that is not being held up, short enough to be
-/// under the timeout a held-up one would be answered by — which is what makes
+/// under the timeout a held-up one would be answered by, which is what makes
 /// it tell "served straight away" from "served once something else timed out".
 /// Only sound where the call site leaves `permissive_http`'s 10 s alone.
 const PROMPTLY: Duration = Duration::from_secs(2);
@@ -761,7 +761,7 @@ fn a_listing_at_the_row_bound_is_reported_as_truncated() {
 }
 
 /// An archive that cannot be listed is a 503 the client may retry, and its own
-/// error names the store — which is the operator's to see, not the client's.
+/// error names the store, which is the operator's to see, not the client's.
 #[test]
 fn a_listing_over_an_archive_that_will_not_answer_is_unavailable() {
     let key = test_key();
@@ -926,7 +926,7 @@ struct Raw {
     stream: std::net::TcpStream,
     /// Everything read so far. A read carries whatever the server had sent,
     /// which is not bounded by the framing the caller asked for and cannot be
-    /// put back, so it is kept rather than discarded — the write-timeout test
+    /// put back, so it is kept rather than discarded. The write-timeout test
     /// counts these bytes.
     read: Vec<u8>,
 }
@@ -1261,7 +1261,7 @@ fn a_download_of_an_object_that_shrank_is_logged_as_short() {
     let (stored, size) = big_object(&server, &key);
     // The answer's head is out and the stream is blocked on a client that is
     // not reading, so the server is at most a socket buffer and one chunk into
-    // an 8 MiB object — nowhere near the 6 MiB mark this truncates to.
+    // an 8 MiB object, nowhere near the 6 MiB mark this truncates to.
     let (mut download, _) = stalled_download(&server, &stored);
     let shrunk = size / 4;
     std::fs::OpenOptions::new()
@@ -1384,7 +1384,7 @@ fn a_connection_past_the_concurrency_cap_waits_for_a_slot() {
 
     // Proving an absence, so this is a wait with nothing to shorten it. It only
     // has to outlast the microseconds a broken semaphore would serve in, and it
-    // has to stay well under `permissive_http`'s idle bound — past that the
+    // has to stay well under `permissive_http`'s idle bound. Past that the
     // holding connection lets the slot go on its own and the absence means
     // nothing.
     assert!(
@@ -1427,7 +1427,7 @@ fn a_connection_that_sends_no_request_is_closed_at_the_idle_timeout() {
 }
 
 /// Every credential file that yields no password stops startup, because
-/// `user:` — half of it already in the public config — would otherwise
+/// `user:`, half of it already in the public config, would otherwise
 /// authorize every pull. `None` is the file never written at all.
 #[test]
 fn a_developer_password_file_with_no_password_in_it_stops_startup() {

@@ -1,7 +1,7 @@
 //! The answer every route gives, as a value. `http::answer` takes a decoded
 //! request and returns a status, a body and the headers that go with it, so
-//! the whole surface is reachable here and only what a socket adds — timeouts,
-//! the body cap, streaming — is left to `tests/binary.rs`.
+//! the whole surface is reachable here, and only what a socket adds (timeouts,
+//! the body cap, streaming) is left to `tests/binary.rs`.
 
 use metsuke_server::archive::FilesystemArchive;
 use metsuke_server::developer::Developer;

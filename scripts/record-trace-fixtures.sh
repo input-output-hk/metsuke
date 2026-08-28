@@ -35,7 +35,7 @@ need() {
 need nix jq
 
 # The Leios source pinned in flake.nix, and the patched cardano-node rev its
-# own lock file pins — the same binary the proto-devnet demo runs. cardano-cli
+# own lock file pins, the same binary the proto-devnet demo runs. cardano-cli
 # comes from the same rev: only the patched build can address the Dijkstra era
 # this devnet forges in, a stock cardano-cli of any version dies with
 # "TODO Dijkstra: shelleyBasedEraConstraints: era not supported".
@@ -217,7 +217,7 @@ sed -n "1,${startup_end}p" "$capture" >"$recordings/leios-node-traces-startup.lo
 echo "recorded: leios-node-traces-startup.log"
 
 # The Leios round: from the first EB forged or announced to the last Leios
-# line. Unfiltered within the window — what the fixture is for is exercising
+# line. Unfiltered within the window. What the fixture is for is exercising
 # metsuke's own namespace and severity selection against everything the node
 # emits alongside the traces that are wanted.
 leios_start=$(window_edge "the Leios window's start" first \

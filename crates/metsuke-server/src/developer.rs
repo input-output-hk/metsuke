@@ -33,8 +33,8 @@ pub struct Developer {
 }
 
 /// A request that may not read the archive. The reason is for the operator's
-/// log and nothing else — told which half of the credential was wrong, a
-/// client learns whether the user exists — so the caller that answers is what
+/// log and nothing else. Told which half of the credential was wrong, a
+/// client learns whether the user exists, so the caller that answers is what
 /// keeps it out of the body (`http::challenge`).
 #[derive(Debug, thiserror::Error)]
 #[error("{0}")]
@@ -157,7 +157,7 @@ impl Filters {
 /// Refused rather than replaced: a lossy decode would answer a query the
 /// client did not send, and answer it with a 200.
 ///
-/// A malformed escape — half-written, or complete but not hex — stays as
+/// A malformed escape, half-written or complete but not hex, stays as
 /// written. It cannot be part of an object key either way, so it fails at the
 /// filter rather than silently becoming a different string.
 pub fn percent_decoded(value: &str) -> Option<String> {

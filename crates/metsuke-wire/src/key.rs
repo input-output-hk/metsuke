@@ -74,7 +74,7 @@ impl<'de> serde::Deserialize<'de> for Kind {
 
 /// Time-major, so one start-after cursor is the whole delta-sync protocol: the
 /// day folder orders the corpus and the UUIDv7 orders within it. Uniqueness is
-/// the UUIDv7's alone — never the clock, the sequence number or the agent id.
+/// the UUIDv7's alone, never the clock, the sequence number or the agent id.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObjectName {
     /// Stamped when the submission was received, which is what makes a late

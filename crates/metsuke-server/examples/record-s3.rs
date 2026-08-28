@@ -147,7 +147,7 @@ fn config_for(endpoint: &str, bucket: &str, region: &str) -> S3Config {
     }
 }
 /// One `ListObjectsV2`, bounded to a key and resumed the way
-/// `List::for_each_key` resumes — by the token the last answer handed back.
+/// `List::for_each_key` resumes, by the token the last answer handed back.
 /// Sent from here rather than through the archive because the walk there is
 /// unbounded, and an unbounded page against this bucket is one answer.
 fn list_page(

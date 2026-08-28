@@ -10,7 +10,7 @@
 //!
 //! TLS belongs to the reverse proxy in front of this
 //! (docs/research/endpoint-protection.md, Transport), as does any IP-keyed
-//! limit (same doc, cost asymmetry and abuse handling) — this layer knows only
+//! limit (same doc, cost asymmetry and abuse handling). This layer knows only
 //! pool ids and one developer credential. The proxy is defence in depth and
 //! nothing more: what the server refuses on its own it refuses with nothing in
 //! front of it (`config::HttpConfig`).
@@ -49,7 +49,7 @@ pub struct Request {
     /// The target as sent, path and query together: the filters and the object
     /// key are read off it (`developer::Filters`).
     pub target: String,
-    /// The two ADR-0001 headers, decoded by whoever built this — once, because
+    /// The two ADR-0001 headers, decoded once by whoever built this, because
     /// whether they decode is also what decides if a body is worth reading
     /// (`serve::handle`). `Err` names the first header that did not decode.
     pub submission: Result<SubmissionHeaders, HeaderError>,
@@ -286,7 +286,7 @@ fn object<A: Store + Bytes>(intake: &Intake<A>, target: &str) -> Answer {
 
 /// The 5xx every use of the archive answers with: a body saying which use
 /// failed, and a log line saying how. The detail names the bucket, the
-/// endpoint or the archive root, and none of that is a client's to read — a
+/// endpoint or the archive root, and none of that is a client's to read. A
 /// pool id is public, so being on the allowlist is no reason to be told.
 fn unavailable(signer: Option<PoolId>, reason: &str, withheld: &str) -> Answer {
     refuse_withholding(signer, 503, reason.to_string(), Some(withheld.to_string()))

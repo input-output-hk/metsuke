@@ -1,6 +1,6 @@
 //! Every value an operator sets, in one file's worth of structs. No field has
 //! a default: a missing limit is a deployment mistake, not a value to guess,
-//! and zero is the same mistake — every field where it means nothing is a
+//! and zero is the same mistake. Every field where it means nothing is a
 //! `NonZero`, so serde refuses it at load rather than at first use.
 
 use std::num::{NonZeroU32, NonZeroU64};
@@ -96,7 +96,7 @@ pub struct DeveloperConfig {
 }
 
 /// Where accepted submissions go. S3 is what production runs (ADR 0005). The
-/// kind is the table's own name — `[archive.s3]` — rather than a `kind` field,
+/// kind is the table's own name, `[archive.s3]`, rather than a `kind` field,
 /// because serde buffers an internally-tagged table and every value under it
 /// then reports at `[archive]` instead of at the line that set it.
 #[derive(Debug, Clone, Deserialize)]
@@ -106,8 +106,8 @@ pub enum ArchiveConfig {
     S3(S3Config),
 }
 
-/// The bucket and how long the server waits on it. Credentials are not here —
-/// they come from the process environment, which is what keeps this file
+/// The bucket and how long the server waits on it. Credentials are not here.
+/// They come from the process environment, which is what keeps this file
 /// Nix-managed and public.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -130,8 +130,8 @@ pub struct S3Config {
     /// `NonZero`: zero is the deliberate choice to let the client's spool be
     /// the only retry layer (ADR 0004).
     pub put_retries: u32,
-    /// Waited between PUT attempts. The failures a retry is for — 503
-    /// SlowDown, a transport reset — need the endpoint given time.
+    /// Waited between PUT attempts. The failures a retry is for, 503
+    /// SlowDown or a transport reset, need the endpoint given time.
     pub put_retry_backoff_ms: NonZeroU64,
     /// Pages a bucket listing may take before it fails naming the bound. An
     /// endpoint that keeps handing back a continuation token would otherwise

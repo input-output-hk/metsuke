@@ -2,7 +2,7 @@
   description = "Local Leios devnet: node, Postgres, db-sync, and a metadata submitter";
 
   # haskell.nix resolves cardano-node's plan by importing from a derivation, so
-  # `nix flake check` — which refuses IFD — cannot evaluate the hydraJobs below
+  # `nix flake check`, which refuses IFD, cannot evaluate the hydraJobs below
   # without this. Nix honours it only for a reader who has accepted this flake's
   # config; anyone else gets "ignoring untrusted flake configuration setting",
   # and then needs IFD allowed in their own nix.conf or the check fails.

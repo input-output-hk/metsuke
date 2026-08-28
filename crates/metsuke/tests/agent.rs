@@ -203,7 +203,7 @@ async fn one_tick_uploads_both_the_scrapes_and_the_trace_lines() {
     assert_eq!(versions, [1, 2]);
 }
 
-// Acceptance: 5xx (and 4xx alike) leaves the spool intact — the same rows
+// Acceptance: 5xx (and 4xx alike) leaves the spool intact. The same rows
 // are offered again on the next attempt.
 #[tokio::test]
 async fn failed_upload_keeps_the_rows_for_the_next_attempt() {

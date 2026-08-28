@@ -7,8 +7,8 @@ use metsuke::keys;
 mod support;
 use support::test_key;
 
-/// A cardano-cli TextEnvelope for the suite's seed: cborHex is CBOR bytes(32)
-/// — the `5820` major-type prefix — followed by the seed.
+/// A cardano-cli TextEnvelope for the suite's seed: cborHex is CBOR bytes(32),
+/// the `5820` major-type prefix, followed by the seed.
 fn test_key_envelope() -> String {
     let seed = metsuke_wire::hex::encode(&test_key().to_bytes());
     format!(

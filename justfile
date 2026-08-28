@@ -1,5 +1,5 @@
 # Test recipes. Each one runs its command whole, keeps the entire output under
-# .test-logs/, and prints a summary of it — so a run stays searchable afterwards
+# .test-logs/, and prints a summary of it, so a run stays searchable afterwards
 # instead of being truncated by a `| tail` nobody can undo. The path is printed
 # every time; grep it when the summary is not enough.
 #
@@ -25,7 +25,7 @@ slow TARGET *ARGS:
 vm:
     @nu scripts/report.nu vm
 
-# End to end — node, bucket, server, two agents — in a VM (~47s, wants /dev/kvm).
+# End to end in a VM: node, bucket, server, two agents (~47s, wants /dev/kvm).
 e2e:
     @nu scripts/report.nu e2e
 

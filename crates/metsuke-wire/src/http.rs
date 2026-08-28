@@ -32,9 +32,9 @@ pub struct Listing {
     pub truncated: bool,
 }
 
-/// An agent bounded whole-request by `timeout` — connect, send and read
-/// together — which hands a status back as an answer rather than an error,
-/// because a refusal is a reason to report and `classify` reads it.
+/// An agent bounded whole-request by `timeout`, which covers connect, send and
+/// read together, and which hands a status back as an answer rather than an
+/// error, because a refusal is a reason to report and `classify` reads it.
 pub fn agent(timeout: Duration) -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(timeout))

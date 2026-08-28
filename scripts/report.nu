@@ -104,7 +104,7 @@ def cargo-rows [lines: list<string>]: nothing -> table {
 }
 
 # The tests that failed and what each one asserted. The counts do not name
-# them, and the assertion is the whole reason anyone reads a failing run — so it
+# them, and the assertion is the whole reason anyone reads a failing run, so it
 # goes in the summary rather than behind a second command.
 def cargo-failures [lines: list<string>]: nothing -> table {
   let names = $lines
@@ -134,11 +134,11 @@ def report-cargo [run: record, table_view: bool]: nothing -> int {
   let lines = open --raw $run.log | lines
   let rows = cargo-rows $lines
 
-  # No test result anywhere means nothing ran — a compile error, a panic in a
+  # No test result anywhere means nothing ran: a compile error, a panic in a
   # build script, cargo refusing the arguments. Reporting the counts here would
   # print a green zero.
   if ($rows | is-empty) {
-    print "BUILD FAILED — no test ran"
+    print "BUILD FAILED: no test ran"
     let errors = $lines | where ($it | str starts-with "error")
     if ($errors | is-not-empty) {
       $errors | each {|line| print $"  ($line)" }
@@ -157,7 +157,7 @@ def report-cargo [run: record, table_view: bool]: nothing -> int {
   }
 
   if ($failures | is-not-empty) or ($totals.failed > 0) {
-    print $"FAILED — ($totals.failed) failed, ($totals.passed) passed"
+    print $"FAILED: ($totals.failed) failed, ($totals.passed) passed"
     $failures | each {|failure|
       print $"  ($failure.test)"
       $failure.detail | each {|line| print $"      ($line | str trim)" }
@@ -169,7 +169,7 @@ def report-cargo [run: record, table_view: bool]: nothing -> int {
   if $table_view {
     $rows | sort-by secs --reverse | print
   }
-  print $"ok — ($totals.passed) passed, ($totals.ignored) ignored, ($rows | length) binaries in (secs $run.took)s"
+  print $"ok: ($totals.passed) passed, ($totals.ignored) ignored, ($rows | length) binaries in (secs $run.took)s"
   print $"  slowest: (slowest $rows target 3)"
   print $"  log: ($run.log)"
   # A suite that ran but whose runner still failed is a runner problem, not a
@@ -227,7 +227,7 @@ def report-vm [run: record, table_view: bool]: nothing -> int {
     $subtests | sort-by secs --reverse | print
   }
   let script = if ($whole | is-empty) { "?" } else { $"($whole | first | get secs)s" }
-  print $"ok — ($subtests | length) subtests, script ($script)"
+  print $"ok: ($subtests | length) subtests, script ($script)"
   if ($subtests | is-not-empty) {
     print $"  slowest: (slowest $subtests subtest 2)"
   }
@@ -252,7 +252,7 @@ def report-check [run: record]: nothing -> int {
   }
 
   # The names of the checks that passed are not something anyone acts on.
-  print $"ok — ($checked | length) derivations checked in (secs $run.took)s"
+  print $"ok: ($checked | length) derivations checked in (secs $run.took)s"
   print $"  log: ($run.log)"
   0
 }
@@ -276,7 +276,7 @@ def "main cargo" [--table, ...args: string] {
 #
 # The binary is resolved through cargo rather than taken as a path, because a
 # path found by hand is the stale artefact of an earlier build as easily as the
-# current one — and a stale binary reports failures that are not there.
+# current one, and a stale binary reports failures that are not there.
 def "main slow" [
   target: string # a test target's name, e.g. `envelope` or `binary`
   --package (-p): string = "" # which crate's, where a target name is in both
@@ -301,7 +301,7 @@ def "main slow" [
   if ($matched | length) > 1 {
     # Two crates here both have a `binary` target, so the ambiguity is real and
     # picking one silently would time whichever cargo listed first.
-    print --stderr $"'($target)' is a target in more than one crate — add -p:"
+    print --stderr $"'($target)' is a target in more than one crate. Add -p:"
     $matched | each {|a|
       let crate = $a.package_id | parse -r '/(?<crate>[^/#]+)#' | get --optional 0.crate
       print --stderr $"  -p ($crate)"
@@ -340,11 +340,11 @@ def "main vm" [--table] {
 # there.
 #
 # Addressed as a subflake of this repo, not as `path:devnet`. That flake reaches
-# the tree above it — `../nix/e2e-test.nix`, and a `path:..` input for the two
-# modules — so a copy of `devnet` alone resolves both against /nix/store and pure
-# evaluation refuses them. Going through the repo also leaves git deciding what
-# is copied, so a devnet left running does not offer nix the unix socket under
-# devnet/.devnet.
+# the tree above it in two ways: `../nix/e2e-test.nix`, and a `path:..` input
+# for the two modules. A copy of `devnet` alone therefore resolves both against
+# /nix/store and pure evaluation refuses them. Going through the repo also
+# leaves git deciding what is copied, so a devnet left running does not offer
+# nix the unix socket under devnet/.devnet.
 #
 # Edits to tracked files are read from disk, staged or not. A file git has never
 # seen is invisible, so a new fixture this test needs has to be added first.

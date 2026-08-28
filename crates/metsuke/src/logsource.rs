@@ -104,8 +104,8 @@ impl Drop for ChildGuard {
 /// process could not find out.
 ///
 /// Kept because a journalctl refused the journal read exits on its own, while
-/// one following a unit that does not resolve waits forever — two ends the
-/// reading side cannot tell apart, with different remedies.
+/// one following a unit that does not resolve waits forever. The reading side
+/// cannot tell these two ends apart, and they call for different remedies.
 #[derive(Debug)]
 pub enum ChildEnd {
     Status(std::process::ExitStatus),
@@ -196,7 +196,7 @@ impl Spawned {
     /// The stream, once the child is still there after the configured grace.
     ///
     /// journalctl execs before it opens the journal, so one the journal refuses
-    /// exits after a spawn that already succeeded — the missing
+    /// exits after a spawn that already succeeded: the missing
     /// `SupplementaryGroups=systemd-journal` of ADR 0010, which an operator can
     /// fix. Nothing is read to find out: `--follow --lines=0` writes nothing
     /// until the node does, so the child's own exit is the only answer there is

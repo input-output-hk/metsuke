@@ -26,7 +26,7 @@ pub struct Applied {
 
 /// Apply the migrations the database has not seen. `migrations` holds one
 /// entry per released schema version and `user_version` counts how many have
-/// run, so an old database gets exactly the missing suffix — and a database
+/// run, so an old database gets exactly the missing suffix, and a database
 /// written by a newer build is refused rather than half-understood.
 pub fn migrate(conn: &Connection, migrations: &[&str]) -> Result<Vec<Applied>, MigrateError> {
     let applied: u32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;

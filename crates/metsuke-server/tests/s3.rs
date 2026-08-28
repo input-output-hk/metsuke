@@ -4,8 +4,8 @@
 //! error rather than a silently dropped submission.
 //!
 //! What the endpoint answers is replayed from the cassette
-//! (tests/fixtures/README.md), so an S3 dialect the archive misreads — an
-//! error body, a continuation token, the key encoding — fails here rather
+//! (tests/fixtures/README.md), so an S3 dialect the archive misreads (an
+//! error body, a continuation token, the key encoding) fails here rather
 //! than in the bucket.
 
 use std::sync::{Arc, Mutex};
@@ -61,7 +61,7 @@ impl Seen {
     }
 
     /// This stored request served back as the object it wrote, metadata
-    /// headers and all — which is what a real endpoint does with them
+    /// headers and all, which is what a real endpoint does with them
     /// (`get-object.http`).
     fn as_object(&self) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
         // Framed by Content-Length whatever the fixture weighs: chunked is
@@ -187,7 +187,7 @@ fn credentials() -> Credentials {
 /// measuring it does not stall the suite.
 const TIMEOUT: Duration = Duration::from_millis(200);
 
-/// How long a presigned URL stays usable, which no test here measures — it is
+/// How long a presigned URL stays usable, which no test here measures. It is
 /// not `TIMEOUT` because that one is now shorter than the second this is
 /// counted in.
 const SIGNATURE_VALIDITY_SECS: u64 = 300;
@@ -581,7 +581,7 @@ fn listing_follows_the_continuation_token_to_the_end() {
 /// as `prefix` and `start-after`, the bound as `max-keys`, and nothing here
 /// follows a continuation token. The cursor is the first key of the bucket
 /// this cassette was recorded from, so what comes back is what the endpoint
-/// really answered that question — the two keys after it, the cursor itself
+/// really answered that question: the two keys after it, the cursor itself
 /// excluded.
 #[test]
 fn a_page_is_one_list_request_carrying_the_clients_filters() {

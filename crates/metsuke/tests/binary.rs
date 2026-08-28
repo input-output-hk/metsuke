@@ -1,6 +1,6 @@
 //! Binary-level tests (ticket metsuke-4zo.5): the built `metsuke` binary
 //! spawned as an SPO would run it. Covers the `run()` wiring the library
-//! tests can't reach — in particular that the `--signing-key` flag really
+//! tests can't reach, in particular that the `--signing-key` flag really
 //! beats the config path, which a swapped argument pair would invert
 //! without failing any type check.
 
@@ -175,7 +175,7 @@ fn exited_within(child: &mut std::process::Child, within: Duration) -> std::proc
 
 // The whole wiring: config + flag in, a verifiable upload out. The config's
 // signing_key points at a path that does not exist, so this passes only
-// when the flag wins the precedence — a swapped `resolve_signing_key`
+// when the flag wins the precedence. A swapped `resolve_signing_key`
 // argument pair fails at startup instead.
 #[tokio::test]
 async fn binary_uploads_a_batch_signed_by_the_flag_key() {

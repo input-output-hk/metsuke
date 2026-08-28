@@ -184,7 +184,7 @@ fn uncomment(example: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         .replace("pool1CHANGEME", &test_pool_id().to_bech32())
-        // The signing_key line documents the flag interplay, not a default.
+        // The signing_key line documents how the flag and config interact, not a default.
         .replace("signing_key = ", "# signing_key = ")
 }
 

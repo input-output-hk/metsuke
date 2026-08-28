@@ -23,7 +23,7 @@ fn ship(line: &str) -> Selection {
     Selection::Ship(trace_line(line))
 }
 
-/// The line's own `sev`. Nothing in the agent reads it — these tests do, to say
+/// The line's own `sev`. Nothing in the agent reads it. These tests do, to say
 /// which lines the namespace rule reaches without consulting it. A record that
 /// declares none fails here rather than reading as "not the severity I asked
 /// about", which would let a recording without `sev` pass every caller.
@@ -102,7 +102,7 @@ fn a_listed_namespace_ships_at_any_severity() {
     assert_eq!(select(&rules, debug), ship(debug));
 }
 
-// A rule that stops mid-segment names no namespace, so it selects nothing —
+// A rule that stops mid-segment names no namespace, so it selects nothing,
 // which is what the shipped default did before metsuke-4zo.107 named the two
 // prefixes the node emits.
 #[test]
@@ -167,7 +167,7 @@ fn a_line_declaring_the_reserved_key_is_not_skip() {
 }
 
 // A line cut short is not a JSON object, so it declares nothing and no rule
-// reaches it — not even the rule that selected the whole line, and the cut
+// reaches it, not even the rule that selected the whole line, and the cut
 // here keeps both fields intact.
 #[test]
 fn a_truncated_line_declares_nothing_and_is_not_selected() {
@@ -204,7 +204,7 @@ fn a_field_reads_through_its_escapes() {
 }
 
 // Every record in the recordings declares the one field a rule reads. A node
-// that stops declaring it silently loses every rule — this is where that shows,
+// that stops declaring it silently loses every rule. This is where that shows,
 // and the count of lines declaring nothing is what holds the pre-tracing dump to
 // being the only one.
 #[test]
@@ -227,7 +227,7 @@ fn every_recorded_record_declares_the_field_a_rule_reads() {
 }
 
 // The point of selecting at all. Stated as a shape rather than a ratio: the
-// shipped rules select something, and nothing they select is a Debug line —
+// shipped rules select something, and nothing they select is a Debug line,
 // which is where the volume in this recording is, and none of it was asked
 // for.
 #[test]

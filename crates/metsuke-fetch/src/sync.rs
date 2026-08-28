@@ -1,6 +1,6 @@
 //! The sync: page the listing from the cursor, write each object down under
 //! the key it is filed as, advance the cursor behind it. There is no manifest
-//! and nothing to reconcile — the objects on disk plus the cursor are the whole
+//! and nothing to reconcile. The objects on disk plus the cursor are the whole
 //! state of a sync.
 
 use std::io;
@@ -80,7 +80,7 @@ pub fn run(
             }
             // After the object is on disk: a cursor ahead of its objects skips
             // them for good. A key the selection passed over is behind the
-            // cursor too — it was listed, and re-listing it would download
+            // cursor too. It was listed, and re-listing it would download
             // nothing.
             cursor.advance(destination.state, &key)?;
         }
@@ -151,7 +151,7 @@ impl Iterator for Pages<'_> {
         };
         self.done = true;
         // The route reads `after` exclusively, so a page ending at or before
-        // the cursor is not the next page — and asking again would hand back
+        // the cursor is not the next page, and asking again would hand back
         // the same one for as long as the walk ran. An empty page the server
         // calls truncated is the same shape: it says there is more and hands
         // none of it over, so taking it as the end would report a whole sync.

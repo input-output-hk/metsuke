@@ -40,21 +40,21 @@ pub enum Rejection {
     ServerBusy { max: u32, window_secs: u32 },
     #[error("signature does not verify over the body as received")]
     BadSignature,
-    /// The signature stands, so these bytes are the pool's — and its header
+    /// The signature stands, so these bytes are the pool's, and its header
     /// frame is not one this build can read a name out of.
     #[error("header frame does not read: {0}")]
     UnreadableHeader(#[from] HeaderError),
     /// Not schema gating: an accepted batch is filed under what it carries.
     /// The key scheme's kind segment is `<metrics|logs>` (`archive::Kind`), and
     /// a version this build has no `Kind` for has nothing to put in that
-    /// segment — the refusal is the key, not the schema, having no name.
+    /// segment. The refusal is the key, not the schema, having no name.
     #[error("schema v{schema_version} names no <metrics|logs> segment, so no key can be formed")]
     KeylessSchema { schema_version: u32 },
 }
 
 /// A submission the server could not process. `Rejected` is the client's
-/// problem and permanent; `Unavailable` is the server's and worth a retry —
-/// the distinction the HTTP layer turns into 4xx versus 5xx.
+/// problem and permanent; `Unavailable` is the server's and worth a retry.
+/// That distinction is what the HTTP layer turns into 4xx versus 5xx.
 #[derive(Debug, thiserror::Error)]
 pub enum IngestError {
     #[error(transparent)]

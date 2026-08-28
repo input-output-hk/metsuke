@@ -24,9 +24,10 @@ select * from read_json('downloads/v1/*/*-logs.jsonl.zst', sample_size=-1)
 
 `metsuke-fetch sync` prints the one of these that matches what it downloaded.
 It cannot print a usable one for a download directory whose own name holds a
-glob character: `*` and `[` survive being bracketed, and on duckdb 1.5.5 a
+glob character. `*` and `[` survive being bracketed, and on duckdb 1.5.5 a
 directory named `q?m` read back through `q[?]m` handed the compressed bytes to
 the JSON parser. Name the directory without them.
+
 Every line carries the pool and agent that wrote it under the `metsuke` key, so
 a row selected out of any of these still says where it came from.
 
@@ -40,4 +41,4 @@ fields back as NULL, and `sample_size=-1` gave them back whole. The same window
 drops a key added inside the `metsuke` stamp.
 
 `read_json_auto` is that default under another name, so it carries the same
-trap; the price of `-1` is one pass over the corpus before the first row.
+trap. The price of `-1` is one pass over the corpus before the first row.

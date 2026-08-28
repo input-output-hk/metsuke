@@ -49,7 +49,7 @@ pub fn scrape_at(unix_secs: i64) -> Scrape {
 }
 
 /// The metric the recorded bodies are read by across the suite, as an integer.
-/// `None` when the scrape states no such metric — a failed scrape, or a body
+/// `None` when the scrape states no such metric: a failed scrape, or a body
 /// from before the node emitted it.
 pub fn block_number(scrape: &Scrape) -> Option<u64> {
     scrape

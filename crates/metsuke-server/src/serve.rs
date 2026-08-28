@@ -29,7 +29,7 @@ use crate::http::{self, Answer, AnswerBody, Method, Request, SubmissionHeaders};
 use crate::intake::Intake;
 
 /// How much of an object is moved per read: copy granularity, not a bound
-/// anything can observe (CLAUDE.md `## Conventions`). Never a frame size — no
+/// anything can observe (CLAUDE.md `## Conventions`). Never a frame size. No
 /// download is chunked (`archive::ObjectStream`).
 const DOWNLOAD_CHUNK_BYTES: usize = 64 * 1024;
 
@@ -116,7 +116,7 @@ async fn accept<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
                 eprintln!("{WARNING}a connection was not accepted: {error}");
                 continue;
             }
-            // Everything else — descriptor exhaustion above all — is the
+            // Everything else, descriptor exhaustion above all, is the
             // host's, and a process that keeps looping on it accepts nothing
             // while looking healthy. Exiting hands the wait to systemd, which
             // holds a restart for `RestartSec` (nix/unit.nix).
@@ -176,10 +176,11 @@ async fn accept<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
 /// queued, so continuing would spin; and it is host policy rather than one
 /// client, which is the exit path's case.
 ///
-/// Three of accept(2)'s — `EPROTO`, `ENOPROTOOPT`, `EHOSTDOWN` — have no
-/// `ErrorKind` and reach here as `Uncategorized`, so they are not covered and
-/// exit; matching them takes raw errnos, which this would then have to keep
-/// true per platform for a case a restart already recovers from.
+/// Three of accept(2)'s errnos have no `ErrorKind` and reach here as
+/// `Uncategorized`: `EPROTO`, `ENOPROTOOPT` and `EHOSTDOWN`. They are
+/// therefore not covered and exit; matching them takes raw errnos, which this
+/// would then have to keep true per platform for a case a restart already
+/// recovers from.
 fn one_connection(error: &io::Error) -> bool {
     matches!(
         error.kind(),

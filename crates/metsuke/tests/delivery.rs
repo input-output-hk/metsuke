@@ -100,7 +100,7 @@ fn pushed_scrapes_seal_verify_and_ack_drains_the_spool() {
 }
 
 // A failed PUT means no ack: the retry offers the same scrapes again but
-// under a fresh counter — a counter value is never handed out twice.
+// under a fresh counter. A counter value is never handed out twice.
 #[test]
 fn unacked_batch_is_retaken_with_a_fresh_counter() {
     let dir = tempfile::tempdir().unwrap();

@@ -1,4 +1,4 @@
-//! CLI parsing tests (ticket metsuke-4zo.5): two flags, hand-parsed —
+//! CLI parsing tests (ticket metsuke-4zo.5): two flags, hand-parsed. They are
 //! `--config` and the `--signing-key` override systemd LoadCredential uses.
 
 use std::path::PathBuf;

@@ -1,6 +1,6 @@
 //! Ingest server: everything between a received upload and an archived
 //! object. `intake` is the single entry point; the other modules are
-//! adapters it drives. Nothing here holds state across a restart — the
+//! adapters it drives. Nothing here holds state across a restart. The
 //! bucket is the only store.
 
 pub mod applications;

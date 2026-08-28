@@ -276,7 +276,7 @@ fn every_named_namespace_carries_its_own_severity() {
 /// The agent parses each trace line as a JSON object, which is what `Stdout
 /// MachineFormat` writes and no other `Stdout` backend does. Only the snippet is
 /// checked here: what step 4 says about *applying* it rests on cardano-node's
-/// backend resolution order, which nothing in this repo verifies — see the note
+/// backend resolution order, which nothing in this repo verifies. See the note
 /// on `instructions::MetricsEndpoint::backend_config` (metsuke-jfb.24).
 #[test]
 fn the_backend_step_names_the_machine_format_backend() {
@@ -336,7 +336,7 @@ fn the_node_config_step_covers_every_namespace_the_agent_selects() {
 }
 
 /// Both snippets are keys to merge into an operator's own `TraceOptions`, and
-/// the trace one holds no `""` key at all — so applying it cannot drop the root
+/// the trace one holds no `""` key at all, so applying it cannot drop the root
 /// entry, which is what carries their severity, their detail and the backends
 /// step 4 added. Why merging is the instruction: ADR 0010.
 #[test]

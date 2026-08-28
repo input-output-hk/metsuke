@@ -1,7 +1,7 @@
 # The whole path once, on real parts: a Leios node's own Prometheus endpoint,
 # the agent through its module, the server through its module, and Garage as
 # the bucket. Scrape, spool, signed submission, verification, object, ACK. What
-# a value should be is not asserted here — the recorded fixtures under
+# a value should be is not asserted here. The recorded fixtures under
 # crates/metsuke/tests/fixtures own that; this asserts that the parts meet.
 #
 # The node's tracing is the recorded pre-production configuration, and the
@@ -71,7 +71,7 @@ let
   # The guest boots here rather than at the host's clock, so the node forges.
   # pool1's opcert is issued for KES period 0 and the demo's genesis is years
   # old, so at any real clock the node is far past `maxKESEvolutions` and
-  # produces nothing — and further every day. A clock the test owns also drops
+  # produces nothing, and further every day. A clock the test owns also drops
   # the wall clock as an input.
   genesisStart = (lib.importJSON "${devnetSrc}/config/genesis/byron-genesis.json").startTime;
 
@@ -177,7 +177,7 @@ let
   # `activeSlots` is what makes it lead often enough to be certain of a block: at
   # the demo's own 0.05, pool1's third of the stake leads about one slot in
   # sixty, and a five-minute window was a coin toss this test lost. Shelley wants
-  # `epochLength == 10k/f`, so the two move together — the same gate
+  # `epochLength == 10k/f`, so the two move together. The same gate
   # devnet/flake.nix's `devnet-setup` applies, which is a fifth copy of what
   # metsuke-4zo.60 tracks.
   nodeConfig =
@@ -787,7 +787,8 @@ let
 in
 # One agent scrapes one URL across the pre-merge node and the post-merge one, so
 # this test can only run while the two ports agree. Divergence is no operator's
-# problem — step 4 tells them which to keep — it is this test needing two URLs.
+# problem, since step 4 tells them which to keep. It is this test that would
+# then need two URLs.
 assert lib.assertMsg (metricsPort == pagePort) (
   "the recording opens port ${toString metricsPort} and the page's snippet opens "
   + "${toString pagePort}: nix/e2e-test.nix scrapes one port across both"

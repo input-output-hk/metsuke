@@ -81,9 +81,9 @@ fn arb_pool_id() -> impl Strategy<Value = PoolId> {
         .prop_map(|seed| PoolId::from_cold_key(&SigningKey::from_bytes(&seed).verifying_key()))
 }
 
-/// Any string, bounded in length alone: the header travels uncompressed under
-/// the byte limit `TEST_LIMITS` states, and every other character — quote,
-/// control, newline, non-ASCII — is JSON escaping this has to cover.
+/// Any string, bounded in length alone. The header travels uncompressed under
+/// the byte limit `TEST_LIMITS` states, and every other character is JSON
+/// escaping this has to cover: quote, control, newline, non-ASCII.
 fn arb_agent_version() -> impl Strategy<Value = String> {
     "(?s).{0,32}"
 }
@@ -756,7 +756,7 @@ const RECORDINGS: [&str; 2] = [
     include_str!("fixtures/recordings/submission-lines.hex"),
 ];
 
-/// One recording, opened. The signature is not recorded — Ed25519 is
+/// One recording, opened. The signature is not recorded. Ed25519 is
 /// deterministic, so re-signing the same bytes with the same key reproduces it.
 fn recorded(hex: &str) -> (Vec<u8>, Envelope) {
     use ed25519_dalek::Signer;
@@ -769,7 +769,7 @@ fn recorded(hex: &str) -> (Vec<u8>, Envelope) {
 
 // A framing change that still round-trips through this build's own `open`
 // would go unnoticed; the recordings are what make it a failing test. Opening
-// them restates none of their values — the recorder owns those.
+// them restates none of their values. The recorder owns those.
 //
 // Resealed from the fields rather than from what `open` returned: `open` takes
 // each line as the text it received and `seal` concatenates them, so resealing
@@ -848,7 +848,7 @@ fn container(header: &[u8], declared: u32, data: &[u8]) -> Vec<u8> {
 }
 
 /// A well-framed, correctly signed container around a hand-written header and
-/// payload — how a client speaking a schema this build does not would send one.
+/// payload, as a client speaking a schema this build does not would send one.
 fn sealed_header(
     key: &SigningKey,
     header: serde_json::Value,
@@ -867,7 +867,7 @@ fn sealed_header(
 
 /// An envelope stamped with its own header, as the agent's spool stamps a row.
 /// `open` checks every line against the header, so lines stamped with anything
-/// else make a batch that can only fail to open — which is
+/// else make a batch that can only fail to open, which is
 /// `open_refuses_a_line_stamped_with_another_batch`, not a builder's job.
 fn envelope_of(
     provenance: Provenance,

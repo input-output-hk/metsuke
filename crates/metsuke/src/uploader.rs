@@ -1,5 +1,5 @@
 //! One batch upload: POST the sealed bytes with the ADR-0001 header
-//! contract and classify the answer. Never touches the spool — the caller
+//! contract and classify the answer. Never touches the spool: the caller
 //! acks on `Acked` and leaves rows in place otherwise (ADR 0004).
 
 use std::time::Duration;
@@ -64,7 +64,7 @@ pub fn upload(config: &UploadConfig, vkey: &VerifyingKey, batch: &SealedBatch) -
     }
 }
 
-/// True when the ack's `latest_version` is newer than this build — the
+/// True when the ack's `latest_version` is newer than this build, the
 /// ADR-0006 update nudge. Segments compare numerically; a version that
 /// doesn't parse cannot claim to be newer.
 pub fn newer_version_available(current: &str, latest: &str) -> bool {

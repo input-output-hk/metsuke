@@ -397,7 +397,7 @@ proptest! {
 
     // ADR 0004: rows leave only through ACK, and an ACK deletes exactly the
     // acked rows. After random push/partial-ack interleavings, acking every
-    // outstanding row leaves zero scrape rows — checked through the API and
+    // outstanding row leaves zero scrape rows, checked through the API and
     // again on the raw file, so a lying `outstanding()` can't hide orphans.
     #[test]
     fn write_ack_delete_leaves_no_orphan_rows(

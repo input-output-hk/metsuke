@@ -1,6 +1,6 @@
 //! Upload scheduling: one upload outcome in, the delay until the next
-//! attempt out. Pure state-plus-arithmetic so the retry policy — jitter on
-//! retryable failures, clamped exponential backoff on rejections — is
+//! attempt out. Pure state-plus-arithmetic, so the retry policy (jitter on
+//! retryable failures, clamped exponential backoff on rejections) is
 //! testable without timers.
 
 use std::time::Duration;
@@ -28,7 +28,7 @@ impl Schedule {
     }
 
     /// The delay until the next upload attempt. `entropy` seeds the jitter;
-    /// any caller-supplied noise (e.g. clock nanoseconds) is enough — the
+    /// any caller-supplied noise (e.g. clock nanoseconds) is enough. The
     /// spread only has to differ across agents, not be unpredictable.
     pub fn after(
         &mut self,

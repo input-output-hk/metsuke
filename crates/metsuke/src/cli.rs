@@ -9,8 +9,8 @@ pub const DEFAULT_CONFIG_PATH: &str = "/etc/metsuke/config.toml";
 #[derive(Debug, PartialEq)]
 pub struct Args {
     pub config: PathBuf,
-    /// Overrides the config's `signing_key` (the LoadCredential interplay
-    /// is documented in contrib/config.example.toml).
+    /// Overrides the config's `signing_key`. How it interacts with
+    /// LoadCredential is documented in contrib/config.example.toml.
     pub signing_key: Option<PathBuf>,
 }
 
