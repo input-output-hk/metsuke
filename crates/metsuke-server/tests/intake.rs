@@ -252,9 +252,10 @@ fn tampered_body_is_rejected() {
         )
         .unwrap_err();
 
-    assert_eq!(status_for(&error), 403);
+    let rejection = rejection(error);
+    assert_eq!(status_for(&rejection), 403);
     assert!(
-        matches!(rejection(error), Rejection::BadSignature),
+        matches!(rejection, Rejection::BadSignature),
         "expected the signature check to reject"
     );
 }
@@ -333,9 +334,10 @@ fn the_shared_budget_refuses_a_pool_inside_its_own_limit() {
 
     let error = submit(&intake, &second, &envelope_for(&second, 1)).unwrap_err();
 
-    assert_eq!(status_for(&error), 429);
+    let rejection = rejection(error);
+    assert_eq!(status_for(&rejection), 429);
     assert!(
-        matches!(rejection(error), Rejection::ServerBusy { max: 1, .. }),
+        matches!(rejection, Rejection::ServerBusy { max: 1, .. }),
         "expected the shared window to reject"
     );
 }
@@ -358,10 +360,11 @@ fn a_body_that_is_not_a_container_is_refused_before_the_allowlist() {
         )
         .unwrap_err();
 
-    assert_eq!(status_for(&error), 400);
+    let rejection = rejection(error);
+    assert_eq!(status_for(&rejection), 400);
     assert!(
         matches!(
-            rejection(error),
+            rejection,
             Rejection::NotASubmission(ContainerError::NotAContainer)
         ),
         "expected the container check to run before the allowlist"
@@ -402,9 +405,10 @@ fn a_header_frame_that_does_not_read_is_refused() {
 
     let error = submit_container(&intake, &key, b"{}", 2, b"").unwrap_err();
 
-    assert_eq!(status_for(&error), 400);
+    let rejection = rejection(error);
+    assert_eq!(status_for(&rejection), 400);
     assert!(
-        matches!(rejection(error), Rejection::UnreadableHeader(_)),
+        matches!(rejection, Rejection::UnreadableHeader(_)),
         "expected the header read to reject"
     );
 }
@@ -421,10 +425,11 @@ fn a_schema_version_with_no_key_segment_is_refused() {
 
     let error = submit_header(&intake, &key, header(&key, unknown), b"").unwrap_err();
 
-    assert_eq!(status_for(&error), 400);
+    let rejection = rejection(error);
+    assert_eq!(status_for(&rejection), 400);
     assert!(
         matches!(
-            rejection(error),
+            rejection,
             Rejection::KeylessSchema { schema_version } if schema_version == unknown
         ),
         "expected the refusal to name the schema version that has no key segment"
@@ -460,7 +465,8 @@ fn a_trace_line_upload_is_accepted_and_filed_as_logs() {
 
 // A store that cannot store is the server's failure, not the client's: it
 // must not come back as a rejection the operator would chase (ADR 0004 —
-// no ACK, so the client keeps the scrapes spooled).
+// no ACK, so the client keeps the scrapes spooled). What it answers with, and
+// what that body may not carry, is tests/http.rs.
 #[test]
 fn archive_failure_is_not_a_rejection() {
     let key = test_key();
@@ -484,7 +490,6 @@ fn archive_failure_is_not_a_rejection() {
         matches!(error, IngestError::Archive(_)),
         "expected an availability error, got {error:?}"
     );
-    assert_eq!(status_for(&error), 503);
 }
 
 // A refused submission archives nothing.

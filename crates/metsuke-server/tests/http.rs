@@ -47,12 +47,17 @@ fn server() -> Server<FilesystemArchive> {
     over(archive, dir)
 }
 
+/// Why `unreachable_archive` fails, and so exactly what `withholds` asserts is
+/// absent: one string, or the assertion could outlive the fixture wording and
+/// pass against a body that never carried it.
+const UNREACHABLE_REASON: &str = "the bucket at s3.example is unreachable";
+
 /// The same server over an archive that fails whichever half is used.
 fn unreachable_archive() -> Server<FailingArchive> {
     let dir = tempfile::tempdir().unwrap();
     over(
         FailingArchive {
-            reason: "the bucket at s3.example is unreachable",
+            reason: UNREACHABLE_REASON,
         },
         dir,
     )
@@ -111,6 +116,18 @@ fn body(answer: &Answer) -> String {
         panic!("this answer's body is a stream, not bytes in hand");
     };
     String::from_utf8_lossy(bytes).to_string()
+}
+
+/// What every use of the archive answers when the store will not (`http`,
+/// `unavailable`): a 503 the client may retry, whose body does not carry the
+/// reason the store gave.
+fn withholds(answer: &Answer) {
+    assert_eq!(answer.status, 503, "{}", body(answer));
+    assert!(
+        !body(answer).contains(UNREACHABLE_REASON),
+        "the store's own error is the operator's to see, not the client's: {}",
+        body(answer)
+    );
 }
 
 #[test]
@@ -190,12 +207,12 @@ fn a_pool_off_the_allowlist_is_forbidden() {
 }
 
 /// An archive that will not take the bytes is a 5xx, or the agent acks and
-/// deletes scrapes that were never stored (ADR 0004).
+/// deletes scrapes that were never stored (ADR 0004). Reached by an
+/// allowlisted pool, which is what makes the withholding matter (`http`,
+/// `unavailable`).
 #[test]
 fn an_archive_that_cannot_store_is_unavailable() {
-    let answer = unreachable_archive().answer(post(&test_key(), 1));
-
-    assert_eq!(answer.status, 503, "{}", body(&answer));
+    withholds(&unreachable_archive().answer(post(&test_key(), 1)));
 }
 
 #[test]
@@ -268,30 +285,17 @@ fn an_authorized_listing_answers_the_archive() {
     assert_eq!(page["truncated"], false);
 }
 
-/// An archive that cannot be listed is a 503 the client may retry, and the
-/// store's own error stays in the log.
 #[test]
 fn a_listing_over_an_archive_that_will_not_answer_is_unavailable() {
-    let answer = unreachable_archive().answer(pull(SUBMISSIONS_PATH));
-
-    assert_eq!(answer.status, 503);
-    assert!(
-        !body(&answer).contains("s3.example"),
-        "the store's own error is the operator's to see, not the client's"
-    );
+    withholds(&unreachable_archive().answer(pull(SUBMISSIONS_PATH)));
 }
 
-/// The same rule on the download route, which is the one that reaches an
-/// endpoint by name (`ArchiveError::EndpointUnusable`).
+/// The download route, which is the one that reaches an endpoint by name
+/// (`ArchiveError::EndpointUnusable`).
 #[test]
 fn a_download_from_an_archive_that_will_not_answer_is_unavailable() {
-    let answer =
-        unreachable_archive().answer(pull(&format!("{OBJECT_PATH}?{KEY_FIELD}=any-object")));
-
-    assert_eq!(answer.status, 503);
-    assert!(
-        !body(&answer).contains("s3.example"),
-        "the store's own error is the operator's to see, not the client's"
+    withholds(
+        &unreachable_archive().answer(pull(&format!("{OBJECT_PATH}?{KEY_FIELD}=any-object"))),
     );
 }
 

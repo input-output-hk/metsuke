@@ -128,20 +128,20 @@ fn decode_hex<const N: usize>(
     })
 }
 
-/// The status a failed submission answers with. What the 4xx/5xx split means
-/// to the agent is ADR 0004; the finer codes are what an operator reads off
-/// the proxy log.
-pub fn status_for(error: &IngestError) -> u16 {
-    match error {
-        IngestError::Rejected(rejection) => match rejection {
-            Rejection::OversizedBody { .. } => 413,
-            Rejection::RateLimited { .. } | Rejection::ServerBusy { .. } => 429,
-            Rejection::UnknownPool { .. } | Rejection::BadSignature => 403,
-            Rejection::NotASubmission(_)
-            | Rejection::UnreadableHeader(_)
-            | Rejection::KeylessSchema { .. } => 400,
-        },
-        IngestError::Archive(_) => 503,
+/// The status a rejected submission answers with. Takes a `Rejection` and not
+/// an `IngestError`, so what this can answer is only ever the client's fault
+/// and only ever 4xx: a rejection's text is the client's to read, where an
+/// availability failure's is `unavailable`'s to withhold. What the 4xx/5xx
+/// split means to the agent is ADR 0004; the finer codes are what an operator
+/// reads off the proxy log.
+pub fn status_for(rejection: &Rejection) -> u16 {
+    match rejection {
+        Rejection::OversizedBody { .. } => 413,
+        Rejection::RateLimited { .. } | Rejection::ServerBusy { .. } => 429,
+        Rejection::UnknownPool { .. } | Rejection::BadSignature => 403,
+        Rejection::NotASubmission(_)
+        | Rejection::UnreadableHeader(_)
+        | Rejection::KeylessSchema { .. } => 400,
     }
 }
 
@@ -256,7 +256,7 @@ fn listing<A: Store + Bytes + List>(
             body: AnswerBody::Bytes(developer::page(listing).into_bytes().into()),
             headers: Vec::new(),
         },
-        Err(error) => unavailable("the archive cannot be listed", &error.to_string()),
+        Err(error) => unavailable(None, "the archive cannot be listed", &error.to_string()),
     }
 }
 
@@ -280,15 +280,16 @@ fn object<A: Store + Bytes>(intake: &Intake<A>, target: &str) -> Answer {
             headers: Vec::new(),
         },
         Err(ArchiveError::NoSuchObject { .. }) => refuse(None, 404, "no such object".to_string()),
-        Err(error) => unavailable("the archive cannot be read", &error.to_string()),
+        Err(error) => unavailable(None, "the archive cannot be read", &error.to_string()),
     }
 }
 
-/// A 503 whose body says which store failed and whose log line says how. The
-/// detail names the bucket, the endpoint or the database file, and none of
-/// that is a client's to read.
-fn unavailable(reason: &str, withheld: &str) -> Answer {
-    refuse_withholding(None, 503, reason.to_string(), Some(withheld.to_string()))
+/// The 5xx every use of the archive answers with: a body saying which use
+/// failed, and a log line saying how. The detail names the bucket, the
+/// endpoint or the archive root, and none of that is a client's to read — a
+/// pool id is public, so being on the allowlist is no reason to be told.
+fn unavailable(signer: Option<PoolId>, reason: &str, withheld: &str) -> Answer {
+    refuse_withholding(signer, 503, reason.to_string(), Some(withheld.to_string()))
 }
 
 fn submit<A: Store>(intake: &Intake<A>, request: &Request) -> Answer {
@@ -313,7 +314,14 @@ fn submit<A: Store>(intake: &Intake<A>, request: &Request) -> Answer {
             ),
             headers: Vec::new(),
         },
-        Err(error) => refuse(Some(signer), status_for(&error), error.to_string()),
+        Err(IngestError::Rejected(rejection)) => {
+            refuse(Some(signer), status_for(&rejection), rejection.to_string())
+        }
+        Err(IngestError::Archive(error)) => unavailable(
+            Some(signer),
+            "the archive cannot be written",
+            &error.to_string(),
+        ),
     }
 }
 
