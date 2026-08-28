@@ -4,17 +4,17 @@ Status: accepted (2026-08-19)
 
 ## Context
 
-Uploads must be attributable to a pool via keys SPOs already hold. The Cardano
-ecosystem default is COSE_Sign1 (CIP-8): cardano-signer emits it, wallets emit it.
-Adopting it would pull a CBOR/COSE stack into both crates and give the wire format
-two possible envelopes. Header-based signing schemes (RFC 9421, SigV4) were also
-considered; they require canonicalization — choosing, ordering, and casing the
-signed headers — and canonicalization mismatch between signer and verifier is a
-recurring vulnerability class.
+Submissions must be attributable to a pool via keys operators already hold. The
+Cardano ecosystem default is COSE_Sign1 (CIP-8): cardano-signer emits it, wallets
+emit it. Adopting it would pull a CBOR/COSE stack into both crates and give the
+wire format two possible envelopes. Header-based signing schemes (RFC 9421, SigV4)
+were also considered; they require canonicalization, meaning choosing, ordering,
+and casing the signed headers. Canonicalization mismatch between signer and
+verifier is a recurring vulnerability class.
 
 ## Decision
 
-The client signs the request body — the exact bytes sent — with a raw Ed25519
+The client signs the request body, the exact bytes sent, with a raw Ed25519
 detached signature. The body is a zstd frame sequence: a skippable frame
 carrying the header as plaintext JSON, then the data frame the payload is
 compressed into (`envelope.rs`). One signature covers both. HTTP headers carry
@@ -26,7 +26,7 @@ CBOR anywhere in the runtime data path.
 - One verification path, one byte string signed; no canonicalization surface.
 - The stored S3 object (the same bytes) is independently verifiable forever.
 - The server can verify before decompressing (see `metsuke_server::intake::Intake::submit` for the check order).
-- SPOs cannot reuse wallet-produced COSE signatures; the client binary does the
-  signing.
-- "Runtime data path" means the submission, which is the only path there is:
-  nothing the server does reads a chain.
+- Operators cannot reuse wallet-produced COSE signatures; the client binary does
+  the signing.
+- "Runtime data path" means the submission, which is the only path there is.
+  Nothing the server does reads a chain.
