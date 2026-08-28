@@ -31,6 +31,11 @@ the JSON parser. Name the directory without them.
 Every line carries the pool and agent that wrote it under the `metsuke` key, so
 a row selected out of any of these still says where it came from.
 
+A scrape holds its metrics as a nested list and a trace line holds its payload
+as a map, so neither reads usefully through `select *`. `duckdb -init
+docs/analytics.sql` flattens both and defines the views a consumer actually
+groups over.
+
 ## Why `sample_size=-1`
 
 duckdb infers the JSON schema from the first 20480 rows and fills any field it
