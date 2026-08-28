@@ -7,6 +7,7 @@ use std::time::Duration;
 
 use metsuke_fetch::cli::{Args, ArgsError, Command};
 use metsuke_fetch::pull::Archive;
+use metsuke_fetch::recipe;
 use metsuke_fetch::select::Filters;
 use metsuke_fetch::sync::{self, Destination, SyncError};
 
@@ -55,10 +56,11 @@ fn run() -> Result<(), Fatal> {
         prefix: &prefix,
         selection: &selection,
     };
-    let (report, what) = match command {
+    let (report, what, read) = match command {
         Command::List => (
             sync::list(&archive, &filters, |key| println!("{key}"))?,
             "listed".to_string(),
+            None,
         ),
         Command::Sync { state, into } => {
             let destination = Destination {
@@ -67,13 +69,18 @@ fn run() -> Result<(), Fatal> {
             };
             let report = sync::run(&archive, &filters, &destination, |key| println!("{key}"))?;
             let what = format!("into {}, {} bytes", into.display(), report.bytes);
-            (report, what)
+            (report, what, Some(recipe::read(&into, selection.kind)))
         }
     };
     eprintln!(
         "{} objects {what}; {} outside the filters, {} this build cannot name",
         report.objects, report.passed, report.unnameable
     );
+    // Printed rather than left to the reader, because the read a consumer
+    // reaches for first is lossy here — docs/reading-the-archive.md.
+    if let Some(read) = read {
+        eprintln!("read them with: duckdb -c \"select * from {read}\"");
+    }
     Ok(())
 }
 

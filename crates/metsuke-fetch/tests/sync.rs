@@ -7,6 +7,7 @@ use std::process::Command;
 
 use metsuke_fetch::cursor::Cursor;
 
+use metsuke_fetch::recipe;
 use metsuke_fetch::select::{Filters, Selection};
 use metsuke_fetch::sync::{self, Destination, SyncError};
 use metsuke_wire::envelope::{self, AgentId, Limits};
@@ -151,33 +152,71 @@ fn objects_land_under_the_keys_they_are_filed_as() {
     }
 }
 
-/// duckdb reads the objects where they landed, with no unpacking step.
+/// duckdb reads the objects where they landed, with no unpacking step, under
+/// the read the tool prints (`recipe`) — and the kind narrows that read to the
+/// objects filed under it, which is a claim about real names on disk.
 #[test]
 fn duckdb_reads_the_downloaded_objects_where_they_landed() {
-    let server = Server::with_objects(2, 100);
+    let server = Server::with_objects(3, 100);
     let synced = synced(&server, &everything());
-    let glob = synced.dir.path().join("objects/v1/**/*.jsonl.zst");
+    let into = synced.dir.path().join("objects");
+    let logs = server
+        .keys()
+        .iter()
+        .filter(|key| key.contains(&Kind::Logs.to_string()))
+        .count();
 
-    let read = Command::new("duckdb")
+    // One line per object, each carrying its own provenance stamp.
+    assert_eq!(rows(&recipe::read(&into, None)), server.keys().len());
+    assert_eq!(rows(&recipe::read(&into, Some(Kind::Logs))), logs);
+}
+
+/// The download directory is the operator's, and it goes inside a SQL string
+/// literal: an unescaped quote in it ends that literal, and duckdb reads a
+/// query the tool did not mean.
+#[test]
+fn duckdb_reads_a_download_directory_whose_name_holds_a_quote() {
+    let server = Server::with_objects(1, 100);
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let into = dir.path().join("it's objects");
+    let state = state_of(dir.path());
+
+    sync::run(
+        &server.pulling(),
+        &everything().filters(),
+        &Destination {
+            into: &into,
+            state: &state,
+        },
+        |_| {},
+    )
+    .expect("the sync runs");
+
+    assert_eq!(rows(&recipe::read(&into, None)), 1);
+}
+
+/// What `read` reads, counted by the duckdb the suite ships with
+/// (flake.nix suiteTools).
+fn rows(read: &str) -> usize {
+    let counted = Command::new("duckdb")
         .args([
             "-noheader",
             "-list",
             "-c",
-            &format!(
-                "select count(*) from read_json('{}', sample_size=-1)",
-                glob.display()
-            ),
+            &format!("select count(*) from {read}"),
         ])
         .output()
-        .expect("duckdb runs (flake.nix suiteTools)");
+        .expect("duckdb runs");
 
     assert!(
-        read.status.success(),
-        "{}",
-        String::from_utf8_lossy(&read.stderr)
+        counted.status.success(),
+        "{read}: {}",
+        String::from_utf8_lossy(&counted.stderr)
     );
-    // One line per object, each carrying its own provenance stamp.
-    assert_eq!(String::from_utf8_lossy(&read.stdout).trim(), "2");
+    String::from_utf8_lossy(&counted.stdout)
+        .trim()
+        .parse()
+        .expect("a count")
 }
 
 /// A page bound is the server's, and the walk has to follow it: three objects

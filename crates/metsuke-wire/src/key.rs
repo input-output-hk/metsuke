@@ -13,7 +13,7 @@ pub const KEY_PREFIX: &str = "v1/";
 
 /// The suffix every object carries: JSON Lines, zstd-compressed, as the wire
 /// container holds them.
-const KEY_SUFFIX: &str = ".jsonl.zst";
+pub const KEY_SUFFIX: &str = ".jsonl.zst";
 
 /// Which payload a batch carries, as the object key spells it. Named from the
 /// schema version rather than read out of the payload: the server never

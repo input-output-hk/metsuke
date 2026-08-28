@@ -9,6 +9,7 @@
 pub mod cli;
 pub mod cursor;
 pub mod pull;
+pub mod recipe;
 pub mod select;
 mod staged;
 pub mod sync;
