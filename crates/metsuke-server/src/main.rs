@@ -5,7 +5,7 @@
 //! exits, zero only if what it was asked to check holds.
 
 use metsuke_server::archive::{Bytes, FilesystemArchive, List, Store};
-use metsuke_server::cli::{Args, ArgsError, Command};
+use metsuke_server::cli::{Args, ArgsError, Command, USAGE, VERSION};
 use metsuke_server::config::{
     ArchiveConfig, ConfigError, DeveloperConfig, HttpConfig, IngestConfig, S3Config, ServerConfig,
 };
@@ -69,7 +69,22 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run() -> Result<(), Fatal> {
-    let args = Args::parse(std::env::args().skip(1))?;
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    // Answered wherever they appear, because that is where an operator writes
+    // them, and on stdout, because they are the run's answer rather than a
+    // refusal.
+    if argv.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{USAGE}");
+        return Ok(());
+    }
+    if argv.iter().any(|a| a == "--version") {
+        println!("{VERSION}");
+        return Ok(());
+    }
+    let args = Args::parse(argv.into_iter())?;
+    // Before the config is even read: the start that most needs its build
+    // named is the one about to fail, and everything below here can.
+    eprintln!("{INFO}metsuke-server {VERSION} starting");
     let text = std::fs::read_to_string(&args.config).map_err(|source| Fatal::ReadConfig {
         path: args.config.display().to_string(),
         source,
@@ -176,8 +191,7 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
     // The bound address, not the configured one: `:0` is how the tests and
     // any readiness check learn the port.
     eprintln!(
-        "{INFO}metsuke-server {} accepting {} pools at http://{}{}",
-        env!("CARGO_PKG_VERSION"),
+        "{INFO}metsuke-server accepting {} pools at http://{}{}",
         ingest.allowlist.len(),
         listener.address(),
         http::SUBMIT_PATH,

@@ -334,15 +334,20 @@ fn a_missing_config_exits_nonzero_naming_the_path() {
     );
 }
 
+/// Named and pointed at `--help`, rather than the whole usage on top of the
+/// error: the operator can ask for that, and now has to read one line.
 #[test]
-fn an_unknown_argument_exits_nonzero_showing_the_usage() {
+fn an_unknown_argument_exits_nonzero_pointing_at_help() {
     let output = Command::new(env!("CARGO_BIN_EXE_metsuke-server"))
         .arg("--verbose")
         .output()
         .unwrap();
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("--config"), "{stderr}");
+    assert!(
+        stderr.contains("--verbose") && stderr.contains(metsuke_server::cli::HELP_HINT),
+        "{stderr}"
+    );
 }
 
 #[test]
@@ -1488,4 +1493,66 @@ fn refuses_to_start(config: &std::path::Path) -> (std::process::ExitStatus, Stri
         .read_to_string(&mut stderr)
         .unwrap();
     (exit, stderr)
+}
+
+/// The version a deploy is named by is the one the crate shipped, so this
+/// compares the binary's answer with the manifest's value rather than a
+/// string written here.
+#[test]
+fn version_is_printed_on_its_own_and_names_the_crates_version() {
+    let output = Command::new(env!("CARGO_BIN_EXE_metsuke-server"))
+        .arg("--version")
+        .output()
+        .expect("the binary runs");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
+/// Asked for, so it is the answer: stdout, exit zero, and no config read,
+/// which is why this passes none.
+#[test]
+fn help_is_printed_on_stdout_and_exits_zero() {
+    for flag in ["--help", "-h"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_metsuke-server"))
+            .arg(flag)
+            .output()
+            .expect("the binary runs");
+
+        assert!(
+            output.status.success(),
+            "{flag}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim_end(),
+            metsuke_server::cli::USAGE
+        );
+    }
+}
+
+/// The run that most needs a build named is the one that failed, so the line
+/// comes before anything that can stop the start.
+#[test]
+fn a_start_that_stops_on_its_config_still_names_the_build() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_metsuke-server"))
+        .args([
+            "--config",
+            &dir.path().join("absent.toml").display().to_string(),
+        ])
+        .output()
+        .expect("the binary runs");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(env!("CARGO_PKG_VERSION")), "got: {stderr}");
 }

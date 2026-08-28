@@ -5,7 +5,7 @@
 use std::time::{Duration, Instant};
 
 use metsuke::agent::Agent;
-use metsuke::cli::{Args, ArgsError};
+use metsuke::cli::{Args, ArgsError, USAGE, VERSION};
 use metsuke::config::{Config, ConfigError, LogConfig, LogSource};
 use metsuke::delivery::Delivery;
 use metsuke::identity::{self, IdentityError};
@@ -60,7 +60,22 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run() -> Result<std::convert::Infallible, StartupError> {
-    let args = Args::parse(std::env::args().skip(1))?;
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+    // Answered wherever they appear, because that is where an operator writes
+    // them, and on stdout, because they are the run's answer rather than a
+    // refusal.
+    if argv.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{USAGE}");
+        std::process::exit(0);
+    }
+    if argv.iter().any(|a| a == "--version") {
+        println!("{VERSION}");
+        std::process::exit(0);
+    }
+    let args = Args::parse(argv.into_iter())?;
+    // Before the config is even read: the start that most needs its build
+    // named is the one about to fail, and everything below here can.
+    eprintln!("{INFO}metsuke {VERSION} starting");
     let text =
         std::fs::read_to_string(&args.config).map_err(|source| StartupError::ReadConfig {
             path: args.config.display().to_string(),
@@ -86,10 +101,8 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
     })?;
     let vkey = key.verifying_key();
     eprintln!(
-        "{INFO}metsuke {} on {agent_id} scraping {} for {}",
-        env!("CARGO_PKG_VERSION"),
-        config.metrics_url,
-        config.pool_id,
+        "{INFO}metsuke on {agent_id} scraping {} for {}",
+        config.metrics_url, config.pool_id,
     );
     let mut agent = Agent::new(
         ScraperConfig {

@@ -210,12 +210,17 @@ async fn binary_uploads_a_batch_signed_by_the_flag_key() {
         .unwrap();
     let mut stderr = child.stderr.take().expect("stderr was piped");
 
-    // The first thing it says is who it is, with the configured name folded
-    // into an id.
+    // The first thing it says is its build, before anything that can fail;
+    // the second is who it is, with the configured name folded into an id.
+    let mut reader = std::io::BufReader::new(&mut stderr);
+    let mut build = String::new();
+    reader.read_line(&mut build).unwrap();
+    assert!(
+        build.contains(env!("CARGO_PKG_VERSION")),
+        "the first line must name the build, got: {build}"
+    );
     let mut startup = String::new();
-    std::io::BufReader::new(&mut stderr)
-        .read_line(&mut startup)
-        .unwrap();
+    reader.read_line(&mut startup).unwrap();
     assert!(
         startup.contains(AGENT_ID),
         "the startup line must name the resolved agent id, got: {startup}"
@@ -260,4 +265,84 @@ async fn binary_uploads_a_batch_signed_by_the_flag_key() {
     // The flag key signed it: `open` verified against the header vkey,
     // which must be the flag key's.
     assert_eq!(vkey_bytes, test_key().verifying_key().to_bytes());
+}
+
+/// The version an operator reads off a build is the one the crate shipped, so
+/// this compares the binary's answer with the manifest's value rather than a
+/// string written here.
+#[test]
+fn version_is_printed_on_its_own_and_names_the_crates_version() {
+    let output = Command::new(env!("CARGO_BIN_EXE_metsuke"))
+        .arg("--version")
+        .output()
+        .expect("the binary runs");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
+/// Asked for, so it is the answer: stdout, exit zero, and the usage the
+/// parser refuses with. Neither form may need a readable config, which is
+/// why this passes no `--config` at all.
+#[test]
+fn help_is_printed_on_stdout_and_exits_zero() {
+    for flag in ["--help", "-h"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_metsuke"))
+            .arg(flag)
+            .output()
+            .expect("the binary runs");
+
+        assert!(
+            output.status.success(),
+            "{flag}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim_end(),
+            metsuke::cli::USAGE
+        );
+    }
+}
+
+/// The run that most needs a build named is the one that failed, so the line
+/// comes before anything that can stop the start.
+#[test]
+fn a_start_that_stops_on_its_config_still_names_the_build() {
+    let dir = tempfile::tempdir().unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_metsuke"))
+        .args([
+            "--config",
+            &dir.path().join("absent.toml").display().to_string(),
+        ])
+        .output()
+        .expect("the binary runs");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(env!("CARGO_PKG_VERSION")), "got: {stderr}");
+}
+
+/// A mistyped flag points at --help rather than restating the usage, so the
+/// error stays one line an operator reads.
+#[test]
+fn an_unknown_flag_points_at_help() {
+    let output = Command::new(env!("CARGO_BIN_EXE_metsuke"))
+        .arg("--sining-key")
+        .output()
+        .expect("the binary runs");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--sining-key") && stderr.contains(metsuke::cli::HELP_HINT),
+        "got: {stderr}"
+    );
 }
