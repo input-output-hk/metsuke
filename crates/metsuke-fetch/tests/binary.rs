@@ -89,3 +89,93 @@ fn an_empty_password_file_is_refused_by_name() {
         "got: {stderr}"
     );
 }
+
+/// The version a Developer reads off a build is the one the crate shipped, so
+/// this compares the binary's answer with the manifest's value rather than a
+/// string written here.
+#[test]
+fn version_is_printed_on_its_own_and_names_the_crates_version() {
+    let output = Command::new(env!("CARGO_BIN_EXE_metsuke-fetch"))
+        .arg("--version")
+        .output()
+        .expect("the binary runs");
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        env!("CARGO_PKG_VERSION")
+    );
+}
+
+/// Asked for, so it is the answer: stdout, exit zero, and the usage the
+/// parser refuses with.
+#[test]
+fn help_is_printed_on_stdout_and_exits_zero() {
+    for flag in ["--help", "-h"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_metsuke-fetch"))
+            .arg(flag)
+            .output()
+            .expect("the binary runs");
+
+        assert!(
+            output.status.success(),
+            "{flag}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim_end(),
+            metsuke_fetch::cli::USAGE
+        );
+    }
+}
+
+#[test]
+fn a_sync_names_the_build_that_wrote_the_download() {
+    let server = Server::with_objects(1, 1);
+    let dir = tempfile::tempdir().expect("a temp dir");
+
+    let output = run(
+        &server,
+        dir.path(),
+        &[
+            "sync",
+            "--state",
+            &dir.path().join("cursor.json").display().to_string(),
+            "--into",
+            &dir.path().join("objects").display().to_string(),
+        ],
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(env!("CARGO_PKG_VERSION")), "got: {stderr}");
+}
+
+/// The run that most needs a build named is the one that failed, so the line
+/// comes before anything that can stop the run.
+#[test]
+fn a_run_that_stops_on_its_password_file_still_names_the_build() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_metsuke-fetch"))
+        .args([
+            "list",
+            "--server",
+            "http://archive.example:8080",
+            "--user",
+            USER,
+            "--password-file",
+            &dir.path().join("absent").display().to_string(),
+            "--timeout-ms",
+            "10000",
+        ])
+        .output()
+        .expect("the binary runs");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(env!("CARGO_PKG_VERSION")), "got: {stderr}");
+}

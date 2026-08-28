@@ -13,12 +13,57 @@ use metsuke_wire::key::{KEY_PREFIX, Kind};
 
 use crate::select::Selection;
 
-pub const USAGE: &str = "usage:
-  metsuke-fetch list <access> [filters]
-  metsuke-fetch sync <access> [filters] --state <path> --into <dir>
+/// The build, which every run names and `--version` answers with. What it
+/// promises across builds is in docs/releasing.md.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-  access:  --server <url> --user <name> --password-file <path> --timeout-ms <n>
-  filters: [--prefix <key prefix>] [--pool <pool1…>] [--agent <id>] [--kind metrics|logs]";
+/// What `--help` answers. A refusal points here instead of repeating it, so
+/// the error an operator has to read stays one line.
+pub const USAGE: &str = "metsuke-fetch downloads the signed telemetry archive to local files.
+
+usage:
+  metsuke-fetch list <access> [filters]
+      print the keys the filters match, downloading nothing
+  metsuke-fetch sync <access> [filters] --state <path> --into <dir>
+      download the ones the cursor has not seen, then advance it
+  metsuke-fetch --help | --version
+
+access, which every command needs and none of which has a default:
+  --server <url>           where the archive is, e.g. https://archive.example
+  --user <name>            the developer account the server was configured with
+  --password-file <path>   a file holding that account's password and nothing else
+  --timeout-ms <n>         how long one request may take, in milliseconds
+
+sync:
+  --state <path>           the cursor file; a run resumes from it and advances it
+  --into <dir>             where objects land, each under its own key
+
+filters, which default to the whole archive:
+  --prefix <key prefix>    only keys starting with this
+  --pool <pool1...>        only this pool, bech32 as the archive keys it
+  --agent <id>             only this agent
+  --kind metrics|logs      only this kind
+
+example:
+  metsuke-fetch sync --server https://archive.example --user dev \\
+    --password-file ~/.config/metsuke/password --timeout-ms 30000 \\
+    --state ~/.local/state/metsuke-fetch/cursor.json --into ~/archive";
+
+/// Where a refusal sends the operator, rather than printing all of `USAGE` on
+/// top of the error.
+pub const HELP_HINT: &str = "try metsuke-fetch --help";
+
+/// What the arguments asked for. `--help` and `--version` are their own
+/// outcomes rather than commands, because they answer without an endpoint, an
+/// account or a credential, and every command needs all three.
+#[derive(Debug, PartialEq)]
+pub enum Invocation {
+    Help,
+    Version,
+    /// Boxed because `Args` dwarfs the other variant and this is parsed once
+    /// per process.
+    Run(Box<Args>),
+}
 
 #[derive(Debug, PartialEq)]
 pub struct Args {
@@ -65,20 +110,20 @@ pub struct Access {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ArgsError {
-    #[error("name a command, list or sync\n{USAGE}")]
+    #[error("name a command, list or sync\n{HELP_HINT}")]
     NoCommand,
-    #[error("unknown command {command:?}\n{USAGE}")]
+    #[error("unknown command {command:?}\n{HELP_HINT}")]
     UnknownCommand { command: String },
-    #[error("unknown argument {argument:?}\n{USAGE}")]
+    #[error("unknown argument {argument:?}\n{HELP_HINT}")]
     Unknown { argument: String },
-    #[error("{flag} needs a value\n{USAGE}")]
+    #[error("{flag} needs a value\n{HELP_HINT}")]
     MissingValue { flag: &'static str },
-    #[error("{command} needs {flag}\n{USAGE}")]
+    #[error("{command} needs {flag}\n{HELP_HINT}")]
     Missing {
         command: &'static str,
         flag: &'static str,
     },
-    #[error("{command} takes no {flag}\n{USAGE}")]
+    #[error("{command} takes no {flag}\n{HELP_HINT}")]
     NotForCommand {
         command: &'static str,
         flag: &'static str,
@@ -93,10 +138,21 @@ pub enum ArgsError {
     },
 }
 
-impl Args {
+impl Invocation {
     /// Parse the arguments after the program name.
-    pub fn parse(args: impl Iterator<Item = String>) -> Result<Args, ArgsError> {
-        let mut args = args;
+    pub fn parse(args: impl Iterator<Item = String>) -> Result<Invocation, ArgsError> {
+        // Asked for anywhere rather than in the command's place, because that
+        // is where an operator writes them and a refusal there teaches nothing
+        // the answer would not have.
+        let args: Vec<String> = args.collect();
+        if let Some(asked) = args.iter().find_map(|argument| match argument.as_str() {
+            "--help" | "-h" => Some(Invocation::Help),
+            "--version" => Some(Invocation::Version),
+            _ => None,
+        }) {
+            return Ok(asked);
+        }
+        let mut args = args.into_iter();
         let command = args.next().ok_or(ArgsError::NoCommand)?;
         let mut given = Given::default();
         while let Some(argument) = args.next() {
@@ -115,7 +171,9 @@ impl Args {
             };
             *value = Some(args.next().ok_or(ArgsError::MissingValue { flag })?);
         }
-        given.into_args(&command)
+        given
+            .into_args(&command)
+            .map(|args| Invocation::Run(Box::new(args)))
     }
 }
 

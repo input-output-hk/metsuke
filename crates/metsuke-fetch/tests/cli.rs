@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use metsuke_fetch::cli::{Args, ArgsError, Command};
+use metsuke_fetch::cli::{Args, ArgsError, Command, Invocation};
 use metsuke_fetch::select::Selection;
 use metsuke_wire::envelope::{AgentId, PoolId, SigningKey};
 use metsuke_wire::key::{KEY_PREFIX, Kind};
@@ -17,8 +17,17 @@ const ACCESS: [[&str; 2]; 4] = [
     ["--timeout-ms", "30000"],
 ];
 
+fn invoked(args: &[&str]) -> Result<Invocation, ArgsError> {
+    Invocation::parse(args.iter().map(|argument| argument.to_string()))
+}
+
+/// The cases below are all about a command's flags, so they read the `Args` a
+/// run gets and treat anything else here as the test being wrong.
 fn parsed(args: &[&str]) -> Result<Args, ArgsError> {
-    Args::parse(args.iter().map(|argument| argument.to_string()))
+    invoked(args).map(|invocation| match invocation {
+        Invocation::Run(args) => *args,
+        asked => panic!("these arguments name a command, not {asked:?}"),
+    })
 }
 
 /// `command` with every access flag, plus whatever the case is about.
@@ -214,4 +223,22 @@ fn a_flag_without_a_value_is_refused() {
         matches!(error, ArgsError::MissingValue { flag: "--server" }),
         "got: {error}"
     );
+}
+
+#[test]
+fn help_and_version_are_answered_without_an_endpoint_or_a_credential() {
+    assert!(matches!(invoked(&["--version"]), Ok(Invocation::Version)));
+    assert!(matches!(invoked(&["--help"]), Ok(Invocation::Help)));
+    assert!(matches!(invoked(&["-h"]), Ok(Invocation::Help)));
+}
+
+/// Where an operator writes them: after the command, and without the access
+/// flags every command otherwise needs.
+#[test]
+fn help_and_version_are_answered_wherever_they_are_written() {
+    assert!(matches!(invoked(&["list", "--help"]), Ok(Invocation::Help)));
+    assert!(matches!(
+        invoked(&["sync", "--prefix", "v1/", "--version"]),
+        Ok(Invocation::Version)
+    ));
 }

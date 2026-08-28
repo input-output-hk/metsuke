@@ -5,7 +5,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use metsuke_fetch::cli::{Args, ArgsError, Command};
+use metsuke_fetch::cli::{Args, ArgsError, Command, Invocation, USAGE, VERSION};
 use metsuke_fetch::pull::Archive;
 use metsuke_fetch::recipe;
 use metsuke_fetch::select::Filters;
@@ -40,12 +40,31 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run() -> Result<(), Fatal> {
+    match Invocation::parse(std::env::args().skip(1))? {
+        // Asked for, so it is the run's answer and goes to stdout; the same
+        // text reaching stderr under an error is a refusal, not an answer.
+        Invocation::Help => {
+            println!("{USAGE}");
+            Ok(())
+        }
+        Invocation::Version => {
+            println!("{VERSION}");
+            Ok(())
+        }
+        Invocation::Run(args) => fetch(*args),
+    }
+}
+
+fn fetch(args: Args) -> Result<(), Fatal> {
     let Args {
         command,
         access,
         prefix,
         selection,
-    } = Args::parse(std::env::args().skip(1))?;
+    } = args;
+    // Before anything that can fail, so a run that stops on its password file
+    // or on the server has still named the build it stopped from.
+    eprintln!("metsuke-fetch {VERSION} against {}", access.server);
     let archive = Archive::new(
         &access.server,
         &access.user,
