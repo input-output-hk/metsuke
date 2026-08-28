@@ -52,7 +52,7 @@ fn write_config_for(
             agent_id = "{AGENT_NAME}"
             metrics_url = "{server_uri}/metrics"
             upload_url = "{server_uri}/v1/submit"
-            sample_interval_secs = 1
+            scrape_interval_secs = 1
             upload_interval_secs = 1
             sntp_servers = []
             spool_path = "{}"

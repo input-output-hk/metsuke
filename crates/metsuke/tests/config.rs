@@ -50,7 +50,7 @@ fn minimal_config_parses_with_shipped_defaults() {
     );
     assert_eq!(config.signing_key, None);
     assert_eq!(config.agent_id, None);
-    assert_eq!(config.sample_interval_secs, 300);
+    assert_eq!(config.scrape_interval_secs, 300);
     assert_eq!(config.upload_interval_secs, 3600);
     assert_eq!(config.sntp_servers, vec!["time.cloudflare.com:123"]);
     assert_eq!(config.sntp_timeout_secs, 5);
@@ -148,13 +148,13 @@ fn the_retired_min_severity_key_fails_loudly() {
     );
 }
 
-// Acceptance: scrape and upload cadences are independent configuration —
-// setting one leaves the other at its default.
+// Acceptance: scrape and upload cadences are independent configuration.
+// Setting one leaves the other at its default.
 #[test]
-fn sample_and_upload_cadences_are_independent() {
-    let toml = format!("{}\nsample_interval_secs = 60\n", minimal_toml());
+fn scrape_and_upload_cadences_are_independent() {
+    let toml = format!("{}\nscrape_interval_secs = 60\n", minimal_toml());
     let config = Config::from_toml(&toml).unwrap();
-    assert_eq!(config.sample_interval_secs, 60);
+    assert_eq!(config.scrape_interval_secs, 60);
     assert_eq!(config.upload_interval_secs, 3600);
 }
 

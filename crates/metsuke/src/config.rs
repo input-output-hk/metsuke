@@ -33,8 +33,8 @@ pub struct Config {
     /// Path to the signing key; `--signing-key` overrides it.
     #[serde(default)]
     pub signing_key: Option<PathBuf>,
-    #[serde(default = "default_sample_interval_secs")]
-    pub sample_interval_secs: u64,
+    #[serde(default = "default_scrape_interval_secs")]
+    pub scrape_interval_secs: u64,
     #[serde(default = "default_upload_interval_secs")]
     pub upload_interval_secs: u64,
     /// SNTP servers as `host:port`, tried in order.
@@ -203,7 +203,7 @@ impl TryFrom<LogToml> for LogConfig {
     }
 }
 
-fn default_sample_interval_secs() -> u64 {
+fn default_scrape_interval_secs() -> u64 {
     300
 }
 

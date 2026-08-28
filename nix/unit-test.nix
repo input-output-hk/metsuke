@@ -131,7 +131,7 @@ pkgs.testers.runNixOSTest {
         pool_id = poolId;
         metrics_url = metricsUrl;
         upload_url = uploadUrl;
-        sample_interval_secs = 1;
+        scrape_interval_secs = 1;
         # A name no test network can resolve would cost every scrape the SNTP
         # timeout.
         sntp_servers = [ ];
@@ -177,7 +177,7 @@ pkgs.testers.runNixOSTest {
         pool_id = poolId;
         metrics_url = metricsUrl;
         upload_url = uploadUrl;
-        sample_interval_secs = 1;
+        scrape_interval_secs = 1;
         sntp_servers = [ ];
         log.journal_unit = "trace-replay.service";
       };
@@ -206,7 +206,7 @@ pkgs.testers.runNixOSTest {
         metrics_url = "${metricsUrl}"
         upload_url = "${uploadUrl}"
         signing_key = "/etc/metsuke/pool.skey"
-        sample_interval_secs = 1
+        scrape_interval_secs = 1
         sntp_servers = []
       '';
     };

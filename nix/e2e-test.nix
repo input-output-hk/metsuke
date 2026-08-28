@@ -242,14 +242,14 @@ let
       let
         # The second agent's own config: same pool, same key, a different
         # machine name and its own spool. Run as a plain unit rather than a
-        # second module instance — what the module renders for one agent is
+        # second module instance. What the module renders for one agent is
         # covered by `metsuke.service`, and this is about the server.
         secondConfig = (pkgs.formats.toml { }).generate "metsuke-two.toml" {
           pool_id = poolId;
           agent_id = secondAgentId;
           metrics_url = "http://127.0.0.1:${toString metricsPort}/metrics";
           upload_url = "http://127.0.0.1:${toString listenPort}/v1/submit";
-          sample_interval_secs = 1;
+          scrape_interval_secs = 1;
           upload_interval_secs = 5;
           upload_jitter_max_secs = 0;
           sntp_servers = [ ];
@@ -372,7 +372,7 @@ let
             pool_id = poolId;
             metrics_url = "http://127.0.0.1:${toString metricsPort}/metrics";
             upload_url = "http://127.0.0.1:${toString listenPort}/v1/submit";
-            sample_interval_secs = 1;
+            scrape_interval_secs = 1;
             # The first submissions meet a bucket that has no layout yet; this is
             # how long the retry that follows takes (ADR 0004).
             upload_interval_secs = 5;
