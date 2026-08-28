@@ -11,7 +11,7 @@ use metsuke::delivery::Delivery;
 use metsuke::identity::{self, IdentityError};
 use metsuke::keys::{self, KeyError};
 use metsuke::logselect::{OutsideRoots, SelectConfig};
-use metsuke::logsource::{JournalSource, LineSourceError, PipeSource};
+use metsuke::logsource::{JournalSource, PipeSource, StartError};
 use metsuke::logtail::{self, DrainEnd};
 use metsuke::schedule::{Schedule, ScheduleConfig};
 use metsuke::scrape::ScrapeConfig;
@@ -43,12 +43,10 @@ enum StartupError {
     #[error("[log] selection rules: {0}")]
     Selection(#[from] OutsideRoots),
     /// An operator who wrote `[log]` asked for these lines, so a journalctl
-    /// that cannot be executed — absent, or not at `journalctl_path` — fails the
-    /// start rather than being retried every backoff forever. Only the exec:
-    /// one that starts and is then refused the journal read exits afterwards,
-    /// which this cannot see (metsuke-4zo.116).
+    /// that never follows fails the start rather than being retried every
+    /// backoff forever (`logsource::StartError`).
     #[error("cannot follow the node's journal: {0}")]
-    TraceSource(#[from] LineSourceError),
+    TraceSource(#[from] StartError),
 }
 
 fn main() -> std::process::ExitCode {
@@ -177,9 +175,9 @@ fn start_trace_collection(
                 journal.journal_unit,
             );
             let journal = journal.clone();
-            // Opened here rather than on the thread, so the exec failure is a
-            // startup failure (`StartupError::TraceSource`).
-            let first = JournalSource::spawn(&journal)?;
+            // Started here rather than on the thread, so a journalctl that
+            // never follows is a startup failure (`StartupError::TraceSource`).
+            let first = JournalSource::spawn(&journal)?.confirm_following()?;
             std::thread::spawn(move || {
                 let error = logtail::run(journal, selection, backoff, spool, first);
                 eprintln!("{ERR}the trace-line spool is not writable: {error}");

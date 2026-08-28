@@ -955,6 +955,7 @@ name = "metsuke"
 version = "0.1.0"
 dependencies = [
  "gethostname",
+ "metsuke",
  "metsuke-wire",
  "proptest",
  "rusqlite",

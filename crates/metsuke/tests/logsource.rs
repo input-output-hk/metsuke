@@ -10,11 +10,13 @@ use std::time::{Duration, Instant};
 
 use metsuke::config::{Config, LogSource};
 use metsuke::logsource::{
-    JournalConfig, JournalSource, LineSource, LineSourceError, PipeConfig, PipeSource,
+    JournalConfig, JournalSource, LineSource, PipeConfig, PipeSource, StartError,
 };
 
 mod support;
-use support::{following, recording, replaying_journalctl, sh_stand_in};
+use support::{
+    TEST_START_GRACE, recording, replaying, replaying_journalctl, sh_stand_in, spawning,
+};
 
 const STARTUP_RECORDING: &str = "leios-node-traces-startup.log";
 const STARTUP_WINDOW: &str = include_str!("fixtures/recordings/leios-node-traces-startup.log");
@@ -22,7 +24,7 @@ const STARTUP_WINDOW: &str = include_str!("fixtures/recordings/leios-node-traces
 #[test]
 fn every_line_arrives_in_order_and_the_stream_ends() {
     let dir = tempfile::tempdir().unwrap();
-    let mut source = following(replaying_journalctl(&dir, &recording(STARTUP_RECORDING)));
+    let mut source = replaying(replaying_journalctl(&dir, &recording(STARTUP_RECORDING)));
 
     let mut read = Vec::new();
     while let Some(line) = source.next_line().unwrap() {
@@ -43,7 +45,7 @@ fn every_line_arrives_in_order_and_the_stream_ends() {
 #[test]
 fn a_stream_that_ended_reports_the_status_its_journalctl_exited_with() {
     let dir = tempfile::tempdir().unwrap();
-    let mut source = following(sh_stand_in(&dir, "refusing-journalctl", "exit 13"));
+    let mut source = replaying(sh_stand_in(&dir, "exiting-journalctl", "exit 13"));
     while source.next_line().unwrap().is_some() {}
 
     let end = source.reap().to_string();
@@ -62,7 +64,7 @@ fn a_stream_still_running_is_ended_and_says_so() {
     // A stand-in that cannot reach an exit of its own. One that writes a
     // recording would race instead: the whole of it fits in a pipe buffer, so it
     // can finish and exit 0 before this line runs.
-    let source = following(sh_stand_in(&dir, "waiting-journalctl", "exec sleep 3600"));
+    let source = replaying(sh_stand_in(&dir, "waiting-journalctl", "exec sleep 3600"));
 
     let end = source.stop().to_string();
 
@@ -70,6 +72,33 @@ fn a_stream_still_running_is_ended_and_says_so() {
         end.contains("signal"),
         "a journalctl this process ended has no status of its own, got: {end}"
     );
+}
+
+// The SupplementaryGroups case `Spawned::confirm_following` is for: 13 is the
+// stand-in's status arriving through `StartError::NotFollowing`.
+#[test]
+fn a_journalctl_refused_the_journal_fails_the_start() {
+    let dir = tempfile::tempdir().unwrap();
+    let spawned = spawning(sh_stand_in(&dir, "refused-journalctl", "exit 13"));
+
+    let Err(error) = spawned.confirm_following() else {
+        panic!("a journalctl that exited is not following the unit");
+    };
+
+    assert!(error.to_string().contains("13"), "{error}");
+    assert!(error.to_string().contains("refused-journalctl"), "{error}");
+}
+
+// The healthy shape: journalctl follows and writes nothing until the node
+// does, so starting must not wait for a line.
+#[test]
+fn a_journalctl_still_following_starts() {
+    let dir = tempfile::tempdir().unwrap();
+    let spawned = spawning(sh_stand_in(&dir, "silent-journalctl", "exec sleep 3600"));
+
+    spawned
+        .confirm_following()
+        .expect("a journalctl that is still running is following");
 }
 
 // A journalctl that is not where the config says fails at startup rather than
@@ -80,12 +109,13 @@ fn a_journalctl_that_is_not_there_fails_loudly() {
     let spawned = JournalSource::spawn(&JournalConfig {
         journal_unit: "cardano-node".to_string(),
         journalctl_path: dir.path().join("no-such-journalctl"),
+        start_grace: TEST_START_GRACE,
     });
     let Err(error) = spawned else {
         panic!("spawning a journalctl that is not there has to fail");
     };
     assert!(
-        matches!(error, LineSourceError::Spawn { .. }),
+        matches!(error, StartError::Spawn { .. }),
         "expected a spawn failure naming the path, got: {error}"
     );
     assert!(error.to_string().contains("no-such-journalctl"), "{error}");
@@ -271,12 +301,26 @@ fn the_pipe_is_chosen_in_the_config_and_needs_nothing_about_the_journal() {
 fn a_journal_key_under_the_pipe_fails_loudly() {
     let error = log_section("source = \"pipe\"\njournal_unit = \"cardano-node\"").unwrap_err();
     assert!(error.contains("journal_unit"), "{error}");
+    let error = log_section("source = \"pipe\"\nstart_grace_secs = 2").unwrap_err();
+    assert!(error.contains("start_grace_secs"), "{error}");
     let error = log_section(
         "source = \"journald\"\njournal_unit = \"cardano-node\"\n\
          journalctl_path = \"/usr/bin/journalctl\"\npipe_queue_capacity = 8",
     )
     .unwrap_err();
     assert!(error.contains("pipe_queue_capacity"), "{error}");
+}
+
+// A grace of nothing would confirm nothing: the child has not been scheduled
+// yet, so it is still running whatever the journal did.
+#[test]
+fn a_start_grace_of_zero_fails_loudly() {
+    let error = log_section(
+        "source = \"journald\"\njournal_unit = \"cardano-node\"\n\
+         journalctl_path = \"/usr/bin/journalctl\"\nstart_grace_secs = 0",
+    )
+    .unwrap_err();
+    assert!(error.contains("start_grace_secs"), "{error}");
 }
 
 // A queue of nothing would drop every line, so the config refuses it rather

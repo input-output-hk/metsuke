@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use metsuke::config::{Config, LogConfig};
 use metsuke::logselect::SelectConfig;
-use metsuke::logsource::{JournalConfig, JournalSource, LineSourceError};
+use metsuke::logsource::{JournalConfig, JournalSource, Spawned, StartError};
 use metsuke_wire::envelope::{AgentId, Limits, PoolId, Provenance, Scrape, SigningKey, TraceLine};
 use metsuke_wire::fixtures;
 use time::OffsetDateTime;
@@ -96,20 +96,22 @@ pub fn replaying_journalctl(dir: &tempfile::TempDir, recording: &Path) -> PathBu
     )
 }
 
-/// Follow a stand-in as if it were the node's journalctl.
+/// Spawn a stand-in as if it were the node's journalctl.
 ///
 /// Retries `ETXTBSY`, which is the harness racing with itself rather than
 /// anything about the source: these tests write an executable while their
 /// siblings fork, and a forked child holds that file's write fd until it execs,
-/// so a spawn inside that window is refused. Every test spawning over a
-/// stand-in goes through here, so the retry is stated once.
-pub fn following(journalctl_path: PathBuf) -> JournalSource {
+/// so a spawn inside that window is refused. Every stand-in this process spawns
+/// goes through here, so the retry is stated once; one the agent binary spawns
+/// for itself does not.
+pub fn spawning(journalctl_path: PathBuf) -> Spawned {
     for _ in 0..RETRIES_ON_BUSY {
         match JournalSource::spawn(&JournalConfig {
             journal_unit: TEST_UNIT.to_string(),
             journalctl_path: journalctl_path.clone(),
+            start_grace: TEST_START_GRACE,
         }) {
-            Ok(source) => return source,
+            Ok(spawned) => return spawned,
             Err(error) if is_text_file_busy(&error) => {
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
@@ -119,18 +121,25 @@ pub fn following(journalctl_path: PathBuf) -> JournalSource {
     panic!("{} stayed busy", journalctl_path.display());
 }
 
+/// The stream without the start check (`Spawned::unconfirmed`).
+pub fn replaying(journalctl_path: PathBuf) -> JournalSource {
+    spawning(journalctl_path).unconfirmed()
+}
+
+/// Long enough for a stand-in that exits at once to have exited. Only a test
+/// that confirms a start pays it.
+pub const TEST_START_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// The unit every test in the suite follows. Which unit it is decides nothing:
 /// the stand-in answers whatever arguments it is given.
 pub const TEST_UNIT: &str = "cardano-node";
 
 const RETRIES_ON_BUSY: u32 = 50;
 
-fn is_text_file_busy(error: &LineSourceError) -> bool {
+fn is_text_file_busy(error: &StartError) -> bool {
     match error {
-        LineSourceError::Spawn { source, .. } => {
-            source.kind() == std::io::ErrorKind::ExecutableFileBusy
-        }
-        LineSourceError::Read { .. } => false,
+        StartError::Spawn { source, .. } => source.kind() == std::io::ErrorKind::ExecutableFileBusy,
+        StartError::NotFollowing { .. } => false,
     }
 }
 

@@ -2,6 +2,8 @@
 //! out. Required fields fail loudly when absent; cadence and probe knobs
 //! default to the shipped values the example config documents.
 
+use std::time::Duration;
+
 use metsuke::config::{Config, LogConfig, LogSource};
 use metsuke::logsource::JournalConfig;
 
@@ -95,6 +97,7 @@ fn a_log_section_naming_only_the_host_s_paths_takes_the_shipped_defaults() {
     );
     assert_eq!(log.log_max_bytes, 256 * 1024 * 1024);
     assert_eq!(log.respawn_backoff_secs, 30);
+    assert_eq!(journal(&log).start_grace, Duration::from_secs(1));
 }
 
 // Neither path is guessable, so a section missing one has to say which.

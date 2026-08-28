@@ -2,9 +2,10 @@
 
 Status: accepted (2026-08-27). Supersedes ADR 0007.
 Amended by metsuke-jfb.11, which moved where a line's stamp is applied, by
-metsuke-jfb.19, which dropped severity as a selection rule, and by
+metsuke-jfb.19, which dropped severity as a selection rule, by
 metsuke-4zo.98, which settled what the archive says about lost lines: nothing,
-and by metsuke-4zo.107, which made a prefix match on segment boundaries.
+by metsuke-4zo.107, which made a prefix match on segment boundaries, and by
+metsuke-4zo.116, which made a journalctl that never follows fail the start.
 
 ## Context
 
@@ -140,11 +141,14 @@ upstream of it.
   pipe has no cursor and nothing to replay.
 - A misconfigured `journal_unit` is still silent while the agent runs:
   `journalctl --follow` on a unit that does not exist waits forever rather than
-  failing, and the agent has no "no lines in N minutes" signal. A journalctl that
-  cannot be executed does fail the start; one refused the journal read exits
-  after the exec succeeded, so it is still a warning per backoff
-  (metsuke-4zo.116). A stream that ends now carries the status its journalctl
-  exited with, which is what separates those two ends.
+  failing, and the agent has no "no lines in N minutes" signal. The two failures
+  that do end the start are a journalctl that cannot be executed and one that
+  execs and then stops within `start_grace_secs`, which is what a refused
+  journal read looks like. A refusal slower than that grace starts the agent
+  anyway and stays a warning per backoff. The line between the two is the rule
+  for every failure here: a start that fails is fatal, and anything after it is
+  retried forever. A stream that ends carries the status its journalctl exited
+  with, which is what separates a refusal from a unit that never resolved.
 - The end-to-end test carries a real node's selected lines all the way into the
   bucket, but not a Leios round's: one node forges an EB only if its own
   mempool overflows, and never receives an announcement or reaches a quorum,

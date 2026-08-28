@@ -15,7 +15,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod support;
 use metsuke_wire::hex;
-use support::{TEST_LIMITS, test_key};
+use support::{TEST_LIMITS, sh_stand_in, test_key};
 
 const RECORDED_CHAIN: &str = include_str!("fixtures/recordings/leios-node.prom");
 
@@ -120,6 +120,57 @@ fn binary_refuses_a_pool_id_the_signing_key_does_not_hash_to() {
         stderr.contains(&other.to_bech32()) && stderr.contains(&mine),
         "startup failure must name both pool ids, got: {stderr}"
     );
+}
+
+// The `[log]` startup path end to end: a journalctl that never follows ends the
+// start (`StartupError::TraceSource`), rather than leaving the agent up.
+#[test]
+fn binary_refuses_a_journalctl_that_cannot_read_the_journal() {
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = write_test_envelope(&dir);
+    let config = write_config(&dir, "http://127.0.0.1:9", "");
+    let journalctl = sh_stand_in(&dir, "refused-journalctl", "exit 13");
+    let mut text = std::fs::read_to_string(&config).unwrap();
+    text.push_str(&format!(
+        "[log]\nsource = \"journald\"\njournal_unit = \"cardano-node\"\n\
+         journalctl_path = \"{}\"\nstart_grace_secs = 1\n",
+        journalctl.display(),
+    ));
+    std::fs::write(&config, text).unwrap();
+
+    // Bounded rather than waited on: the failure this covers is an agent that
+    // stays up collecting nothing, which a plain `output()` would hang on.
+    let mut child = Command::new(env!("CARGO_BIN_EXE_metsuke"))
+        .args(["--config", config.to_str().unwrap()])
+        .args(["--signing-key", key_path.to_str().unwrap()])
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = child.stderr.take().expect("stderr was piped");
+    let status = exited_within(&mut child, Duration::from_secs(30));
+
+    assert!(!status.success());
+    let mut said = String::new();
+    std::io::Read::read_to_string(&mut stderr, &mut said).unwrap();
+    assert!(
+        said.contains("journal") && said.contains("13"),
+        "startup failure must name the journal and journalctl's status, got: {said}"
+    );
+}
+
+/// The status of a process that had to end on its own. One still running at
+/// the deadline is killed, and the test fails.
+fn exited_within(child: &mut std::process::Child, within: Duration) -> std::process::ExitStatus {
+    let deadline = Instant::now() + within;
+    while Instant::now() < deadline {
+        if let Some(status) = child.try_wait().unwrap() {
+            return status;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    panic!("the binary was still running after {within:?}");
 }
 
 // The whole wiring: config + flag in, a verifiable upload out. The config's

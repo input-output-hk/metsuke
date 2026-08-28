@@ -127,6 +127,7 @@ in
                   namespaces = shipped (types.listOf types.str);
                   log_max_bytes = shipped types.ints.unsigned;
                   respawn_backoff_secs = shipped types.ints.unsigned;
+                  start_grace_secs = shipped types.ints.positive;
                 };
               }
             );

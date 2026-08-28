@@ -3,8 +3,9 @@
 //! absent or malformed; every cadence and limit is a config knob with a
 //! shipped default (see contrib/config.example.toml).
 
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::path::PathBuf;
+use std::time::Duration;
 
 use serde::Deserialize;
 
@@ -123,6 +124,9 @@ struct LogToml {
     source: LogSourceKind,
     journal_unit: Option<String>,
     journalctl_path: Option<PathBuf>,
+    /// Zero would confirm nothing, so the type refuses it rather than the
+    /// agent starting with the check silently off.
+    start_grace_secs: Option<NonZeroU64>,
     pipe_queue_capacity: Option<NonZeroUsize>,
     #[serde(default = "default_log_namespace_roots")]
     namespace_roots: Vec<String>,
@@ -165,12 +169,18 @@ impl TryFrom<LogToml> for LogConfig {
                     journalctl_path: toml.journalctl_path.ok_or(LogSourceError::JournaldNeeds {
                         field: "journalctl_path",
                     })?,
+                    start_grace: Duration::from_secs(
+                        toml.start_grace_secs
+                            .unwrap_or_else(default_log_start_grace_secs)
+                            .get(),
+                    ),
                 })
             }
             LogSourceKind::Pipe => {
                 for (field, set) in [
                     ("journal_unit", toml.journal_unit.is_some()),
                     ("journalctl_path", toml.journalctl_path.is_some()),
+                    ("start_grace_secs", toml.start_grace_secs.is_some()),
                 ] {
                     if set {
                         return Err(LogSourceError::PipeRefuses { field });
@@ -260,6 +270,13 @@ fn default_log_max_bytes() -> u64 {
 
 fn default_log_respawn_backoff_secs() -> u64 {
     30
+}
+
+/// A chosen bound, not a measured one: no recording says how long a refused
+/// journalctl takes to exit. Paid at every start and respawn (semantics:
+/// `logsource::Spawned::confirm_following`).
+fn default_log_start_grace_secs() -> NonZeroU64 {
+    NonZeroU64::new(1).expect("1 is not zero")
 }
 
 fn default_scrape_timeout_secs() -> u64 {

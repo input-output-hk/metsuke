@@ -10,6 +10,7 @@ use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use metsuke_wire::journal::{ERR, WARNING};
 
@@ -27,6 +28,9 @@ pub struct JournalConfig {
     /// Which journalctl to run. The shipped unit names an absolute store
     /// path, because a hardened unit's PATH is not something to rely on.
     pub journalctl_path: PathBuf,
+    /// How long a spawned journalctl has to still be running before it counts
+    /// as following (semantics: `Spawned::confirm_following`).
+    pub start_grace: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,28 +41,63 @@ pub struct PipeConfig {
     pub queue_capacity: NonZeroUsize,
 }
 
+/// Why a journal source never started. Separate from `LineSourceError`, which
+/// only a source that did start can hand back.
 #[derive(Debug, thiserror::Error)]
-pub enum LineSourceError {
+pub enum StartError {
     #[error("cannot start {path}: {source}")]
     Spawn {
         path: String,
         #[source]
         source: std::io::Error,
     },
-    #[error("reading from {path} failed: {source}")]
-    Read {
-        path: String,
-        #[source]
-        source: std::io::Error,
-    },
+    #[error("{path} stopped instead of following the journal ({end})")]
+    NotFollowing { path: String, end: ChildEnd },
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("reading from {path} failed: {source}")]
+pub struct LineSourceError {
+    pub path: String,
+    #[source]
+    pub source: std::io::Error,
 }
 
 pub struct JournalSource {
-    /// `None` once `reap` or `stop` has taken it, so `drop` does not wait on a
-    /// child one of them already reaped.
-    child: Option<Child>,
+    child: ChildGuard,
     lines: BufReader<ChildStdout>,
     path: String,
+}
+
+/// A journalctl that is killed if it is dropped. Nothing else ends a
+/// `--follow`, and one left behind means the respawn has two of them following
+/// the same unit.
+struct ChildGuard(Option<Child>);
+
+/// `None` only after `reap` or `stop` took the child, and both consume the
+/// source holding the guard.
+const HELD: &str = "a guard holds its child until reap or stop takes it";
+
+impl ChildGuard {
+    fn held(&mut self) -> &mut Child {
+        self.0.as_mut().expect(HELD)
+    }
+
+    fn taken(&mut self) -> Child {
+        self.0.take().expect(HELD)
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.0
+            && child.kill().is_ok()
+        {
+            // Only after a kill that landed: waiting on one still running is
+            // this process stopping until journalctl does.
+            let _ = child.wait();
+        }
+    }
 }
 
 /// How the journalctl behind a stream stopped: the status it chose, or why this
@@ -89,7 +128,7 @@ impl JournalSource {
     /// journal is read: there is no resume mark yet, so an agent that restarts
     /// picks up from now rather than re-shipping whatever the journal still
     /// holds.
-    pub fn spawn(config: &JournalConfig) -> Result<Self, LineSourceError> {
+    pub fn spawn(config: &JournalConfig) -> Result<Spawned, StartError> {
         let path = config.journalctl_path.display().to_string();
         let mut child = Command::new(&config.journalctl_path)
             .args([
@@ -105,7 +144,7 @@ impl JournalSource {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .spawn()
-            .map_err(|source| LineSourceError::Spawn {
+            .map_err(|source| StartError::Spawn {
                 path: path.clone(),
                 source,
             })?;
@@ -113,10 +152,11 @@ impl JournalSource {
             .stdout
             .take()
             .expect("stdout is piped, so the handle is there");
-        Ok(JournalSource {
-            child: Some(child),
+        Ok(Spawned {
+            child: ChildGuard(Some(child)),
             lines: BufReader::new(stdout),
             path,
+            grace: config.start_grace,
         })
     }
 
@@ -127,24 +167,69 @@ impl JournalSource {
     /// answer would report this process's signal in place of the status the
     /// child chose.
     pub fn reap(mut self) -> ChildEnd {
-        waited(self.taken())
+        waited(self.child.taken())
     }
 
     /// The same for a stream that stopped without ending, where the child may
     /// still be running and following the unit.
     pub fn stop(mut self) -> ChildEnd {
-        let mut child = self.taken();
+        let mut child = self.child.taken();
         match child.kill() {
             Ok(()) => waited(child),
             Err(error) => ChildEnd::Unavailable(error),
         }
     }
+}
 
-    /// Both callers consume the source, so the child is still here.
-    fn taken(&mut self) -> Child {
-        self.child
-            .take()
-            .expect("a source hands its child to reap or stop once")
+/// A journalctl that has execed, before anything says it is following the
+/// unit. Reaching the stream without `confirm_following`'s wait takes a second
+/// call, `unconfirmed`, which is not compiled into a shipped binary; dropping
+/// this instead kills the child.
+pub struct Spawned {
+    child: ChildGuard,
+    lines: BufReader<ChildStdout>,
+    path: String,
+    grace: Duration,
+}
+
+impl Spawned {
+    /// The stream, once the child is still there after the configured grace.
+    ///
+    /// journalctl execs before it opens the journal, so one the journal refuses
+    /// exits after a spawn that already succeeded — the missing
+    /// `SupplementaryGroups=systemd-journal` of ADR 0010, which an operator can
+    /// fix. Nothing is read to find out: `--follow --lines=0` writes nothing
+    /// until the node does, so the child's own exit is the only answer there is
+    /// now. The grace is therefore a ceiling on what this catches: a refusal
+    /// that takes longer than the grace starts the agent anyway, and reaches
+    /// the operator as the stream ending once per respawn.
+    pub fn confirm_following(mut self) -> Result<JournalSource, StartError> {
+        std::thread::sleep(self.grace);
+        match self.child.held().try_wait() {
+            Ok(None) => Ok(self.source()),
+            Ok(Some(status)) => Err(StartError::NotFollowing {
+                path: self.path.clone(),
+                end: ChildEnd::Status(status),
+            }),
+            Err(error) => Err(StartError::NotFollowing {
+                path: self.path.clone(),
+                end: ChildEnd::Unavailable(error),
+            }),
+        }
+    }
+
+    /// The stream without the start check (`confirm_following`).
+    #[cfg(feature = "test-support")]
+    pub fn unconfirmed(self) -> JournalSource {
+        self.source()
+    }
+
+    fn source(self) -> JournalSource {
+        JournalSource {
+            child: self.child,
+            lines: self.lines,
+            path: self.path,
+        }
     }
 }
 
@@ -161,7 +246,7 @@ impl LineSource for JournalSource {
         let read = self
             .lines
             .read_line(&mut line)
-            .map_err(|source| LineSourceError::Read {
+            .map_err(|source| LineSourceError {
                 path: self.path.clone(),
                 source,
             })?;
@@ -169,18 +254,6 @@ impl LineSource for JournalSource {
             return Ok(None);
         }
         Ok(Some(line.trim_end_matches(['\r', '\n']).to_string()))
-    }
-}
-
-impl Drop for JournalSource {
-    /// A source that is dropped because its stream failed leaves a journalctl
-    /// behind otherwise, and the respawn would then have two following the
-    /// same unit.
-    fn drop(&mut self) {
-        if let Some(child) = &mut self.child {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
     }
 }
 
@@ -245,7 +318,7 @@ impl LineSource for PipeSource {
             .take()
         {
             None => Ok(None),
-            Some(source) => Err(LineSourceError::Read {
+            Some(source) => Err(LineSourceError {
                 path: STDIN.to_string(),
                 source,
             }),

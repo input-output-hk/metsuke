@@ -10,7 +10,7 @@ use metsuke_wire::envelope::TraceLine;
 use metsuke_wire::journal::{ERR, WARNING};
 
 use crate::logselect::{SelectConfig, Selection, select};
-use crate::logsource::{ChildEnd, JournalConfig, JournalSource, LineSource};
+use crate::logsource::{ChildEnd, JournalConfig, JournalSource, LineSource, Spawned};
 use crate::spool::{LogSpool, SpoolError};
 
 /// How many times one line's spool write is retried when SQLite answers busy.
@@ -23,10 +23,10 @@ const BUSY_RETRIES: u32 = 3;
 /// stream ends. `journalctl --follow` outlives the node's own restarts, so an
 /// end here means the transport failed rather than that the node stopped.
 ///
-/// `first` is the stream the caller already opened, so a journalctl that cannot
-/// be executed at all never reaches this loop (`main::StartupError::TraceSource`
-/// owns why). One that execs and is then refused the journal still does, and is
-/// still re-spawned every backoff — metsuke-4zo.116.
+/// `first` is the stream the caller already started, so a journalctl that never
+/// follows fails the start instead of reaching this loop
+/// (`main::StartupError::TraceSource`). One that stops following later is
+/// re-spawned here, and each respawn is confirmed the same way.
 ///
 /// Returns only on a spool that cannot be written, which the caller ends the
 /// process on: `main` already treats a spool it cannot open as fatal, and a
@@ -43,7 +43,7 @@ pub fn run(
     loop {
         let spawned = match opened.take() {
             Some(source) => Ok(source),
-            None => JournalSource::spawn(&journal),
+            None => JournalSource::spawn(&journal).and_then(Spawned::confirm_following),
         };
         match spawned {
             Err(error) => eprintln!("{ERR}trace lines not collected: {error}"),

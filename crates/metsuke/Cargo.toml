@@ -20,7 +20,16 @@ toml = "0.9.8"
 # read as a retryable failure.
 ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
 
+[features]
+# `test-support`: `logsource::Spawned::unconfirmed`, which only a stand-in
+# needs and a shipped binary must not be able to call. Only a dev-dependency
+# names it, and resolver 2 keeps dev-dependency features out of a normal build.
+test-support = []
+
 [dev-dependencies]
+# This crate's own tests, on itself, for `test-support`: the only way to declare
+# one of a crate's features for its own test targets.
+metsuke = { path = ".", features = ["test-support"] }
 metsuke-wire = { path = "../metsuke-wire", features = ["fixtures"] }
 proptest = "1.11.0"
 tempfile = "3.27.0"

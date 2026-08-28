@@ -71,7 +71,7 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # reads the node's stdout, writes every line through to its own stdout
 # unchanged, and never makes the node wait. A line it has no room to queue is
 # dropped and counted, and pipe_queue_capacity is how many it may hold. It
-# reads no journal, so neither journal key may be set, and the NixOS module
+# reads no journal, so none of the journal keys may be set, and the NixOS module
 # does not render this source: the unit it writes has no node upstream of it.
 #
 # namespaces are prefixes and are the whole selection rule; namespace_roots is
@@ -79,6 +79,10 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # startup. Both match on segment boundaries, so an entry names a namespace the
 # node emits or an ancestor of one, never a fragment of a name. Why severity is
 # not a second rule: docs/adr/0010.
+#
+# start_grace_secs is how long a just-started journalctl has to stay running
+# before the agent accepts it as following, so a unit that may not read the
+# journal fails the start rather than collecting nothing (docs/adr/0010).
 # [log]
 # source = "journald"
 # journal_unit = "cardano-node"
@@ -87,3 +91,4 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # namespaces = ["Consensus.LeiosKernel", "Consensus.LeiosPeer", "ChainDB.AddBlockEvent.AddedToCurrentChain", "Forge.Loop.AdoptedBlock"]
 # log_max_bytes = 268435456
 # respawn_backoff_secs = 30
+# start_grace_secs = 1
