@@ -1,8 +1,9 @@
 //! The onboarding page an operator is pointed at: nothing to accepted
 //! submissions. It is rendered rather than checked in so that every value it
-//! quotes comes out of the file that owns it — the shipped example config and
-//! unit whole, the agent version `build.rs` read, the field list from the wire
-//! types — and no edit here can document a default the agent does not ship.
+//! quotes comes out of the file that owns it. That is the shipped example
+//! config and unit whole, the agent version `build.rs` read, and the field list
+//! from the wire types. No edit here can document a default the agent does not
+//! ship.
 
 use std::collections::BTreeMap;
 
@@ -51,15 +52,15 @@ pub fn render(config_example: &str, unit: &str) -> String {
     format!(
         r#"<!doctype html>
 <meta charset="utf-8">
-<title>metsuke — telemetry for the MusashiNet rewards program</title>
+<title>metsuke: telemetry for the MusashiNet rewards program</title>
 <style>body {{ max-width: 46em; margin: 2em auto; font-family: sans-serif }}
 pre {{ overflow-x: auto; background: #f4f4f4; padding: 1em }}</style>
 
 <h1>metsuke</h1>
 
 <p>metsuke is a small agent you run beside cardano-node. It reads your node's
-Prometheus metrics endpoint over loopback and uploads a signed batch to this
-server. It never opens your node socket and never touches a key beyond the one
+Prometheus metrics endpoint over loopback and sends this server a signed
+submission. It never opens your node socket and never touches a key beyond the one
 signing key you point it at. It reads your node's journal only if you turn that
 on in step 5, and then only the trace lines your own configuration selects.</p>
 
@@ -68,42 +69,42 @@ on the machine your node is on.</p>
 
 <h2>1. What leaves your machine</h2>
 
-<p>One upload is a plain JSON header, then your scrapes zstd compressed, one
+<p>One submission is a plain JSON header, then your scrapes zstd compressed, one
 JSON object per line, with a detached Ed25519 signature over the whole byte
 sequence. The header rides in a zstd skippable frame, so <code>zstd -d</code>
-on an upload hands back the lines and nothing else. This is an example of the
+on a submission hands back the lines and nothing else. This is an example of the
 whole thing: two scrapes, the first cut down to two metrics where a real line
 carries every one your node exposes, the second a scrape that failed.</p>
 
 <pre>{envelope}</pre>
 
 <p>One line per scrape, and its <code>metrics</code> are every metric your node
-exposes on the endpoint you open in step 4 whose value JSON can hold — the same
-metric lines that command prints. Each entry carries the metric's
+exposes on the endpoint you open in step 4 whose value JSON can hold. Those are
+the same metric lines that command prints. Each entry carries the metric's
 <code>name</code>, its <code>labels</code> and its <code>value</code> as your
 node stated them, plus the <code>declared_type</code> its <code># TYPE</code>
-line gave where it had one. Nothing else on your machine is read: what the agent
-contributes about your machine is two facts of its own, <code>scraped_at</code>,
-the time it scraped, and <code>clock_offset_ms</code>, the offset its own NTP
-query measured.</p>
+line gave where it had one. The agent reads nothing else on your machine. It
+contributes two facts of its own, <code>scraped_at</code>, the time it scraped,
+and <code>clock_offset_ms</code>, the offset its own NTP query measured.</p>
 
-<p>A scrape that failed is itself a signal, so the batch uploads either way: no
+<p>A scrape that failed is itself a signal, so the submission is sent either way:
+no
 metrics, and <code>failure</code> naming what stopped it. Its
 <code>reason</code> is one of {reasons}, and its <code>detail</code> is the
-message the agent had — the port, the status, or the size limit it was
+message the agent had: the port, the status, or the size limit it was
 configured with.</p>
 
 <p>Every line names the pool and the machine that wrote it under
-<code>metsuke</code> — <code>pool_id</code> and <code>agent_id</code>, the name
-you configure — so one line read out of the archive on its own still says where
+<code>metsuke</code>, as <code>pool_id</code> and <code>agent_id</code>, the
+name you configure. One line read out of the archive on its own still says where
 it came from. That is the only key metsuke claims on a line.</p>
 
 <p>The header carries those same two, and four more: <code>agent_version</code>,
-the build that scraped; <code>counter</code>, which batch of yours this is;
-<code>timestamp</code>, when the batch was sealed; and
+the build that scraped; <code>counter</code>, which submission of yours this is;
+<code>timestamp</code>, when the submission was sealed; and
 <code>schema_version</code>, which shape its lines are.</p>
 
-<p>If you do step 5, trace lines upload as their own batches: the same header
+<p>If you do step 5, trace lines travel as their own submissions: the same header
 with <code>schema_version</code> 2, and then the lines you selected, one per
 line, each the object your node wrote plus that same <code>metsuke</code>
 key.</p>
@@ -111,7 +112,7 @@ key.</p>
 <p>The signature travels beside the body in two headers:
 <code>{HEADER_VKEY}</code> and <code>{HEADER_SIGNATURE}</code>. Anything between
 your agent and this server has to pass both through unchanged, or the signature
-will not verify. Your pool id is not among them: it is the hash of the key in
+will not verify. Your pool id is not among them. It is the hash of the key in
 the first header, so this server derives it rather than taking your word for
 it.</p>
 
@@ -129,15 +130,14 @@ your submissions whatever key you sign them with.</p>
 
 <h2>3. Choose a signing key</h2>
 
-<p>Submissions are signed by your pool's cold key. That is the whole of it: a
-pool id is the hash of its cold verification key, so the key that signs is what
-says which pool an upload is for, and nothing else has to be looked up or
-believed.</p>
+<p>Your pool's cold key signs submissions. That is the whole of it. A pool id is
+the hash of its cold verification key, so the key that signs is what says which
+pool a submission is for, and nothing else has to be looked up or believed.</p>
 
-<p>The agent reads the key as a cardano-cli TextEnvelope file — the
+<p>The agent reads the key as a cardano-cli TextEnvelope file, the
 <code>pool.skey</code> you already have. It refuses to start unless the key
 hashes to the <code>pool_id</code> you configured, which is the same check this
-server makes on every upload.</p>
+server makes on every submission.</p>
 
 <h2>4. Enable the node's metrics endpoint</h2>
 
@@ -148,12 +148,12 @@ not reachable from anywhere else:</p>
 <pre>{backend}</pre>
 
 <p>If your node configuration has no <code>TraceOptions</code> at all, paste that
-as it stands. If it has one, merge into it rather than pasting over it: the
+as it stands. If it has one, merge into it rather than pasting over it. The
 <code>""</code> key is your node's root entry, so keep every other key it has
 and add to its backends list.</p>
 
 <p>Both backends have to end up in that list, and each replaces one of its own
-kind rather than joining it: if your root already names a
+kind rather than joining it. If your root already names a
 <code>PrometheusSimple</code> or an <code>Stdout</code> backend, replace that one
 instead of keeping both. If you would rather keep your own
 <code>PrometheusSimple</code>, leave it and point step 7's
@@ -170,10 +170,10 @@ step 5 looks applied, and not one trace line is ever collected.</p>
 timestamps, so it cannot answer when an announcement arrived, when a block body
 and its closure were received, or when a quorum was reached. Those live in the
 node's trace stream, and the agent ships every field of the lines you select
-from it: it reads one field to decide, and it computes nothing from any of
+from it. It reads one field to decide, and it computes nothing from any of
 them.</p>
 
-<p>Skip this step and the agent stays exactly as step 4 leaves it — metrics
+<p>Skip this step and the agent stays exactly as step 4 leaves it: metrics
 only, and no read of your journal. To turn it on, the node has to emit those
 traces in the first place. These are the namespaces it has to emit, again as
 keys to merge into your <code>TraceOptions</code>:</p>
@@ -181,7 +181,7 @@ keys to merge into your <code>TraceOptions</code>:</p>
 <pre>{traces}</pre>
 
 <p><strong>Check before you add them.</strong> Your configuration may already set
-some of these, and merging replaces a key's whole entry — so these take the
+some of these, and merging replaces a key's whole entry, so these take the
 place of whatever severity or rate limit you had on those namespaces. It may
 also set rate limits on namespaces this snippet does not name; pasting over the
 object rather than merging into it would drop those too.</p>
@@ -222,9 +222,9 @@ you must set.</p>
 
 <pre>{config}</pre>
 
-<p>The upload URL is this server: replace the example host with the host you
+<p>The upload URL is this server. Replace the example host with the host you
 are reading this page on. The metrics URL has to match the endpoint you opened
-in step 4, and has to be a loopback address — the agent refuses to scrape
+in step 4, and has to be a loopback address. The agent refuses to scrape
 anything else.</p>
 
 <h2>8. Run it under systemd</h2>
@@ -245,15 +245,15 @@ sudo systemctl enable --now metsuke</pre>
 <h2>9. Verify</h2>
 
 <p>The agent logs one line at startup naming the endpoint it scrapes and the
-pool it reports for, and one line per upload saying whether the server took the
-batch:</p>
+pool it reports for, and one line per submission saying whether the server took
+it:</p>
 
 <pre>systemctl status metsuke
 journalctl -u metsuke -f</pre>
 
-<p>The first upload is attempted as soon as the agent starts, so you do not
-have to wait out a cadence to find out that something is wrong. A refused
-upload logs the server's reason and the scrapes stay spooled — nothing is lost
+<p>The first submission is sent as soon as the agent starts, so you do not have
+to wait out a cadence to find out that something is wrong. A refused submission
+logs the server's reason and the scrapes stay spooled. Nothing is lost
 while you fix it, and they upload once it is fixed.</p>
 
 <h2>10. Staying up to date</h2>
@@ -322,7 +322,7 @@ impl MetricsEndpoint {
         &self.url
     }
 
-    /// The one node-config change the agent needs, as JSON: cardano-node reads
+    /// The one node-config change the agent needs, as JSON. cardano-node reads
     /// JSON wherever it reads YAML, and the empty-string key is unwieldy in
     /// YAML by hand.
     ///
@@ -331,8 +331,8 @@ impl MetricsEndpoint {
     /// `listToMaybe` (`Cardano/Node/Tracing/API.hs`, read at the
     /// `cardano-node-leios` pin), so a second is silently ignored and an
     /// operator who appends keeps the port they had. Stated here rather than on
-    /// the page — an operator needs the instruction, not the mechanism, and
-    /// nothing in this repo verifies another project's resolution order.
+    /// the page, because an operator needs the instruction, not the mechanism,
+    /// and nothing in this repo verifies another project's resolution order.
     fn backend_config(&self) -> String {
         format!(
             r#"{{
@@ -419,14 +419,14 @@ fn metadata_json() -> String {
 /// every build; the digits mean nothing beyond showing the format.
 const EXAMPLE_INSTANT: i64 = 1_780_000_000;
 
-/// The upload the page shows, built from the wire types themselves, so the
+/// The submission the page shows, built from the wire types themselves, so the
 /// example cannot show a shape the crate does not send.
 /// `the_page_renders_rows_whose_metrics_are_a_nested_list` reads the rows back
 /// out of the rendered page rather than restating them.
 ///
 /// Two rows, because a scrape has two shapes and a field only the failed one
 /// carries would otherwise never reach the page. Two metrics in the first,
-/// where a real row carries every one the endpoint returned: the names are a
+/// where a real row carries every one the endpoint returned. The names are a
 /// node's, the values are not, and an operator checks the claim against their
 /// own endpoint with the command in step 4.
 pub fn example_submission() -> Envelope {
@@ -496,8 +496,8 @@ fn failure_reasons() -> String {
     words.join(", ")
 }
 
-/// That submission as the page prints it: the header indented for reading — on
-/// the wire it is one line — and the payload after it as the lines a
+/// That submission as the page prints it: the header indented for reading,
+/// though on the wire it is one line, and the payload after it as the lines a
 /// decompressor hands back.
 fn example_envelope() -> String {
     let envelope = example_submission();

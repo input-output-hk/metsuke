@@ -40,9 +40,9 @@ pub struct Ack {
     pub latest_version: String,
 }
 
-/// Which Agent reported a batch: lowercase ASCII alphanumerics in
+/// Which Agent reported a submission: lowercase ASCII alphanumerics in
 /// dash-separated runs. Two constructors, because the two callers want
-/// different things from a name — `slugify` turns any hostname into an id, so a
+/// different things from a name. `slugify` turns any hostname into an id, so a
 /// host called `Relay_1` reports instead of refusing to start, and `parse`
 /// takes only the form `slugify` emits, so an id read off the wire is an id
 /// something made (`slugify_folds_a_hostname_into_an_agent_id`,
@@ -363,7 +363,7 @@ pub struct Envelope {
 
 /// The skippable frame's content: everything about a submission that is not
 /// the payload itself. It holds no payload key, so which schema a submission
-/// declares is answerable without inflating a byte — which is what
+/// declares is answerable without inflating a byte, which is what
 /// `read_header` is for.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Header {
@@ -517,7 +517,7 @@ pub enum Reason {
 }
 
 impl Reason {
-    /// Every case, for the callers that have to cover all of them — the
+    /// Every case, for the callers that have to cover all of them. The
     /// instructions page renders its list from here. Complete or the crate does
     /// not build: see the const assertion below it.
     pub const ALL: [Reason; 4] = [
@@ -790,7 +790,7 @@ pub fn seal(
 const DECOMPRESS_CHUNK_BYTES: usize = 64 * 1024;
 
 /// Verify the signature over the wire bytes as received, then read the header
-/// out of the skippable frame and decompress the data frame — refusing to
+/// out of the skippable frame and decompress the data frame, refusing to
 /// inflate past `limits.max_decompressed_bytes`. Uses `verify_strict` to
 /// reject signatures that only pass under malleable or mixed-order-point
 /// interpretations.
@@ -803,7 +803,7 @@ pub fn open(
     key.verify_strict(wire_bytes, signature)?;
     let frames = split(wire_bytes, limits.max_header_bytes)?;
     // The version alone first, so a version this build never spoke is named as
-    // such whatever else its header holds — a v3 that dropped a field every
+    // such whatever else its header holds. A v3 that dropped a field every
     // version so far carries would otherwise report that missing field.
     let peek: SchemaVersionPeek = serde_json::from_slice(frames.header)?;
     let schema = Schema::of(peek.schema_version)?;
@@ -838,7 +838,7 @@ pub fn open(
 /// as it stands.
 ///
 /// Only the reserved key is read. A line's own fields are the schema's business,
-/// and what a consumer makes of them is `Envelope::scrapes` — reading them here
+/// and what a consumer makes of them is `Envelope::scrapes`. Reading them here
 /// would make every archived line's fate depend on the payload structs of
 /// whichever build opened it.
 fn stamped(index: usize, line: &str, stamp: &Provenance) -> Result<PayloadLine, OpenError> {

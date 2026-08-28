@@ -1,6 +1,6 @@
 [package]
 name = "metsuke"
-description = "Telemetry agent scraping cardano-node metrics and uploading signed batches"
+description = "Telemetry agent scraping cardano-node metrics and sending signed submissions"
 version = "0.1.0"
 publish = false
 edition.workspace = true
