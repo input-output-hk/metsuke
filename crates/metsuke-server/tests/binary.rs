@@ -581,6 +581,29 @@ fn an_s3_archive_without_credentials_exits_nonzero_naming_them() {
     assert!(stderr.contains("AWS_ACCESS_KEY_ID"), "{stderr}");
 }
 
+/// A working server has to look like one. The archive is the record of what
+/// was accepted (ADR 0005), but reading it takes bucket credentials, so
+/// without a line per submission a journal shows only refusals and an operator
+/// watching one cannot tell a busy server from a silent one.
+#[test]
+fn an_accepted_submission_is_logged_against_its_pool_and_object() {
+    let key = test_key();
+    let server = Server::start(&[pool_of(&key)]);
+
+    assert_eq!(server.post(&key, &envelope_now(&key, 1)).0, 200);
+
+    let logged = server.logged();
+    let stored = only_object_key(&server);
+    assert!(
+        logged.contains(&format!("accepted {}", pool_of(&key))),
+        "the acceptance must name the pool, got: {logged}"
+    );
+    assert!(
+        logged.contains(&stored),
+        "and the object it became, got: {logged}"
+    );
+}
+
 /// The one backend whose objects nobody can ever check says so at startup.
 /// The pair is dropped at the moment of storing, so this line is the only
 /// place an operator can learn it: no route, no audit and no consumer can

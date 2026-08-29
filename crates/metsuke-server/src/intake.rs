@@ -10,6 +10,7 @@
 use std::sync::Mutex;
 
 use metsuke_wire::envelope::{Ack, ContainerError, Header, HeaderError, PoolId, read_header};
+use metsuke_wire::journal::INFO;
 use time::{Duration, OffsetDateTime};
 
 use crate::archive::{ArchiveError, Kind, ObjectName, Store, StoredSubmission};
@@ -206,6 +207,18 @@ impl<A: Store> Intake<A> {
             wire_bytes: signed.wire_bytes,
         };
         self.archive.store(&stored)?;
+        // Said here rather than beside `http::refuse`, because what is worth
+        // saying about an accepted submission is the object it became, and
+        // this is where that name is. The key carries the pool, the agent and
+        // the kind (`archive::ObjectName`), so one line answers whose it was,
+        // which of their Agents sent it and what it held. Without it a journal
+        // shows only refusals, and an operator watching a working server sees
+        // nothing but whatever scans the internet.
+        eprintln!(
+            "{INFO}accepted {pool_id}: {}, {} bytes",
+            stored.object_key(),
+            signed.wire_bytes.len()
+        );
         Ok(Ack {
             latest_version: crate::CLIENT_VERSION.to_string(),
         })
