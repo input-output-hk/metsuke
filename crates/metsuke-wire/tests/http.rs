@@ -27,6 +27,17 @@ fn a_4xx_is_terminal_and_carries_the_body_as_the_reason() {
     assert!(!refusal.retryable);
 }
 
+// The exception the 4xx rule needs: a rate limit says come back, not fix
+// something. Reading it as terminal is what sends an agent into the rejection
+// backoff over a window that clears on its own.
+#[test]
+fn a_429_is_retryable() {
+    let refusal = http::classify(&mut answered(429, "over the limit")).unwrap_err();
+    assert_eq!(refusal.status, 429);
+    assert_eq!(refusal.reason, "over the limit");
+    assert!(refusal.retryable);
+}
+
 #[test]
 fn a_5xx_is_retryable() {
     let refusal = http::classify(&mut answered(503, "come back later")).unwrap_err();

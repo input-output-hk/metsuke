@@ -180,6 +180,35 @@ async fn client_error_is_rejected_with_the_server_reason() {
     assert_eq!(reason, "pool not on the allowlist");
 }
 
+// A rate limit is the 4xx an operator cannot act on: the window clears by
+// itself, so the agent schedules it as a retry rather than escalating the
+// rejection backoff a window's worth of refusals at a time.
+#[tokio::test]
+async fn a_rate_limit_is_retryable() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .set_body_string("pool pool1 is over its limit of 100 uploads per 3600s"),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let batch = sealed_test_batch(&dir);
+    let config = upload_config(&server.uri());
+    let outcome =
+        tokio::task::spawn_blocking(move || upload(&config, &test_key().verifying_key(), &batch))
+            .await
+            .unwrap();
+    let UploadOutcome::Retryable(reason) = outcome else {
+        panic!("expected retryable, got {outcome:?}");
+    };
+    assert_eq!(
+        reason,
+        "server answered 429: pool pool1 is over its limit of 100 uploads per 3600s"
+    );
+}
+
 // The full header contract: the request the server sees must verify with
 // nothing but its own headers and body (ADR 0001).
 #[tokio::test]

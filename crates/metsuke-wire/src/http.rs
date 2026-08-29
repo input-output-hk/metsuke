@@ -53,10 +53,14 @@ pub struct Refusal {
     pub retryable: bool,
 }
 
+/// The one 4xx a retry answers differently: the window it names rolls whether
+/// or not anything is changed.
+const TOO_MANY_REQUESTS: u16 = 429;
+
 /// Split a 2xx from everything else, leaving a success's body unread for the
-/// caller. Only a 4xx is terminal: credentials, policy or a clock, which
-/// retrying delays the reason for without changing it. Everything else may
-/// answer differently next time.
+/// caller. A 4xx is terminal: credentials, policy or a clock, which retrying
+/// delays the reason for without changing it. Everything else may answer
+/// differently next time, `TOO_MANY_REQUESTS` included.
 pub fn classify(response: &mut ureq::http::Response<ureq::Body>) -> Result<(), Refusal> {
     let status = response.status().as_u16();
     if (200..300).contains(&status) {
@@ -68,6 +72,6 @@ pub fn classify(response: &mut ureq::http::Response<ureq::Body>) -> Result<(), R
             .body_mut()
             .read_to_string()
             .unwrap_or_else(|error| format!("unreadable reason: {error}")),
-        retryable: !(400..500).contains(&status),
+        retryable: status == TOO_MANY_REQUESTS || !(400..500).contains(&status),
     })
 }

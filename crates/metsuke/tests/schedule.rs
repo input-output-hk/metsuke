@@ -1,6 +1,7 @@
 //! Upload scheduling tests (ticket metsuke-4zo.5): outcome in, delay until
-//! the next attempt out. 5xx/transport retries next interval with jitter;
-//! 4xx backs off exponentially with a clamp; an ack resets the backoff.
+//! the next attempt out. 5xx/transport and 429 retry next interval with
+//! jitter; the other 4xx back off exponentially with a clamp; an ack resets
+//! the backoff.
 
 use std::time::Duration;
 
