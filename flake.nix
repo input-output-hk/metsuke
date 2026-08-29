@@ -43,21 +43,27 @@
         inputs.git-hooks.flakeModule
       ];
 
-      # A hydraJob, not a check: runNixOSTest wants /dev/kvm, and `nix flake
-      # check` has to stay runnable wherever the crates build. The end-to-end
-      # job is devnet/flake.nix's, which is where the node it needs is pinned.
-      flake.hydraJobs.units = lib.genAttrs systems (
-        system:
-        import ./nix/unit-test.nix {
-          pkgs = inputs.nixpkgs.legacyPackages.${system};
-          agentModule = self.nixosModules.metsuke;
-          serverModule = self.nixosModules.metsuke-server;
-          metrics = ./crates/metsuke/tests/fixtures/recordings/leios-node.prom;
-          traces = ./crates/metsuke/tests/fixtures/recordings/leios-node-traces.log;
-          contribUnit = ./contrib/metsuke.service;
-          agent = self.packages.${system}.metsuke;
-        }
-      );
+      flake.hydraJobs = {
+        # A hydraJob, not a check: runNixOSTest wants /dev/kvm, and `nix flake
+        # check` has to stay runnable wherever the crates build. The end-to-end
+        # job is devnet/flake.nix's, which is where the node it needs is pinned.
+        units = lib.genAttrs systems (
+          system:
+          import ./nix/unit-test.nix {
+            pkgs = inputs.nixpkgs.legacyPackages.${system};
+            agentModule = self.nixosModules.metsuke;
+            serverModule = self.nixosModules.metsuke-server;
+            metrics = ./crates/metsuke/tests/fixtures/recordings/leios-node.prom;
+            traces = ./crates/metsuke/tests/fixtures/recordings/leios-node-traces.log;
+            contribUnit = ./contrib/metsuke.service;
+            agent = self.packages.${system}.metsuke;
+          }
+        );
+
+        packages = lib.genAttrs systems (system: removeAttrs self.packages.${system} [ "default" ]);
+        checks = lib.genAttrs systems (system: self.checks.${system});
+        devShells = lib.genAttrs systems (system: self.devShells.${system});
+      };
 
       flake.nixosModules = {
         metsuke =
