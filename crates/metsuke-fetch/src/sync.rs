@@ -4,12 +4,16 @@
 //! state of a sync.
 
 use std::io;
+use std::io::Write as _;
+use std::num::NonZeroU64;
 use std::path::{Component, Path, PathBuf};
 
 use crate::cursor::{Cursor, CursorError};
-use crate::pull::{Archive, PullError};
+use crate::pull::{Archive, Object, PullError};
 use crate::select::{Filters, Selected};
 use crate::staged;
+use metsuke_wire::envelope::PoolId;
+use metsuke_wire::key::ObjectName;
 
 /// What one run moved, and what it did not. `passed` and `unnameable` are
 /// counted rather than dropped quietly: a filter that selected nothing and a
@@ -23,6 +27,36 @@ pub struct Report {
     /// Listed, and not a key `ObjectName::parse` reads, so no selection could
     /// answer for it.
     pub unnameable: u64,
+    /// Landed and checked against the pair the download carried.
+    pub verified: u64,
+    /// Landed with no pair to check it against, which is every object from an
+    /// archive that stores none (`pull::Object`). Counted rather than refused,
+    /// or a run against one would download nothing; `--require-verified` is
+    /// what turns it into a refusal.
+    pub unverifiable: u64,
+    /// Named rather than counted: an object nobody may trust is not a number,
+    /// it is a key somebody has to look at. Each of these was not written.
+    pub rejected: Vec<Rejected>,
+}
+
+/// An object the run refused to write down, and why.
+#[derive(Debug, PartialEq)]
+pub struct Rejected {
+    pub key: String,
+    pub reason: String,
+}
+
+/// What this run will hold and what it insists on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Verification {
+    /// Ceiling on one object, because checking it means holding it
+    /// (`pull::Archive::object`).
+    pub max_object_bytes: NonZeroU64,
+    /// Whether an object that carries no pair is a refusal rather than a
+    /// count. Off by default: the archive a developer reaches for is usually
+    /// S3, which carries one, but a filesystem archive never does and this
+    /// tool is how its objects are read.
+    pub require_verified: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -63,6 +97,7 @@ pub fn run(
     archive: &Archive,
     filters: &Filters<'_>,
     destination: &Destination<'_>,
+    verification: Verification,
     mut landed: impl FnMut(&str),
 ) -> Result<Report, SyncError> {
     let mut cursor = Cursor::read(destination.state, filters)?;
@@ -71,9 +106,27 @@ pub fn run(
         for key in page? {
             match filters.selection.selects(&key) {
                 Selected::Yes => {
-                    report.bytes += download(archive, destination.into, &key)?;
-                    report.objects += 1;
-                    landed(&key);
+                    match download(archive, destination.into, &key, verification)? {
+                        Landed::Verified(bytes) => {
+                            report.bytes += bytes;
+                            report.objects += 1;
+                            report.verified += 1;
+                            landed(&key);
+                        }
+                        Landed::Unverifiable(bytes) => {
+                            report.bytes += bytes;
+                            report.objects += 1;
+                            report.unverifiable += 1;
+                            landed(&key);
+                        }
+                        // Not handed to `landed`: that is the run's list of
+                        // what a reader will find on disk, and this is not on
+                        // it.
+                        Landed::Rejected(reason) => report.rejected.push(Rejected {
+                            key: key.clone(),
+                            reason,
+                        }),
+                    }
                 }
                 Selected::No => report.passed += 1,
                 Selected::Unnameable => report.unnameable += 1,
@@ -170,20 +223,79 @@ impl Iterator for Pages<'_> {
 }
 
 /// One object written under `into`, verbatim (`staged::replacing`).
-fn download(archive: &Archive, into: &Path, key: &str) -> Result<u64, SyncError> {
+/// What one object's download came to: the bytes it added, or the reason it
+/// was not written. Not a `SyncError`: an object nobody may trust is this
+/// object's news and not the run's, so the sync goes on and the caller counts
+/// it (`Report::rejected`).
+enum Landed {
+    Verified(u64),
+    Unverifiable(u64),
+    Rejected(String),
+}
+
+fn download(
+    archive: &Archive,
+    into: &Path,
+    key: &str,
+    verification: Verification,
+) -> Result<Landed, SyncError> {
     let path = destination(into, key).ok_or_else(|| SyncError::NotAKey {
         key: key.to_string(),
     })?;
-    // The pull failure travels out as the `io::Error` the staging path takes
-    // and is taken back off it here, so a refused download reports the
-    // server's reason rather than a write that stopped.
-    staged::replacing(&path, |file| {
-        archive.object(key, file).map_err(io::Error::other)
-    })
-    .map_err(|error| match error.downcast::<PullError>() {
-        Ok(pull) => SyncError::Pull(pull),
-        Err(source) => SyncError::Write { path, source },
-    })
+    let object = match archive.object(key, verification.max_object_bytes) {
+        Ok(object) => object,
+        // An object over the bound is the run's to report and not to stop for,
+        // the same as one that does not verify: the operator raises the flag
+        // or leaves it, and the rest of the archive still syncs.
+        Err(oversized @ PullError::Oversized { .. }) => {
+            return Ok(Landed::Rejected(oversized.to_string()));
+        }
+        Err(error) => return Err(SyncError::Pull(error)),
+    };
+    let landed = match checked(key, &object, verification.require_verified) {
+        Err(reason) => return Ok(Landed::Rejected(reason)),
+        Ok(landed) => landed,
+    };
+    // Written only once it is decided: an object nobody may trust never
+    // reaches the download directory, so a reader globbing the tree cannot
+    // pick one up without having been told.
+    staged::replacing(&path, |file| file.write_all(&object.bytes))
+        .map_err(|source| SyncError::Write { path, source })?;
+    Ok(landed(object.bytes.len() as u64))
+}
+
+/// Whether these bytes may be written down, and as what. Two halves, and both
+/// are needed: the signature says a holder of that key sealed exactly these
+/// bytes, and the hash says which pool that key speaks for. Checking one alone
+/// takes an object a stranger signed, or one filed under a pool that never
+/// sent it.
+fn checked(
+    key: &str,
+    object: &Object,
+    require_verified: bool,
+) -> Result<fn(u64) -> Landed, String> {
+    let Some(attestation) = object.attestation else {
+        return match require_verified {
+            true => Err("carries no key and signature to check it with".to_string()),
+            false => Ok(Landed::Unverifiable),
+        };
+    };
+    if attestation
+        .vkey
+        .verify_strict(&object.bytes, &attestation.signature)
+        .is_err()
+    {
+        return Err("the signature does not stand over the bytes as downloaded".to_string());
+    }
+    let name = ObjectName::parse(key).map_err(|error| error.to_string())?;
+    let signer = PoolId::from_cold_key(&attestation.vkey);
+    match signer == name.pool_id {
+        true => Ok(Landed::Verified),
+        false => Err(format!(
+            "signed by {signer}, and filed under {}",
+            name.pool_id
+        )),
+    }
 }
 
 /// The file under `into` an object key names, or `None` for a key that names

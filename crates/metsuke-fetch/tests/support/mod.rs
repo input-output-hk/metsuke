@@ -6,6 +6,7 @@
 //! needs reads as dead code in the others.
 #![allow(dead_code)]
 
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::net::TcpListener;
 use std::num::{NonZeroU32, NonZeroU64};
@@ -22,7 +23,7 @@ use metsuke_server::intake::Intake;
 use metsuke_server::serve;
 use metsuke_wire::envelope::{
     AgentId, Envelope, Payload, PayloadLine, PoolId, Provenance, Scrape, Signature, SigningKey,
-    seal,
+    VerifyingKey, seal,
 };
 use metsuke_wire::fixtures;
 use time::OffsetDateTime;
@@ -59,6 +60,72 @@ pub struct Object {
     pub key: String,
     pub wire_bytes: Vec<u8>,
     pub signature: Signature,
+    /// The key that sealed it, so a test can answer the pair beside the bytes
+    /// or tamper with either half.
+    pub signer: SigningKey,
+}
+
+/// A filesystem archive that answers the metadata an S3 one holds beside an
+/// object. A real filesystem archive discards the pair at ingest, so a suite
+/// built on one could only ever exercise the unverifiable path; what a test
+/// seeds into `attested` is what the download then carries.
+/// Shared, so a test can answer a different pair after the server is up.
+pub type Attested = std::sync::Arc<std::sync::Mutex<HashMap<String, (VerifyingKey, Signature)>>>;
+
+pub struct Attesting {
+    inner: FilesystemArchive,
+    attested: Attested,
+}
+
+impl metsuke_server::archive::Store for Attesting {
+    fn store(
+        &self,
+        submission: &metsuke_server::archive::StoredSubmission<'_>,
+    ) -> Result<(), metsuke_server::archive::ArchiveError> {
+        self.inner.store(submission)
+    }
+}
+
+impl metsuke_server::archive::Bytes for Attesting {
+    fn reader(
+        &self,
+        key: &str,
+    ) -> Result<metsuke_server::archive::ObjectStream, metsuke_server::archive::ArchiveError> {
+        Ok(metsuke_server::archive::ObjectStream {
+            attestation: self
+                .attested
+                .lock()
+                .expect("no panic holds this lock")
+                .get(key)
+                .map(|(vkey, signature)| metsuke_server::archive::Attestation {
+                    vkey: *vkey,
+                    signature: *signature,
+                }),
+            ..self.inner.reader(key)?
+        })
+    }
+}
+
+impl metsuke_server::archive::List for Attesting {
+    fn location(&self) -> String {
+        self.inner.location()
+    }
+
+    fn for_each_key<E: From<metsuke_server::archive::ArchiveError>>(
+        &self,
+        visit: impl FnMut(&str) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.inner.for_each_key(visit)
+    }
+
+    fn page(
+        &self,
+        prefix: &str,
+        after: &str,
+        max_keys: NonZeroU32,
+    ) -> Result<metsuke_server::archive::Page, metsuke_server::archive::ArchiveError> {
+        self.inner.page(prefix, after, max_keys)
+    }
 }
 
 /// A server serving one archive directory, with the objects the test seeded in
@@ -68,13 +135,26 @@ pub struct Server {
     pub url: String,
     pub objects: Vec<Object>,
     root: PathBuf,
+    attested: Attested,
     /// Held so the archive and the password file outlive the server.
     _dir: tempfile::TempDir,
 }
 
 impl Server {
-    /// Serve `count` objects, `list_max_rows` keys to a page.
+    /// Serve `count` objects, `list_max_rows` keys to a page, with nothing to
+    /// check them by. That is what a filesystem archive answers, so it is what
+    /// every test not about the checking meets.
     pub fn with_objects(count: usize, list_max_rows: u32) -> Server {
+        Server::serving(count, list_max_rows, false)
+    }
+
+    /// The same, with each object's key and signature answered beside it, as
+    /// an S3 archive holds them.
+    pub fn attesting(count: usize, list_max_rows: u32) -> Server {
+        Server::serving(count, list_max_rows, true)
+    }
+
+    fn serving(count: usize, list_max_rows: u32, attest: bool) -> Server {
         let dir = tempfile::tempdir().expect("a temp dir");
         let root = dir.path().join("archive");
         let objects = (0..count)
@@ -92,7 +172,25 @@ impl Server {
         );
         let listener = serve::bind("127.0.0.1:0").expect("a kernel-chosen port binds");
         let url = format!("http://{}", listener.address());
-        let intake = Intake::new(ingest_config(), FilesystemArchive::new(&root));
+        let attested: Attested = std::sync::Arc::new(std::sync::Mutex::new(match attest {
+            false => HashMap::new(),
+            true => objects
+                .iter()
+                .map(|object| {
+                    (
+                        object.key.clone(),
+                        (object.signer.verifying_key(), object.signature),
+                    )
+                })
+                .collect(),
+        }));
+        let intake = Intake::new(
+            ingest_config(),
+            Attesting {
+                inner: FilesystemArchive::new(&root),
+                attested: std::sync::Arc::clone(&attested),
+            },
+        );
         std::thread::spawn(move || {
             match listener.serve(http_config(), intake, developer, instructions::page()) {
                 Ok(never) => match never {},
@@ -103,6 +201,7 @@ impl Server {
             url,
             objects,
             root,
+            attested,
             _dir: dir,
         }
     }
@@ -133,6 +232,53 @@ impl Server {
             .permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o000);
         std::fs::set_permissions(&path, permissions).expect("permissions change");
+    }
+
+    /// The pair this archive answers for `key`, replacing whatever it held.
+    fn answer_with(&self, key: &str, vkey: VerifyingKey, signature: Signature) {
+        self.attested
+            .lock()
+            .expect("no panic holds this lock")
+            .insert(key.to_string(), (vkey, signature));
+    }
+
+    /// One byte of a stored object flipped, leaving the metadata beside it
+    /// alone: bytes that no longer stand under the signature the archive
+    /// answers with.
+    pub fn tamper(&self, key: &str) {
+        let path = self.root.join(key);
+        let mut bytes = std::fs::read(&path).expect("the object is there");
+        *bytes.last_mut().expect("a sealed object is not empty") ^= 0xff;
+        std::fs::write(&path, &bytes).expect("the object rewrites");
+    }
+
+    /// A stored object replaced by one another key sealed, answered with that
+    /// key's own pair: bytes that verify, under a pool that is not the one the
+    /// object is filed under.
+    pub fn reseal_as(&self, key: &str, signer: &SigningKey) {
+        let name = ObjectName::parse(key).expect("a seeded key parses");
+        let envelope = Envelope::new(
+            Provenance {
+                pool_id: pool_of(signer),
+                agent_id: name.agent_id.clone(),
+            },
+            env!("CARGO_PKG_VERSION").to_string(),
+            1,
+            test_now(),
+            Payload::scrapes(vec![
+                PayloadLine::scrape(
+                    &scrape(test_now()),
+                    &Provenance {
+                        pool_id: pool_of(signer),
+                        agent_id: name.agent_id,
+                    },
+                )
+                .expect("a scrape stamps"),
+            ]),
+        );
+        let (wire_bytes, signature) = seal(signer, &envelope, 0).expect("a test envelope seals");
+        std::fs::write(self.root.join(key), &wire_bytes).expect("the object rewrites");
+        self.answer_with(key, signer.verifying_key(), signature);
     }
 
     /// An object under a key no `ObjectName::parse` reads, which is what
@@ -222,6 +368,7 @@ fn seeded(root: &Path, index: usize) -> Object {
     std::fs::write(&path, &wire_bytes).expect("the object writes");
     Object {
         key: name.to_key(),
+        signer: key,
         wire_bytes,
         signature,
     }

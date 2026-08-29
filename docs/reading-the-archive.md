@@ -50,12 +50,30 @@ accepts an object signed by a stranger, or one filed under a pool that never
 sent it.
 
 An object that arrives without those headers cannot be checked at all. That is
-what a filesystem archive answers, having no metadata to store beside an
-object, and what any object something other than this server wrote answers.
-Bytes without them are bytes the server is asking to be believed about.
+what a filesystem archive answers, having discarded the pair at ingest rather
+than merely not serving it, and what any object something other than this
+server wrote answers. Bytes without them are bytes the server is asking to be
+believed about.
 
-`metsuke-fetch` does not run this check yet. Until it does, a consumer that
-needs the guarantee runs it over what was downloaded.
+`metsuke-fetch sync` runs both halves on every object as it lands, so a
+directory it wrote holds nothing that failed. Its summary says how many of each
+it saw:
+
+```
+3 objects into ~/archive, 3145728 bytes; 3 verified, 0 unverifiable, 0 not written; …
+```
+
+An object that fails is named on stderr, is not written, and makes the run exit
+nonzero. The cursor still advances past it, because the archive is append-only
+and the same bytes will fail the same way tomorrow; syncing it again means
+rewinding the state file. What to do about one is not this tool's:
+`metsuke-server verify-archive` walks the bucket and names every object whose
+stored bytes and metadata disagree, and removing one is a bucket-admin action,
+since the server holds no delete.
+
+Unverifiable is counted rather than refused, or a run against a filesystem
+archive would download nothing. `--require-verified` turns it into a refusal,
+which is what a consumer computing anything that matters should pass.
 
 ## Why `sample_size=-1`
 

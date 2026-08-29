@@ -12,6 +12,12 @@ use metsuke_wire::envelope::{AgentId, PoolId};
 use metsuke_wire::key::{KEY_PREFIX, Kind};
 
 use crate::select::Selection;
+use crate::sync::Verification;
+
+/// What one object may weigh before this run refuses to hold it to check it.
+/// Sixteen times the shipped `max_body_bytes`, so the ceiling is the tool's
+/// own safety net and never the thing an operator meets.
+const DEFAULT_MAX_OBJECT_BYTES: NonZeroU64 = NonZeroU64::new(16 * 1024 * 1024).unwrap();
 
 /// The build, which every run names and `--version` answers with. What it
 /// promises across builds is in docs/releasing.md.
@@ -37,6 +43,10 @@ access, which every command needs and none of which has a default:
 sync:
   --state <path>           the cursor file; a run resumes from it and advances it
   --into <dir>             where objects land, each under its own key
+  --max-object-bytes <n>   the most one object may weigh, since checking it
+                           means holding it; 16777216 by default
+  --require-verified       refuse an object the download carries no key and
+                           signature for, rather than counting it
 
 filters, which default to the whole archive:
   --prefix <key prefix>    only keys starting with this
@@ -75,6 +85,9 @@ pub struct Args {
     pub prefix: String,
     /// What the run keeps of the keys the prefix listed.
     pub selection: Selection,
+    /// What the run will hold to check an object, and whether it insists on
+    /// checking one at all (`sync::Verification`).
+    pub verification: Verification,
 }
 
 /// What the run does with the keys it lists.
@@ -128,6 +141,8 @@ pub enum ArgsError {
         command: &'static str,
         flag: &'static str,
     },
+    #[error("{flag} takes a whole number of bytes above zero, not {value:?}")]
+    NotAByteCount { flag: &'static str, value: String },
     #[error("{flag} takes a whole number of milliseconds above zero, not {value:?}")]
     NotADuration { flag: &'static str, value: String },
     #[error("{flag} {value:?} is not one: {reason}")]
@@ -156,6 +171,10 @@ impl Invocation {
         let command = args.next().ok_or(ArgsError::NoCommand)?;
         let mut given = Given::default();
         while let Some(argument) = args.next() {
+            if argument == "--require-verified" {
+                given.require_verified = true;
+                continue;
+            }
             let (flag, value) = match argument.as_str() {
                 "--server" => ("--server", &mut given.server),
                 "--user" => ("--user", &mut given.user),
@@ -167,6 +186,7 @@ impl Invocation {
                 "--pool" => ("--pool", &mut given.pool),
                 "--agent" => ("--agent", &mut given.agent),
                 "--kind" => ("--kind", &mut given.kind),
+                "--max-object-bytes" => ("--max-object-bytes", &mut given.max_object_bytes),
                 _ => return Err(ArgsError::Unknown { argument }),
             };
             *value = Some(args.next().ok_or(ArgsError::MissingValue { flag })?);
@@ -192,6 +212,8 @@ struct Given {
     pool: Option<String>,
     agent: Option<String>,
     kind: Option<String>,
+    max_object_bytes: Option<String>,
+    require_verified: bool,
 }
 
 impl Given {
@@ -211,13 +233,24 @@ impl Given {
         // Refused rather than ignored: a `list --into` reads as a download
         // that would then write nothing.
         if let Command::List = command {
-            for (flag, value) in [("--state", &self.state), ("--into", &self.into)] {
+            for (flag, value) in [
+                ("--state", &self.state),
+                ("--into", &self.into),
+                ("--max-object-bytes", &self.max_object_bytes),
+            ] {
                 if value.is_some() {
                     return Err(ArgsError::NotForCommand {
                         command: command.name(),
                         flag,
                     });
                 }
+            }
+            // The same refusal, for the flag that carries no value to test.
+            if self.require_verified {
+                return Err(ArgsError::NotForCommand {
+                    command: command.name(),
+                    flag: "--require-verified",
+                });
             }
         }
         let name = command.name();
@@ -241,6 +274,16 @@ impl Given {
                 asked => asked.to_string(),
             },
             selection: self.selection()?,
+            verification: Verification {
+                max_object_bytes: match self.max_object_bytes.as_deref() {
+                    None => DEFAULT_MAX_OBJECT_BYTES,
+                    Some(given) => given.parse().map_err(|_| ArgsError::NotAByteCount {
+                        flag: "--max-object-bytes",
+                        value: given.to_string(),
+                    })?,
+                },
+                require_verified: self.require_verified,
+            },
             command,
         })
     }
