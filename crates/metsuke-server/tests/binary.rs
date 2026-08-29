@@ -1221,7 +1221,7 @@ fn big_object(server: &Server, key: &SigningKey) -> (String, usize) {
         metsuke_server::archive::Kind::Logs,
     )
     .to_key();
-    let bytes = 8 * 1024 * 1024;
+    let bytes = 64 * 1024 * 1024;
     let path = server.archive_root().join(&stored);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, vec![0u8; bytes]).unwrap();
