@@ -1,6 +1,6 @@
 //! The one path an upload takes. `submit` read top to bottom is the check
-//! order, and there are three checks: the pool is allowlisted, the traffic is
-//! within its budget, the signature stands.
+//! order, and there are three checks: the pool is allowlisted, the signature
+//! stands, the traffic is within its budget.
 //!
 //! Nothing here decompresses and nothing reads a payload. The header frame is
 //! plaintext inside the signed bytes, so what an object is filed under comes
@@ -118,6 +118,14 @@ impl<A: Store> Intake<A> {
         if !self.config.allowlist.contains_key(&pool_id) {
             return Err(Rejection::UnknownPool { pool_id }.into());
         }
+        // Before the limiter rather than after it. A cold verification key is
+        // public, so anyone can present an allowlisted pool's and spend that
+        // pool's window on bodies it never signed, which reaches the pool's
+        // agent as a 429. Only what the signature has proved is charged, and
+        // the cost of the reordering is one Ed25519 verify per forged body.
+        if !signed.verifies() {
+            return Err(Rejection::BadSignature.into());
+        }
         // A temporary of this statement, so the guard is released before the
         // match reads it rather than at the end of the block.
         let charged = self
@@ -142,9 +150,6 @@ impl<A: Store> Intake<A> {
                 }
                 .into());
             }
-        }
-        if !signed.verifies() {
-            return Err(Rejection::BadSignature.into());
         }
         self.accept(signed, pool_id, now)
     }

@@ -342,6 +342,36 @@ fn the_shared_budget_refuses_a_pool_inside_its_own_limit() {
     );
 }
 
+// The limiter is charged after the signature, so a body the pool never signed
+// spends none of its window. A cold verification key is public, and charging
+// on one would let a stranger empty an allowlisted pool's budget and leave
+// that pool's own agent reading 429.
+#[test]
+fn a_forged_body_spends_none_of_the_pools_budget() {
+    let key = test_key();
+    let config = IngestConfig {
+        rate_limit_uploads: nonzero_u32(1),
+        ..permissive_config(&[pool_of(&key)])
+    };
+    let (intake, _dir) = intake_with(config);
+    let (mut body, signature) = seal(&key, &envelope_for(&key, 1));
+    *body.last_mut().unwrap() ^= 0xff;
+
+    let error = intake
+        .submit(
+            &submission(key.verifying_key(), signature, &body),
+            test_now(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(rejection(error), Rejection::BadSignature),
+        "expected the signature check to reject"
+    );
+
+    // The single upload the window allows is still the pool's to spend.
+    submit(&intake, &key, &envelope_for(&key, 2)).unwrap();
+}
+
 // The container check is first: a body that is not a submission is refused
 // before the allowlist, the limiter or any cryptography, so a pool that is
 // not allowlisted still hears about the framing rather than the allowlist.
