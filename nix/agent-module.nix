@@ -52,7 +52,12 @@ in
     };
 
     signingKeyFile = lib.mkOption {
-      type = lib.types.path;
+      # `str` rather than `path`, so a nix path literal cannot type check here.
+      # Interpolating one copies the key into /nix/store, where it is world
+      # readable and travels in every closure this system is pushed to. A
+      # runtime path given as a string is what sops-nix and agenix hand back,
+      # and it is also what lets the key be replaced without a rebuild.
+      type = lib.types.str;
       description = ''
         The pool cold signing key, in cardano-cli TextEnvelope form. The agent
         refuses to start unless it hashes to the configured pool id.
@@ -169,6 +174,10 @@ in
       {
         assertion = cfg.settings.spool_path == null || lib.hasPrefix "${writable}/" cfg.settings.spool_path;
         message = "services.metsuke.settings.spool_path has to be under ${writable}: the unit may write nothing else.";
+      }
+      {
+        assertion = lib.hasPrefix "/" cfg.signingKeyFile;
+        message = "services.metsuke.signingKeyFile has to be an absolute path: LoadCredential reads a relative one as the name of a credential inherited from the manager, which is not a file on this host.";
       }
     ];
   };

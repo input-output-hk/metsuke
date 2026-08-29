@@ -66,7 +66,12 @@ in
     };
 
     developerPasswordFile = lib.mkOption {
-      type = lib.types.path;
+      # `str` rather than `path`, so a nix path literal cannot type check here.
+      # Interpolating one copies the secret into /nix/store, where it is world
+      # readable and travels in every closure this system is pushed to. A
+      # runtime path given as a string is what sops-nix and agenix hand back,
+      # and it is also what lets the secret be replaced without a rebuild.
+      type = lib.types.str;
       description = ''
         The developer account's password, alone in a file. Read by systemd as
         root, so the deployed secret stays unreadable to the service user.
@@ -74,7 +79,9 @@ in
     };
 
     environmentFile = lib.mkOption {
-      type = lib.types.nullOr lib.types.path;
+      # `str` for the same reason `developerPasswordFile` is one, and it holds
+      # the same kind of secret.
+      type = lib.types.nullOr lib.types.str;
       default = null;
       description = ''
         Passed to systemd as `EnvironmentFile`. An S3 archive reads
@@ -180,6 +187,10 @@ in
       {
         assertion = !(cfg.settings.archive ? s3) || cfg.environmentFile != null;
         message = "services.metsuke-server.environmentFile is required by an S3 archive: that is where the server reads AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY from.";
+      }
+      {
+        assertion = lib.hasPrefix "/" cfg.developerPasswordFile;
+        message = "services.metsuke-server.developerPasswordFile has to be an absolute path: LoadCredential reads a relative one as the name of a credential inherited from the manager, which is not a file on this host.";
       }
       {
         assertion =

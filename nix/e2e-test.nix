@@ -388,8 +388,8 @@ let
 
         services.metsuke-server = {
           enable = true;
-          environmentFile = awsEnvironment;
-          developerPasswordFile = password;
+          environmentFile = "${awsEnvironment}";
+          developerPasswordFile = "${password}";
           restartSecs = 2;
           settings = {
             listen = "127.0.0.1:${toString listenPort}";
