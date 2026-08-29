@@ -31,6 +31,32 @@ the JSON parser. Name the directory without them.
 Every line carries the pool and agent that wrote it under the `metsuke` key, so
 a row selected out of any of these still says where it came from.
 
+## Checking that an object is a pool's
+
+The signature is detached, so it does not travel inside the object. A download
+carries it beside the bytes, in the two headers the pool itself sent:
+
+```
+x-metsuke-vkey       the pool's cold verification key, hex
+x-metsuke-signature  raw Ed25519 over the body as downloaded, hex
+```
+
+Two things make an object the pool's, and both are needed. The signature has to
+verify over the bytes exactly as they arrived, uncompressed and unmodified, and
+the key has to be the one the pool id in the object's own name is the
+blake2b-224 hash of. The first says a holder of that key sealed these bytes; the
+second says which pool that key speaks for. Checking one without the other
+accepts an object signed by a stranger, or one filed under a pool that never
+sent it.
+
+An object that arrives without those headers cannot be checked at all. That is
+what a filesystem archive answers, having no metadata to store beside an
+object, and what any object something other than this server wrote answers.
+Bytes without them are bytes the server is asking to be believed about.
+
+`metsuke-fetch` does not run this check yet. Until it does, a consumer that
+needs the guarantee runs it over what was downloaded.
+
 ## Why `sample_size=-1`
 
 duckdb infers the JSON schema from the first 20480 rows and fills any field it

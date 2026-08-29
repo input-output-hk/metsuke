@@ -15,8 +15,8 @@ use metsuke_wire::envelope::{Signature, VerifyingKey};
 use metsuke_wire::{hex, http};
 
 use crate::archive::{
-    ArchiveError, Bytes, Fetch, FetchedObject, KEY_PREFIX, List, ObjectName, ObjectStream, Page,
-    Store, StoredSubmission,
+    ArchiveError, Attestation, Bytes, Fetch, FetchedObject, KEY_PREFIX, List, ObjectName,
+    ObjectStream, Page, Store, StoredSubmission,
 };
 use crate::config::S3Config;
 use metsuke_wire::journal::WARNING;
@@ -285,6 +285,11 @@ impl Bytes for S3Archive {
                     _ => refuse(failure.reason),
                 }
             })?;
+        // Off the head, before the body is taken: what a consumer checks the
+        // bytes with travels with them or the download is unverifiable. An
+        // object without it was not written by this server, and saying so is
+        // the client's to do, so it goes out absent rather than as a refusal.
+        let attestation = attestation(&response).ok();
         let body = response.into_body();
         // Why a download cannot go out without one: `archive::ObjectStream`.
         let length = body
@@ -295,6 +300,7 @@ impl Bytes for S3Archive {
         Ok(ObjectStream {
             key: key.to_string(),
             length,
+            attestation,
             reader: Box::new(body.into_reader()),
         })
     }
@@ -313,22 +319,7 @@ impl Fetch for S3Archive {
             .map_err(|failure| refuse(failure.reason))?;
         // Read the metadata out before the body: an object missing a header is
         // unverifiable however good its bytes are.
-        let metadata = |header: &'static str| -> Result<&str, String> {
-            response
-                .headers()
-                .get(header)
-                .ok_or(format!("no {header} on the object"))?
-                .to_str()
-                .map_err(|_| format!("{header} is not text"))
-        };
-        let read = || -> Result<(VerifyingKey, Signature), String> {
-            Ok((
-                VerifyingKey::from_bytes(&unhex(metadata(META_VKEY)?, META_VKEY)?)
-                    .map_err(|error| format!("{META_VKEY}: {error}"))?,
-                Signature::from_bytes(&unhex(metadata(META_SIGNATURE)?, META_SIGNATURE)?),
-            ))
-        };
-        let (vkey, signature) = read().map_err(refuse)?;
+        let Attestation { vkey, signature } = attestation(&response).map_err(refuse)?;
         let wire_bytes = response
             .body_mut()
             .read_to_vec()
@@ -340,6 +331,26 @@ impl Fetch for S3Archive {
             wire_bytes,
         })
     }
+}
+
+/// The two metadata headers an object carries, off a GET answer's head. Named
+/// as the failure it is rather than as an `Option`, because an object this
+/// server stored has both (ADR 0005): a download tolerates their absence and
+/// an audit does not, so which it is belongs to the caller.
+fn attestation(response: &ureq::http::Response<ureq::Body>) -> Result<Attestation, String> {
+    let metadata = |header: &'static str| -> Result<&str, String> {
+        response
+            .headers()
+            .get(header)
+            .ok_or(format!("no {header} on the object"))?
+            .to_str()
+            .map_err(|_| format!("{header} is not text"))
+    };
+    Ok(Attestation {
+        vkey: VerifyingKey::from_bytes(&unhex(metadata(META_VKEY)?, META_VKEY)?)
+            .map_err(|error| format!("{META_VKEY}: {error}"))?,
+        signature: Signature::from_bytes(&unhex(metadata(META_SIGNATURE)?, META_SIGNATURE)?),
+    })
 }
 
 /// Carries which metadata header was wrong into `fetch`'s reason string.

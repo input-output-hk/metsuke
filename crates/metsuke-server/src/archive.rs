@@ -149,6 +149,15 @@ pub trait Bytes {
     fn reader(&self, key: &str) -> Result<ObjectStream, ArchiveError>;
 }
 
+/// What a stored object's signature is checked with, as the archive holds it
+/// beside the bytes (ADR 0005). Both or neither: a check needs the pair, so
+/// half of it is the same as none of it.
+#[derive(Debug, Clone, Copy)]
+pub struct Attestation {
+    pub vkey: VerifyingKey,
+    pub signature: Signature,
+}
+
 /// An object being read out of the archive. The length is not optional: a
 /// download that could not state one would have to answer chunked, and then
 /// the copy granularity would be a size the client sees. An archive that will
@@ -159,6 +168,11 @@ pub struct ObjectStream {
     /// there. The download knows no client beyond the one credential.
     pub key: String,
     pub length: u64,
+    /// `None` where the archive stores no metadata beside an object, which is
+    /// every filesystem archive and any object something other than this
+    /// server wrote. A consumer handed bytes without it can check nothing
+    /// about them.
+    pub attestation: Option<Attestation>,
     pub reader: Box<dyn io::Read + Send>,
 }
 
@@ -259,6 +273,9 @@ impl Bytes for FilesystemArchive {
         Ok(ObjectStream {
             key: key.to_string(),
             length,
+            // No sidecar to read one out of, which is why this archive
+            // implements `Bytes` and not `Fetch`.
+            attestation: None,
             reader: Box::new(file),
         })
     }

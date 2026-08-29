@@ -11,7 +11,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use metsuke_server::archive::{ArchiveError, Fetch, Kind, List, Store, StoredSubmission};
+use metsuke_server::archive::{ArchiveError, Bytes, Fetch, Kind, List, Store, StoredSubmission};
 use metsuke_server::config::S3Config;
 use metsuke_server::s3::{META_SIGNATURE, META_VKEY, S3Archive};
 use metsuke_server::verify::{audit, verify};
@@ -390,7 +390,7 @@ fn the_object_a_bucket_handed_back_verifies() {
 }
 
 /// The download route reads the bucket through `Bytes`, which asks for the
-/// body and none of the metadata `Fetch` reconciles.
+/// body and for the two metadata headers a consumer checks it with.
 #[test]
 fn an_object_downloads_as_the_bytes_that_were_put() {
     let endpoint = FakeS3::start(Vec::new());
@@ -403,6 +403,31 @@ fn an_object_downloads_as_the_bytes_that_were_put() {
         read_object(&archive, &submission.object_key()).unwrap(),
         wire_bytes,
         "a developer verifies the signature over exactly these bytes"
+    );
+}
+
+/// And the two values that check is run with come back off the object's own
+/// metadata, so what a download hands a consumer is verifiable on its own.
+#[test]
+fn a_download_carries_the_metadata_the_put_wrote() {
+    let endpoint = FakeS3::start(Vec::new());
+    let (wire_bytes, signature) = submission(COUNTER);
+    let submission = stored(signature, &wire_bytes);
+    let archive = endpoint.archive(1);
+    archive.store(&submission).unwrap();
+
+    let stream = archive.reader(&submission.object_key()).unwrap();
+
+    let attestation = stream.attestation.expect("the object carries its metadata");
+    assert_eq!(attestation.vkey, submission.vkey);
+    assert_eq!(attestation.signature, signature);
+    // The pair is the whole verification input: what was stored under it
+    // opens, which is the check a consumer runs for itself.
+    assert!(
+        attestation
+            .vkey
+            .verify_strict(&wire_bytes, &attestation.signature)
+            .is_ok()
     );
 }
 

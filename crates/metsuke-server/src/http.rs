@@ -20,7 +20,7 @@ use metsuke_wire::hex::{self, HexError};
 use metsuke_wire::journal::{ERR, WARNING};
 use time::OffsetDateTime;
 
-use crate::archive::{ArchiveError, Bytes, List, ObjectStream, Store};
+use crate::archive::{ArchiveError, Attestation, Bytes, List, ObjectStream, Store};
 use crate::authority::Signed;
 use crate::developer::{self, Developer, Filters, Unauthorized};
 use crate::instructions;
@@ -162,7 +162,7 @@ pub struct Answer {
 /// (`archive::Bytes`).
 pub enum AnswerBody {
     Bytes(bytes::Bytes),
-    Stream(ObjectStream),
+    Stream(Box<ObjectStream>),
 }
 
 /// One request answered. Blocking, because it stores to and reads from the
@@ -277,12 +277,31 @@ fn object<A: Store + Bytes>(intake: &Intake<A>, target: &str) -> Answer {
             // RFC 8878: the body is the zstd the pool signed, so a developer
             // decompresses it themselves.
             content_type: "application/zstd",
-            body: AnswerBody::Stream(stream),
-            headers: Vec::new(),
+            // The same two headers the pool sent, going back out beside the
+            // same bytes: a download without them is bytes a consumer can
+            // check nothing about, and the archive is the only account of
+            // what it holds (ADR 0005).
+            headers: attested(&stream.attestation),
+            body: AnswerBody::Stream(Box::new(stream)),
         },
         Err(ArchiveError::NoSuchObject { .. }) => refuse(None, 404, "no such object".to_string()),
         Err(error) => unavailable(None, "the archive cannot be read", &error.to_string()),
     }
+}
+
+/// The download's own headers, which are the submission's two read back out
+/// of the archive. Empty where the archive holds none: what a consumer does
+/// about bytes it cannot check is its own to decide, and refusing the
+/// download would only withhold the bytes as well.
+fn attested(attestation: &Option<Attestation>) -> Vec<(&'static str, String)> {
+    attestation
+        .map(|Attestation { vkey, signature }| {
+            vec![
+                (HEADER_VKEY, hex::encode(vkey.as_bytes())),
+                (HEADER_SIGNATURE, hex::encode(&signature.to_bytes())),
+            ]
+        })
+        .unwrap_or_default()
 }
 
 /// The 5xx every use of the archive answers with: a body saying which use

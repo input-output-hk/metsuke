@@ -362,7 +362,7 @@ fn respond(answer: Answer) -> hyper::Response<ResponseBody> {
         // A stream does not, so what the archive declared is stated instead.
         AnswerBody::Stream(stream) => {
             response = response.header(hyper::header::CONTENT_LENGTH, stream.length);
-            streamed(stream).boxed()
+            streamed(*stream).boxed()
         }
     };
     response
@@ -375,10 +375,13 @@ fn respond(answer: Answer) -> hyper::Response<ResponseBody> {
 /// next chunk once the last one has gone out, so a developer that stops
 /// reading stalls its own download and nothing else.
 fn streamed(stream: ObjectStream) -> Streamed {
+    // The attestation went out with the head (`http::attested`), so what is
+    // left here is the body and what bounds it.
     let ObjectStream {
         key,
         length,
         mut reader,
+        ..
     } = stream;
     let (frames, receiver) = mpsc::channel(1);
     tokio::task::spawn_blocking(move || {

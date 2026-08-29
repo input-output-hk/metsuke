@@ -324,6 +324,111 @@ fn a_download_of_an_object_the_archive_does_not_hold_is_not_found() {
     assert_eq!(answer.status, 404, "{}", body(&answer));
 }
 
+/// A filesystem archive that answers the metadata an S3 one holds beside an
+/// object, so the download route's half of the check a consumer runs is
+/// reachable without a bucket.
+struct Attested {
+    inner: FilesystemArchive,
+    attestation: metsuke_server::archive::Attestation,
+}
+
+impl metsuke_server::archive::Store for Attested {
+    fn store(
+        &self,
+        submission: &metsuke_server::archive::StoredSubmission<'_>,
+    ) -> Result<(), metsuke_server::archive::ArchiveError> {
+        self.inner.store(submission)
+    }
+}
+
+impl metsuke_server::archive::Bytes for Attested {
+    fn reader(
+        &self,
+        key: &str,
+    ) -> Result<metsuke_server::archive::ObjectStream, metsuke_server::archive::ArchiveError> {
+        Ok(metsuke_server::archive::ObjectStream {
+            attestation: Some(self.attestation),
+            ..self.inner.reader(key)?
+        })
+    }
+}
+
+impl metsuke_server::archive::List for Attested {
+    fn location(&self) -> String {
+        self.inner.location()
+    }
+
+    fn for_each_key<E: From<metsuke_server::archive::ArchiveError>>(
+        &self,
+        visit: impl FnMut(&str) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.inner.for_each_key(visit)
+    }
+
+    fn page(
+        &self,
+        prefix: &str,
+        after: &str,
+        max_keys: std::num::NonZeroU32,
+    ) -> Result<metsuke_server::archive::Page, metsuke_server::archive::ArchiveError> {
+        self.inner.page(prefix, after, max_keys)
+    }
+}
+
+/// What a consumer checks the bytes with travels with them: the same two
+/// headers the pool sent, so a download is verifiable without asking the
+/// server to be believed about anything.
+#[test]
+fn a_download_carries_the_key_and_signature_the_pool_sent() {
+    let key = test_key();
+    let (_, signature) = seal(&key, &envelope_for(&key, 4));
+    let dir = tempfile::tempdir().unwrap();
+    let server = over(
+        Attested {
+            inner: FilesystemArchive::new(&dir.path().join("archive")),
+            attestation: metsuke_server::archive::Attestation {
+                vkey: key.verifying_key(),
+                signature,
+            },
+        },
+        dir,
+    );
+    assert_eq!(server.answer(post(&key, 4)).status, 200);
+
+    let answer = server.answer(pull(&format!(
+        "{OBJECT_PATH}?{KEY_FIELD}={}",
+        stored_key(&server)
+    )));
+
+    let sent: std::collections::HashMap<&str, String> = answer.headers.into_iter().collect();
+    assert_eq!(
+        sent.get(HEADER_VKEY),
+        Some(&hex::encode(key.verifying_key().as_bytes()))
+    );
+    assert_eq!(
+        sent.get(HEADER_SIGNATURE),
+        Some(&hex::encode(&signature.to_bytes()))
+    );
+}
+
+/// And an archive that holds no metadata says so by sending none, rather than
+/// by withholding the bytes: what to do about an object it cannot check is the
+/// consumer's to decide.
+#[test]
+fn a_download_from_an_archive_without_metadata_carries_no_headers() {
+    let server = server();
+    let key = test_key();
+    assert_eq!(server.answer(post(&key, 4)).status, 200);
+
+    let answer = server.answer(pull(&format!(
+        "{OBJECT_PATH}?{KEY_FIELD}={}",
+        stored_key(&server)
+    )));
+
+    assert_eq!(answer.status, 200);
+    assert!(answer.headers.is_empty(), "got: {:?}", answer.headers);
+}
+
 /// The download hands back the archive's reader (metsuke-4zo.72).
 #[test]
 fn a_download_answers_the_stored_bytes_as_a_stream() {
@@ -356,7 +461,12 @@ fn a_download_answers_the_stored_bytes_as_a_stream() {
 
 /// The key of the one object the archive holds, read off the listing because
 /// the id in it is the server's, stamped at receipt.
-fn stored_key(server: &Server<FilesystemArchive>) -> String {
+fn stored_key<A>(server: &Server<A>) -> String
+where
+    A: metsuke_server::archive::Store
+        + metsuke_server::archive::Bytes
+        + metsuke_server::archive::List,
+{
     let answer = server.answer(pull(SUBMISSIONS_PATH));
     let page: serde_json::Value = serde_json::from_str(&body(&answer)).unwrap();
     match page["keys"].as_array().unwrap().as_slice() {
