@@ -36,6 +36,11 @@ list_max_pages = 1000
 allowlist = { pool1CHANGEME = "MUSA-0000" }
 max_body_bytes = 1048576
 max_header_bytes = 4096
+# How far either way a batch may be sealed from this server's clock. A batch is
+# sealed at upload rather than when its scrapes were taken, so a spooled hour
+# still arrives fresh; what this refuses is a captured submission sent again,
+# and an agent whose host clock has drifted this far.
+max_timestamp_skew_secs = 300
 # A runaway-agent backstop, not abuse control: ~16x headroom over six agents
 # uploading once an hour.
 rate_limit_uploads = 100

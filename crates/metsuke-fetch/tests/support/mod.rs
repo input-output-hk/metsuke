@@ -238,6 +238,7 @@ fn ingest_config() -> IngestConfig {
         allowlist: Codes::new(),
         max_body_bytes: nonzero_u64(1 << 20),
         max_header_bytes: nonzero_u64(4096),
+        max_timestamp_skew_secs: nonzero_u32(u32::MAX),
         rate_limit_uploads: nonzero_u32(1000),
         rate_limit_uploads_total: nonzero_u32(1000),
         rate_limit_window_secs: nonzero_u32(3600),

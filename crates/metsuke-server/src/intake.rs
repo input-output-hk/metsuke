@@ -1,6 +1,7 @@
 //! The one path an upload takes. `submit` read top to bottom is the check
-//! order, and there are three checks: the pool is allowlisted, the signature
-//! stands, the traffic is within its budget.
+//! order, and there are four checks: the pool is allowlisted, the signature
+//! stands, the batch was sealed near this clock, the traffic is within its
+//! budget.
 //!
 //! Nothing here decompresses and nothing reads a payload. The header frame is
 //! plaintext inside the signed bytes, so what an object is filed under comes
@@ -8,8 +9,8 @@
 
 use std::sync::Mutex;
 
-use metsuke_wire::envelope::{Ack, ContainerError, HeaderError, PoolId, read_header};
-use time::OffsetDateTime;
+use metsuke_wire::envelope::{Ack, ContainerError, Header, HeaderError, PoolId, read_header};
+use time::{Duration, OffsetDateTime};
 
 use crate::archive::{ArchiveError, Kind, ObjectName, Store, StoredSubmission};
 use crate::authority::Signed;
@@ -40,6 +41,19 @@ pub enum Rejection {
     ServerBusy { max: u32, window_secs: u32 },
     #[error("signature does not verify over the body as received")]
     BadSignature,
+    /// The signature stands, so the pool sealed these bytes, and it sealed
+    /// them too far from this server's clock for this to be the upload they
+    /// were sealed for. A replay is what it refuses; a drifted clock is what
+    /// an operator meets, so the refusal states both clocks.
+    #[error(
+        "sealed at {sealed_at}, and this server's clock reads {now}: over the \
+         {max_secs}s either way that a submission may be sealed from"
+    )]
+    StaleTimestamp {
+        sealed_at: OffsetDateTime,
+        now: OffsetDateTime,
+        max_secs: u32,
+    },
     /// The signature stands, so these bytes are the pool's, and its header
     /// frame is not one this build can read a name out of.
     #[error("header frame does not read: {0}")]
@@ -126,6 +140,22 @@ impl<A: Store> Intake<A> {
         if !signed.verifies() {
             return Err(Rejection::BadSignature.into());
         }
+        // The header is read once, here, and handed to `accept`: the freshness
+        // check needs it before the limiter is charged, because a replayed body
+        // carries a signature that verifies and would otherwise spend the
+        // window of the pool it was captured from.
+        let header = read_header(signed.wire_bytes, self.config.max_header_bytes.get())
+            .map_err(Rejection::UnreadableHeader)?;
+        let skew = now - header.timestamp;
+        let max_secs = self.config.max_timestamp_skew_secs.get();
+        if skew.abs() > Duration::seconds(max_secs.into()) {
+            return Err(Rejection::StaleTimestamp {
+                sealed_at: header.timestamp,
+                now,
+                max_secs,
+            }
+            .into());
+        }
         // A temporary of this statement, so the guard is released before the
         // match reads it rather than at the end of the block.
         let charged = self
@@ -151,7 +181,7 @@ impl<A: Store> Intake<A> {
                 .into());
             }
         }
-        self.accept(signed, pool_id, now)
+        self.accept(signed, pool_id, now, header)
     }
 
     /// The post-signature half: the batch is the pool's, so what it says about
@@ -161,9 +191,8 @@ impl<A: Store> Intake<A> {
         signed: &Signed<'_>,
         pool_id: PoolId,
         now: OffsetDateTime,
+        header: Header,
     ) -> Result<Ack, IngestError> {
-        let header = read_header(signed.wire_bytes, self.config.max_header_bytes.get())
-            .map_err(Rejection::UnreadableHeader)?;
         let kind = Kind::of(header.schema_version).ok_or(Rejection::KeylessSchema {
             schema_version: header.schema_version,
         })?;

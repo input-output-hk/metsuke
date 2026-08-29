@@ -412,6 +412,7 @@ let
               allowlist.${poolId} = "MUSA-0000";
               max_body_bytes = 1048576;
               max_header_bytes = 4096;
+              max_timestamp_skew_secs = 300;
               rate_limit_uploads = 240;
               rate_limit_uploads_total = 2400;
               rate_limit_window_secs = 3600;

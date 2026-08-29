@@ -141,7 +141,8 @@ pub fn status_for(rejection: &Rejection) -> u16 {
         Rejection::UnknownPool { .. } | Rejection::BadSignature => 403,
         Rejection::NotASubmission(_)
         | Rejection::UnreadableHeader(_)
-        | Rejection::KeylessSchema { .. } => 400,
+        | Rejection::KeylessSchema { .. }
+        | Rejection::StaleTimestamp { .. } => 400,
     }
 }
 

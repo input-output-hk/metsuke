@@ -10,11 +10,13 @@ use metsuke_wire::envelope::{
     CONTAINER_MAGIC, ContainerError, Envelope, PoolId, SCHEMA_VERSION_LINES,
     SCHEMA_VERSION_SCRAPES, SigningKey,
 };
+use time::Duration;
 
 mod support;
 use support::{
-    FailingArchive, envelope_for, lines_envelope_at, nonzero_u32, nonzero_u64, other_key,
-    permissive_config, pool_of, seal, submission, test_agent_id, test_key, test_now, trace_line,
+    FailingArchive, envelope_at, envelope_for, lines_envelope_at, nonzero_u32, nonzero_u64,
+    other_key, permissive_config, pool_of, seal, submission, test_agent_id, test_key, test_now,
+    trace_line,
 };
 
 /// An intake wired to a temporary directory, ready to submit to. The
@@ -27,6 +29,15 @@ fn intake_with(config: IngestConfig) -> (Intake<FilesystemArchive>, tempfile::Te
 
 fn intake_for(pools: &[PoolId]) -> (Intake<FilesystemArchive>, tempfile::TempDir) {
     intake_with(permissive_config(pools))
+}
+
+/// Permissive but for the freshness window, which `permissive_config` leaves
+/// wide enough that no other test meets it.
+fn skew_of(secs: u32, key: &SigningKey) -> IngestConfig {
+    IngestConfig {
+        max_timestamp_skew_secs: nonzero_u32(secs),
+        ..permissive_config(&[pool_of(key)])
+    }
 }
 
 fn rejection(error: IngestError) -> Rejection {
@@ -366,6 +377,79 @@ fn a_forged_body_spends_none_of_the_pools_budget() {
     assert!(
         matches!(rejection(error), Rejection::BadSignature),
         "expected the signature check to reject"
+    );
+
+    // The single upload the window allows is still the pool's to spend.
+    submit(&intake, &key, &envelope_for(&key, 2)).unwrap();
+}
+
+// A batch is sealed when it is uploaded, not when its scrapes were taken, so
+// what this bounds is how long a captured submission stays replayable. Both
+// directions, because a clock that runs fast is as wrong as one that lags.
+#[test]
+fn a_batch_sealed_outside_the_window_is_refused() {
+    let key = test_key();
+    let (intake, _dir) = intake_with(skew_of(300, &key));
+    for offset in [Duration::seconds(-301), Duration::seconds(301)] {
+        let sealed_at = test_now() + offset;
+        let (body, signature) = seal(&key, &envelope_at(&key, 1, sealed_at));
+
+        let error = intake
+            .submit(
+                &submission(key.verifying_key(), signature, &body),
+                test_now(),
+            )
+            .unwrap_err();
+
+        let rejection = rejection(error);
+        assert_eq!(status_for(&rejection), 400);
+        assert!(
+            matches!(rejection, Rejection::StaleTimestamp { max_secs: 300, .. }),
+            "offset {offset}: expected the timestamp check to reject, got {rejection:?}"
+        );
+    }
+}
+
+// The edge is inside: a batch sealed exactly at the bound is the last one the
+// window admits, so the refusal above is the bound being crossed and not the
+// bound being reached.
+#[test]
+fn a_batch_sealed_at_the_window_is_accepted() {
+    let key = test_key();
+    let (intake, _dir) = intake_with(skew_of(300, &key));
+    let sealed_at = test_now() - Duration::seconds(300);
+    let (body, signature) = seal(&key, &envelope_at(&key, 1, sealed_at));
+
+    intake
+        .submit(
+            &submission(key.verifying_key(), signature, &body),
+            test_now(),
+        )
+        .unwrap();
+}
+
+// The window is checked before the limiter for the same reason the signature
+// is: a replayed body carries a signature that verifies, so charging first
+// would let whoever captured one spend the window of the pool that sealed it.
+#[test]
+fn a_replayed_batch_spends_none_of_the_pools_budget() {
+    let key = test_key();
+    let config = IngestConfig {
+        rate_limit_uploads: nonzero_u32(1),
+        ..skew_of(300, &key)
+    };
+    let (intake, _dir) = intake_with(config);
+    let (body, signature) = seal(&key, &envelope_at(&key, 1, test_now() - Duration::hours(2)));
+
+    let error = intake
+        .submit(
+            &submission(key.verifying_key(), signature, &body),
+            test_now(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(rejection(error), Rejection::StaleTimestamp { .. }),
+        "expected the timestamp check to reject"
     );
 
     // The single upload the window allows is still the pool's to spend.

@@ -247,6 +247,7 @@ pub fn ingest_toml(config: &IngestConfig) -> String {
         allowlist,
         max_body_bytes,
         max_header_bytes,
+        max_timestamp_skew_secs,
         rate_limit_uploads,
         rate_limit_uploads_total,
         rate_limit_window_secs,
@@ -256,6 +257,7 @@ pub fn ingest_toml(config: &IngestConfig) -> String {
 allowlist = {allowlist}
 max_body_bytes = {max_body_bytes}
 max_header_bytes = {max_header_bytes}
+max_timestamp_skew_secs = {max_timestamp_skew_secs}
 rate_limit_uploads = {rate_limit_uploads}
 rate_limit_uploads_total = {rate_limit_uploads_total}
 rate_limit_window_secs = {rate_limit_window_secs}
@@ -270,6 +272,7 @@ pub fn permissive_config(allowed: &[PoolId]) -> IngestConfig {
         allowlist: allowlist(allowed),
         max_body_bytes: nonzero_u64(1024 * 1024),
         max_header_bytes: nonzero_u64(MAX_HEADER_BYTES),
+        max_timestamp_skew_secs: nonzero_u32(u32::MAX),
         rate_limit_uploads: nonzero_u32(100),
         rate_limit_uploads_total: nonzero_u32(1000),
         rate_limit_window_secs: nonzero_u32(3600),
