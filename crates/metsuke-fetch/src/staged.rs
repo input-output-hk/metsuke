@@ -11,8 +11,11 @@ use std::path::{Path, PathBuf};
 /// atomic; it carries the destination's name so an operator seeing one knows
 /// what it was becoming.
 ///
-/// The rename alone is not a durability guarantee: neither directory is fsynced
-/// (metsuke-jfb.31).
+/// The directory is fsynced after the rename, which is what makes the rename
+/// itself durable. Without it the two renames a sync makes, the object's and
+/// the cursor's, are in different directories and nothing orders them across a
+/// power loss: the cursor could be durable while the object it names is not,
+/// and the resumed run would then skip that object for good.
 pub fn replacing<T>(
     path: &Path,
     write: impl FnOnce(&mut fs::File) -> io::Result<T>,
@@ -26,6 +29,11 @@ pub fn replacing<T>(
         let written = write(&mut file)?;
         file.sync_all()?;
         fs::rename(&staged, path)?;
+        // The rename is a directory operation, so the file's own sync says
+        // nothing about it. Costs one fsync per object written.
+        if let Some(parent) = path.parent() {
+            fs::File::open(parent)?.sync_all()?;
+        }
         Ok(written)
     };
     match written() {
