@@ -6,6 +6,14 @@
 *.db-wal*
 # fsqlite multi-process namespace sidecars (-fsqlite-ns-gate / -fsqlite-ns-use)
 *.db-fsqlite-*
+# and the upgrade record, which separates with a dot rather than a dash
+# (beads.db.fsqlite-migration-state)
+*.db.fsqlite-*
+# The three `br doctor` audits for by name. The first two are already covered
+# above, and it checks for the patterns rather than for what they match.
+*-fsqlite-ns-gate
+*-fsqlite-ns-use
+*.vacuum-wal-cert*
 
 # Lock files
 .write.lock
