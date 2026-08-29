@@ -455,6 +455,27 @@
                 inherit (pkgs) cargo clippy;
               };
               settings.denyWarnings = true;
+              entry = lib.mkForce (
+                toString (
+                  pkgs.writeShellScript "clippy-hook" ''
+                    export PATH=${
+                      lib.makeBinPath [
+                        pkgs.cargo
+                        pkgs.clippy
+                      ]
+                    }:$PATH
+                    if ! command -v cc >/dev/null; then
+                      echo "clippy builds this workspace's build scripts and there is no cc here. Commit from the devShell: nix develop"
+                      exit 1
+                    fi
+                    if [ ! -d "''${CARGO_HOME:-$HOME/.cargo}/registry/index" ]; then
+                      echo "clippy resolves offline and this cargo home holds no registry index. Warm it once: nix develop -c cargo fetch"
+                      exit 1
+                    fi
+                    exec cargo-clippy clippy --all-targets --offline -- --deny warnings
+                  ''
+                )
+              );
             };
           };
 
