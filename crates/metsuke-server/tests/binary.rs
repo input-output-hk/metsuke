@@ -292,6 +292,13 @@ fn bound_url(stderr: ChildStderr, logged: Arc<std::sync::Mutex<String>>) -> Stri
             reader.read_line(&mut line).unwrap() > 0,
             "server exited before naming its address"
         );
+        // Kept as it is read, not only after the address line: what a server
+        // says while starting is said before it names its address, and a test
+        // about a startup line would otherwise be reading an empty string.
+        logged
+            .lock()
+            .expect("no panic holds this lock")
+            .push_str(&line);
         if let Some(start) = line.find("http://") {
             // Drained in the background rather than at the end: a full stderr
             // pipe would otherwise wedge the server mid-test.
@@ -572,6 +579,26 @@ fn an_s3_archive_without_credentials_exits_nonzero_naming_them() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("AWS_ACCESS_KEY_ID"), "{stderr}");
+}
+
+/// The one backend whose objects nobody can ever check says so at startup.
+/// The pair is dropped at the moment of storing, so this line is the only
+/// place an operator can learn it: no route, no audit and no consumer can
+/// recover what the archive did not keep.
+#[test]
+fn a_filesystem_archive_says_what_it_gives_up() {
+    let server = Server::start(&[pool_of(&test_key())]);
+
+    let logged = server.logged();
+
+    assert!(
+        logged.contains("drops the key and signature"),
+        "the startup log must say what this backend costs, got: {logged}"
+    );
+    assert!(
+        logged.contains(&server.archive_root().display().to_string()),
+        "and name the archive it is warning about, got: {logged}"
+    );
 }
 
 /// Restarting keeps nothing but the in-memory rate-limit windows, so the

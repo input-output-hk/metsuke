@@ -16,7 +16,7 @@ use metsuke_server::intake::Intake;
 use metsuke_server::s3::{S3Archive, S3Error};
 use metsuke_server::serve;
 use metsuke_server::verify::{Audit, AuditError, audit};
-use metsuke_wire::journal::{ERR, INFO};
+use metsuke_wire::journal::{ERR, INFO, WARNING};
 use rusty_s3::Credentials;
 
 #[derive(Debug, thiserror::Error)]
@@ -105,14 +105,28 @@ fn run() -> Result<(), Fatal> {
     // The archive kind is matched once: pairing it with the subcommand would
     // multiply the arms by every kind this grows.
     match archive {
-        ArchiveConfig::Filesystem { root } => dispatch(
-            FilesystemArchive::new(&root),
-            args.command,
-            serving,
-            // A filesystem archive stores no metadata, so there is nothing to
-            // re-verify an object against.
-            |_, _| Err(Fatal::CannotVerifyFilesystem),
-        ),
+        ArchiveConfig::Filesystem { root } => {
+            // Said once, loudly, because nothing downstream can: the pair is
+            // dropped at the moment of storing, so no route, no audit and no
+            // consumer can ever recover it. An operator who reads this line
+            // and meant it has lost nothing; one who did not has an archive
+            // that cannot be told from a fabricated one.
+            eprintln!(
+                "{WARNING}archiving to the filesystem at {}: this stores the submission bytes \
+                 alone and drops the key and signature they were checked with, so nothing can \
+                 verify this archive afterwards, verify-archive refuses it, and every download \
+                 reaches a consumer unverifiable. S3 is what production runs (ADR 0005).",
+                root.display()
+            );
+            dispatch(
+                FilesystemArchive::new(&root),
+                args.command,
+                serving,
+                // A filesystem archive stores no metadata, so there is nothing
+                // to re-verify an object against.
+                |_, _| Err(Fatal::CannotVerifyFilesystem),
+            )
+        }
         ArchiveConfig::S3(config) => dispatch(
             s3_archive(&config)?,
             args.command,

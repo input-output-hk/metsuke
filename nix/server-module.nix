@@ -184,6 +184,18 @@ in
       };
     };
 
+    # A warning and not an assertion: the config test and a single-host
+    # development deployment both use this backend deliberately, and refusing
+    # it would leave them with nothing. What it costs is not obvious from the
+    # option name, so it is said here as well as at startup.
+    warnings = lib.optional (cfg.settings.archive ? filesystem) ''
+      services.metsuke-server.settings.archive.filesystem stores the submission
+      bytes alone and drops the key and signature they were checked with, so
+      nothing can verify that archive afterwards, verify-archive refuses it, and
+      every download reaches a consumer unverifiable. S3 is what production runs
+      (ADR 0005).
+    '';
+
     assertions = [
       {
         assertion = !(cfg.settings.archive ? s3) || cfg.environmentFile != null;
