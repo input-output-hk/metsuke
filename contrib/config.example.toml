@@ -51,7 +51,10 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # upload_batch_max_bytes counts the header frame and the payload before
 # compression; the server's own ceiling is [ingest].max_body_bytes on the
 # compressed bytes (contrib/server.example.toml), and nothing checks the two
-# against each other. Why the two count a line the same way: docs/adr/0010.
+# against each other. Raising this past what your server allows earns a 413 on
+# every attempt, and the same rows reseal to the same size, so they stay
+# spooled until the cap drops them. Why the two count a line the same way:
+# docs/adr/0010.
 #
 # upload_max_submissions is how many submissions one upload tick may send. A
 # node emits more trace lines between ticks than one submission carries, so at
