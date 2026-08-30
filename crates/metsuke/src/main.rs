@@ -287,11 +287,15 @@ fn upload_tick(
         lines,
         carried,
         bytes,
+        payload_digest,
     } in &sent
     {
         match outcome {
             UploadOutcome::Acked(ack) => {
-                eprintln!("{INFO}submission {counter} accepted: {lines} {carried}, {bytes} bytes");
+                eprintln!(
+                    "{INFO}submission {counter} accepted: {lines} {carried}, {bytes} bytes, \
+                     payload {payload_digest}"
+                );
                 if newer_version_available(env!("CARGO_PKG_VERSION"), &ack.latest_version) {
                     eprintln!(
                         "{WARNING}client {} is available (this is {}); \
@@ -304,13 +308,14 @@ fn upload_tick(
             UploadOutcome::Retryable(reason) => {
                 eprintln!(
                     "{WARNING}submission {counter} was not taken, and the spool keeps its \
-                     {lines} {carried}: {reason}"
+                     {lines} {carried}, payload {payload_digest}: {reason}"
                 );
             }
             UploadOutcome::Rejected { status, reason } => {
                 eprintln!(
                     "{WARNING}the server refused submission {counter} ({status}), the spool \
-                     keeps its {lines} {carried}, backing off: {reason}"
+                     keeps its {lines} {carried}, payload {payload_digest}, backing off: \
+                     {reason}"
                 );
             }
         }

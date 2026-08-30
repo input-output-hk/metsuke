@@ -39,6 +39,10 @@ pub struct SealedSubmission {
     /// What the header stamped this with, so a journal line and an archived
     /// object can be matched by it.
     pub counter: u64,
+    /// What its rows are, rather than what this attempt at them is
+    /// (`envelope::payload_digest`). Everything else here is redrawn when a
+    /// refused submission is resealed, so this is what ties the two together.
+    pub payload_digest: String,
     rows: SubmissionRows,
 }
 
@@ -186,11 +190,13 @@ impl Delivery {
     ) -> Result<SealedSubmission, DeliveryError> {
         let counter = self.spool.next_counter()?;
         let envelope = self.envelope(counter, now, payload);
+        let payload_digest = envelope::payload_digest(&envelope);
         let (wire_bytes, signature) = envelope::seal(&self.key, &envelope, self.compression_level)?;
         Ok(SealedSubmission {
             wire_bytes,
             signature,
             counter,
+            payload_digest,
             rows,
         })
     }

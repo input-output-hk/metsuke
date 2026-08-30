@@ -124,9 +124,54 @@ fn unacked_batch_is_retaken_with_a_fresh_counter() {
         .take_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .unwrap();
+    // The digest is what a reader has to match the two by: everything else
+    // about the retry differs, including the bytes and their length, because
+    // the header carries a fresh counter and a later timestamp.
+    assert_eq!(first.payload_digest, retry.payload_digest);
+    assert_ne!(first.wire_bytes, retry.wire_bytes);
+
     let (first, retry) = (open(&first), open(&retry));
     assert_eq!(scrapes_of(&first), scrapes_of(&retry));
     assert!(retry.counter > first.counter);
+}
+
+// And it has to be the payload's, not the attempt's: two submissions carrying
+// different rows must not answer the same, or matching a refusal to a retry
+// would confirm rows that never went.
+#[test]
+fn submissions_of_different_rows_carry_different_digests() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = test_key();
+    let mut delivery = temp_delivery(&dir, &key);
+    delivery.push(&scrape_at(1)).unwrap();
+    let first = delivery.take_submission(test_now()).unwrap().unwrap();
+    let first_digest = first.payload_digest.clone();
+    delivery.ack(first).unwrap();
+
+    delivery.push(&scrape_at(2)).unwrap();
+    let second = delivery.take_submission(test_now()).unwrap().unwrap();
+    assert_ne!(first_digest, second.payload_digest);
+}
+
+// The archive is where a consumer checks the claim, so the digest has to be
+// over what a stored object decompresses to and nothing else.
+#[test]
+fn the_digest_covers_exactly_what_zstd_hands_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = test_key();
+    let mut delivery = temp_delivery(&dir, &key);
+    for secs in 1..=3 {
+        delivery.push(&scrape_at(secs)).unwrap();
+    }
+    let sealed = delivery.take_submission(test_now()).unwrap().unwrap();
+    let opened = envelope::open(
+        &key.verifying_key(),
+        &sealed.wire_bytes,
+        &sealed.signature,
+        TEST_LIMITS,
+    )
+    .unwrap();
+    assert_eq!(sealed.payload_digest, envelope::payload_digest(&opened));
 }
 
 #[test]

@@ -64,6 +64,9 @@ pub struct Uploaded {
     pub carried: &'static str,
     /// The sealed bytes, as sent.
     pub bytes: usize,
+    /// What its rows are (`delivery::SealedSubmission::payload_digest`), so a
+    /// refusal and the attempt that later carried the same rows can be matched.
+    pub payload_digest: String,
 }
 
 impl Agent {
@@ -141,6 +144,7 @@ impl Agent {
             lines: submission.lines(),
             carried: submission.carried(),
             bytes: submission.wire_bytes.len(),
+            payload_digest: submission.payload_digest.clone(),
         };
         if matches!(sent.outcome, UploadOutcome::Acked(_)) {
             self.delivery

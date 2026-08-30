@@ -57,9 +57,11 @@ both.
 _Avoid_: section, block, chunk
 
 **Sequence Number**:
-The count an **Agent** stamps on each **Submission** it sends, so a consumer
-reading the archive can see that one is missing. Per **Agent**, and the server
-neither reads nor checks it.
+The count an **Agent** stamps on each **Submission** it sends. Per **Agent**,
+and the server neither reads nor checks it. A number is never handed out twice,
+so an attempt the server refused spends one and the same lines go out under a
+later one. A gap therefore says a **Submission** did not land; it does not say
+its **Scrapes** were lost, and it is not a count of what is missing.
 _Avoid_: counter, nonce, offset
 
 **Allowlist**:
@@ -108,8 +110,11 @@ _Avoid_: user, consumer, analyst, client
 >
 > **Dev:** "So a gap in one relay's numbers means we lost a **Submission**?"
 >
-> **Domain expert:** "Yes, from that **Agent**. Reading it as the pool's would
-> count the other relay's uploads as missing."
+> **Domain expert:** "It means one did not land, from that **Agent**. Reading
+> it as the pool's would count the other relay's uploads as missing. And a
+> refused attempt spends its number and sends its lines under the next, so the
+> gap is usually the retry rather than a loss. What was actually collected is
+> what the **Scrapes** say they were taken at."
 
 ## Flagged ambiguities
 

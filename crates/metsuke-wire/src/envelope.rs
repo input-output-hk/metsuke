@@ -744,6 +744,20 @@ struct Unstamped<T> {
 /// Concatenation, because a line was stamped and rendered where it was written
 /// (`PayloadLine`). Nothing is serialized here, so a batch's bytes are the sum
 /// of what its rows already measured.
+/// A short digest of exactly the bytes `payload_lines` produces, which is what
+/// `zstd -d` emits for a stored object, so a consumer can recompute it from the
+/// archive rather than trust a log line.
+///
+/// The header is deliberately not covered. A submission the server did not take
+/// is resealed under a fresh counter and timestamp, so everything else about it
+/// changes: the bytes, their length and the signature. Its rows do not, and
+/// this is what says so.
+pub fn payload_digest(envelope: &Envelope) -> String {
+    use blake2::digest::consts::U8;
+    use blake2::{Blake2b, Digest};
+    crate::hex::encode(&Blake2b::<U8>::digest(payload_lines(envelope))[..])
+}
+
 pub fn payload_lines(envelope: &Envelope) -> Vec<u8> {
     let mut body = Vec::with_capacity(
         envelope
