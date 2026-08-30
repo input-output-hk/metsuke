@@ -87,6 +87,21 @@ impl Server {
             .clone()
     }
 
+    /// The same once `needle` is in it, or whatever was logged by the
+    /// deadline, so the assertion still names what it did find. A reader
+    /// thread drains the server's stderr, so a line written while an answer
+    /// goes out is not there the moment that answer arrives.
+    fn logged_until(&self, needle: &str) -> String {
+        let deadline = std::time::Instant::now() + PATIENCE;
+        loop {
+            let logged = self.logged();
+            if logged.contains(needle) || std::time::Instant::now() >= deadline {
+                return logged;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn archive_root(&self) -> std::path::PathBuf {
         self.dir.path().join("archive")
     }
@@ -592,8 +607,8 @@ fn an_accepted_submission_is_logged_against_its_pool_and_object() {
 
     assert_eq!(server.post(&key, &envelope_now(&key, 1)).0, 200);
 
-    let logged = server.logged();
     let stored = only_object_key(&server);
+    let logged = server.logged_until(&stored);
     assert!(
         logged.contains(&format!("accepted {}", pool_of(&key))),
         "the acceptance must name the pool, got: {logged}"
@@ -1332,7 +1347,7 @@ fn a_download_of_an_object_that_shrank_is_logged_as_short() {
         delivered < size,
         "the body must be short of the declared {size}, got {delivered}"
     );
-    let logged = server.logged();
+    let logged = server.logged_until("short of");
     assert!(
         logged.contains(&stored) && logged.contains("short of"),
         "the short read must be logged against its key, got: {logged}"
@@ -1359,7 +1374,7 @@ fn a_download_of_an_object_that_grew_is_logged_as_over_length() {
     // The client cannot tell (`serve::streamed`), which is why the log line is
     // the only account of it.
     assert_eq!(body, size, "the answer fills its declared length");
-    let logged = server.logged();
+    let logged = server.logged_until("grew past");
     assert!(
         logged.contains(&stored) && logged.contains("grew past"),
         "the over-length read must be logged against its key, got: {logged}"
