@@ -610,12 +610,13 @@ fn an_accepted_submission_is_logged_against_its_pool_and_object() {
     let stored = only_object_key(&server);
     let logged = server.logged_until(&stored);
     assert!(
-        logged.contains(&format!("accepted {}", pool_of(&key))),
-        "the acceptance must name the pool, got: {logged}"
+        logged.contains(&format!("accepted {stored}")),
+        "the acceptance must name the object it became, got: {logged}"
     );
     assert!(
-        logged.contains(&stored),
-        "and the object it became, got: {logged}"
+        stored.contains(&pool_of(&key).to_string()),
+        "and that name is what says whose it was, so the line does not repeat \
+         the pool beside it: {stored}"
     );
 }
 

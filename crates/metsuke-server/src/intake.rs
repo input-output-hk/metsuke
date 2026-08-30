@@ -211,11 +211,13 @@ impl<A: Store> Intake<A> {
         // saying about an accepted submission is the object it became, and
         // this is where that name is. The key carries the pool, the agent and
         // the kind (`archive::ObjectName`), so one line answers whose it was,
-        // which of their Agents sent it and what it held. Without it a journal
-        // shows only refusals, and an operator watching a working server sees
-        // nothing but whatever scans the internet.
+        // which of their Agents sent it and what it held, and naming the pool
+        // beside it would only be that key's own middle segment again. A
+        // refusal states the pool because it has no key to carry one. Without
+        // this a journal shows only refusals, and an operator watching a
+        // working server sees nothing but whatever scans the internet.
         eprintln!(
-            "{INFO}accepted {pool_id}: {}, {} bytes",
+            "{INFO}accepted {}, {} bytes",
             stored.object_key(),
             signed.wire_bytes.len()
         );
