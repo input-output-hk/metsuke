@@ -57,3 +57,61 @@ fn a_3xx_is_retryable() {
             .retryable
     );
 }
+
+// What a proxy in front of the server answers. metsuke-server states a reason
+// in a sentence, but an agent meets whatever is between it and the server
+// first: this is the page nginx returned to leios1-bp-a-1's agent when its
+// drain outran a rate limit. Logged as it arrived, journald reads each newline
+// as its own entry, so the severity prefix written once at the front is
+// attached to the first line and nothing else.
+#[test]
+fn a_proxys_html_page_is_reduced_to_one_line() {
+    let page = "<html>\r\n<head><title>429 Too Many Requests</title></head>\r\n<body>\r\n\
+                <center><h1>429 Too Many Requests</h1></center>\r\n<hr><center>nginx</center>\r\n\
+                </body>\r\n</html>\r\n";
+    let refusal = http::classify(&mut answered(429, page)).unwrap_err();
+    assert!(
+        !refusal.reason.contains('\n') && !refusal.reason.contains('\r'),
+        "a reason has to be one journal entry, got {:?}",
+        refusal.reason
+    );
+    assert!(
+        refusal.reason.contains("429 Too Many Requests"),
+        "and still say what answered, got {:?}",
+        refusal.reason
+    );
+    assert!(refusal.retryable);
+}
+
+// A refusal is logged, so its length is a log line's length and not the
+// answering server's to choose.
+#[test]
+fn a_reason_past_the_bound_is_cut_with_a_mark() {
+    let refusal = http::classify(&mut answered(500, &"x".repeat(10_000))).unwrap_err();
+    assert!(
+        refusal.reason.chars().count() <= 201,
+        "got {} chars",
+        refusal.reason.chars().count()
+    );
+    assert!(
+        refusal.reason.ends_with('…'),
+        "a cut has to show, got {:?}",
+        refusal.reason
+    );
+}
+
+// Cutting inside a multi-byte character would panic on the slice, and a reason
+// is whatever answered rather than something this crate chose the encoding of.
+#[test]
+fn a_reason_is_cut_on_a_character_boundary() {
+    let refusal = http::classify(&mut answered(500, &"é".repeat(10_000))).unwrap_err();
+    assert!(refusal.reason.starts_with('é'));
+    assert!(refusal.reason.ends_with('…'));
+}
+
+// The common case is unchanged: one sentence arrives as itself.
+#[test]
+fn a_reason_that_is_already_a_line_is_left_alone() {
+    let refusal = http::classify(&mut answered(403, "pool is not on the allowlist")).unwrap_err();
+    assert_eq!(refusal.reason, "pool is not on the allowlist");
+}
