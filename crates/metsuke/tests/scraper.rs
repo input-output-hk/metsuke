@@ -60,7 +60,7 @@ async fn one_row_carries_metrics_and_clock_offset() {
             timeout: Duration::from_secs(2),
         },
     };
-    let row = tokio::task::spawn_blocking(move || scrape_once(&config))
+    let (row, _) = tokio::task::spawn_blocking(move || scrape_once(&config))
         .await
         .expect("scraper task panicked");
     // What the recorded body states: tests/scrape.rs.

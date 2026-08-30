@@ -13,6 +13,7 @@ use metsuke::keys::{self, KeyError};
 use metsuke::logselect::{OutsideRoots, SelectConfig};
 use metsuke::logsource::{JournalSource, PipeSource, StartError};
 use metsuke::logtail::{self, DrainEnd};
+use metsuke::report::ScrapeReport;
 use metsuke::schedule::{Schedule, ScheduleConfig};
 use metsuke::scrape::ScrapeConfig;
 use metsuke::scraper::ScraperConfig;
@@ -140,6 +141,7 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         backoff_max: Duration::from_secs(config.upload_backoff_max_secs),
     };
     let mut schedule = Schedule::new();
+    let mut scrapes = ScrapeReport::default();
     let mut next_scrape = Instant::now();
     // First upload immediately: rows left over from the previous run retry
     // at startup (ADR 0004).
@@ -147,13 +149,15 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
     loop {
         let now = Instant::now();
         if now >= next_scrape {
-            if let Err(error) = agent.scrape_once() {
-                eprintln!("{ERR}scrape not spooled: {error}");
+            match agent.scrape_once() {
+                Ok(news) => warn(scrapes.record(&news)),
+                Err(error) => eprintln!("{ERR}scrape not spooled: {error}"),
             }
             next_scrape = now + scrape_interval;
         }
         if now >= next_upload {
-            next_upload = now + upload_tick(&mut agent, &mut schedule, &schedule_config);
+            next_upload =
+                now + upload_tick(&mut agent, &mut scrapes, &mut schedule, &schedule_config);
         }
         let wake = next_scrape.min(next_upload);
         std::thread::sleep(wake.saturating_duration_since(Instant::now()));
@@ -229,11 +233,24 @@ fn start_trace_collection(
     Ok(())
 }
 
+/// The scrape report's lines, at the one severity all of them carry.
+fn warn(lines: Vec<String>) {
+    for line in lines {
+        eprintln!("{WARNING}{line}");
+    }
+}
+
 /// One upload tick: attempt, log the outcome, return the delay until the
 /// next attempt.
-fn upload_tick(agent: &mut Agent, schedule: &mut Schedule, config: &ScheduleConfig) -> Duration {
+fn upload_tick(
+    agent: &mut Agent,
+    scrapes: &mut ScrapeReport,
+    schedule: &mut Schedule,
+    config: &ScheduleConfig,
+) -> Duration {
     // Before the attempt, so every path out of this function has said it:
     // sustained overload is exactly the case where the attempt fails.
+    warn(scrapes.drain());
     let dropped = agent.take_dropped_report();
     if dropped > 0 {
         eprintln!(

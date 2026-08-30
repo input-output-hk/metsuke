@@ -7,6 +7,7 @@
 use time::OffsetDateTime;
 
 use crate::delivery::{Delivery, DeliveryError, SealedSubmission};
+use crate::scrape::Refused;
 use crate::scraper::{ScraperConfig, scrape_once};
 use crate::spool::UncarriableReport;
 use crate::uploader::{UploadConfig, UploadOutcome, upload};
@@ -36,6 +37,17 @@ pub enum UploadError {
          (rows will be resubmitted): {0}"
     )]
     AckAfterAccept(#[source] DeliveryError),
+}
+
+/// What one scrape tick has for the journal. The row goes straight to the
+/// spool, so what an operator would want said about it comes back here rather
+/// than being read off the row afterwards.
+#[derive(Debug, Default)]
+pub struct ScrapeNews {
+    /// The detail of the failure the row shipped, when the scrape failed.
+    pub failed: Option<String>,
+    /// The body's lines that reached no metric.
+    pub refused: Vec<Refused>,
 }
 
 /// What one upload tick has for the journal: the server's answer, and which
@@ -71,9 +83,11 @@ impl Agent {
     }
 
     /// One scrape tick: read, probe, spool.
-    pub fn scrape_once(&mut self) -> Result<(), DeliveryError> {
-        self.dropped_since_report += self.delivery.push(&scrape_once(&self.scraper))?;
-        Ok(())
+    pub fn scrape_once(&mut self) -> Result<ScrapeNews, DeliveryError> {
+        let (row, refused) = scrape_once(&self.scraper);
+        let failed = row.failure.as_ref().map(|failure| failure.detail.clone());
+        self.dropped_since_report += self.delivery.push(&row)?;
+        Ok(ScrapeNews { failed, refused })
     }
 
     /// One upload tick: a submission of scrapes, then one of trace lines,

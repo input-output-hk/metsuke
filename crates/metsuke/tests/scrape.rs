@@ -26,7 +26,7 @@ fn config(metrics_url: String) -> ScrapeConfig {
 }
 
 async fn scrape_config(config: ScrapeConfig) -> Scrape {
-    tokio::task::spawn_blocking(move || scrape(&config))
+    tokio::task::spawn_blocking(move || scrape(&config).0)
         .await
         .expect("scrape task panicked")
 }

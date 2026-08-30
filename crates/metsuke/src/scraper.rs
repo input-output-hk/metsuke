@@ -2,7 +2,7 @@
 //! their merge, so "clock offset comes from the agent's own SNTP query"
 //! (ADR 0007) is a code path, not caller discipline.
 
-use crate::scrape::{self, ScrapeConfig};
+use crate::scrape::{self, Refused, ScrapeConfig};
 use crate::sntp::{SntpConfig, probe};
 use metsuke_wire::envelope::Scrape;
 
@@ -12,9 +12,10 @@ pub struct ScraperConfig {
 }
 
 /// One complete row: the scrape with `clock_offset_ms` filled from the SNTP
-/// probe. Never errors: neither half has a failure a row cannot carry.
-pub fn scrape_once(config: &ScraperConfig) -> Scrape {
-    let mut row = scrape::scrape(&config.scrape);
+/// probe, and the lines it read no metric from. Never errors: neither half has
+/// a failure a row cannot carry.
+pub fn scrape_once(config: &ScraperConfig) -> (Scrape, Vec<Refused>) {
+    let (mut row, refused) = scrape::scrape(&config.scrape);
     row.clock_offset_ms = probe(&config.sntp);
-    row
+    (row, refused)
 }
