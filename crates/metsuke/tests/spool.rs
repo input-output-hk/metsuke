@@ -312,7 +312,64 @@ fn open_migrates_a_fresh_database() {
     let version: u32 = raw
         .query_row("PRAGMA user_version", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
+}
+
+// The byte total is stored, so a spool written before it existed has to gain
+// one that counts what is already in the file. Seeding it to zero would let a
+// full spool accept a whole cap's worth again before evicting anything, which
+// on a deployed agent is the file growing to twice what its operator set.
+#[test]
+fn an_existing_spool_gains_a_total_counting_what_it_already_holds() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = temp_config(&dir, 3 * scrape_bytes());
+    {
+        let mut spool = Spool::open(&config).unwrap();
+        for secs in 1..=3 {
+            spool.push(&scrape_at(secs)).unwrap();
+        }
+    }
+    // The same file as the version that had no total.
+    let raw = rusqlite::Connection::open(&config.path).unwrap();
+    raw.execute_batch("DROP TABLE stream_bytes; PRAGMA user_version = 1;")
+        .unwrap();
+    drop(raw);
+
+    let mut spool = Spool::open(&config).unwrap();
+    assert_eq!(
+        spool.push(&scrape_at(4)).unwrap(),
+        1,
+        "the cap must count the rows the file already held"
+    );
+    assert_eq!(spool.outstanding(whole_spool()).unwrap().len(), 3);
+}
+
+// And the total has to come back down: acked rows are gone, so the room they
+// took is room again. A total that only ever grew would have a long-running
+// agent evicting live rows to make space it already had.
+#[test]
+fn the_cap_counts_only_what_is_still_spooled() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut spool = Spool::open(&temp_config(&dir, 3 * scrape_bytes())).unwrap();
+    for secs in 1..=3 {
+        spool.push(&scrape_at(secs)).unwrap();
+    }
+    let acked: Vec<_> = spool
+        .outstanding(whole_spool())
+        .unwrap()
+        .into_iter()
+        .map(|row| row.id)
+        .collect();
+    spool.ack(&acked).unwrap();
+
+    for secs in 4..=6 {
+        assert_eq!(
+            spool.push(&scrape_at(secs)).unwrap(),
+            0,
+            "an emptied spool has its whole cap free again"
+        );
+    }
+    assert_eq!(spool.outstanding(whole_spool()).unwrap().len(), 3);
 }
 
 // The trace-line half is written by its own connection and read by the upload
