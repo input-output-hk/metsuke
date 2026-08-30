@@ -58,7 +58,7 @@ fn the_recorded_stream_reaches_a_sealed_batch_as_the_lines_the_rules_selected() 
         UNBOUNDED,
     );
     let batch = delivery
-        .take_line_batch(OffsetDateTime::UNIX_EPOCH)
+        .take_line_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .expect("the recording holds lines the shipped rules select");
     let opened = envelope::open(

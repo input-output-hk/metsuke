@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use metsuke::agent::Agent;
+use metsuke::agent::{Agent, Uploaded};
 use metsuke::cli::{Args, ArgsError, USAGE, VERSION};
 use metsuke::config::{Config, ConfigError, LogConfig, LogSource};
 use metsuke::delivery::Delivery;
@@ -87,7 +87,8 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
     identity::check_pool_id(config.pool_id, &key.verifying_key())?;
     let agent_id = identity::agent_id(config.agent_id.as_deref())?;
     // Resolved once and handed to both spool writers: it is what stamps every
-    // line and what a batch's header names, so one value or they could disagree.
+    // line and what a submission's header names, so one value or they could
+    // disagree.
     let provenance = Provenance {
         pool_id: config.pool_id,
         agent_id: agent_id.clone(),
@@ -241,45 +242,61 @@ fn upload_tick(agent: &mut Agent, schedule: &mut Schedule, config: &ScheduleConf
         );
     }
     let attempted = agent.upload_once();
-    // After the attempt, because taking the batch is what drops them.
+    // After the attempt, because taking the submission is what drops them.
     let uncarriable = agent.take_uncarriable_report();
     if uncarriable.oversized > 0 {
         eprintln!(
-            "{WARNING}dropped {} rows no batch could ever carry, the largest {} bytes: \
+            "{WARNING}dropped {} rows no submission could ever carry, the largest {} bytes: \
              raise upload_batch_max_bytes past it, plus the envelope's framing",
             uncarriable.oversized, uncarriable.largest_bytes,
         );
     }
-    let outcome = match attempted {
-        Ok(Some(outcome)) => outcome,
-        Ok(None) => return config.upload_interval,
+    let sent = match attempted {
+        Ok(sent) => sent,
         Err(error) => {
             eprintln!("{ERR}{error}");
             return config.upload_interval;
         }
     };
-    match &outcome {
-        UploadOutcome::Acked(ack) => {
-            eprintln!("{INFO}batch acked");
-            if newer_version_available(env!("CARGO_PKG_VERSION"), &ack.latest_version) {
+    let Some(last) = sent.last() else {
+        return config.upload_interval;
+    };
+    // Every submission of the tick, because which one a line is about is what
+    // ties it to an archived object and to what stays spooled.
+    for Uploaded {
+        outcome,
+        counter,
+        lines,
+        carried,
+        bytes,
+    } in &sent
+    {
+        match outcome {
+            UploadOutcome::Acked(ack) => {
+                eprintln!("{INFO}submission {counter} accepted: {lines} {carried}, {bytes} bytes");
+                if newer_version_available(env!("CARGO_PKG_VERSION"), &ack.latest_version) {
+                    eprintln!(
+                        "{WARNING}client {} is available (this is {}); \
+                         see the instructions page for the update procedure",
+                        ack.latest_version,
+                        env!("CARGO_PKG_VERSION"),
+                    );
+                }
+            }
+            UploadOutcome::Retryable(reason) => {
                 eprintln!(
-                    "{WARNING}client {} is available (this is {}); \
-                     see the instructions page for the update procedure",
-                    ack.latest_version,
-                    env!("CARGO_PKG_VERSION"),
+                    "{WARNING}submission {counter} was not taken, and the spool keeps its \
+                     {lines} {carried}: {reason}"
+                );
+            }
+            UploadOutcome::Rejected { status, reason } => {
+                eprintln!(
+                    "{WARNING}the server refused submission {counter} ({status}), the spool \
+                     keeps its {lines} {carried}, backing off: {reason}"
                 );
             }
         }
-        UploadOutcome::Retryable(reason) => {
-            eprintln!("{WARNING}upload failed, scrapes stay spooled: {reason}");
-        }
-        UploadOutcome::Rejected { status, reason } => {
-            eprintln!(
-                "{WARNING}server rejected the upload ({status}), \
-                 scrapes stay spooled, backing off: {reason}"
-            );
-        }
     }
     let entropy = time::OffsetDateTime::now_utc().unix_timestamp_nanos() as u64;
-    schedule.after(&outcome, config, entropy)
+    schedule.after(&last.outcome, config, entropy)
 }

@@ -1,7 +1,7 @@
 # metsuke
 
 Telemetry for the MusashiNet rewards program: `crates/metsuke` (SPO agent) scrapes
-cardano-node's Prometheus endpoint and uploads signed batches; `crates/metsuke-server`
+cardano-node's Prometheus endpoint and uploads signed submissions; `crates/metsuke-server`
 verifies and archives them to S3; `crates/metsuke-fetch` is the developer's tool that
 pulls the archive back down; `crates/metsuke-wire` is what they agree on, and it is the
 only one any of them links. `metsuke-fetch`'s tests are the exception: they pull from

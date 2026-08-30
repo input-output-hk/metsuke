@@ -5,7 +5,7 @@
 
 listen = "127.0.0.1:8080"
 
-# Generous, because a pool on a bad link still has to get its batch in.
+# Generous, because a pool on a bad link still has to get its submission in.
 [http]
 idle_timeout_ms = 30000
 read_timeout_ms = 60000
@@ -36,7 +36,7 @@ list_max_pages = 1000
 allowlist = { pool1CHANGEME = "MUSA-0000" }
 max_body_bytes = 1048576
 max_header_bytes = 4096
-# How far either way a batch may be sealed from this server's clock. A batch is
+# How far either way a submission may be sealed from this server's clock. One is
 # sealed at upload rather than when its scrapes were taken, so a spooled hour
 # still arrives fresh; what this refuses is a captured submission sent again,
 # and an agent whose host clock has drifted this far.

@@ -20,7 +20,7 @@ use support::{TEST_LIMITS, block_number, scrape_at, test_key, test_provenance};
 
 const UNBOUNDED: u64 = 64 * 1024 * 1024;
 
-fn sealed_test_batch(dir: &tempfile::TempDir) -> metsuke::delivery::SealedBatch {
+fn sealed_test_batch(dir: &tempfile::TempDir) -> metsuke::delivery::SealedSubmission {
     let spool = Spool::open(&SpoolConfig {
         path: dir.path().join("spool.sqlite"),
         max_bytes: UNBOUNDED,
@@ -31,7 +31,7 @@ fn sealed_test_batch(dir: &tempfile::TempDir) -> metsuke::delivery::SealedBatch 
     let mut delivery = Delivery::new(spool, test_key(), 0, UNBOUNDED);
     delivery.push(&scrape_at(5)).unwrap();
     delivery
-        .take_batch(OffsetDateTime::UNIX_EPOCH)
+        .take_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .unwrap()
 }

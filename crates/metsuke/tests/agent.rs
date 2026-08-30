@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use metsuke::agent::Agent;
+use metsuke::agent::{Agent, Uploaded};
 use metsuke::delivery::Delivery;
 use metsuke::scrape::ScrapeConfig;
 use metsuke::scraper::ScraperConfig;
@@ -114,10 +114,17 @@ async fn scraped_metrics_upload_as_a_verified_batch_and_ack_drains_the_spool() {
     .unwrap();
 
     assert!(
-        matches!(first, Some(UploadOutcome::Acked(_))),
-        "expected ack, got {first:?}"
+        matches!(
+            first.as_slice(),
+            [Uploaded {
+                outcome: UploadOutcome::Acked(_),
+                carried: "scrape",
+                ..
+            }]
+        ),
+        "expected one acked scrape submission, got {first:?}"
     );
-    assert!(second.is_none(), "acked rows must leave the spool");
+    assert!(second.is_empty(), "acked rows must leave the spool");
 
     let request = &uploads.received_requests().await.unwrap()[0];
     let header = |name: &str| request.headers.get(name).unwrap().to_str().unwrap();
@@ -166,11 +173,28 @@ async fn one_tick_uploads_both_the_scrapes_and_the_trace_lines() {
     .await
     .unwrap();
 
+    // Both come back, not just the last. Reporting only the trace lines would
+    // leave the operator of an agent collecting them with no sign that their
+    // scrapes were ever taken.
     assert!(
-        matches!(first, Some(UploadOutcome::Acked(_))),
-        "expected ack, got {first:?}"
+        matches!(
+            first.as_slice(),
+            [
+                Uploaded {
+                    outcome: UploadOutcome::Acked(_),
+                    carried: "scrape",
+                    ..
+                },
+                Uploaded {
+                    outcome: UploadOutcome::Acked(_),
+                    carried: "trace line",
+                    ..
+                }
+            ]
+        ),
+        "expected an acked submission per stream, got {first:?}"
     );
-    assert!(second.is_none(), "both streams must have been acked");
+    assert!(second.is_empty(), "both streams must have been acked");
 
     let versions: Vec<u32> = uploads
         .received_requests()
@@ -225,9 +249,23 @@ async fn failed_upload_keeps_the_rows_for_the_next_attempt() {
     .await
     .unwrap();
 
-    assert!(matches!(first, Some(UploadOutcome::Retryable(_))));
+    // One attempt, not two: a submission the server did not take ends the
+    // tick rather than the trace lines being offered on top of it.
+    assert!(matches!(
+        first.as_slice(),
+        [Uploaded {
+            outcome: UploadOutcome::Retryable(_),
+            ..
+        }]
+    ));
     assert!(
-        matches!(second, Some(UploadOutcome::Retryable(_))),
+        matches!(
+            second.as_slice(),
+            [Uploaded {
+                outcome: UploadOutcome::Retryable(_),
+                ..
+            }]
+        ),
         "unacked rows must be offered again, got {second:?}"
     );
 }

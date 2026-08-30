@@ -75,7 +75,7 @@ fn pushed_scrapes_seal_verify_and_ack_drains_the_spool() {
         delivery.push(scrape).unwrap();
     }
     let batch = delivery
-        .take_batch(OffsetDateTime::UNIX_EPOCH)
+        .take_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .unwrap();
     let opened = envelope::open(
@@ -93,7 +93,7 @@ fn pushed_scrapes_seal_verify_and_ack_drains_the_spool() {
     delivery.ack(batch).unwrap();
     assert!(
         delivery
-            .take_batch(OffsetDateTime::UNIX_EPOCH)
+            .take_submission(OffsetDateTime::UNIX_EPOCH)
             .unwrap()
             .is_none()
     );
@@ -107,7 +107,7 @@ fn unacked_batch_is_retaken_with_a_fresh_counter() {
     let key = test_key();
     let mut delivery = temp_delivery(&dir, &key);
     delivery.push(&scrape_at(1)).unwrap();
-    let open = |batch: &metsuke::delivery::SealedBatch| {
+    let open = |batch: &metsuke::delivery::SealedSubmission| {
         envelope::open(
             &key.verifying_key(),
             &batch.wire_bytes,
@@ -117,11 +117,11 @@ fn unacked_batch_is_retaken_with_a_fresh_counter() {
         .unwrap()
     };
     let first = delivery
-        .take_batch(OffsetDateTime::UNIX_EPOCH)
+        .take_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .unwrap();
     let retry = delivery
-        .take_batch(OffsetDateTime::UNIX_EPOCH)
+        .take_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .unwrap();
     let (first, retry) = (open(&first), open(&retry));
@@ -136,13 +136,13 @@ fn empty_spool_yields_no_batch() {
     let mut delivery = temp_delivery(&dir, &key);
     assert!(
         delivery
-            .take_batch(OffsetDateTime::UNIX_EPOCH)
+            .take_submission(OffsetDateTime::UNIX_EPOCH)
             .unwrap()
             .is_none()
     );
     assert!(
         delivery
-            .take_line_batch(OffsetDateTime::UNIX_EPOCH)
+            .take_line_submission(OffsetDateTime::UNIX_EPOCH)
             .unwrap()
             .is_none()
     );
@@ -165,7 +165,7 @@ fn spooled_trace_lines_seal_as_their_own_envelope() {
         lines.push(line).unwrap();
     }
     let batch = delivery
-        .take_line_batch(OffsetDateTime::UNIX_EPOCH)
+        .take_line_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .unwrap();
     let opened = envelope::open(
@@ -180,10 +180,56 @@ fn spooled_trace_lines_seal_as_their_own_envelope() {
     delivery.ack(batch).unwrap();
     assert!(
         delivery
-            .take_line_batch(OffsetDateTime::UNIX_EPOCH)
+            .take_line_submission(OffsetDateTime::UNIX_EPOCH)
             .unwrap()
             .is_none()
     );
+}
+
+// What the journal says a submission was. The header's counter, so a log line
+// and an archived object name the same one; the row count and what to call
+// those rows, so an agent collecting traces does not report both of a tick's
+// submissions as the same thing.
+#[test]
+fn a_sealed_submission_states_what_the_journal_names_it_by() {
+    let dir = tempfile::tempdir().unwrap();
+    let key = test_key();
+    let mut delivery = temp_delivery(&dir, &key);
+    let mut lines = temp_log_spool(&dir);
+    for scrape in [scrape_at(1), scrape_at(2)] {
+        delivery.push(&scrape).unwrap();
+    }
+    lines.push(&trace_line(r#"{"ns":"one line"}"#)).unwrap();
+
+    let scrapes = delivery
+        .take_submission(OffsetDateTime::UNIX_EPOCH)
+        .unwrap()
+        .unwrap();
+    assert_eq!(scrapes.lines(), 2);
+    assert_eq!(scrapes.carried(), "scrapes");
+
+    let traces = delivery
+        .take_line_submission(OffsetDateTime::UNIX_EPOCH)
+        .unwrap()
+        .unwrap();
+    assert_eq!(traces.lines(), 1);
+    assert_eq!(
+        traces.carried(),
+        "trace line",
+        "the word agrees with the count"
+    );
+
+    // One counter across both streams, and the field carries what the header
+    // was stamped with rather than a second count of its own.
+    assert_eq!(traces.counter, scrapes.counter + 1);
+    let opened = envelope::open(
+        &key.verifying_key(),
+        &traces.wire_bytes,
+        &traces.signature,
+        TEST_LIMITS,
+    )
+    .unwrap();
+    assert_eq!(opened.counter, traces.counter);
 }
 
 // Acking a trace-line batch must not touch a spooled scrape, and vice versa:
@@ -198,13 +244,13 @@ fn acking_one_stream_leaves_the_other_spooled() {
     lines.push(&trace_line(r#"{"ns":"one line"}"#)).unwrap();
 
     let batch = delivery
-        .take_line_batch(OffsetDateTime::UNIX_EPOCH)
+        .take_line_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .unwrap();
     delivery.ack(batch).unwrap();
 
     let scrapes = delivery
-        .take_batch(OffsetDateTime::UNIX_EPOCH)
+        .take_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .expect("the scrape is still spooled");
     let opened = envelope::open(
@@ -273,7 +319,7 @@ fn a_batch_stops_at_the_configured_budget_and_the_rest_is_retaken() {
     for secs in 1..=5 {
         delivery.push(&scrape_at(secs)).unwrap();
     }
-    let open = |batch: &metsuke::delivery::SealedBatch| {
+    let open = |batch: &metsuke::delivery::SealedSubmission| {
         envelope::open(
             &key.verifying_key(),
             &batch.wire_bytes,
@@ -284,14 +330,14 @@ fn a_batch_stops_at_the_configured_budget_and_the_rest_is_retaken() {
     };
 
     let first = delivery
-        .take_batch(OffsetDateTime::UNIX_EPOCH)
+        .take_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .unwrap();
     assert_eq!(scrapes_of(&open(&first)), [scrape_at(1), scrape_at(2)]);
     delivery.ack(first).unwrap();
 
     let second = delivery
-        .take_batch(OffsetDateTime::UNIX_EPOCH)
+        .take_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .unwrap();
     assert_eq!(scrapes_of(&open(&second)), [scrape_at(3), scrape_at(4)]);
@@ -317,7 +363,7 @@ fn no_batch_seals_a_body_past_the_budget() {
         delivery.push(&scrape_at(secs)).unwrap();
         lines.push(&line).unwrap();
     }
-    let open = |batch: &metsuke::delivery::SealedBatch| {
+    let open = |batch: &metsuke::delivery::SealedSubmission| {
         envelope::open(
             &key.verifying_key(),
             &batch.wire_bytes,
@@ -327,8 +373,8 @@ fn no_batch_seals_a_body_past_the_budget() {
         .unwrap()
     };
 
-    let scrapes = open(&delivery.take_batch(test_now()).unwrap().unwrap());
-    let traces = open(&delivery.take_line_batch(test_now()).unwrap().unwrap());
+    let scrapes = open(&delivery.take_submission(test_now()).unwrap().unwrap());
+    let traces = open(&delivery.take_line_submission(test_now()).unwrap().unwrap());
 
     assert!(!scrapes_of(&scrapes).is_empty() && !lines_of(&traces).is_empty());
     assert!(body_bytes(&scrapes) <= cap, "{}", body_bytes(&scrapes));
@@ -357,7 +403,7 @@ fn a_line_larger_than_the_whole_budget_is_dropped_rather_than_sealed() {
         .unwrap();
     lines.push(&carriable).unwrap();
 
-    let batch = delivery.take_line_batch(test_now()).unwrap().unwrap();
+    let batch = delivery.take_line_submission(test_now()).unwrap().unwrap();
 
     let opened = envelope::open(
         &key.verifying_key(),
@@ -387,8 +433,8 @@ fn a_budget_the_framing_exhausts_fails_the_tick_and_keeps_the_rows() {
 
     // `framing_bytes` stamps UNIX_EPOCH, so this budget is the framing exactly
     // and what it leaves for rows is zero rather than negative.
-    let attempt =
-        delivery_with_batch_cap(&dir, &key, framing).take_line_batch(OffsetDateTime::UNIX_EPOCH);
+    let attempt = delivery_with_batch_cap(&dir, &key, framing)
+        .take_line_submission(OffsetDateTime::UNIX_EPOCH);
 
     match attempt {
         Err(metsuke::delivery::DeliveryError::BudgetBelowFraming { .. }) => {}
@@ -396,7 +442,7 @@ fn a_budget_the_framing_exhausts_fails_the_tick_and_keeps_the_rows() {
         Ok(_) => panic!("a budget under the framing seals no batch"),
     }
     let batch = delivery_with_batch_cap(&dir, &key, UNBOUNDED)
-        .take_line_batch(test_now())
+        .take_line_submission(test_now())
         .unwrap()
         .unwrap();
     let opened = envelope::open(
@@ -446,8 +492,8 @@ fn the_spool_charges_a_row_what_the_server_inflates_for_it() {
         charged_bytes(&dir, "log_lines"),
     ];
     let batches = [
-        delivery.take_batch(test_now()).unwrap().unwrap(),
-        delivery.take_line_batch(test_now()).unwrap().unwrap(),
+        delivery.take_submission(test_now()).unwrap().unwrap(),
+        delivery.take_line_submission(test_now()).unwrap().unwrap(),
     ];
 
     for (charged, batch) in charged.into_iter().zip(batches) {

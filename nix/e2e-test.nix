@@ -481,7 +481,7 @@ let
           # the server resolved the cold key to the pool id, PUT the bytes, and
           # answered.
           e2e.wait_until_succeeds(
-              "journalctl -u metsuke.service | grep -q 'batch acked'",
+              "journalctl -u metsuke.service | grep -qE 'submission [0-9]+ accepted'",
               timeout = timedelta(minutes = 5),
           )
           listing = e2e.succeed(
@@ -509,7 +509,7 @@ let
           # id (metsuke-jfb.4).
           e2e.wait_for_unit("metsuke-two.service")
           e2e.wait_until_succeeds(
-              "journalctl -u metsuke-two.service | grep -q 'batch acked'",
+              "journalctl -u metsuke-two.service | grep -qE 'submission [0-9]+ accepted'",
               timeout = timedelta(minutes = 5),
           )
           listing = e2e.succeed(
