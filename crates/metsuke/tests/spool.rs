@@ -373,6 +373,35 @@ fn a_reader_holding_the_file_does_not_block_a_trace_line_push() {
         .unwrap();
 }
 
+// And the other direction, which is the one that wedged an agent in the field:
+// the trace thread holds the write lock for as long as its push takes, and
+// taking a batch is what drains the spool it is filling. Taking one has to be a
+// read, or the busier the stream gets the less the loop that relieves it runs.
+#[test]
+fn a_writer_holding_the_file_does_not_block_taking_a_batch() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("spool.sqlite");
+    let mut spool = Spool::open(&SpoolConfig {
+        path: path.clone(),
+        max_bytes: WHOLE_SPOOL,
+        // Short on purpose: a take that waits on the lock fails here rather
+        // than making the test hang.
+        busy_timeout: Duration::from_millis(100),
+        provenance: test_provenance(),
+    })
+    .unwrap();
+    let mut lines = LogSpool::open(&temp_log_config(&dir, WHOLE_SPOOL)).unwrap();
+    lines.push(&trace_line(r#"{"ns":"one"}"#)).unwrap();
+    spool.push(&scrape_at(1)).unwrap();
+
+    let writer = rusqlite::Connection::open(&path).unwrap();
+    writer.busy_timeout(Duration::from_millis(100)).unwrap();
+    writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+    assert_eq!(spool.outstanding(whole_spool()).unwrap().len(), 1);
+    assert_eq!(spool.outstanding_lines(whole_spool()).unwrap().len(), 1);
+}
+
 // The two caps are independent: a trace stream filling its own does not evict
 // a scrape, and both live in one file.
 #[test]

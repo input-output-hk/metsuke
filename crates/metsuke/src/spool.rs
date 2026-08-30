@@ -185,7 +185,8 @@ struct Outstanding {
     uncarriable_bytes: Option<u64>,
 }
 
-/// Oldest first, up to `budget.max_bytes`.
+/// Oldest first, up to `budget.max_bytes`. A reader unless there is actually an
+/// oversized head row to drop, which WAL never blocks.
 ///
 /// A row over the budget on its own cannot be sealed into any batch bounded by
 /// it, so offering it only seals a body the server refuses; and because every
@@ -205,17 +206,27 @@ fn outstanding_rows(
 ) -> Result<Outstanding, SpoolError> {
     let Stream { table, payload } = *stream;
     let params = [clamp(budget.max_bytes)];
-    let uncarriable: Option<i64> = conn
+    // Asked as a read first. SQLite takes the write lock for a DELETE whether
+    // or not it matches, and the trace-line writer holds that lock, so a
+    // leading DELETE made taking a batch fail against a busy stream: the one
+    // thing that drains the spool could not run while the spool was filling.
+    let oversized: Option<(i64, i64)> = conn
         .query_row(
             &format!(
-                "DELETE FROM {table}
-                 WHERE id = (SELECT MIN(id) FROM {table}) AND bytes > ?1
-                 RETURNING bytes"
+                "SELECT id, bytes FROM {table}
+                 WHERE id = (SELECT MIN(id) FROM {table}) AND bytes > ?1"
             ),
             params,
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
+    let uncarriable = match oversized {
+        None => None,
+        Some((id, bytes)) => {
+            conn.execute(&format!("DELETE FROM {table} WHERE id = ?1"), [id])?;
+            Some(bytes)
+        }
+    };
     let mut statement = conn.prepare(&format!(
         "SELECT id, {payload} FROM (
             SELECT id, {payload}, SUM(bytes) OVER (ORDER BY id) AS running FROM {table}
