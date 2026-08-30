@@ -9,8 +9,8 @@ use crate::uploader::UploadOutcome;
 
 pub struct ScheduleConfig {
     pub upload_interval: Duration,
-    /// Upper bound on the random spread added to a retryable failure, so a
-    /// fleet of agents doesn't stampede a recovering server in step.
+    /// Upper bound on the spread that places an agent within the interval, and
+    /// on the spread a retry adds, so a fleet does not upload in step.
     pub jitter_max: Duration,
     /// Clamp on the rejection backoff.
     pub backoff_max: Duration,
@@ -18,12 +18,16 @@ pub struct ScheduleConfig {
 
 pub struct Schedule {
     consecutive_rejections: u32,
+    /// Whether this run has already picked where in the interval its uploads
+    /// land. Set by the first accepted submission and never read again.
+    phase_chosen: bool,
 }
 
 impl Schedule {
     pub fn new() -> Self {
         Schedule {
             consecutive_rejections: 0,
+            phase_chosen: false,
         }
     }
 
@@ -37,9 +41,18 @@ impl Schedule {
         entropy: u64,
     ) -> Duration {
         match outcome {
+            // The first one spreads this agent within the interval, every one
+            // after it keeps the phase that chose. Agents installed together
+            // would otherwise upload in the same second of every interval for
+            // as long as they ran, and nothing in a working fleet would break
+            // the step; jittering every time instead would spread them at the
+            // cost of the dependable hourly line an operator watches for.
             UploadOutcome::Acked(_) => {
                 self.consecutive_rejections = 0;
-                config.upload_interval
+                match std::mem::replace(&mut self.phase_chosen, true) {
+                    false => config.upload_interval + jitter(config.jitter_max, entropy),
+                    true => config.upload_interval,
+                }
             }
             UploadOutcome::Retryable(_) => {
                 // Deliberate reset: the backoff answers 4xx rejections, and

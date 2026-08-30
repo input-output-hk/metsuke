@@ -71,8 +71,9 @@ pub struct Config {
     pub scrape_max_body_bytes: u64,
     #[serde(default = "default_upload_timeout_secs")]
     pub upload_timeout_secs: u64,
-    /// Upper bound on the random spread added when retrying after a 5xx or
-    /// transport failure.
+    /// Upper bound on the spread that places this agent within the interval,
+    /// and on the spread a retry adds, so agents installed together do not
+    /// upload in step (`schedule::Schedule::after`).
     #[serde(default = "default_upload_jitter_max_secs")]
     pub upload_jitter_max_secs: u64,
     /// Clamp on the exponential backoff after 4xx rejections.
