@@ -90,32 +90,39 @@ impl Agent {
         Ok(ScrapeNews { failed, refused })
     }
 
-    /// One upload tick: a submission of scrapes, then one of trace lines,
-    /// each sealed, POSTed and acked only on `Acked`. Empty when both streams
-    /// are. Every attempt comes back, not just the last: a tick that sent two
-    /// submissions is two lines in the journal, and reporting only the second
-    /// would leave an agent's scrapes looking unsent while the server was
-    /// storing them. The caller schedules on the last, and a submission that
-    /// was not accepted ends the tick, because backing off on the scrapes and
-    /// then pressing on with the lines would ignore the answer.
+    /// One upload tick: scrapes, then trace lines, each stream drained until it
+    /// is empty or the tick's allowance is spent. Every submission is sealed,
+    /// POSTed and acked only on `Acked`.
+    ///
+    /// Draining rather than sending one of each is what keeps a spool from
+    /// filling: a node emits more between ticks than one submission carries, so
+    /// a tick that sent one left the difference behind every hour until the cap
+    /// discarded it.
+    ///
+    /// Every attempt comes back, not just the last, because a tick that sent
+    /// several is several lines in the journal. The caller schedules on the
+    /// last, and a submission the server did not take ends the tick, because
+    /// pressing on would ignore the answer.
     pub fn upload_once(&mut self) -> Result<Vec<Uploaded>, UploadError> {
+        type Take =
+            fn(&mut Delivery, OffsetDateTime) -> Result<Option<SealedSubmission>, DeliveryError>;
+        let streams: [Take; 2] = [Delivery::take_submission, Delivery::take_line_submission];
+
         let now = OffsetDateTime::now_utc();
-        let taken = self
-            .delivery
-            .take_submission(now)
-            .map_err(UploadError::NotAttempted)?;
-        let mut sent = Vec::from_iter(self.send(taken)?);
-        // Vacuously true when the scrape stream was empty, which is the tick
-        // that has only trace lines to offer.
-        if sent
-            .iter()
-            .all(|one| matches!(one.outcome, UploadOutcome::Acked(_)))
-        {
-            let taken = self
-                .delivery
-                .take_line_submission(now)
-                .map_err(UploadError::NotAttempted)?;
-            sent.extend(self.send(taken)?);
+        let allowance = self.upload.max_submissions.get();
+        let mut sent = Vec::new();
+        for take in streams {
+            while sent.len() < allowance {
+                let taken = take(&mut self.delivery, now).map_err(UploadError::NotAttempted)?;
+                let Some(one) = self.send(taken)? else {
+                    break;
+                };
+                let accepted = matches!(one.outcome, UploadOutcome::Acked(_));
+                sent.push(one);
+                if !accepted {
+                    return Ok(sent);
+                }
+            }
         }
         Ok(sent)
     }

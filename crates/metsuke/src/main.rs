@@ -127,6 +127,7 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         UploadConfig {
             upload_url: config.upload_url.clone(),
             timeout: Duration::from_secs(config.upload_timeout_secs),
+            max_submissions: config.upload_max_submissions,
         },
         vkey,
     );

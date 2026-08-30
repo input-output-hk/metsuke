@@ -3,6 +3,7 @@
 //! server's own call (`open`) accepts; an ack drains the spool, any failure
 //! leaves it intact.
 
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use metsuke::agent::{Agent, Uploaded};
@@ -47,6 +48,22 @@ fn test_log_spool(dir: &tempfile::TempDir) -> LogSpool {
 /// An agent scraping the given metrics server and uploading to the given
 /// upload server. SNTP points at a dead loopback port so the offset is null.
 fn test_agent(dir: &tempfile::TempDir, metrics: &MockServer, uploads: &MockServer) -> Agent {
+    // Wide enough that a tick drains whatever a test spooled, and one batch
+    // holds it, so a test that is not about either says nothing about them.
+    agent_with(dir, metrics, uploads, UNBOUNDED, SHIPPED_SUBMISSIONS)
+}
+
+/// The shipped `upload_max_submissions`, so the suite exercises the allowance
+/// operators actually run with.
+const SHIPPED_SUBMISSIONS: usize = 16;
+
+fn agent_with(
+    dir: &tempfile::TempDir,
+    metrics: &MockServer,
+    uploads: &MockServer,
+    batch_max_bytes: u64,
+    max_submissions: usize,
+) -> Agent {
     let spool = Spool::open(&SpoolConfig {
         path: spool_path(dir),
         max_bytes: UNBOUNDED,
@@ -66,10 +83,11 @@ fn test_agent(dir: &tempfile::TempDir, metrics: &MockServer, uploads: &MockServe
                 timeout: Duration::from_millis(50),
             },
         },
-        Delivery::new(spool, test_key(), 0, UNBOUNDED),
+        Delivery::new(spool, test_key(), 0, batch_max_bytes),
         UploadConfig {
             upload_url: format!("{}/v1/submit", uploads.uri()).try_into().unwrap(),
             timeout: Duration::from_secs(5),
+            max_submissions: NonZeroUsize::new(max_submissions).expect("the allowance is not zero"),
         },
         test_key().verifying_key(),
     )
@@ -268,4 +286,103 @@ async fn failed_upload_keeps_the_rows_for_the_next_attempt() {
         ),
         "unacked rows must be offered again, got {second:?}"
     );
+}
+
+/// A batch cap that holds one trace line and no more, so a tick has to send
+/// one submission per line to clear the spool.
+fn one_line_per_submission(line: &str) -> u64 {
+    // The framing is spent before any row is, as tests/delivery.rs measures it.
+    // The timestamp carries subsecond digits because `upload_once` stamps with
+    // `now_utc`, whose header line is longer than the epoch's by them.
+    let empty = envelope::Envelope::new(
+        test_provenance(),
+        metsuke::AGENT_VERSION.to_string(),
+        u64::MAX,
+        time::OffsetDateTime::from_unix_timestamp_nanos(1_780_000_000_123_456_789).unwrap(),
+        envelope::Payload::trace_lines(vec![]),
+    );
+    let framing = (envelope::HEADER_OFFSET + envelope::header_json(&empty).unwrap().len()) as u64;
+    let row = envelope::PayloadLine::trace_line(&trace_line(line), &test_provenance())
+        .unwrap()
+        .wire_bytes();
+    framing + row
+}
+
+// The wedge this fixes: a node emits more between ticks than one submission
+// carries, so a tick that sent one left the difference spooled every hour
+// until the cap discarded it. A tick drains the stream instead.
+#[tokio::test]
+async fn one_tick_drains_a_stream_that_outgrew_a_single_submission() {
+    let metrics = metrics_server().await;
+    let uploads = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/submit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "latest_version": "0.1.0"
+        })))
+        .mount(&uploads)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let line = r#"{"ns":"Consensus.LeiosPeer.Msg"}"#;
+    let mut agent = agent_with(
+        &dir,
+        &metrics,
+        &uploads,
+        one_line_per_submission(line),
+        SHIPPED_SUBMISSIONS,
+    );
+    let mut spool = test_log_spool(&dir);
+    for _ in 0..5 {
+        spool.push(&trace_line(line)).unwrap();
+    }
+
+    let (first, second) = tokio::task::spawn_blocking(move || {
+        let first = agent.upload_once().unwrap();
+        let second = agent.upload_once().unwrap();
+        (first, second)
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        first.len(),
+        5,
+        "every spooled line has to leave in the one tick, got {first:?}"
+    );
+    assert!(
+        first.iter().all(|one| one.carried == "trace line"),
+        "{first:?}"
+    );
+    assert!(
+        second.is_empty(),
+        "the stream must be drained, got {second:?}"
+    );
+}
+
+// And the allowance is what bounds it, so a spool far behind does not upload
+// without end on one tick.
+#[tokio::test]
+async fn a_tick_sends_no_more_than_its_allowance() {
+    let metrics = metrics_server().await;
+    let uploads = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/submit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "latest_version": "0.1.0"
+        })))
+        .mount(&uploads)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let line = r#"{"ns":"Consensus.LeiosPeer.Msg"}"#;
+    let mut agent = agent_with(&dir, &metrics, &uploads, one_line_per_submission(line), 3);
+    let mut spool = test_log_spool(&dir);
+    for _ in 0..10 {
+        spool.push(&trace_line(line)).unwrap();
+    }
+
+    let sent = tokio::task::spawn_blocking(move || agent.upload_once().unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(sent.len(), 3, "the allowance bounds the tick, got {sent:?}");
 }

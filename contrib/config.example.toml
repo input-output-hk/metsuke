@@ -48,10 +48,17 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # ceiling is [ingest].max_body_bytes on the compressed bytes
 # (contrib/server.example.toml), and nothing checks the two against each other.
 # Why the two count a line the same way: docs/adr/0010.
+#
+# upload_max_submissions is how many submissions one upload tick may send. A
+# node emits more trace lines between ticks than one submission carries, so at
+# one per tick the remainder is spooled until the cap drops it. Raise it if
+# your node still gains spool between uploads; the ceiling on it is whatever
+# the server allows per pool per window.
 # upload_timeout_secs = 60
 # upload_jitter_max_secs = 300
 # upload_backoff_max_secs = 86400
 # upload_batch_max_bytes = 4194304
+# upload_max_submissions = 16
 
 # zstd level for the upload body (0 = zstd's default).
 # compression_level = 0

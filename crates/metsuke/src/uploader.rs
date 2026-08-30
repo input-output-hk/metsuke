@@ -2,6 +2,7 @@
 //! contract and classify the answer. Never touches the spool: the caller
 //! acks on `Acked` and leaves rows in place otherwise (ADR 0004).
 
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use crate::delivery::SealedSubmission;
@@ -13,6 +14,9 @@ pub struct UploadConfig {
     pub upload_url: UploadUrl,
     /// Whole-request deadline, as bounded by `metsuke_wire::http::agent`.
     pub timeout: Duration,
+    /// What one tick may send (`agent::Agent::upload_once`). Read there rather
+    /// than here: one POST is one POST whatever the tick's allowance is.
+    pub max_submissions: NonZeroUsize,
 }
 
 /// What one upload attempt means for the spool and the schedule.

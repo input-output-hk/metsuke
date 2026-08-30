@@ -2,6 +2,7 @@
 //! out carrying the ADR-0001 header contract, the server's answer classified
 //! into ack / retryable / rejected without touching the spool.
 
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use metsuke::delivery::Delivery;
@@ -40,6 +41,9 @@ fn upload_config(base_url: &str) -> UploadConfig {
     UploadConfig {
         upload_url: format!("{base_url}/v1/submit").try_into().unwrap(),
         timeout: Duration::from_secs(5),
+        // `upload` sends the one submission it is handed; the tick's allowance
+        // is `Agent::upload_once`'s, and tests/agent.rs is where it is read.
+        max_submissions: NonZeroUsize::new(1).expect("1 is not zero"),
     }
 }
 
