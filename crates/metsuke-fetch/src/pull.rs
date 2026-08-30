@@ -14,6 +14,11 @@ use metsuke_wire::http::{
     self, AFTER_FIELD, KEY_FIELD, Listing, OBJECT_PATH, PREFIX_FIELD, SUBMISSIONS_PATH,
 };
 
+/// The most an object's declared length may reserve before its body arrives.
+/// Not a limit on the object, which is `--max-object-bytes`; this is how much
+/// of a stranger's arithmetic the process acts on in advance.
+const PREALLOCATED_MAX: u64 = 1024 * 1024;
+
 /// One object as it came back: the bytes to write, and the pair that says
 /// whose they are where the archive held it. `None` is not a fault of the
 /// download. A filesystem archive discards the pair at ingest
@@ -152,7 +157,12 @@ impl Archive {
             });
         }
         let attestation = attestation(&response);
-        let mut bytes = Vec::with_capacity(length as usize);
+        // A hint only, so the cap costs a reallocation on an object past it and
+        // nothing else: `io::copy` grows this as the body arrives, and what
+        // bounds the object is the refusal above. Capped because the length
+        // here is the one the server declared, and reserving all of it would
+        // let an answer that sends no body at all spend the memory of one.
+        let mut bytes = Vec::with_capacity(length.min(PREALLOCATED_MAX) as usize);
         let read =
             io::copy(&mut response.body_mut().as_reader(), &mut bytes).map_err(|source| {
                 PullError::Unread {
