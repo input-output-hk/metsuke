@@ -12,7 +12,6 @@ use crate::cursor::{Cursor, CursorError};
 use crate::pull::{Archive, Object, PullError};
 use crate::select::{Filters, Selected};
 use crate::staged;
-use metsuke_wire::envelope::PoolId;
 use metsuke_wire::key::ObjectName;
 
 /// What one run moved, and what it did not. `passed` and `unnameable` are
@@ -288,14 +287,10 @@ fn checked(
         return Err("the signature does not stand over the bytes as downloaded".to_string());
     }
     let name = ObjectName::parse(key).map_err(|error| error.to_string())?;
-    let signer = PoolId::from_cold_key(&attestation.vkey);
-    match signer == name.pool_id {
-        true => Ok(Landed::Verified),
-        false => Err(format!(
-            "signed by {signer}, and filed under {}",
-            name.pool_id
-        )),
-    }
+    name.pool_id
+        .check_cold_key(&attestation.vkey)
+        .map_err(|signer| format!("signed by {signer}, and filed under {}", name.pool_id))?;
+    Ok(Landed::Verified)
 }
 
 /// The file under `into` an object key names, or `None` for a key that names

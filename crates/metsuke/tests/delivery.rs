@@ -1,5 +1,5 @@
 //! Delivery seam tests (ticket metsuke-4zo.4): spool state in, sealed bytes
-//! out, ack shrinks the spool. The batch is checked by `open`ing it with the
+//! out, ack shrinks the spool. The submission is checked by `open`ing it with the
 //! verifying key.
 
 use std::time::Duration;
@@ -14,29 +14,31 @@ use time::OffsetDateTime;
 mod support;
 use support::{TEST_LIMITS, scrape_at, test_key, test_provenance, trace_line};
 
-/// Wide enough that no cap in the spool or the batch fires unless a test asks
+/// Wide enough that no cap in the spool or the submission fires unless a test asks
 /// for one.
 const UNBOUNDED: u64 = 64 * 1024 * 1024;
 
 const NO_CONTENTION: Duration = Duration::from_secs(1);
 
-/// The scrapes an opened batch carries, so a test that is about delivery does
+/// The scrapes an opened submission carries, so a test that is about delivery does
 /// not carry the schema check with it.
 fn scrapes_of(envelope: &envelope::Envelope) -> Vec<Scrape> {
-    envelope.scrapes().expect("a scrape batch carries scrapes")
+    envelope
+        .scrapes()
+        .expect("a scrape submission carries scrapes")
 }
 
 fn lines_of(envelope: &envelope::Envelope) -> Vec<TraceLine> {
     envelope
         .trace_lines()
-        .expect("a trace-line batch carries lines")
+        .expect("a trace-line submission carries lines")
 }
 
 fn temp_delivery(dir: &tempfile::TempDir, key: &SigningKey) -> Delivery {
-    delivery_with_batch_cap(dir, key, UNBOUNDED)
+    delivery_with_submission_cap(dir, key, UNBOUNDED)
 }
 
-fn delivery_with_batch_cap(
+fn delivery_with_submission_cap(
     dir: &tempfile::TempDir,
     key: &SigningKey,
     batch_max_bytes: u64,
@@ -62,7 +64,7 @@ fn temp_log_spool(dir: &tempfile::TempDir) -> LogSpool {
     .unwrap()
 }
 
-// The whole loop contract: what was pushed comes out as a batch the server's
+// The whole loop contract: what was pushed comes out as a submission the server's
 // own call (`open` with the verifying key) accepts, and an ack empties the
 // spool.
 #[test]
@@ -74,14 +76,14 @@ fn pushed_scrapes_seal_verify_and_ack_drains_the_spool() {
     for scrape in &scrapes {
         delivery.push(scrape).unwrap();
     }
-    let batch = delivery
+    let submission = delivery
         .take_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .unwrap();
     let opened = envelope::open(
         &key.verifying_key(),
-        &batch.wire_bytes,
-        &batch.signature,
+        &submission.wire_bytes,
+        &submission.signature,
         TEST_LIMITS,
     )
     .unwrap();
@@ -90,7 +92,7 @@ fn pushed_scrapes_seal_verify_and_ack_drains_the_spool() {
         opened.provenance.pool_id,
         PoolId::from_cold_key(&key.verifying_key())
     );
-    delivery.ack(batch).unwrap();
+    delivery.ack(submission).unwrap();
     assert!(
         delivery
             .take_submission(OffsetDateTime::UNIX_EPOCH)
@@ -102,16 +104,16 @@ fn pushed_scrapes_seal_verify_and_ack_drains_the_spool() {
 // A failed PUT means no ack: the retry offers the same scrapes again but
 // under a fresh counter. A counter value is never handed out twice.
 #[test]
-fn unacked_batch_is_retaken_with_a_fresh_counter() {
+fn unacked_submission_is_retaken_with_a_fresh_counter() {
     let dir = tempfile::tempdir().unwrap();
     let key = test_key();
     let mut delivery = temp_delivery(&dir, &key);
     delivery.push(&scrape_at(1)).unwrap();
-    let open = |batch: &metsuke::delivery::SealedSubmission| {
+    let open = |submission: &metsuke::delivery::SealedSubmission| {
         envelope::open(
             &key.verifying_key(),
-            &batch.wire_bytes,
-            &batch.signature,
+            &submission.wire_bytes,
+            &submission.signature,
             TEST_LIMITS,
         )
         .unwrap()
@@ -175,7 +177,7 @@ fn the_digest_covers_exactly_what_zstd_hands_back() {
 }
 
 #[test]
-fn empty_spool_yields_no_batch() {
+fn empty_spool_yields_no_submission() {
     let dir = tempfile::tempdir().unwrap();
     let key = test_key();
     let mut delivery = temp_delivery(&dir, &key);
@@ -209,20 +211,20 @@ fn spooled_trace_lines_seal_as_their_own_envelope() {
     for line in &recorded {
         lines.push(line).unwrap();
     }
-    let batch = delivery
+    let submission = delivery
         .take_line_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .unwrap();
     let opened = envelope::open(
         &key.verifying_key(),
-        &batch.wire_bytes,
-        &batch.signature,
+        &submission.wire_bytes,
+        &submission.signature,
         TEST_LIMITS,
     )
     .unwrap();
     assert_eq!(opened.schema_version(), 2);
     assert_eq!(lines_of(&opened), recorded);
-    delivery.ack(batch).unwrap();
+    delivery.ack(submission).unwrap();
     assert!(
         delivery
             .take_line_submission(OffsetDateTime::UNIX_EPOCH)
@@ -277,7 +279,7 @@ fn a_sealed_submission_states_what_the_journal_names_it_by() {
     assert_eq!(opened.counter, traces.counter);
 }
 
-// Acking a trace-line batch must not touch a spooled scrape, and vice versa:
+// Acking a trace-line submission must not touch a spooled scrape, and vice versa:
 // the two streams share one file and one counter, nothing else.
 #[test]
 fn acking_one_stream_leaves_the_other_spooled() {
@@ -288,11 +290,11 @@ fn acking_one_stream_leaves_the_other_spooled() {
     delivery.push(&scrape_at(1)).unwrap();
     lines.push(&trace_line(r#"{"ns":"one line"}"#)).unwrap();
 
-    let batch = delivery
+    let submission = delivery
         .take_line_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .unwrap();
-    delivery.ack(batch).unwrap();
+    delivery.ack(submission).unwrap();
 
     let scrapes = delivery
         .take_submission(OffsetDateTime::UNIX_EPOCH)
@@ -309,7 +311,7 @@ fn acking_one_stream_leaves_the_other_spooled() {
 }
 
 /// An envelope of `payload`'s shape with nothing in it, at the widest counter a
-/// spool can hand out: what the batch budget reserves before any row is in it.
+/// spool can hand out: what the submission budget reserves before any row is in it.
 fn empty_envelope(key: &SigningKey, payload: Payload) -> envelope::Envelope {
     envelope::Envelope::new(
         Provenance {
@@ -323,14 +325,14 @@ fn empty_envelope(key: &SigningKey, payload: Payload) -> envelope::Envelope {
     )
 }
 
-/// What that envelope's header frame costs. The batch budget covers it, so a
+/// What that envelope's header frame costs. The submission budget covers it, so a
 /// test that wants room for exactly two rows starts here.
 fn framing_bytes(key: &SigningKey, payload: Payload) -> u64 {
     let empty = empty_envelope(key, payload);
     (envelope::HEADER_OFFSET + envelope::header_json(&empty).unwrap().len()) as u64
 }
 
-/// What one row costs a batch, measured off the line itself
+/// What one row costs a submission, measured off the line itself
 /// (`envelope::PayloadLine::wire_bytes`).
 fn scrape_row_bytes(scrape: &Scrape) -> u64 {
     PayloadLine::scrape(scrape, &test_provenance())
@@ -344,31 +346,31 @@ fn line_row_bytes(line: &TraceLine) -> u64 {
         .wire_bytes()
 }
 
-/// The payload bytes a batch of `envelope` seals into, which is what
+/// The payload bytes a submission of `envelope` seals into, which is what
 /// `upload_batch_max_bytes` bounds.
 fn body_bytes(envelope: &envelope::Envelope) -> u64 {
     envelope::payload_lines(envelope).len() as u64
 }
 
-// The batch budget is what keeps one envelope off both the agent's memory and
+// The submission budget is what keeps one envelope off both the agent's memory and
 // the server's body limit; the remainder is taken next time.
 #[test]
-fn a_batch_stops_at_the_configured_budget_and_the_rest_is_retaken() {
+fn a_submission_stops_at_the_configured_budget_and_the_rest_is_retaken() {
     let dir = tempfile::tempdir().unwrap();
     let key = test_key();
     // One row's full cost (`spool::RowBudget`); the framing is spent before any
     // row is.
     let one = scrape_row_bytes(&scrape_at(1));
     let cap = framing_bytes(&key, Payload::scrapes(vec![])) + 2 * one;
-    let mut delivery = delivery_with_batch_cap(&dir, &key, cap);
+    let mut delivery = delivery_with_submission_cap(&dir, &key, cap);
     for secs in 1..=5 {
         delivery.push(&scrape_at(secs)).unwrap();
     }
-    let open = |batch: &metsuke::delivery::SealedSubmission| {
+    let open = |submission: &metsuke::delivery::SealedSubmission| {
         envelope::open(
             &key.verifying_key(),
-            &batch.wire_bytes,
-            &batch.signature,
+            &submission.wire_bytes,
+            &submission.signature,
             TEST_LIMITS,
         )
         .unwrap()
@@ -389,30 +391,30 @@ fn a_batch_stops_at_the_configured_budget_and_the_rest_is_retaken() {
 }
 
 // metsuke-4zo.96: the budget bounds the whole sealed body, framing and
-// separators included, so a batch cannot exceed the number the operator set.
-// It wedged before: the batch is deterministic, so the same rejected batch
+// separators included, so a submission cannot exceed the number the operator set.
+// It wedged before: the submission is deterministic, so the same rejected submission
 // retries until its rows are evicted.
 #[test]
-fn no_batch_seals_a_body_past_the_budget() {
+fn no_submission_seals_a_body_past_the_budget() {
     let dir = tempfile::tempdir().unwrap();
     let key = test_key();
     // Enough of both streams that the budget, not the spool, is what stops the
-    // batch; the trace line is a real one, escaping and all.
+    // submission; the trace line is a real one, escaping and all.
     let line = trace_line(
         r#"{"at":"2026-08-25T18:19:38.018453907Z","ns":"Consensus.LeiosPeer.Announcement","data":{"msg":"\"quoted\""},"sev":"Info"}"#,
     );
     let cap = framing_bytes(&key, Payload::trace_lines(vec![])) + 40 * line.to_line().len() as u64;
-    let mut delivery = delivery_with_batch_cap(&dir, &key, cap);
+    let mut delivery = delivery_with_submission_cap(&dir, &key, cap);
     let mut lines = temp_log_spool(&dir);
     for secs in 1..=200 {
         delivery.push(&scrape_at(secs)).unwrap();
         lines.push(&line).unwrap();
     }
-    let open = |batch: &metsuke::delivery::SealedSubmission| {
+    let open = |submission: &metsuke::delivery::SealedSubmission| {
         envelope::open(
             &key.verifying_key(),
-            &batch.wire_bytes,
-            &batch.signature,
+            &submission.wire_bytes,
+            &submission.signature,
             TEST_LIMITS,
         )
         .unwrap()
@@ -427,7 +429,7 @@ fn no_batch_seals_a_body_past_the_budget() {
 }
 
 // The same budget, narrowed to the row that is over it on its own: it cannot
-// be sealed into any batch the budget allows, so it goes and the lines behind
+// be sealed into any submission the budget allows, so it goes and the lines behind
 // it ship in its place rather than waiting out the spool's own cap.
 #[test]
 fn a_line_larger_than_the_whole_budget_is_dropped_rather_than_sealed() {
@@ -438,7 +440,7 @@ fn a_line_larger_than_the_whole_budget_is_dropped_rather_than_sealed() {
     );
     let carriable_bytes = line_row_bytes(&carriable);
     let cap = framing_bytes(&key, Payload::trace_lines(vec![])) + 2 * carriable_bytes;
-    let mut delivery = delivery_with_batch_cap(&dir, &key, cap);
+    let mut delivery = delivery_with_submission_cap(&dir, &key, cap);
     let mut lines = temp_log_spool(&dir);
     lines
         .push(&trace_line(&format!(
@@ -448,12 +450,12 @@ fn a_line_larger_than_the_whole_budget_is_dropped_rather_than_sealed() {
         .unwrap();
     lines.push(&carriable).unwrap();
 
-    let batch = delivery.take_line_submission(test_now()).unwrap().unwrap();
+    let submission = delivery.take_line_submission(test_now()).unwrap().unwrap();
 
     let opened = envelope::open(
         &key.verifying_key(),
-        &batch.wire_bytes,
-        &batch.signature,
+        &submission.wire_bytes,
+        &submission.signature,
         TEST_LIMITS,
     )
     .unwrap();
@@ -478,22 +480,22 @@ fn a_budget_the_framing_exhausts_fails_the_tick_and_keeps_the_rows() {
 
     // `framing_bytes` stamps UNIX_EPOCH, so this budget is the framing exactly
     // and what it leaves for rows is zero rather than negative.
-    let attempt = delivery_with_batch_cap(&dir, &key, framing)
+    let attempt = delivery_with_submission_cap(&dir, &key, framing)
         .take_line_submission(OffsetDateTime::UNIX_EPOCH);
 
     match attempt {
         Err(metsuke::delivery::DeliveryError::BudgetBelowFraming { .. }) => {}
         Err(other) => panic!("a budget under the framing reports itself, got {other:?}"),
-        Ok(_) => panic!("a budget under the framing seals no batch"),
+        Ok(_) => panic!("a budget under the framing seals no submission"),
     }
-    let batch = delivery_with_batch_cap(&dir, &key, UNBOUNDED)
+    let submission = delivery_with_submission_cap(&dir, &key, UNBOUNDED)
         .take_line_submission(test_now())
         .unwrap()
         .unwrap();
     let opened = envelope::open(
         &key.verifying_key(),
-        &batch.wire_bytes,
-        &batch.signature,
+        &submission.wire_bytes,
+        &submission.signature,
         TEST_LIMITS,
     )
     .unwrap();
@@ -515,7 +517,7 @@ fn charged_bytes(dir: &tempfile::TempDir, table: &str) -> u64 {
 
 // metsuke-jfb.9: what the spool charged a row is what the server has to inflate
 // for it. Measured against `max_decompressed_bytes` itself, the limit the agent's
-// `upload_batch_max_bytes` has to stay under: the batch opens at exactly the
+// `upload_batch_max_bytes` has to stay under: the submission opens at exactly the
 // charged total and is refused one byte under it, so a framing change that moves
 // the payload's real cost without the `bytes` column fails here.
 #[test]
@@ -536,17 +538,17 @@ fn the_spool_charges_a_row_what_the_server_inflates_for_it() {
         charged_bytes(&dir, "scrapes"),
         charged_bytes(&dir, "log_lines"),
     ];
-    let batches = [
+    let submissions = [
         delivery.take_submission(test_now()).unwrap().unwrap(),
         delivery.take_line_submission(test_now()).unwrap().unwrap(),
     ];
 
-    for (charged, batch) in charged.into_iter().zip(batches) {
+    for (charged, submission) in charged.into_iter().zip(submissions) {
         let opened = |max_decompressed_bytes| {
             envelope::open(
                 &key.verifying_key(),
-                &batch.wire_bytes,
-                &batch.signature,
+                &submission.wire_bytes,
+                &submission.signature,
                 Limits {
                     max_header_bytes: TEST_LIMITS.max_header_bytes,
                     max_decompressed_bytes,
@@ -561,7 +563,7 @@ fn the_spool_charges_a_row_what_the_server_inflates_for_it() {
     }
 }
 
-/// A timestamp with the subsecond digits a real batch carries: the header line
+/// A timestamp with the subsecond digits a real submission carries: the header line
 /// is longer for them, and the framing reserve has to cover that.
 fn test_now() -> OffsetDateTime {
     OffsetDateTime::from_unix_timestamp_nanos(1_780_000_000_123_456_789).unwrap()

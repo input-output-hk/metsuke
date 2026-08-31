@@ -1,5 +1,5 @@
 //! External-behaviour test for the agent loop body (ticket metsuke-4zo.5):
-//! a recorded Leios scrape body in, a signed compressed batch out that the
+//! a recorded Leios scrape body in, a signed compressed submission out that the
 //! server's own call (`open`) accepts; an ack drains the spool, any failure
 //! leaves it intact.
 
@@ -24,7 +24,7 @@ use support::{TEST_LIMITS, block_number, test_key, test_provenance, trace_line};
 
 const RECORDED_CHAIN: &str = include_str!("fixtures/recordings/leios-node.prom");
 
-/// Wide enough that no spool or batch cap fires here.
+/// Wide enough that no spool or submission cap fires here.
 const UNBOUNDED: u64 = 64 * 1024 * 1024;
 
 const NO_CONTENTION: Duration = Duration::from_secs(1);
@@ -48,14 +48,16 @@ fn test_log_spool(dir: &tempfile::TempDir) -> LogSpool {
 /// An agent scraping the given metrics server and uploading to the given
 /// upload server. SNTP points at a dead loopback port so the offset is null.
 fn test_agent(dir: &tempfile::TempDir, metrics: &MockServer, uploads: &MockServer) -> Agent {
-    // Wide enough that a tick drains whatever a test spooled, and one batch
+    // Wide enough that a tick drains whatever a test spooled, and one submission
     // holds it, so a test that is not about either says nothing about them.
-    agent_with(dir, metrics, uploads, UNBOUNDED, SHIPPED_SUBMISSIONS)
+    agent_with(dir, metrics, uploads, UNBOUNDED, shipped_submissions())
 }
 
 /// The shipped `upload_max_submissions`, so the suite exercises the allowance
 /// operators actually run with.
-const SHIPPED_SUBMISSIONS: usize = 16;
+fn shipped_submissions() -> usize {
+    support::shipped_config().upload_max_submissions.get()
+}
 
 fn agent_with(
     dir: &tempfile::TempDir,
@@ -106,10 +108,10 @@ async fn metrics_server() -> MockServer {
     metrics
 }
 
-// Acceptance: recorded scrape bodies in → signed, compressed batch with
+// Acceptance: recorded scrape bodies in → signed, compressed submission with
 // correct headers out, and the ack deletes the delivered rows.
 #[tokio::test]
-async fn scraped_metrics_upload_as_a_verified_batch_and_ack_drains_the_spool() {
+async fn scraped_metrics_upload_as_a_verified_submission_and_ack_drains_the_spool() {
     let metrics = metrics_server().await;
     let uploads = MockServer::start().await;
     Mock::given(method("POST"))
@@ -288,7 +290,7 @@ async fn failed_upload_keeps_the_rows_for_the_next_attempt() {
     );
 }
 
-/// A batch cap that holds one trace line and no more, so a tick has to send
+/// A submission cap that holds one trace line and no more, so a tick has to send
 /// one submission per line to clear the spool.
 fn one_line_per_submission(line: &str) -> u64 {
     // The framing is spent before any row is, as tests/delivery.rs measures it.
@@ -329,7 +331,7 @@ async fn one_tick_drains_a_stream_that_outgrew_a_single_submission() {
         &metrics,
         &uploads,
         one_line_per_submission(line),
-        SHIPPED_SUBMISSIONS,
+        shipped_submissions(),
     );
     let mut spool = test_log_spool(&dir);
     for _ in 0..5 {

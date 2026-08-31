@@ -1,4 +1,4 @@
-//! Upload seam tests (ticket metsuke-4zo.5): a sealed batch in, one POST
+//! Upload seam tests (ticket metsuke-4zo.5): a sealed submission in, one POST
 //! out carrying the ADR-0001 header contract, the server's answer classified
 //! into ack / retryable / rejected without touching the spool.
 
@@ -21,7 +21,7 @@ use support::{TEST_LIMITS, block_number, scrape_at, test_key, test_provenance};
 
 const UNBOUNDED: u64 = 64 * 1024 * 1024;
 
-fn sealed_test_batch(dir: &tempfile::TempDir) -> metsuke::delivery::SealedSubmission {
+fn sealed_test_submission(dir: &tempfile::TempDir) -> metsuke::delivery::SealedSubmission {
     let spool = Spool::open(&SpoolConfig {
         path: dir.path().join("spool.sqlite"),
         max_bytes: UNBOUNDED,
@@ -70,12 +70,13 @@ async fn server_error_is_retryable() {
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
-    let batch = sealed_test_batch(&dir);
+    let submission = sealed_test_submission(&dir);
     let config = upload_config(&server.uri());
-    let outcome =
-        tokio::task::spawn_blocking(move || upload(&config, &test_key().verifying_key(), &batch))
-            .await
-            .unwrap();
+    let outcome = tokio::task::spawn_blocking(move || {
+        upload(&config, &test_key().verifying_key(), &submission)
+    })
+    .await
+    .unwrap();
     // The server's own words reach the journal on this path too, not just on
     // a rejection.
     let UploadOutcome::Retryable(reason) = outcome else {
@@ -88,16 +89,17 @@ async fn server_error_is_retryable() {
 #[tokio::test]
 async fn unreachable_server_is_retryable() {
     let dir = tempfile::tempdir().unwrap();
-    let batch = sealed_test_batch(&dir);
+    let submission = sealed_test_submission(&dir);
     let config = UploadConfig {
         timeout: Duration::from_millis(200),
         // TEST-NET-1 (RFC 5737) is unroutable: connect fails, nothing answers.
         ..upload_config("https://192.0.2.1:9")
     };
-    let outcome =
-        tokio::task::spawn_blocking(move || upload(&config, &test_key().verifying_key(), &batch))
-            .await
-            .unwrap();
+    let outcome = tokio::task::spawn_blocking(move || {
+        upload(&config, &test_key().verifying_key(), &submission)
+    })
+    .await
+    .unwrap();
     assert!(
         matches!(outcome, UploadOutcome::Retryable(_)),
         "expected retryable, got {outcome:?}"
@@ -142,9 +144,9 @@ fn an_https_upload_url_speaks_tls() {
     let peer = std::thread::spawn(move || opening_bytes(listener, Duration::from_secs(5)));
 
     let dir = tempfile::tempdir().unwrap();
-    let batch = sealed_test_batch(&dir);
+    let submission = sealed_test_submission(&dir);
     let config = upload_config(&format!("https://127.0.0.1:{port}"));
-    let outcome = upload(&config, &test_key().verifying_key(), &batch);
+    let outcome = upload(&config, &test_key().verifying_key(), &submission);
 
     let bytes = peer.join().unwrap();
     assert_eq!(
@@ -171,12 +173,13 @@ async fn client_error_is_rejected_with_the_server_reason() {
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
-    let batch = sealed_test_batch(&dir);
+    let submission = sealed_test_submission(&dir);
     let config = upload_config(&server.uri());
-    let outcome =
-        tokio::task::spawn_blocking(move || upload(&config, &test_key().verifying_key(), &batch))
-            .await
-            .unwrap();
+    let outcome = tokio::task::spawn_blocking(move || {
+        upload(&config, &test_key().verifying_key(), &submission)
+    })
+    .await
+    .unwrap();
     let UploadOutcome::Rejected { status, reason } = outcome else {
         panic!("expected rejected, got {outcome:?}");
     };
@@ -198,12 +201,13 @@ async fn a_rate_limit_is_retryable() {
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
-    let batch = sealed_test_batch(&dir);
+    let submission = sealed_test_submission(&dir);
     let config = upload_config(&server.uri());
-    let outcome =
-        tokio::task::spawn_blocking(move || upload(&config, &test_key().verifying_key(), &batch))
-            .await
-            .unwrap();
+    let outcome = tokio::task::spawn_blocking(move || {
+        upload(&config, &test_key().verifying_key(), &submission)
+    })
+    .await
+    .unwrap();
     let UploadOutcome::Retryable(reason) = outcome else {
         panic!("expected retryable, got {outcome:?}");
     };
@@ -226,13 +230,14 @@ async fn acked_upload_carries_verifiable_headers_and_body() {
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
-    let batch = sealed_test_batch(&dir);
+    let submission = sealed_test_submission(&dir);
     let config = upload_config(&server.uri());
 
-    let outcome =
-        tokio::task::spawn_blocking(move || upload(&config, &test_key().verifying_key(), &batch))
-            .await
-            .unwrap();
+    let outcome = tokio::task::spawn_blocking(move || {
+        upload(&config, &test_key().verifying_key(), &submission)
+    })
+    .await
+    .unwrap();
 
     let UploadOutcome::Acked(ack) = outcome else {
         panic!("expected ack, got {outcome:?}");
@@ -252,7 +257,9 @@ async fn acked_upload_carries_verifiable_headers_and_body() {
     let sig_bytes = hex::decode::<64>(header(HEADER_SIGNATURE)).unwrap();
     let signature = Signature::from_bytes(&sig_bytes);
     let opened = envelope::open(&vkey, &request.body, &signature, TEST_LIMITS).unwrap();
-    let scrapes = opened.scrapes().expect("a scrape batch carries scrapes");
+    let scrapes = opened
+        .scrapes()
+        .expect("a scrape submission carries scrapes");
     assert_eq!(block_number(&scrapes[0]), Some(5));
     assert_eq!(
         opened.provenance.pool_id,

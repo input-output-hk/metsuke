@@ -1,6 +1,6 @@
 //! The one path an upload takes. `submit` read top to bottom is the check
 //! order, and there are four checks: the pool is allowlisted, the signature
-//! stands, the batch was sealed near this clock, the traffic is within its
+//! stands, the submission was sealed near this clock, the traffic is within its
 //! budget.
 //!
 //! Nothing here decompresses and nothing reads a payload. The header frame is
@@ -59,7 +59,7 @@ pub enum Rejection {
     /// frame is not one this build can read a name out of.
     #[error("header frame does not read: {0}")]
     UnreadableHeader(#[from] HeaderError),
-    /// Not schema gating: an accepted batch is filed under what it carries.
+    /// Not schema gating: an accepted submission is filed under what it carries.
     /// The key scheme's kind segment is `<metrics|logs>` (`archive::Kind`), and
     /// a version this build has no `Kind` for has nothing to put in that
     /// segment. The refusal is the key, not the schema, having no name.
@@ -185,7 +185,7 @@ impl<A: Store> Intake<A> {
         self.accept(signed, pool_id, now, header)
     }
 
-    /// The post-signature half: the batch is the pool's, so what it says about
+    /// The post-signature half: the submission is the pool's, so what it says about
     /// itself is what the object is filed under.
     fn accept(
         &self,

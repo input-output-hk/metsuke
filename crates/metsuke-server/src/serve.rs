@@ -152,7 +152,7 @@ async fn accept<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
             // An idle connection reaching `idle_timeout_ms` is the configured
             // behaviour and no news. Everything else is: a connection that
             // ended early may have lost an ack, and an agent that never saw
-            // one sends the batch again.
+            // one sends the submission again.
             if let Err(error) = served
                 && !error.is_timeout()
             {

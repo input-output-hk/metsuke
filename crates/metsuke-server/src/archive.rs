@@ -149,14 +149,8 @@ pub trait Bytes {
     fn reader(&self, key: &str) -> Result<ObjectStream, ArchiveError>;
 }
 
-/// What a stored object's signature is checked with, as the archive holds it
-/// beside the bytes (ADR 0005). Both or neither: a check needs the pair, so
-/// half of it is the same as none of it.
-#[derive(Debug, Clone, Copy)]
-pub struct Attestation {
-    pub vkey: VerifyingKey,
-    pub signature: Signature,
-}
+/// What a stored object's signature is checked with (`metsuke_wire::envelope`).
+pub use metsuke_wire::envelope::Attestation;
 
 /// An object being read out of the archive. The length is not optional: a
 /// download that could not state one would have to answer chunked, and then

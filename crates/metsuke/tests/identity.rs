@@ -44,7 +44,7 @@ fn the_pool_a_key_hashes_to_is_accepted() {
 }
 
 // A pool id that is not this key's hash is a configuration mistake the agent
-// cannot ship past: every batch it sealed would be refused. The refusal names
+// cannot ship past: every submission it sealed would be refused. The refusal names
 // both, so the operator can see which one is wrong.
 #[test]
 fn a_pool_id_the_key_does_not_hash_to_is_refused() {

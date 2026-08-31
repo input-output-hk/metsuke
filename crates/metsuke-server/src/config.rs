@@ -166,7 +166,7 @@ pub struct IngestConfig {
     /// Cap on the header frame a submission declares, checked against the
     /// declared length before any of it is read.
     pub max_header_bytes: NonZeroU64,
-    /// How far either way a batch's sealed timestamp may sit from this
+    /// How far either way a submission's sealed timestamp may sit from this
     /// server's clock. It bounds how long a captured submission stays
     /// replayable, and it is what an agent whose host clock has drifted is
     /// refused by, so it is a clock tolerance as much as a limit.

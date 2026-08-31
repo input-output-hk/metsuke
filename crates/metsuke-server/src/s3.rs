@@ -286,10 +286,14 @@ impl Bytes for S3Archive {
                 }
             })?;
         // Off the head, before the body is taken: what a consumer checks the
-        // bytes with travels with them or the download is unverifiable. An
-        // object without it was not written by this server, and saying so is
-        // the client's to do, so it goes out absent rather than as a refusal.
-        let attestation = attestation(&response).ok();
+        // bytes with travels with them or the download is unverifiable.
+        let attestation = match attestation(&response) {
+            Ok(attestation) => attestation,
+            Err(reason) => {
+                eprintln!("{WARNING}unusable attestation on {key}: {reason}");
+                None
+            }
+        };
         let body = response.into_body();
         // Why a download cannot go out without one: `archive::ObjectStream`.
         let length = body
@@ -319,7 +323,12 @@ impl Fetch for S3Archive {
             .map_err(|failure| refuse(failure.reason))?;
         // Read the metadata out before the body: an object missing a header is
         // unverifiable however good its bytes are.
-        let Attestation { vkey, signature } = attestation(&response).map_err(refuse)?;
+        let Attestation { vkey, signature } =
+            attestation(&response).map_err(refuse)?.ok_or_else(|| {
+                refuse(format!(
+                    "neither {META_VKEY} nor {META_SIGNATURE} is on the object"
+                ))
+            })?;
         let wire_bytes = response
             .body_mut()
             .read_to_vec()
@@ -333,24 +342,43 @@ impl Fetch for S3Archive {
     }
 }
 
-/// The two metadata headers an object carries, off a GET answer's head. Named
-/// as the failure it is rather than as an `Option`, because an object this
-/// server stored has both (ADR 0005): a download tolerates their absence and
-/// an audit does not, so which it is belongs to the caller.
-fn attestation(response: &ureq::http::Response<ureq::Body>) -> Result<Attestation, String> {
-    let metadata = |header: &'static str| -> Result<&str, String> {
-        response
-            .headers()
-            .get(header)
-            .ok_or(format!("no {header} on the object"))?
+/// The two metadata headers an object carries, off a GET answer's head.
+///
+/// Absent and unreadable are separated because they say different things: an
+/// object this server did not write carries neither header, while anything else
+/// is metadata this server wrote (ADR 0005) and cannot read back, which is a
+/// bug here. Both are tolerated by a download and refused by an audit, so which
+/// it is stays the caller's call.
+fn attestation(response: &ureq::http::Response<ureq::Body>) -> Result<Option<Attestation>, String> {
+    let raw = |header: &'static str| response.headers().get(header);
+    let (raw_vkey, raw_signature) = match (raw(META_VKEY), raw(META_SIGNATURE)) {
+        (Some(vkey), Some(signature)) => (vkey, signature),
+        (None, None) => return Ok(None),
+        (Some(_), None) => {
+            return Err(format!(
+                "only {META_VKEY} of the two metadata headers is set"
+            ));
+        }
+        (None, Some(_)) => {
+            return Err(format!(
+                "only {META_SIGNATURE} of the two metadata headers is set"
+            ));
+        }
+    };
+    let text = |header: &'static str, value: &ureq::http::HeaderValue| -> Result<String, String> {
+        value
             .to_str()
+            .map(str::to_string)
             .map_err(|_| format!("{header} is not text"))
     };
-    Ok(Attestation {
-        vkey: VerifyingKey::from_bytes(&unhex(metadata(META_VKEY)?, META_VKEY)?)
+    Ok(Some(Attestation {
+        vkey: VerifyingKey::from_bytes(&unhex(&text(META_VKEY, raw_vkey)?, META_VKEY)?)
             .map_err(|error| format!("{META_VKEY}: {error}"))?,
-        signature: Signature::from_bytes(&unhex(metadata(META_SIGNATURE)?, META_SIGNATURE)?),
-    })
+        signature: Signature::from_bytes(&unhex(
+            &text(META_SIGNATURE, raw_signature)?,
+            META_SIGNATURE,
+        )?),
+    }))
 }
 
 /// Carries which metadata header was wrong into `fetch`'s reason string.

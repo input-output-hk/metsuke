@@ -178,7 +178,7 @@ fn exited_within(child: &mut std::process::Child, within: Duration) -> std::proc
 // when the flag wins the precedence. A swapped `resolve_signing_key`
 // argument pair fails at startup instead.
 #[tokio::test]
-async fn binary_uploads_a_batch_signed_by_the_flag_key() {
+async fn binary_uploads_a_submission_signed_by_the_flag_key() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .respond_with(

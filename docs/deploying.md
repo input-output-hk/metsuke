@@ -194,10 +194,12 @@ key pair in the meantime.
 
 **Tracing.** cardano-parts sets `useLegacyTracing = mkDefault false`, so the
 node forwards its traces to `cardano-tracer` over a socket rather than writing
-them itself. ADR 0010 assumes the node's own journal carries the trace lines.
-Whether it still does there is unverified, and beads `metsuke-4zo.126` is the
-check. Until someone runs it, deploy with `[log]` left out and take metrics
-only. The metrics side already agrees: cardano-parts defaults
+them itself. ADR 0010 assumes the node's own journal carries the trace lines,
+and on playground it still does (`metsuke-4zo.126`): forwarding does not take
+the lines out of journald, which keeps them in machine format for the agent's
+namespace selection to read. So `source = "journald"` with `journal_unit` is
+the source that works on a cardano-parts host. The metrics side already agrees:
+cardano-parts defaults
 `cardanoNodePrometheusExporterPort` to 12798, which is the port the shipped
 example config scrapes.
 

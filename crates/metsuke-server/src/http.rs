@@ -304,12 +304,7 @@ fn object<A: Store + Bytes>(intake: &Intake<A>, target: &str) -> Answer {
 /// download would only withhold the bytes as well.
 fn attested(attestation: &Option<Attestation>) -> Vec<(&'static str, String)> {
     attestation
-        .map(|Attestation { vkey, signature }| {
-            vec![
-                (HEADER_VKEY, hex::encode(vkey.as_bytes())),
-                (HEADER_SIGNATURE, hex::encode(&signature.to_bytes())),
-            ]
-        })
+        .map(|attestation| attestation.headers().to_vec())
         .unwrap_or_default()
 }
 

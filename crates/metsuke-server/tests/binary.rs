@@ -167,7 +167,7 @@ impl Server {
             .unwrap()
     }
 
-    /// POST a sealed batch with the ADR-0001 headers. Returns the status and
+    /// POST a sealed submission with the ADR-0001 headers. Returns the status and
     /// the body, which is the Ack on success and the rejection text
     /// otherwise.
     fn post(&self, key: &SigningKey, envelope: &Envelope) -> (u16, String) {
@@ -373,7 +373,7 @@ fn an_unknown_argument_exits_nonzero_pointing_at_help() {
 }
 
 #[test]
-fn a_sealed_batch_is_acked_and_archived_byte_for_byte() {
+fn a_sealed_submission_is_acked_and_archived_byte_for_byte() {
     let key = test_key();
     let server = Server::start(&[pool_of(&key)]);
     let envelope = envelope_now(&key, 1);
@@ -391,10 +391,10 @@ fn a_sealed_batch_is_acked_and_archived_byte_for_byte() {
     );
 }
 
-/// A client that resent because it never saw the ack gets both batches stored:
+/// A client that resent because it never saw the ack gets both submissions stored:
 /// nothing here refuses a body for having been seen before, and the ids differ.
 #[test]
-fn a_resent_batch_is_stored_again_rather_than_refused() {
+fn a_resent_submission_is_stored_again_rather_than_refused() {
     let key = test_key();
     let server = Server::start(&[pool_of(&key)]);
     let envelope = envelope_now(&key, 7);

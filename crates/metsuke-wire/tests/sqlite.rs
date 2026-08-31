@@ -46,7 +46,7 @@ fn is_a_no_op_when_every_migration_has_run() {
 fn a_migration_that_fails_leaves_the_database_as_it_was() {
     let conn = Connection::open_in_memory().unwrap();
     migrate(&conn, &MIGRATIONS[..1]).unwrap();
-    // Makes a table, then fails, exactly as a half-applied batch would.
+    // Makes a table, then fails, exactly as a half-applied submission would.
     let broken = [
         MIGRATIONS[0],
         "CREATE TABLE second (id INTEGER PRIMARY KEY);
@@ -57,7 +57,7 @@ fn a_migration_that_fails_leaves_the_database_as_it_was() {
     assert_eq!(user_version(&conn), 1, "the version must not have moved");
     assert!(
         conn.execute_batch("SELECT id FROM second").is_err(),
-        "and the table the failed batch made must be gone"
+        "and the table the failed submission made must be gone"
     );
     // So the real migration still applies, which is the point.
     migrate(&conn, &MIGRATIONS).unwrap();

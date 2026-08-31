@@ -33,6 +33,39 @@ pub const HEADER_OFFSET: usize = 8;
 pub const HEADER_VKEY: &str = "x-metsuke-vkey";
 pub const HEADER_SIGNATURE: &str = "x-metsuke-signature";
 
+/// What a stored object's signature is checked with, as it travels: the archive
+/// holds it beside the bytes (ADR 0005) and a download carries it back in the
+/// same two headers an upload arrived with. Both or neither, because a check
+/// needs the pair, so half of it is the same as none of it.
+#[derive(Debug, Clone, Copy)]
+pub struct Attestation {
+    pub vkey: VerifyingKey,
+    pub signature: Signature,
+}
+
+impl Attestation {
+    /// The pair as a download's headers, in the encoding `from_headers` reads.
+    pub fn headers(&self) -> [(&'static str, String); 2] {
+        [
+            (HEADER_VKEY, crate::hex::encode(self.vkey.as_bytes())),
+            (
+                HEADER_SIGNATURE,
+                crate::hex::encode(&self.signature.to_bytes()),
+            ),
+        ]
+    }
+
+    /// The pair off an answer's head. `None` where either header is absent or
+    /// unreadable: what an unverifiable object means is the caller's to say,
+    /// and on this path a download is not refused for it.
+    pub fn from_headers(vkey: Option<&str>, signature: Option<&str>) -> Option<Attestation> {
+        Some(Attestation {
+            vkey: VerifyingKey::from_bytes(&crate::hex::decode::<32>(vkey?).ok()?).ok()?,
+            signature: Signature::from_bytes(&crate::hex::decode::<64>(signature?).ok()?),
+        })
+    }
+}
+
 /// The server's answer to an accepted upload. `latest_version` is the
 /// client-crate version embedded at server build (ADR 0006).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -151,12 +184,23 @@ impl PoolId {
         Ok(PoolId(hash))
     }
 
-    /// The pool id a cold verification key hashes to. The ADR-0003 cold-key
-    /// check is `envelope.provenance.pool_id == PoolId::from_cold_key(vkey)`.
+    /// The pool id a cold verification key hashes to. See CONTEXT.md,
+    /// **Cold Key**.
     pub fn from_cold_key(key: &VerifyingKey) -> Self {
         use blake2::digest::consts::U28;
         use blake2::{Blake2b, Digest};
         PoolId(Blake2b::<U28>::digest(key.as_bytes()).into())
+    }
+
+    /// Whether `key` is the cold key this pool id derives from, and the id it
+    /// derives to where it is not. Every caller refuses in its own words and
+    /// names both ids doing it, so the id comes back rather than a bool.
+    pub fn check_cold_key(&self, key: &VerifyingKey) -> Result<(), PoolId> {
+        let implied = PoolId::from_cold_key(key);
+        match implied == *self {
+            true => Ok(()),
+            false => Err(implied),
+        }
     }
 
     /// The 28 bytes themselves, for the one caller that reads a pool id out of
@@ -199,9 +243,9 @@ pub const PROVENANCE_KEY: &str = "metsuke";
 /// says where it came from.
 ///
 /// The two values an agent knows before it spools a line, and no more. The
-/// batch's counter and timestamp are not among them: both are drawn when a batch
+/// submission's counter and timestamp are not among them: both are drawn when a submission
 /// is sealed, and a row whose upload failed is sealed into a later one, so a line
-/// stamped with either would name a batch it did not travel in.
+/// stamped with either would name a submission it did not travel in.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Provenance {
     pub pool_id: PoolId,
@@ -252,7 +296,7 @@ impl PayloadLine {
 
     /// What this line costs a sealed payload: its own bytes and the newline
     /// after them. The one place a row's wire cost is computed, so the spool's
-    /// stored `bytes` and a batch's budget cannot disagree (metsuke-jfb.9).
+    /// stored `bytes` and a submission's budget cannot disagree (metsuke-jfb.9).
     pub fn wire_bytes(&self) -> u64 {
         self.0.len() as u64 + 1
     }
@@ -311,7 +355,7 @@ impl Serialize for TraceLine {
     }
 }
 
-/// What one batch carries: its lines, already stamped, and which schema they
+/// What one submission carries: its lines, already stamped, and which schema they
 /// are. Both constructors set the version from the shape they were given, so an
 /// envelope never states the two apart.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -340,7 +384,7 @@ impl Payload {
     }
 }
 
-/// One signed upload batch. The `counter` and `timestamp` live in the header
+/// One signed submission. The `counter` and `timestamp` live in the header
 /// frame, inside the signed bytes, where a consumer reads them without
 /// inflating the payload.
 ///
@@ -349,14 +393,14 @@ impl Payload {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Envelope {
     schema_version: u32,
-    /// Which pool and which of its Agents sealed the batch, and what every
+    /// Which pool and which of its Agents sealed the submission, and what every
     /// line of it is stamped with.
     pub provenance: Provenance,
     pub agent_version: String,
-    /// Per-agent monotonic counter: a gap in one agent's run of it is a batch
+    /// Per-agent monotonic counter: a gap in one agent's run of it is a submission
     /// the archive never got.
     pub counter: u64,
-    /// Batch creation time, RFC 3339 UTC.
+    /// Submission creation time, RFC 3339 UTC.
     pub timestamp: OffsetDateTime,
     payload: Payload,
 }
@@ -416,13 +460,13 @@ impl Envelope {
         self.schema_version
     }
 
-    /// The batch's scrapes, for a reader that wants the fields rather than the
+    /// The submission's scrapes, for a reader that wants the fields rather than the
     /// bytes. A consumer's call, never the agent's (`PayloadLine`).
     pub fn scrapes(&self) -> Result<Vec<Scrape>, ReadError> {
         self.read(SCHEMA_VERSION_SCRAPES)
     }
 
-    /// The same for a trace-line batch.
+    /// The same for a trace-line submission.
     pub fn trace_lines(&self) -> Result<Vec<TraceLine>, ReadError> {
         Ok(self
             .read::<serde_json::Map<String, serde_json::Value>>(SCHEMA_VERSION_LINES)?
@@ -607,10 +651,10 @@ pub enum OpenError {
     /// line the sender did not finish writing.
     #[error("payload's last line has no terminating newline")]
     UnterminatedLine,
-    /// Every line states the batch it travelled in. A line stating another one
+    /// Every line states the submission it travelled in. A line stating another one
     /// is a payload assembled from two of them, and a reader taking provenance
     /// off the line rather than the header would never notice.
-    #[error("payload line {index} does not carry this batch's provenance")]
+    #[error("payload line {index} does not carry this submission's provenance")]
     LineProvenance { index: usize },
     /// Named by index, because serde's own position is inside the one line it
     /// was handed and says "line 1" for every one of them.
@@ -627,7 +671,7 @@ pub enum OpenError {
     UnsupportedSchemaVersion { found: u32 },
 }
 
-/// Why reading a batch's lines as their fields failed
+/// Why reading a submission's lines as their fields failed
 /// (`Envelope::scrapes`, `Envelope::trace_lines`).
 ///
 /// Its own error rather than an `OpenError`: a submission is accepted and
@@ -635,7 +679,7 @@ pub enum OpenError {
 /// a consumer's failures and never an ingest path's.
 #[derive(Debug, thiserror::Error)]
 pub enum ReadError {
-    /// The batch is fine and the question was wrong.
+    /// The submission is fine and the question was wrong.
     #[error("payload is schema v{found}, read as v{asked}")]
     PayloadIsNot { asked: u32, found: u32 },
     /// Named by index, because serde's own position is inside the one line it
@@ -707,17 +751,17 @@ pub fn split(bytes: &[u8], max_header_bytes: u64) -> Result<Frames<'_>, Containe
     Ok(Frames { header, data })
 }
 
-/// The header frame's content, uncompressed. The agent budgets a batch against
+/// The header frame's content, uncompressed. The agent budgets a submission against
 /// this length rather than against a second account of the header's fields.
 pub fn header_json(envelope: &Envelope) -> Result<Vec<u8>, SealError> {
     Ok(serde_json::to_vec(&Header::of(envelope))?)
 }
 
 /// One payload line as it goes on the wire: the scrape's or the node's own
-/// object, plus this batch's provenance under the one reserved key. The field
+/// object, plus this submission's provenance under the one reserved key. The field
 /// name spells `PROVENANCE_KEY`'s value a second time because `serde(rename)`
 /// takes a literal; the tests assert against the constant, so a change to
-/// either alone fails `every_payload_line_carries_the_batch_s_provenance`.
+/// either alone fails `every_payload_line_carries_the_submission_s_provenance`.
 #[derive(Serialize)]
 struct Stamped<'a, T: Serialize> {
     #[serde(flatten)]
@@ -736,28 +780,14 @@ struct Unstamped<T> {
     metsuke: serde::de::IgnoredAny,
 }
 
-/// The data frame's content before compression: the batch's lines, each
+/// The data frame's content before compression: the submission's lines, each
 /// newline-terminated. What `Limits::max_decompressed_bytes` bounds, and what
 /// `zstd -d` emits. Both payload shapes make the same line; ADR 0010 says
 /// why.
 ///
 /// Concatenation, because a line was stamped and rendered where it was written
-/// (`PayloadLine`). Nothing is serialized here, so a batch's bytes are the sum
+/// (`PayloadLine`). Nothing is serialized here, so a submission's bytes are the sum
 /// of what its rows already measured.
-/// A short digest of exactly the bytes `payload_lines` produces, which is what
-/// `zstd -d` emits for a stored object, so a consumer can recompute it from the
-/// archive rather than trust a log line.
-///
-/// The header is deliberately not covered. A submission the server did not take
-/// is resealed under a fresh counter and timestamp, so everything else about it
-/// changes: the bytes, their length and the signature. Its rows do not, and
-/// this is what says so.
-pub fn payload_digest(envelope: &Envelope) -> String {
-    use blake2::digest::consts::U8;
-    use blake2::{Blake2b, Digest};
-    crate::hex::encode(&Blake2b::<U8>::digest(payload_lines(envelope))[..])
-}
-
 pub fn payload_lines(envelope: &Envelope) -> Vec<u8> {
     let mut body = Vec::with_capacity(
         envelope
@@ -771,6 +801,20 @@ pub fn payload_lines(envelope: &Envelope) -> Vec<u8> {
         line.write_wire(&mut body);
     }
     body
+}
+
+/// A short digest of exactly the bytes `payload_lines` produces, which is what
+/// `zstd -d` emits for a stored object, so a consumer can recompute it from the
+/// archive rather than trust a log line.
+///
+/// The header is deliberately not covered. A submission the server did not take
+/// is resealed under a fresh counter and timestamp, so everything else about it
+/// changes: the bytes, their length and the signature. Its rows do not, and
+/// this is what says so.
+pub fn payload_digest(envelope: &Envelope) -> String {
+    use blake2::digest::consts::U8;
+    use blake2::{Blake2b, Digest};
+    crate::hex::encode(&Blake2b::<U8>::digest(payload_lines(envelope))[..])
 }
 
 /// Serialize, compress, and sign an envelope. Returns the wire bytes exactly

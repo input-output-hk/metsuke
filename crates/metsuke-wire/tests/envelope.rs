@@ -236,7 +236,7 @@ proptest! {
     }
 
     // metsuke-jfb.9: what a row is charged is what the payload spends on it.
-    // The agent budgets a batch by summing `wire_bytes` and the server bounds
+    // The agent budgets a submission by summing `wire_bytes` and the server bounds
     // the bytes `payload_lines` produced, so a framing change that moves one
     // without the other puts the two limits out of step.
     #[test]
@@ -268,7 +268,7 @@ proptest! {
 
     // Both payload shapes make the same line; ADR 0010 says why that matters.
     #[test]
-    fn every_payload_line_carries_the_batch_s_provenance(
+    fn every_payload_line_carries_the_submission_s_provenance(
         scrapes in arb_envelope(),
         lines in arb_lines_envelope(),
     ) {
@@ -284,7 +284,7 @@ proptest! {
 }
 
 // The stamp is what an agent knows before it spools a line, which is the pool
-// and the machine and nothing else: the batch's counter and timestamp are drawn
+// and the machine and nothing else: the submission's counter and timestamp are drawn
 // when it is sealed, so they stay in the header.
 #[test]
 fn a_stamped_line_names_the_pool_and_the_agent() {
@@ -340,7 +340,7 @@ fn a_number_json_cannot_write_back_is_refused_at_the_parse() {
 }
 
 #[test]
-fn open_refuses_a_line_stamped_with_another_batch() {
+fn open_refuses_a_line_stamped_with_another_submission() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let pool_id = PoolId::from_cold_key(&key.verifying_key());
     let elsewhere = Provenance {
@@ -420,7 +420,7 @@ fn the_header_reads_back_without_a_decompressor() {
 // The same read as the fields a caller acts on, which is what an ingest path
 // files an object by (`envelope::read_header`).
 #[test]
-fn read_header_answers_the_batch_s_own_account_of_itself() {
+fn read_header_answers_the_submission_s_own_account_of_itself() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let env = empty_scrapes_envelope(&key);
     let (bytes, _) = envelope::seal(&key, &env, 0).unwrap();
@@ -664,10 +664,10 @@ fn a_counter_past_an_f64_s_exact_range_keeps_its_digits_through_seal_and_open() 
     assert_eq!(value.to_string(), ALLOCATED.to_string());
 }
 
-// What a consumer gets back out of a batch: the fields, not the bytes. The
+// What a consumer gets back out of a submission: the fields, not the bytes. The
 // only place a payload struct reads a payload line.
 #[test]
-fn a_consumer_reads_a_batch_s_scrapes_back_as_scrapes() {
+fn a_consumer_reads_a_submission_s_scrapes_back_as_scrapes() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let (bytes, sig) = envelope::seal(&key, &one_scrape_envelope(&key), 0).unwrap();
     let opened = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap();
@@ -675,10 +675,10 @@ fn a_consumer_reads_a_batch_s_scrapes_back_as_scrapes() {
     assert_eq!(opened.scrapes().unwrap(), [scrape()]);
 }
 
-// Asking a batch for the shape it does not carry names both versions rather
+// Asking a submission for the shape it does not carry names both versions rather
 // than reporting the fields the other schema happens not to have.
 #[test]
-fn reading_a_scrape_batch_as_trace_lines_names_both_schemas() {
+fn reading_a_scrape_submission_as_trace_lines_names_both_schemas() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let err = one_scrape_envelope(&key).trace_lines().unwrap_err();
     assert!(
@@ -786,7 +786,7 @@ fn this_build_seals_the_recorded_submissions() {
     }
 }
 
-/// The same batch with every line rendered again from its own fields.
+/// The same submission with every line rendered again from its own fields.
 fn restamped(envelope: &Envelope) -> Envelope {
     let stamp = &envelope.provenance;
     let payload = match envelope.schema_version() {
@@ -867,8 +867,8 @@ fn sealed_header(
 
 /// An envelope stamped with its own header, as the agent's spool stamps a row.
 /// `open` checks every line against the header, so lines stamped with anything
-/// else make a batch that can only fail to open, which is
-/// `open_refuses_a_line_stamped_with_another_batch`, not a builder's job.
+/// else make a submission that can only fail to open, which is
+/// `open_refuses_a_line_stamped_with_another_submission`, not a builder's job.
 fn envelope_of(
     provenance: Provenance,
     agent_version: String,

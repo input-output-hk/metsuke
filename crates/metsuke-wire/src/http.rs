@@ -80,6 +80,9 @@ pub fn classify(response: &mut ureq::http::Response<ureq::Body>) -> Result<(), R
 
 /// How much of a refusal's body is worth repeating. metsuke-server answers one
 /// sentence; this is for everything else that can answer instead.
+///
+/// A constant rather than configuration, against the convention: nothing an
+/// operator sets changes what a proxy answers with.
 const REASON_MAX_CHARS: usize = 200;
 
 /// The body as one bounded line, because a refusal is logged and a log line is

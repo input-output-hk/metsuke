@@ -25,7 +25,7 @@ pub struct ScrapeConfig {
 /// the SNTP probe. The lines no metric was read from come back beside the row
 /// rather than reaching the journal from here: a node that stays broken would
 /// write the same warning every interval, so the agent counts them and picks
-/// when to say it (`main::ScrapeReport`).
+/// when to say it (`crate::report::ScrapeReport`).
 pub fn scrape(config: &ScrapeConfig) -> (Scrape, Vec<Refused>) {
     let scraped_at = OffsetDateTime::now_utc();
     let (metrics, refused, failure) = match fetch(config) {

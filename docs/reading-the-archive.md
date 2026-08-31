@@ -80,16 +80,10 @@ Unverifiable is counted rather than refused, or a run against a filesystem
 archive would download nothing. `--require-verified` turns it into a refusal,
 which is what a consumer computing anything that matters should pass.
 
-## What a gap in an agent's counters is
+## What a gap in an agent's sequence numbers is
 
-`counter` runs per agent, and a value is never handed out twice: an agent draws
-and persists one before it seals, so an attempt the server refused has spent
-its number and the same lines are sent again under a later one. A rate limit
-met mid-drain is the ordinary case, and it leaves a hole.
-
-So a gap says a submission did not land. It does not say anything was lost, it
-is not a count of what is missing, and summing gaps to measure coverage counts
-every retry as a loss.
+What a gap in `counter` says, and what it does not, is CONTEXT.md,
+**Sequence Number**.
 
 **From the archive alone a gap cannot be resolved, and no read here will do
 it.** The submission that spent the number was refused, so it never became an

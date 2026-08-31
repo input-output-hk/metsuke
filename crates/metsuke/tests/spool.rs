@@ -157,7 +157,7 @@ fn push_reports_the_rows_the_cap_dropped() {
     assert_eq!(spool.push(&scrape_at(3)).unwrap(), 1);
 }
 
-// The batch budget bounds what one upload costs in memory and on the wire, so
+// The submission budget bounds what one upload costs in memory and on the wire, so
 // `outstanding` stops at a prefix rather than reading the whole spool.
 #[test]
 fn outstanding_stops_before_exceeding_the_byte_budget() {
@@ -280,7 +280,7 @@ fn a_stored_row_travels_whatever_its_fields_are() {
 }
 
 // A counter value handed out must never be handed out again, even across a
-// restart: a gap in one agent's run of it is how a consumer sees a batch the
+// restart: a gap in one agent's run of it is how a consumer sees a submission the
 // archive never got.
 #[test]
 fn the_counter_is_monotonic_across_restart() {
@@ -432,10 +432,10 @@ fn a_reader_holding_the_file_does_not_block_a_trace_line_push() {
 
 // And the other direction, which is the one that wedged an agent in the field:
 // the trace thread holds the write lock for as long as its push takes, and
-// taking a batch is what drains the spool it is filling. Taking one has to be a
+// taking a submission is what drains the spool it is filling. Taking one has to be a
 // read, or the busier the stream gets the less the loop that relieves it runs.
 #[test]
-fn a_writer_holding_the_file_does_not_block_taking_a_batch() {
+fn a_writer_holding_the_file_does_not_block_taking_a_submission() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("spool.sqlite");
     let mut spool = Spool::open(&SpoolConfig {
@@ -487,14 +487,14 @@ proptest! {
     // again on the raw file, so a lying `outstanding()` can't hide orphans.
     #[test]
     fn write_ack_delete_leaves_no_orphan_rows(
-        batches in prop::collection::vec((1usize..8, any::<prop::sample::Index>()), 1..10),
+        submissions in prop::collection::vec((1usize..8, any::<prop::sample::Index>()), 1..10),
         cap_rows in 1u64..50,
     ) {
         let dir = tempfile::tempdir().unwrap();
         let config = temp_config(&dir, cap_rows * scrape_bytes());
         let mut spool = Spool::open(&config).unwrap();
         let mut pushed = 0i64;
-        for (count, ack_pick) in batches {
+        for (count, ack_pick) in submissions {
             for _ in 0..count {
                 spool.push(&scrape_at(pushed)).unwrap();
                 pushed += 1;

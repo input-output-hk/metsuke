@@ -127,7 +127,7 @@ fn header(key: &SigningKey, schema_version: u32) -> serde_json::Value {
     })
 }
 
-// Acceptance: a valid batch is archived as the bytes that were signed, and
+// Acceptance: a valid submission is archived as the bytes that were signed, and
 // the ACK carries the client version this server was built against
 // (ADR 0005, ADR 0006).
 #[test]
@@ -220,14 +220,14 @@ fn unknown_pool_is_rejected() {
 
 // The key is what says which pool an upload is for, so a key that
 // is nobody's cold key speaks for nobody: the pool it hashes to is not on the
-// allowlist, and the refusal names that pool rather than the one the batch
+// allowlist, and the refusal names that pool rather than the one the submission
 // claims.
 #[test]
 fn a_key_that_is_not_the_pools_cold_key_speaks_for_nobody() {
     let pool = pool_of(&test_key());
     let impostor = other_key();
     let (intake, _dir) = intake_for(&[pool]);
-    // The batch's own header still names the allowlisted pool: the server does
+    // The submission's own header still names the allowlisted pool: the server does
     // not read it, so the claim buys the impostor nothing.
     let envelope = envelope_for(&impostor, 1);
     let (body, signature) = seal(&impostor, &envelope);
@@ -383,11 +383,11 @@ fn a_forged_body_spends_none_of_the_pools_budget() {
     submit(&intake, &key, &envelope_for(&key, 2)).unwrap();
 }
 
-// A batch is sealed when it is uploaded, not when its scrapes were taken, so
+// A submission is sealed when it is uploaded, not when its scrapes were taken, so
 // what this bounds is how long a captured submission stays replayable. Both
 // directions, because a clock that runs fast is as wrong as one that lags.
 #[test]
-fn a_batch_sealed_outside_the_window_is_refused() {
+fn a_submission_sealed_outside_the_window_is_refused() {
     let key = test_key();
     let (intake, _dir) = intake_with(skew_of(300, &key));
     for offset in [Duration::seconds(-301), Duration::seconds(301)] {
@@ -410,11 +410,11 @@ fn a_batch_sealed_outside_the_window_is_refused() {
     }
 }
 
-// The edge is inside: a batch sealed exactly at the bound is the last one the
+// The edge is inside: a submission sealed exactly at the bound is the last one the
 // window admits, so the refusal above is the bound being crossed and not the
 // bound being reached.
 #[test]
-fn a_batch_sealed_at_the_window_is_accepted() {
+fn a_submission_sealed_at_the_window_is_accepted() {
     let key = test_key();
     let (intake, _dir) = intake_with(skew_of(300, &key));
     let sealed_at = test_now() - Duration::seconds(300);
@@ -432,7 +432,7 @@ fn a_batch_sealed_at_the_window_is_accepted() {
 // is: a replayed body carries a signature that verifies, so charging first
 // would let whoever captured one spend the window of the pool that sealed it.
 #[test]
-fn a_replayed_batch_spends_none_of_the_pools_budget() {
+fn a_replayed_submission_spends_none_of_the_pools_budget() {
     let key = test_key();
     let config = IngestConfig {
         rate_limit_uploads: nonzero_u32(1),

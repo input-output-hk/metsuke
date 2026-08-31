@@ -45,7 +45,7 @@ pub fn migrate(conn: &Connection, migrations: &[&str]) -> Result<Vec<Applied>, M
     }
     let mut ran = Vec::new();
     for (version, migration) in migrations.iter().enumerate().skip(applied as usize) {
-        // `Connection::changes` reports the last statement of the batch alone,
+        // `Connection::changes` reports the last statement of the submission alone,
         // and a migration is as many statements as it needs.
         let before = conn.total_changes();
         let transaction = conn.unchecked_transaction()?;

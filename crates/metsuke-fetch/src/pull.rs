@@ -8,8 +8,7 @@ use std::num::NonZeroU64;
 use std::time::Duration;
 
 use base64::Engine as _;
-use metsuke_wire::envelope::{HEADER_SIGNATURE, HEADER_VKEY, Signature, VerifyingKey};
-use metsuke_wire::hex;
+use metsuke_wire::envelope::{Attestation, HEADER_SIGNATURE, HEADER_VKEY};
 use metsuke_wire::http::{
     self, AFTER_FIELD, KEY_FIELD, Listing, OBJECT_PATH, PREFIX_FIELD, SUBMISSIONS_PATH,
 };
@@ -17,6 +16,10 @@ use metsuke_wire::http::{
 /// The most an object's declared length may reserve before its body arrives.
 /// Not a limit on the object, which is `--max-object-bytes`; this is how much
 /// of a stranger's arithmetic the process acts on in advance.
+///
+/// A constant rather than configuration, against the convention: raising it
+/// only buys back one `Vec` growth and hands a lying `Content-Length` that much
+/// more of this process's memory, so there is nothing here worth exposing.
 const PREALLOCATED_MAX: u64 = 1024 * 1024;
 
 /// One object as it came back: the bytes to write, and the pair that says
@@ -30,22 +33,11 @@ pub struct Object {
     pub attestation: Option<Attestation>,
 }
 
-/// What checking an object takes, as the download carries it.
-#[derive(Debug, Clone, Copy)]
-pub struct Attestation {
-    pub vkey: VerifyingKey,
-    pub signature: Signature,
-}
-
-/// The two headers off an answer's head, both or neither: a check needs the
-/// pair, so half of it is the same as none of it. Malformed is the same as
-/// absent here, and what an unverifiable object means is `sync`'s to say.
+/// The two headers off an answer's head. What an unverifiable object means is
+/// `sync`'s to say; `Attestation::from_headers` says when there is one.
 fn attestation(response: &ureq::http::Response<ureq::Body>) -> Option<Attestation> {
     let text = |header: &str| -> Option<&str> { response.headers().get(header)?.to_str().ok() };
-    Some(Attestation {
-        vkey: VerifyingKey::from_bytes(&hex::decode::<32>(text(HEADER_VKEY)?).ok()?).ok()?,
-        signature: Signature::from_bytes(&hex::decode::<64>(text(HEADER_SIGNATURE)?).ok()?),
-    })
+    Attestation::from_headers(text(HEADER_VKEY), text(HEADER_SIGNATURE))
 }
 
 /// The archive behind one server and one account.

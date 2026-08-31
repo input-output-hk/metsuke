@@ -1,7 +1,7 @@
 //! The agent's only durability layer (ADR 0004): scrapes, trace lines,
 //! delivery state, and schema migrations in one SQLite file. A row leaves on
 //! server ACK, as the oldest row past its stream's byte cap, or for being
-//! larger than a whole batch on its own (`outstanding_rows`); everything else is
+//! larger than a whole submission on its own (`outstanding_rows`); everything else is
 //! offered again at startup and every upload interval.
 //!
 //! A row is stored as the line it will be on the wire
@@ -10,7 +10,7 @@
 //!
 //! Both caps are in bytes rather than rows because a trace line and a scrape
 //! are not the same size and a trace stream's rate is not the scrape tick's; a
-//! row count bounds neither the file nor the memory a batch costs.
+//! row count bounds neither the file nor the memory a submission costs.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -36,16 +36,16 @@ pub struct Spool {
     max_bytes: u64,
     provenance: Provenance,
     /// Accumulated rather than returned per call, because the caller that has
-    /// to say it is the upload loop and the deletes happen while a batch is
+    /// to say it is the upload loop and the deletes happen while a submission is
     /// being taken.
     uncarriable_since_report: UncarriableReport,
 }
 
-/// What taking a batch deleted since the last report: rows no batch could
+/// What taking a submission deleted since the last report: rows no submission could
 /// carry.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct UncarriableReport {
-    /// Rows over a whole batch's budget on their own (`outstanding_rows`).
+    /// Rows over a whole submission's budget on their own (`outstanding_rows`).
     pub oversized: u64,
     /// The largest row dropped, so the operator is told the budget a row has
     /// to clear rather than only that rows were dropped.
@@ -134,7 +134,7 @@ const LINES: Stream = Stream {
 ///
 /// WAL because the file has two writers: under rollback journalling a reader
 /// takes a shared lock that blocks the trace-line writer, so the upload loop
-/// reading a batch would stall the stream for as long as it takes.
+/// reading a submission would stall the stream for as long as it takes.
 fn open_spool(path: &PathBuf, busy_timeout: Duration) -> Result<Connection, SpoolError> {
     let conn = Connection::open(path)?;
     conn.busy_timeout(busy_timeout)?;
@@ -223,7 +223,7 @@ fn push_capped(
     Ok(dropped)
 }
 
-/// What a batch may spend on rows. A row costs the `bytes` column and nothing
+/// What a submission may spend on rows. A row costs the `bytes` column and nothing
 /// beside it (`envelope::PayloadLine::wire_bytes`).
 #[derive(Debug, Clone, Copy)]
 pub struct RowBudget {
@@ -239,7 +239,7 @@ struct Outstanding {
 /// Oldest first, up to `budget.max_bytes`. A reader unless there is actually an
 /// oversized head row to drop, which WAL never blocks.
 ///
-/// A row over the budget on its own cannot be sealed into any batch bounded by
+/// A row over the budget on its own cannot be sealed into any submission bounded by
 /// it, so offering it only seals a body the server refuses; and because every
 /// later row's running sum starts at its bytes, leaving it at the head stalls
 /// the whole stream behind it until the spool's own cap evicts it. Deleting it
@@ -259,7 +259,7 @@ fn outstanding_rows(
     let ceiling = clamp(budget.max_bytes);
     // Asked as a read first. SQLite takes the write lock for a DELETE whether
     // or not it matches, and the trace-line writer holds that lock, so a
-    // leading DELETE made taking a batch fail against a busy stream: the one
+    // leading DELETE made taking a submission fail against a busy stream: the one
     // thing that drains the spool could not run while the spool was filling.
     let oversized: Option<(i64, i64)> = conn
         .query_row(
@@ -273,12 +273,23 @@ fn outstanding_rows(
         .optional()?;
     let uncarriable = match oversized {
         None => None,
-        Some((id, bytes)) => {
+        Some((id, _)) => {
             let transaction = conn.transaction()?;
-            transaction.execute(&format!("DELETE FROM {table} WHERE id = ?1"), [id])?;
-            add_total(&transaction, stream, -bytes)?;
+            // The row was named by a read outside the write lock, so the cap may
+            // have evicted it since. Only the bytes the DELETE actually removed
+            // come off the total, or it decrements twice for one row.
+            let removed: Option<i64> = transaction
+                .query_row(
+                    &format!("DELETE FROM {table} WHERE id = ?1 RETURNING bytes"),
+                    [id],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if let Some(bytes) = removed {
+                add_total(&transaction, stream, -bytes)?;
+            }
             transaction.commit()?;
-            Some(bytes)
+            removed
         }
     };
     // Stopped at the first row past the budget rather than filtered on a window
@@ -381,7 +392,7 @@ impl Spool {
             .collect())
     }
 
-    /// What every row in this file is stamped with, and therefore what a batch
+    /// What every row in this file is stamped with, and therefore what a submission
     /// drawn from it has to name in its header (`delivery::Delivery::envelope`).
     pub fn provenance(&self) -> &Provenance {
         &self.provenance

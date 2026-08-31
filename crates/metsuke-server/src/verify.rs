@@ -16,9 +16,9 @@ pub enum VerifyError {
     BadSignature { key: String },
     #[error("{key}: the header frame does not read: {reason}")]
     UnreadableHeader { key: String, reason: String },
-    #[error("{key}: nothing files a schema v{schema_version} batch")]
+    #[error("{key}: nothing files a schema v{schema_version} submission")]
     UnnameableKind { key: String, schema_version: u32 },
-    #[error("{key}: the batch inside belongs at {expected}")]
+    #[error("{key}: the submission inside belongs at {expected}")]
     Misfiled { key: String, expected: String },
 }
 

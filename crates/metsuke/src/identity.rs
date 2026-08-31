@@ -37,12 +37,10 @@ pub fn agent_id(configured: Option<&str>) -> Result<AgentId, IdentityError> {
 /// checks the same thing per upload; failing here means an operator hears it
 /// once at startup rather than as a rejection an hour later.
 pub fn check_pool_id(configured: PoolId, key: &VerifyingKey) -> Result<(), IdentityError> {
-    let implied = PoolId::from_cold_key(key);
-    match implied == configured {
-        true => Ok(()),
-        false => Err(IdentityError::PoolIdMismatch {
+    configured
+        .check_cold_key(key)
+        .map_err(|implied| IdentityError::PoolIdMismatch {
             configured,
             implied,
-        }),
-    }
+        })
 }

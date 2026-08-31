@@ -84,7 +84,7 @@ fn bytes_that_were_never_signed_fail_before_the_header_is_read() {
 
 /// An object whose key says one agent and whose header says another is
 /// misfiled: the key is `store`'s output, so re-deriving it is what catches a
-/// batch that was filed under something other than what it carries.
+/// submission that was filed under something other than what it carries.
 #[test]
 fn an_object_filed_under_the_wrong_agent_does_not_verify() {
     let mut object = stored_object();
@@ -96,7 +96,7 @@ fn an_object_filed_under_the_wrong_agent_does_not_verify() {
     );
 }
 
-/// The same for the kind: a metrics batch filed as logs is not the object its
+/// The same for the kind: a metrics submission filed as logs is not the object its
 /// key names.
 #[test]
 fn an_object_filed_under_the_wrong_kind_does_not_verify() {

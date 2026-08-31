@@ -9,8 +9,11 @@ the real server, so that crate dev-depends on it. Security is the top constraint
 least privilege, smallest attack surface.
 
 Whose a submission is is derived, never claimed. See CONTEXT.md, **Cold Key**.
-The two ends that enforce it are `metsuke::identity::check_pool_id` and
-`metsuke_server::authority::Signed::pool_id`.
+The derivation and its compare are `metsuke_wire::envelope::PoolId::from_cold_key`
+and `check_cold_key`; every enforcement goes through them —
+`metsuke::identity::check_pool_id` at agent startup,
+`metsuke_server::authority::Signed::pool_id` per upload, and
+`metsuke_fetch::sync::checked` per downloaded object.
 
 ## Invariants
 

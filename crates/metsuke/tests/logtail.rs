@@ -1,6 +1,6 @@
 //! The agent-side trace path end to end, on the recorded stream: a journalctl
 //! stand-in replaying it, the drain that selects and spools, and the sealed
-//! batch opened back. What a rule keeps is tests/logselect.rs; this is that the
+//! submission opened back. What a rule keeps is tests/logselect.rs; this is that the
 //! four parts hand the same bytes along.
 
 use std::time::Duration;
@@ -21,7 +21,7 @@ use support::{
 const LEIOS_RECORDING: &str = "leios-node-traces.log";
 const LEIOS_WINDOW: &str = include_str!("fixtures/recordings/leios-node-traces.log");
 
-/// Wide enough that no spool or batch cap fires here.
+/// Wide enough that no spool or submission cap fires here.
 const UNBOUNDED: u64 = 64 * 1024 * 1024;
 
 const NO_CONTENTION: Duration = Duration::from_secs(1);
@@ -30,7 +30,7 @@ const NO_CONTENTION: Duration = Duration::from_secs(1);
 // the binary runs, out as the envelope the server opens: every selected line
 // and nothing else, in the order the node wrote them and field for field.
 #[test]
-fn the_recorded_stream_reaches_a_sealed_batch_as_the_lines_the_rules_selected() {
+fn the_recorded_stream_reaches_a_sealed_submission_as_the_lines_the_rules_selected() {
     let dir = tempfile::tempdir().unwrap();
     let rules = shipped_rules();
     let mut source = replaying(replaying_journalctl(&dir, &recording(LEIOS_RECORDING)));
@@ -57,20 +57,20 @@ fn the_recorded_stream_reaches_a_sealed_batch_as_the_lines_the_rules_selected() 
         0,
         UNBOUNDED,
     );
-    let batch = delivery
+    let submission = delivery
         .take_line_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .expect("the recording holds lines the shipped rules select");
     let opened = envelope::open(
         &key.verifying_key(),
-        &batch.wire_bytes,
-        &batch.signature,
+        &submission.wire_bytes,
+        &submission.signature,
         TEST_LIMITS,
     )
     .unwrap();
     let lines = opened
         .trace_lines()
-        .expect("a trace-line batch carries lines");
+        .expect("a trace-line submission carries lines");
 
     let selected: Vec<TraceLine> = LEIOS_WINDOW
         .lines()
