@@ -20,6 +20,14 @@ use crate::applications::{METADATA_KEY, METADATA_LABEL};
 /// rather than a program comes here for.
 pub const PATH: &str = "/";
 
+pub const ICON: &str = include_str!("../assets/favicon.svg");
+pub const ICON_PATH: &str = "/favicon.svg";
+/// The path a client asks for on its own, whatever the page links. Served
+/// because a refusal log is the record of why a pool's uploads are not
+/// landing, and an icon probe is not that.
+pub const ICON_LEGACY_PATH: &str = "/favicon.ico";
+pub const ICON_CONTENT_TYPE: &str = "image/svg+xml";
+
 /// The shipped agent configuration, whose commented values are pinned to the
 /// code's defaults by `crates/metsuke/tests/config.rs`.
 pub const CONFIG_EXAMPLE: &str = include_str!("../../../contrib/config.example.toml");
@@ -53,6 +61,7 @@ pub fn render(config_example: &str, unit: &str) -> String {
         r#"<!doctype html>
 <meta charset="utf-8">
 <title>metsuke: telemetry for the MusashiNet rewards program</title>
+<link rel="icon" href="{ICON_PATH}" type="{ICON_CONTENT_TYPE}">
 <style>body {{ max-width: 46em; margin: 2em auto; font-family: sans-serif }}
 pre {{ overflow-x: auto; background: #f4f4f4; padding: 1em }}</style>
 

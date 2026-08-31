@@ -7,3 +7,5 @@
 /devnet/.devnet
 /.claude/settings.local.json
 /.test-logs
+# br doctor per-run artifacts
+.doctor/

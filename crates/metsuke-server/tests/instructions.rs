@@ -162,6 +162,20 @@ fn the_page_names_the_submission_headers() {
     }
 }
 
+/// Linked, so a browser never falls back to the path it would have guessed
+/// (metsuke-n1th).
+#[test]
+fn the_page_links_the_icon_route() {
+    assert!(
+        instructions::page().contains(&format!(
+            r#"<link rel="icon" href="{}" type="{}">"#,
+            instructions::ICON_PATH,
+            instructions::ICON_CONTENT_TYPE
+        )),
+        "no icon link in the page"
+    );
+}
+
 /// Verbatim, not summarised: the copy-paste block is the shipped file, so
 /// there is nothing to keep in step with it.
 #[test]

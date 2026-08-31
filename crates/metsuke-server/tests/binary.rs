@@ -739,6 +739,28 @@ fn the_instructions_page_is_served_without_credentials() {
 }
 
 #[test]
+fn both_favicon_paths_are_served_without_credentials() {
+    let key = test_key();
+    let server = Server::start(&[pool_of(&key)]);
+    for path in [
+        metsuke_server::instructions::ICON_PATH,
+        metsuke_server::instructions::ICON_LEGACY_PATH,
+    ] {
+        let (status, body, headers) = server.pull_as(path, None);
+        assert_eq!(status, 200, "{path}: {}", String::from_utf8_lossy(&body));
+        assert_eq!(
+            String::from_utf8_lossy(&body),
+            metsuke_server::instructions::ICON
+        );
+        assert!(
+            headers.iter().any(|(field, value)| field == "content-type"
+                && value.starts_with(metsuke_server::instructions::ICON_CONTENT_TYPE)),
+            "{path}: {headers:?}"
+        );
+    }
+}
+
+#[test]
 fn the_instructions_page_takes_only_get() {
     let key = test_key();
     let server = Server::start(&[pool_of(&key)]);
