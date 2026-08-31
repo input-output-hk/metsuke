@@ -24,6 +24,29 @@ fn write_roster(path: &Path, pool: PoolId, keys: &[&SubmissionKey]) {
     std::fs::write(path, text).expect("the roster writes");
 }
 
+/// Replace the roster the way a generator must: write the new one beside it,
+/// then rename over it, so no reader ever sees a partial file. The replacement
+/// is stamped with the mtime of the file it replaces, which is what a server
+/// comparing timestamps would read as "nothing changed".
+fn swap_roster(path: &Path, pool: PoolId, keys: &[&SubmissionKey]) {
+    let was = std::fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .expect("the roster being replaced is readable");
+    let next = path.with_extension("json.next");
+    write_roster(&next, pool, keys);
+    std::fs::File::options()
+        .write(true)
+        .open(&next)
+        .and_then(|file| file.set_modified(was))
+        .expect("the replacement takes the mtime of what it replaces");
+    assert_eq!(
+        std::fs::metadata(&next).unwrap().len(),
+        std::fs::metadata(path).unwrap().len(),
+        "the two rosters are the same length, which is what makes the stamp equal"
+    );
+    std::fs::rename(&next, path).expect("the roster is swapped by rename");
+}
+
 fn public_key(key: &SubmissionKey) -> metsuke_wire::leios::LeiosPublicKey {
     metsuke_wire::leios::LeiosPublicKey::from_bytes(
         &hex::decode::<96>(&key.public_key_hex()).expect("96 bytes of hex"),
@@ -79,8 +102,12 @@ fn a_pool_may_have_more_than_one_key_listed() {
 
 /// The rotation, as the server meets it: the file is rewritten under a running
 /// server and the next submission is judged against what it now says.
+///
+/// The swap is a rename, which is what a writer must do (ADR 0011). The
+/// replacement is given the mtime and the length of the one it replaces, so
+/// this fails for any server that decides "unchanged" from those alone.
 #[test]
-fn a_rewritten_roster_is_read_again() {
+fn a_roster_swapped_under_the_server_is_read_again() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("roster.json");
     let pool = pool_of(&test_key());
@@ -88,7 +115,7 @@ fn a_rewritten_roster_is_read_again() {
     let roster = Roster::load(&path).unwrap();
     assert!(roster.registers(pool, &public_key(&test_leios_key(1))));
 
-    write_roster(&path, pool, &[&test_leios_key(2)]);
+    swap_roster(&path, pool, &[&test_leios_key(2)]);
 
     assert!(roster.registers(pool, &public_key(&test_leios_key(2))));
     assert!(

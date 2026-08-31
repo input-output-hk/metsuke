@@ -27,7 +27,7 @@ Each is an accepted decision; read the ADR before working near it.
 - Client SQLite spool is the only durability layer; ACK means the S3 PUT succeeded. See docs/adr/0004.
 - S3 stores the raw signed bytes and is the only store; the server holds no state. See docs/adr/0005.
 - Client and server versions are independent; the update nudge is embedded at server build. See docs/adr/0006.
-- A submission signed by a pool's Leios key claims its pool in a header, and that claim is believed only where a roster file lists that key for that pool; the cold-key path derives it still. See docs/adr/0011.
+- A submission signed by a pool's Leios key claims its pool in a header, and that claim is believed only where a roster file lists that key for that pool; the cold-key path derives it still. The roster is replaced by rename, never written in place, and a timer beside the server is what writes it. See docs/adr/0011.
 - Without `[log]` the agent touches only the loopback Prometheus endpoint: no socket, no journal, no groups. `[log].source` picks what it reads: the pipe holds no group either, and only the journal costs `SupplementaryGroups=systemd-journal`, which reads every unit's journal. See docs/adr/0010 and nix/unit.nix.
 
 ## Conventions

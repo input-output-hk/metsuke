@@ -74,17 +74,32 @@ cold key (ADR 0011). Generated the same way, from a node this time:
 metsuke-roster query dijkstra \
   --socket-path <node socket> --testnet-magic <magic> > pool-state.json
 
-metsuke-roster generate pool-state.json > roster.json
+metsuke-roster generate pool-state.json roster.json
 ```
 
 `query` needs `cardano-cli` on `PATH`, and the era is a positional because
-`latest` is not the era a Leios network answers in. `generate` is offline and
-pure. Point `settings.ingest.leios_roster` at where the result lands; the
-server re-reads it when it changes, so a new roster needs no restart.
+`latest` is not the era a Leios network answers in. `generate` takes the
+destination rather than writing to stdout, because it puts the file in place by
+rename; do not redirect it over a roster the server is reading. ADR 0011 has why
+the swap has to be a rename.
 
-Run it once an epoch, from a timer. A pool that registers a new Leios key is
-refused until a run picks it up, so the cadence is the ceiling on how long a
-rotation takes to land. It costs nothing to run more often. The roster carries
+Those two commands are what `services.metsuke-server.roster` runs on a timer, so
+a deployment sets that rather than running them by hand. It needs the node
+socket and its group, the era, and the network, and it writes
+`/var/lib/metsuke-roster/roster.json`, which is the path
+`settings.ingest.leios_roster` has to name; the module refuses any other. On a
+cardano-parts host the socket pair is
+`config.services.cardano-node.socketPath 0` and
+`config.services.cardano-node.socketGroup`. Run the commands by hand only to
+look at what the chain says; the server re-reads the file when it changes, so a
+new roster needs no restart.
+
+Setting `leios_roster` without enabling the timer builds, with a warning: the
+file is then whatever last wrote it, and a roster nobody refreshes refuses every
+pool that rotated.
+
+Set `interval` to once an epoch; ADR 0011's stale-roster consequence is what a
+slower one costs, and it costs nothing to run more often. The roster carries
 the epoch and slot it was taken at, and the server logs them at startup and at
 every reload: that pair is what says whether a refusal is a stale roster or a
 key the chain really does not register.

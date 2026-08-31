@@ -8,6 +8,7 @@ use roster.nu *
 # cardano-cli 11.1.0.0. Every pool in it has one registered key and no announced
 # one, so the recording covers the roster's shape and not a rotation in flight.
 const ANSWER = path self fixtures/query-answer.json
+const ROSTER = path self roster.nu
 
 const POOL = "eb8865c72876f93e07d3db55c14c03a542afa1ab8ad83065723a3204"
 const KEY = "ae23eff571532a2e0542b2f7a4e8ae59c1dc40aafdec0ce3a3e2d36d0240e1bbb02d417f56388cd44bd553679e6c6dc40173b5c7dcb94ba6f08a1ba20796d0c243ea2a5e913a8dd0dfce27822405b2daa53c60557645d9320908690e888eefcf"
@@ -87,8 +88,26 @@ def a-key-that-is-not-a-pool-id-is-an-error [] {
   assert error { $renamed | as-file }
 }
 
+# The swap the server's change detection rests on: every `generate` leaves the
+# name pointing at a new inode, and leaves no half-written file behind.
+def each-generate-replaces-the-file-by-rename [] {
+  let dir = mktemp --directory
+  let into = $dir | path join roster.json
+
+  ^$nu.current-exe $ROSTER generate $ANSWER $into
+  let first = ls --long $into | get 0.inode
+  ^$nu.current-exe $ROSTER generate $ANSWER $into
+  let second = ls --long $into | get 0.inode
+
+  assert not equal $first $second
+  assert equal (ls $dir | get name | path basename) ["roster.json"]
+  assert equal (open $into | get epoch) 2
+  rm --recursive --force $dir
+}
+
 def main [] {
   the-recorded-answer-becomes-a-roster
+  each-generate-replaces-the-file-by-rename
   the-tip-the-answer-was-taken-at-travels-with-it
   both-the-registered-and-the-announced-key-are-listed
   a-key-announced-unchanged-is-listed-once

@@ -343,6 +343,13 @@
               server = config.packages.metsuke-server;
             };
 
+            roster-unit = import ./nix/roster-unit-test.nix {
+              inherit pkgs;
+              serverModule = self.nixosModules.metsuke-server;
+              server = config.packages.metsuke-server;
+              roster = config.packages.metsuke-roster;
+            };
+
             static-x86_64-linux = linksNothing config.packages.metsuke-static-x86_64-linux;
             static-aarch64-linux = linksNothing config.packages.metsuke-static-aarch64-linux;
 

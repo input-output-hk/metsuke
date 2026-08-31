@@ -28,11 +28,26 @@ for that pool. Both checks or neither: a claimed pool with no roster entry, a
 key the roster does not list for it, and a signature that does not verify are
 one refusal.
 
-The roster is a file. Something outside this repository queries `pool-state`
-and writes it; the server re-reads it when it changes and never queries
-anything itself. It lists, per pool, every key the chain currently registers
-and every key it has announced for the next epoch, so a rotation is accepted
-before it takes effect and the epoch boundary is not an event.
+The roster is a file. A timer beside the server queries `pool-state` and writes
+it; the server re-reads it when it changes and never queries anything itself.
+That split is the point: the query needs a node socket and a chain client, and
+the thing on the ingest path gets neither. It lists, per pool, every key the
+chain currently registers and every key it has announced for the next epoch, so
+a rotation is accepted before it takes effect and the epoch boundary is not an
+event.
+
+The timer is ours to run, not an operator's to write: the server is ours, so a
+roster nobody regenerates is our outage. `services.metsuke-server.roster` is the
+unit, and it costs the ingest host a cardano-node socket and a cardano-cli in
+one unit's PATH. The generator runs as its own named user and hands the file
+over by group, so what the ingest unit gains is one group and no new reach.
+
+A new roster is put in place by rename, never written over the old one. The
+server reads the file on the request path, so a writer that truncates in place
+hands it half a roster; rename makes the swap one step and gives the name a new
+inode, which is what the server notices the change by. Timestamps cannot carry
+that on their own: successive rosters are naturally the same length, and two
+written inside one mtime tick would look identical while listing different keys.
 
 Leios-key submissions are signed under this project's own domain separation
 tag, not the consensus one. The key is the same key that signs votes; the
@@ -57,4 +72,6 @@ in the other.
   key, so there was no way to borrow one.
 - A stale roster refuses a pool that rotated. That is the failure we chose:
   the alternative, accepting a key the chain no longer registers, accepts
-  submissions from whoever holds a retired key.
+  submissions from whoever holds a retired key. How often the timer runs is
+  therefore the ceiling on how long a rotation takes to land, and the only
+  thing that bounds that refusal.

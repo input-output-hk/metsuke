@@ -104,6 +104,11 @@ def cli [command: list<string>, common: list<string>]: nothing -> any {
   $answer.stdout | from json
 }
 
-def "main generate" [answer: path]: nothing -> string {
-  open --raw $answer | from json | as-file
+# Write the file the server reads: beside it, then renamed over it. Taking the
+# destination rather than stdout is what keeps a caller from redirecting over a
+# roster in use. ADR 0011 has why the swap has to be a rename.
+def "main generate" [answer: path, into: path]: nothing -> nothing {
+  let next = $"($into).next"
+  open --raw $answer | from json | as-file | save --force $next
+  mv --force $next $into
 }

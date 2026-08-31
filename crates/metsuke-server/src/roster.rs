@@ -1,11 +1,11 @@
 //! The Key Roster: which **Leios Keys** the chain registers for each pool
-//! (ADR 0011). A file something outside this repository writes off
-//! `cardano-cli query pool-state`; this server reads it, re-reads it when it
-//! changes, and queries nothing itself.
+//! (ADR 0011). A file a timer beside this server writes off `cardano-cli query
+//! pool-state`; this server reads it, re-reads it when it changes, and queries
+//! nothing itself.
 //!
-//! A pool's entry holds every key the roster's writer saw for it, the
-//! registered one and any announced for the next epoch together. ADR 0011 has
-//! why.
+//! What its writer must not break: the file is replaced by rename, and a pool's
+//! entry holds every key its writer saw for that pool, the registered one and
+//! any announced for the next epoch together. ADR 0011 has why for both.
 
 use std::collections::HashMap;
 use std::fs;
@@ -85,22 +85,34 @@ struct Loaded {
     read_from: Option<Stamp>,
 }
 
-/// Enough of the file's metadata to say it is not the one already read. Both
-/// halves, because a rewrite within the timestamp's resolution can still
-/// change the length.
+/// Enough of the file's metadata to say it is not the one already read. All
+/// four together: a rename points the name at a new inode, which is what
+/// catches a swap the timestamp is too coarse to see, and the timestamp and
+/// length are what still separate two generations when a freed inode is handed
+/// straight back to the next `.next` file (ADR 0011).
+///
+/// The timestamp is optional because a filesystem that does not keep one is not
+/// a reason to give up on the other three. Collapsing the whole stamp would
+/// make every `registers` call re-read and re-parse the roster on the ingest
+/// path, silently.
 #[derive(PartialEq, Eq)]
 struct Stamp {
-    modified: SystemTime,
+    device: u64,
+    inode: u64,
+    modified: Option<SystemTime>,
     len: u64,
 }
 
 impl Stamp {
-    /// `None` where the file cannot be stated, which `refresh` reads as "try a
-    /// full read and let that report the reason".
+    /// `None` where the file cannot be stated at all, which `refresh` reads as
+    /// "try a full read and let that report the reason".
     fn of(path: &Path) -> Option<Stamp> {
+        use std::os::unix::fs::MetadataExt;
         let metadata = fs::metadata(path).ok()?;
         Some(Stamp {
-            modified: metadata.modified().ok()?,
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            modified: metadata.modified().ok(),
             len: metadata.len(),
         })
     }
