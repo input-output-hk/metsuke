@@ -84,9 +84,10 @@
         }:
         let
           craneLib = inputs.crane.mkLib pkgs;
-          # Cargo sources and the fixtures: the scrape bodies and the trace
-          # recordings are compiled in with include_str!, the submission
-          # recordings and the S3 cassette are read at test time.
+          # Cargo sources, the fixtures and the server's icon: the scrape
+          # bodies, the trace recordings and the icon are compiled in with
+          # include_str!, the submission recordings and the S3 cassette are
+          # read at test time.
           #
           # Under crates/ alone, because this filter is not gitignore-aware: a
           # devnet run leaves .hex files in the working tree, and matching
@@ -96,6 +97,7 @@
             ".log"
             ".hex"
             ".http"
+            ".svg"
           ];
           cratesDir = "${toString ./crates}/";
           # The shipped config and unit, which both crates compile in whole:
@@ -210,8 +212,8 @@
           # The server's tree. build.rs reads the agent manifest for
           # CLIENT_VERSION, so the agent crate has to be here in full even
           # though nothing links against it; the two contrib files are carried
-          # whole into the instructions page with include_str!, so cargo
-          # sources alone do not build.
+          # whole into the instructions page with include_str!, as is the icon
+          # under assets/, so cargo sources alone do not build.
           serverFileset = pkgs.lib.fileset.unions [
             (pkgs.lib.fileset.fromSource (crateSrc [
               ./crates/metsuke-wire
@@ -220,6 +222,7 @@
             ]))
             ./contrib/config.example.toml
             ./contrib/metsuke.service
+            ./crates/metsuke-server/assets
           ];
 
           unit = import ./nix/unit.nix;

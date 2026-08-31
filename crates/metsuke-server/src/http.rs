@@ -1,7 +1,7 @@
 //! What the server answers, as values: the POST route submissions arrive on,
 //! whose headers decode into an `authority::Signed`, the two GET routes a
-//! developer pulls the archive back out through (`developer`), and the
-//! `instructions` page.
+//! developer pulls the archive back out through (`developer`), and what
+//! `instructions` renders and serves.
 //!
 //! No transport type appears here. `answer` takes a decoded `Request` and
 //! returns an `Answer`, so every route's answer is reachable from a test
@@ -33,7 +33,7 @@ pub const SUBMIT_PATH: &str = "/v1/submit";
 /// (`metsuke_wire::http`), re-exported so a route reads off one name here.
 pub use metsuke_wire::http::{KEY_FIELD, OBJECT_PATH, SUBMISSIONS_PATH};
 
-/// The two methods the four routes take. Anything else is one value: a refusal
+/// The two methods every route takes. Anything else is one value: a refusal
 /// names the method the route accepts, never the one that was tried.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
@@ -184,6 +184,15 @@ pub fn answer<A: Store + Bytes + List>(
                 headers: Vec::new(),
             },
             _ => refuse(None, 405, format!("{} takes GET", instructions::PATH)),
+        },
+        instructions::ICON_PATH | instructions::ICON_LEGACY_PATH => match request.method {
+            Method::Get => Answer {
+                status: 200,
+                content_type: instructions::ICON_CONTENT_TYPE,
+                body: AnswerBody::Bytes(bytes::Bytes::from_static(instructions::ICON.as_bytes())),
+                headers: Vec::new(),
+            },
+            _ => refuse(None, 405, format!("{path} takes GET")),
         },
         // A known route reached with the wrong method is named, because a
         // client that guessed the method is not a client at the wrong address.

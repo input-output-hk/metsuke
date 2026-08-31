@@ -151,6 +151,29 @@ fn the_instructions_page_takes_only_get() {
     assert_eq!(answer.status, 405);
 }
 
+/// metsuke-n1th.
+#[test]
+fn both_favicon_paths_serve_the_mark() {
+    let server = server();
+    for path in [instructions::ICON_PATH, instructions::ICON_LEGACY_PATH] {
+        let answer = server.answer(get(path));
+
+        assert_eq!(answer.status, 200, "{path}: {}", body(&answer));
+        assert_eq!(answer.content_type, instructions::ICON_CONTENT_TYPE);
+        assert_eq!(body(&answer), instructions::ICON);
+    }
+}
+
+#[test]
+fn the_favicon_route_takes_only_get() {
+    let answer = server().answer(Request {
+        method: Method::Post,
+        ..get(instructions::ICON_PATH)
+    });
+
+    assert_eq!(answer.status, 405);
+}
+
 #[test]
 fn a_route_nothing_serves_names_where_submissions_go() {
     let answer = server().answer(get("/nowhere"));
