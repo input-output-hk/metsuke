@@ -11,4 +11,5 @@ pub mod hex;
 pub mod http;
 pub mod journal;
 pub mod key;
+pub mod leios;
 pub mod sqlite;

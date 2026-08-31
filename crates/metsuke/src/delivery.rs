@@ -11,14 +11,14 @@
 use time::OffsetDateTime;
 
 use crate::spool::{RowBudget, Spool, SpoolError, SpooledRow, UncarriableReport};
-use metsuke_wire::envelope::{self, Envelope, Payload, PayloadLine, Scrape, SigningKey};
+use metsuke_wire::envelope::{self, Envelope, Payload, PayloadLine, Scrape, SubmissionKey};
 
 pub struct Delivery {
     /// Also where the pool and agent a submission names come from: the spool stamped
     /// every line it holds with them, so taking the header's identity from
     /// anywhere else would let the two disagree.
     spool: Spool,
-    key: SigningKey,
+    key: SubmissionKey,
     /// zstd level passed to `seal` (0 = zstd's default).
     compression_level: i32,
     /// Pre-compression ceiling on one envelope: its header frame plus its
@@ -29,13 +29,13 @@ pub struct Delivery {
     batch_max_bytes: u64,
 }
 
-/// One sealed upload: the bytes to PUT and the signature to send with them.
+/// One sealed upload: the bytes to PUT and what attests them.
 /// The rows it covers stay private, so the only rows an `ack` can delete are
 /// the ones sealed into this submission, and consuming it prevents a double
 /// ack.
 pub struct SealedSubmission {
     pub wire_bytes: Vec<u8>,
-    pub signature: envelope::Signature,
+    pub attestation: envelope::Attestation,
     /// What the header stamped this with, so a journal line and an archived
     /// object can be matched by it.
     pub counter: u64,
@@ -90,7 +90,7 @@ pub enum DeliveryError {
 impl Delivery {
     pub fn new(
         spool: Spool,
-        key: SigningKey,
+        key: SubmissionKey,
         compression_level: i32,
         batch_max_bytes: u64,
     ) -> Self {
@@ -191,10 +191,11 @@ impl Delivery {
         let counter = self.spool.next_counter()?;
         let envelope = self.envelope(counter, now, payload);
         let payload_digest = envelope::payload_digest(&envelope);
-        let (wire_bytes, signature) = envelope::seal(&self.key, &envelope, self.compression_level)?;
+        let (wire_bytes, attestation) =
+            envelope::seal(&self.key, &envelope, self.compression_level)?;
         Ok(SealedSubmission {
             wire_bytes,
-            signature,
+            attestation,
             counter,
             payload_digest,
             rows,

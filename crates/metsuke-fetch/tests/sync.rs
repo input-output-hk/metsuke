@@ -142,9 +142,8 @@ fn a_downloaded_object_is_the_archived_bytes_and_still_verifies() {
     let downloaded = std::fs::read(synced.path(&object.key)).expect("the object landed");
     assert_eq!(downloaded, object.wire_bytes);
     envelope::open(
-        &test_key().verifying_key(),
+        &object.attestation,
         &downloaded,
-        &object.signature,
         Limits {
             max_header_bytes: 4096,
             max_decompressed_bytes: 1 << 20,

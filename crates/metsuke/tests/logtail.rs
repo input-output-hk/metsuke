@@ -14,8 +14,8 @@ use time::OffsetDateTime;
 
 mod support;
 use support::{
-    TEST_LIMITS, recording, replaying, replaying_journalctl, shipped_rules, test_key,
-    test_provenance,
+    TEST_LIMITS, recording, replaying, replaying_journalctl, shipped_rules, test_provenance,
+    test_submission_key,
 };
 
 const LEIOS_RECORDING: &str = "leios-node-traces.log";
@@ -44,7 +44,6 @@ fn the_recorded_stream_reaches_a_sealed_submission_as_the_lines_the_rules_select
 
     logtail::drain(&mut source, &rules, &mut lines).unwrap();
 
-    let key = test_key();
     let mut delivery = Delivery::new(
         Spool::open(&SpoolConfig {
             path: dir.path().join("spool.sqlite"),
@@ -53,7 +52,7 @@ fn the_recorded_stream_reaches_a_sealed_submission_as_the_lines_the_rules_select
             provenance: test_provenance(),
         })
         .unwrap(),
-        key.clone(),
+        test_submission_key(),
         0,
         UNBOUNDED,
     );
@@ -61,13 +60,8 @@ fn the_recorded_stream_reaches_a_sealed_submission_as_the_lines_the_rules_select
         .take_line_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .expect("the recording holds lines the shipped rules select");
-    let opened = envelope::open(
-        &key.verifying_key(),
-        &submission.wire_bytes,
-        &submission.signature,
-        TEST_LIMITS,
-    )
-    .unwrap();
+    let opened =
+        envelope::open(&submission.attestation, &submission.wire_bytes, TEST_LIMITS).unwrap();
     let lines = opened
         .trace_lines()
         .expect("a trace-line submission carries lines");

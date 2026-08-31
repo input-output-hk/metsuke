@@ -11,7 +11,6 @@ use std::time::Duration;
 use rusty_s3::actions::{ListObjectsV2, S3Action as _};
 use rusty_s3::{Bucket, Credentials, UrlStyle};
 
-use metsuke_wire::envelope::{Signature, VerifyingKey};
 use metsuke_wire::{hex, http};
 
 use crate::archive::{
@@ -159,9 +158,9 @@ impl Store for S3Archive {
         let metadata = [
             (
                 META_SIGNATURE,
-                hex::encode(&submission.signature.to_bytes()),
+                hex::encode(&submission.attestation.signature_bytes()),
             ),
-            (META_VKEY, hex::encode(submission.vkey.as_bytes())),
+            (META_VKEY, hex::encode(&submission.attestation.key_bytes())),
         ];
         let mut attempts = 0;
         loop {
@@ -323,20 +322,18 @@ impl Fetch for S3Archive {
             .map_err(|failure| refuse(failure.reason))?;
         // Read the metadata out before the body: an object missing a header is
         // unverifiable however good its bytes are.
-        let Attestation { vkey, signature } =
-            attestation(&response).map_err(refuse)?.ok_or_else(|| {
-                refuse(format!(
-                    "neither {META_VKEY} nor {META_SIGNATURE} is on the object"
-                ))
-            })?;
+        let attestation = attestation(&response).map_err(refuse)?.ok_or_else(|| {
+            refuse(format!(
+                "neither {META_VKEY} nor {META_SIGNATURE} is on the object"
+            ))
+        })?;
         let wire_bytes = response
             .body_mut()
             .read_to_vec()
             .map_err(|error| refuse(format!("unreadable body: {error}")))?;
         Ok(FetchedObject {
             name,
-            vkey,
-            signature,
+            attestation,
             wire_bytes,
         })
     }
@@ -371,17 +368,14 @@ fn attestation(response: &ureq::http::Response<ureq::Body>) -> Result<Option<Att
             .map(str::to_string)
             .map_err(|_| format!("{header} is not text"))
     };
-    Ok(Some(Attestation {
-        vkey: VerifyingKey::from_bytes(&unhex(&text(META_VKEY, raw_vkey)?, META_VKEY)?)
-            .map_err(|error| format!("{META_VKEY}: {error}"))?,
-        signature: Signature::from_bytes(&unhex(
-            &text(META_SIGNATURE, raw_signature)?,
-            META_SIGNATURE,
-        )?),
-    }))
-}
-
-/// Carries which metadata header was wrong into `fetch`'s reason string.
-fn unhex<const N: usize>(text: &str, header: &str) -> Result<[u8; N], String> {
-    hex::decode(text).map_err(|error| format!("{header} is not hex: {error} ({text:?})"))
+    // The one decoder, so what an object's metadata means here is what the
+    // same pair meant as request headers (metsuke-jfb.41). Its wording names
+    // the request headers, and this path's pair is those two values under the
+    // metadata names, so the reason states which pair it was reading.
+    Attestation::decode(
+        Some(&text(META_VKEY, raw_vkey)?),
+        Some(&text(META_SIGNATURE, raw_signature)?),
+    )
+    .map(Some)
+    .map_err(|error| format!("{META_VKEY}/{META_SIGNATURE}: {error}"))
 }

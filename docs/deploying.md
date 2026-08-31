@@ -67,6 +67,32 @@ an empty table, because an empty allowlist stops every submission and otherwise
 looks exactly like a program nobody joined. It emits the `[ingest.allowlist]`
 table the server module's `settings.ingest.allowlist` expects.
 
+**The Leios key roster.** Only where agents sign with a Leios key rather than a
+cold key (ADR 0011). Generated the same way, from a node this time:
+
+```
+metsuke-roster query dijkstra \
+  --socket-path <node socket> --testnet-magic <magic> > pool-state.json
+
+metsuke-roster generate pool-state.json > roster.json
+```
+
+`query` needs `cardano-cli` on `PATH`, and the era is a positional because
+`latest` is not the era a Leios network answers in. `generate` is offline and
+pure. Point `settings.ingest.leios_roster` at where the result lands; the
+server re-reads it when it changes, so a new roster needs no restart.
+
+Run it once an epoch, from a timer. A pool that registers a new Leios key is
+refused until a run picks it up, so the cadence is the ceiling on how long a
+rotation takes to land. It costs nothing to run more often. The roster carries
+the epoch and slot it was taken at, and the server logs them at startup and at
+every reload: that pair is what says whether a refusal is a stale roster or a
+key the chain really does not register.
+
+Leave the setting out entirely on a network with no Leios keys. Absent means
+Leios-signed submissions are refused with a reason, which is the right answer;
+an empty roster would be the same refusal with a worse one.
+
 ## The server host
 
 Import `nixosModules.metsuke-server`. The module defaults `package`, so the
@@ -116,7 +142,7 @@ Then import `nixosModules.metsuke`:
 ```nix
 services.metsuke = {
   enable = true;
-  signingKeyFile = <the pool's cold.skey>;
+  signingKeyFile = <the pool's cold.skey, or its bls.skey>;
   settings = {
     pool_id = "pool1...";
     agent_id = "relay-1";
@@ -137,6 +163,14 @@ the entire privilege difference and it is the reason ADR 0010 made the feature
 opt-in.
 
 The agent's spool has to be under `/var/lib/metsuke`, which the module asserts.
+
+Either key signs. The cold key needs no roster on the server and is what a
+submission is attributed by on its own, forever; the Leios key needs the pool
+on a roster the server has, and is what a host that must not hold the cold key
+signs with. Which one a file is comes from its TextEnvelope `type` and not from
+its bytes, for the reason `metsuke::keys` states. The agent refuses anything
+that is neither, at startup, naming what it found. ADR 0011 has what each
+costs.
 
 ### What the agent host has to be allowed to reach
 

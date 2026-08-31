@@ -16,16 +16,17 @@ use http_body_util::{BodyExt as _, Full};
 use hyper::body::{Body, Frame, Incoming};
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
-use metsuke_wire::envelope::{HEADER_SIGNATURE, HEADER_VKEY, PoolId};
+use metsuke_wire::envelope::{HEADER_POOL, HEADER_SIGNATURE, HEADER_VKEY, PoolId};
 use metsuke_wire::journal::{ERR, WARNING};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Semaphore, mpsc};
 
 use crate::archive::{Bytes as ArchiveBytes, List, ObjectStream, Store};
+use crate::authority::Attributed;
 use crate::config::HttpConfig;
 use crate::developer::Developer;
-use crate::http::{self, Answer, AnswerBody, Method, Request, SubmissionHeaders};
+use crate::http::{self, Answer, AnswerBody, Method, Request};
 use crate::intake::Intake;
 
 /// How much of an object is moved per read: copy granularity, not a bound
@@ -226,9 +227,10 @@ async fn handle<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
     };
     let decoded = Request {
         method,
-        submission: SubmissionHeaders::decode(
+        submission: Attributed::decode(
             text(HEADER_VKEY).as_deref(),
             text(HEADER_SIGNATURE).as_deref(),
+            text(HEADER_POOL).as_deref(),
         ),
         authorization: text("authorization"),
         body: Vec::new(),

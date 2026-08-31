@@ -28,10 +28,11 @@ pub struct Report {
     pub unnameable: u64,
     /// Landed and checked against the pair the download carried.
     pub verified: u64,
-    /// Landed with no pair to check it against, which is every object from an
-    /// archive that stores none (`pull::Object`). Counted rather than refused,
-    /// or a run against one would download nothing; `--require-verified` is
-    /// what turns it into a refusal.
+    /// Landed without both halves of the check: no pair to check it against,
+    /// which is every object from an archive that stores none (`pull::Object`),
+    /// or a signature that stands under a key naming no pool (`checked`).
+    /// Counted rather than refused, or a run against one would download
+    /// nothing; `--require-verified` is what turns it into a refusal.
     pub unverifiable: u64,
     /// Named rather than counted: an object nobody may trust is not a number,
     /// it is a key somebody has to look at. Each of these was not written.
@@ -268,28 +269,41 @@ fn download(
 /// bytes, and the hash says which pool that key speaks for. Checking one alone
 /// takes an object a stranger signed, or one filed under a pool that never
 /// sent it.
+///
+/// Only a cold key has the second half. A Leios key names no pool, and what
+/// tied it to one was the server's roster at the moment the object was
+/// accepted, which this tool does not keep and cannot reconstruct (ADR 0011).
+/// Such an object lands with its signature checked and its filing taken on the
+/// server's word, which is what `Unverifiable` says.
 fn checked(
     key: &str,
     object: &Object,
     require_verified: bool,
 ) -> Result<fn(u64) -> Landed, String> {
-    let Some(attestation) = object.attestation else {
+    let Some(attestation) = &object.attestation else {
         return match require_verified {
             true => Err("carries no key and signature to check it with".to_string()),
             false => Ok(Landed::Unverifiable),
         };
     };
-    if attestation
-        .vkey
-        .verify_strict(&object.bytes, &attestation.signature)
-        .is_err()
-    {
+    if !attestation.verifies(&object.bytes) {
         return Err("the signature does not stand over the bytes as downloaded".to_string());
     }
     let name = ObjectName::parse(key).map_err(|error| error.to_string())?;
-    name.pool_id
-        .check_cold_key(&attestation.vkey)
-        .map_err(|signer| format!("signed by {signer}, and filed under {}", name.pool_id))?;
+    let Some(signer) = attestation.attributes() else {
+        return match require_verified {
+            true => Err("signed by a Leios key, which names no pool to check \
+                         the filing against"
+                .to_string()),
+            false => Ok(Landed::Unverifiable),
+        };
+    };
+    if signer != name.pool_id {
+        return Err(format!(
+            "signed by {signer}, and filed under {}",
+            name.pool_id
+        ));
+    }
     Ok(Landed::Verified)
 }
 

@@ -194,7 +194,6 @@ fn an_object_reads_back_as_the_bytes_that_were_stored() {
     let key = test_key();
     let body = b"the compressed, signed body";
     let stored = stored_submission(
-        &key,
         object_name(&key, test_now(), Kind::Metrics),
         seal(&key, &envelope_for(&key, 3)).1,
         body,

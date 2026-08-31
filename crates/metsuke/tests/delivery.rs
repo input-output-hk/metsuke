@@ -6,13 +6,13 @@ use std::time::Duration;
 
 use metsuke::delivery::Delivery;
 use metsuke::spool::{LogSpool, LogSpoolConfig, Spool, SpoolConfig};
-use metsuke_wire::envelope::{
-    self, Limits, Payload, PayloadLine, PoolId, Provenance, Scrape, SigningKey, TraceLine,
-};
+use metsuke_wire::envelope::{self, Limits, Payload, PayloadLine, Scrape, TraceLine};
 use time::OffsetDateTime;
 
 mod support;
-use support::{TEST_LIMITS, scrape_at, test_key, test_provenance, trace_line};
+use support::{
+    TEST_LIMITS, scrape_at, test_pool_id, test_provenance, test_submission_key, trace_line,
+};
 
 /// Wide enough that no cap in the spool or the submission fires unless a test asks
 /// for one.
@@ -34,15 +34,11 @@ fn lines_of(envelope: &envelope::Envelope) -> Vec<TraceLine> {
         .expect("a trace-line submission carries lines")
 }
 
-fn temp_delivery(dir: &tempfile::TempDir, key: &SigningKey) -> Delivery {
-    delivery_with_submission_cap(dir, key, UNBOUNDED)
+fn temp_delivery(dir: &tempfile::TempDir) -> Delivery {
+    delivery_with_submission_cap(dir, UNBOUNDED)
 }
 
-fn delivery_with_submission_cap(
-    dir: &tempfile::TempDir,
-    key: &SigningKey,
-    batch_max_bytes: u64,
-) -> Delivery {
+fn delivery_with_submission_cap(dir: &tempfile::TempDir, batch_max_bytes: u64) -> Delivery {
     let spool = Spool::open(&SpoolConfig {
         path: dir.path().join("spool.sqlite"),
         max_bytes: UNBOUNDED,
@@ -50,7 +46,7 @@ fn delivery_with_submission_cap(
         provenance: test_provenance(),
     })
     .unwrap();
-    Delivery::new(spool, key.clone(), 0, batch_max_bytes)
+    Delivery::new(spool, test_submission_key(), 0, batch_max_bytes)
 }
 
 /// The trace-line writer, which is a separate connection in the binary too.
@@ -70,8 +66,7 @@ fn temp_log_spool(dir: &tempfile::TempDir) -> LogSpool {
 #[test]
 fn pushed_scrapes_seal_verify_and_ack_drains_the_spool() {
     let dir = tempfile::tempdir().unwrap();
-    let key = test_key();
-    let mut delivery = temp_delivery(&dir, &key);
+    let mut delivery = temp_delivery(&dir);
     let scrapes = [scrape_at(1), scrape_at(2)];
     for scrape in &scrapes {
         delivery.push(scrape).unwrap();
@@ -80,18 +75,10 @@ fn pushed_scrapes_seal_verify_and_ack_drains_the_spool() {
         .take_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .unwrap();
-    let opened = envelope::open(
-        &key.verifying_key(),
-        &submission.wire_bytes,
-        &submission.signature,
-        TEST_LIMITS,
-    )
-    .unwrap();
+    let opened =
+        envelope::open(&submission.attestation, &submission.wire_bytes, TEST_LIMITS).unwrap();
     assert_eq!(scrapes_of(&opened), scrapes);
-    assert_eq!(
-        opened.provenance.pool_id,
-        PoolId::from_cold_key(&key.verifying_key())
-    );
+    assert_eq!(opened.provenance.pool_id, test_pool_id());
     delivery.ack(submission).unwrap();
     assert!(
         delivery
@@ -106,17 +93,10 @@ fn pushed_scrapes_seal_verify_and_ack_drains_the_spool() {
 #[test]
 fn unacked_submission_is_retaken_with_a_fresh_counter() {
     let dir = tempfile::tempdir().unwrap();
-    let key = test_key();
-    let mut delivery = temp_delivery(&dir, &key);
+    let mut delivery = temp_delivery(&dir);
     delivery.push(&scrape_at(1)).unwrap();
     let open = |submission: &metsuke::delivery::SealedSubmission| {
-        envelope::open(
-            &key.verifying_key(),
-            &submission.wire_bytes,
-            &submission.signature,
-            TEST_LIMITS,
-        )
-        .unwrap()
+        envelope::open(&submission.attestation, &submission.wire_bytes, TEST_LIMITS).unwrap()
     };
     let first = delivery
         .take_submission(OffsetDateTime::UNIX_EPOCH)
@@ -143,8 +123,7 @@ fn unacked_submission_is_retaken_with_a_fresh_counter() {
 #[test]
 fn submissions_of_different_rows_carry_different_digests() {
     let dir = tempfile::tempdir().unwrap();
-    let key = test_key();
-    let mut delivery = temp_delivery(&dir, &key);
+    let mut delivery = temp_delivery(&dir);
     delivery.push(&scrape_at(1)).unwrap();
     let first = delivery.take_submission(test_now()).unwrap().unwrap();
     let first_digest = first.payload_digest.clone();
@@ -160,27 +139,19 @@ fn submissions_of_different_rows_carry_different_digests() {
 #[test]
 fn the_digest_covers_exactly_what_zstd_hands_back() {
     let dir = tempfile::tempdir().unwrap();
-    let key = test_key();
-    let mut delivery = temp_delivery(&dir, &key);
+    let mut delivery = temp_delivery(&dir);
     for secs in 1..=3 {
         delivery.push(&scrape_at(secs)).unwrap();
     }
     let sealed = delivery.take_submission(test_now()).unwrap().unwrap();
-    let opened = envelope::open(
-        &key.verifying_key(),
-        &sealed.wire_bytes,
-        &sealed.signature,
-        TEST_LIMITS,
-    )
-    .unwrap();
+    let opened = envelope::open(&sealed.attestation, &sealed.wire_bytes, TEST_LIMITS).unwrap();
     assert_eq!(sealed.payload_digest, envelope::payload_digest(&opened));
 }
 
 #[test]
 fn empty_spool_yields_no_submission() {
     let dir = tempfile::tempdir().unwrap();
-    let key = test_key();
-    let mut delivery = temp_delivery(&dir, &key);
+    let mut delivery = temp_delivery(&dir);
     assert!(
         delivery
             .take_submission(OffsetDateTime::UNIX_EPOCH)
@@ -200,8 +171,7 @@ fn empty_spool_yields_no_submission() {
 #[test]
 fn spooled_trace_lines_seal_as_their_own_envelope() {
     let dir = tempfile::tempdir().unwrap();
-    let key = test_key();
-    let mut delivery = temp_delivery(&dir, &key);
+    let mut delivery = temp_delivery(&dir);
     let mut lines = temp_log_spool(&dir);
     let recorded = [
         r#"{"at":"2026-08-25T18:19:38.019429126Z"}"#,
@@ -215,13 +185,8 @@ fn spooled_trace_lines_seal_as_their_own_envelope() {
         .take_line_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .unwrap();
-    let opened = envelope::open(
-        &key.verifying_key(),
-        &submission.wire_bytes,
-        &submission.signature,
-        TEST_LIMITS,
-    )
-    .unwrap();
+    let opened =
+        envelope::open(&submission.attestation, &submission.wire_bytes, TEST_LIMITS).unwrap();
     assert_eq!(opened.schema_version(), 2);
     assert_eq!(lines_of(&opened), recorded);
     delivery.ack(submission).unwrap();
@@ -240,8 +205,7 @@ fn spooled_trace_lines_seal_as_their_own_envelope() {
 #[test]
 fn a_sealed_submission_states_what_the_journal_names_it_by() {
     let dir = tempfile::tempdir().unwrap();
-    let key = test_key();
-    let mut delivery = temp_delivery(&dir, &key);
+    let mut delivery = temp_delivery(&dir);
     let mut lines = temp_log_spool(&dir);
     for scrape in [scrape_at(1), scrape_at(2)] {
         delivery.push(&scrape).unwrap();
@@ -269,13 +233,7 @@ fn a_sealed_submission_states_what_the_journal_names_it_by() {
     // One counter across both streams, and the field carries what the header
     // was stamped with rather than a second count of its own.
     assert_eq!(traces.counter, scrapes.counter + 1);
-    let opened = envelope::open(
-        &key.verifying_key(),
-        &traces.wire_bytes,
-        &traces.signature,
-        TEST_LIMITS,
-    )
-    .unwrap();
+    let opened = envelope::open(&traces.attestation, &traces.wire_bytes, TEST_LIMITS).unwrap();
     assert_eq!(opened.counter, traces.counter);
 }
 
@@ -284,8 +242,7 @@ fn a_sealed_submission_states_what_the_journal_names_it_by() {
 #[test]
 fn acking_one_stream_leaves_the_other_spooled() {
     let dir = tempfile::tempdir().unwrap();
-    let key = test_key();
-    let mut delivery = temp_delivery(&dir, &key);
+    let mut delivery = temp_delivery(&dir);
     let mut lines = temp_log_spool(&dir);
     delivery.push(&scrape_at(1)).unwrap();
     lines.push(&trace_line(r#"{"ns":"one line"}"#)).unwrap();
@@ -300,24 +257,15 @@ fn acking_one_stream_leaves_the_other_spooled() {
         .take_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .expect("the scrape is still spooled");
-    let opened = envelope::open(
-        &key.verifying_key(),
-        &scrapes.wire_bytes,
-        &scrapes.signature,
-        TEST_LIMITS,
-    )
-    .unwrap();
+    let opened = envelope::open(&scrapes.attestation, &scrapes.wire_bytes, TEST_LIMITS).unwrap();
     assert_eq!(scrapes_of(&opened), [scrape_at(1)]);
 }
 
 /// An envelope of `payload`'s shape with nothing in it, at the widest counter a
 /// spool can hand out: what the submission budget reserves before any row is in it.
-fn empty_envelope(key: &SigningKey, payload: Payload) -> envelope::Envelope {
+fn empty_envelope(payload: Payload) -> envelope::Envelope {
     envelope::Envelope::new(
-        Provenance {
-            pool_id: PoolId::from_cold_key(&key.verifying_key()),
-            ..test_provenance()
-        },
+        test_provenance(),
         metsuke::AGENT_VERSION.to_string(),
         u64::MAX,
         OffsetDateTime::UNIX_EPOCH,
@@ -327,8 +275,8 @@ fn empty_envelope(key: &SigningKey, payload: Payload) -> envelope::Envelope {
 
 /// What that envelope's header frame costs. The submission budget covers it, so a
 /// test that wants room for exactly two rows starts here.
-fn framing_bytes(key: &SigningKey, payload: Payload) -> u64 {
-    let empty = empty_envelope(key, payload);
+fn framing_bytes(payload: Payload) -> u64 {
+    let empty = empty_envelope(payload);
     (envelope::HEADER_OFFSET + envelope::header_json(&empty).unwrap().len()) as u64
 }
 
@@ -357,23 +305,16 @@ fn body_bytes(envelope: &envelope::Envelope) -> u64 {
 #[test]
 fn a_submission_stops_at_the_configured_budget_and_the_rest_is_retaken() {
     let dir = tempfile::tempdir().unwrap();
-    let key = test_key();
     // One row's full cost (`spool::RowBudget`); the framing is spent before any
     // row is.
     let one = scrape_row_bytes(&scrape_at(1));
-    let cap = framing_bytes(&key, Payload::scrapes(vec![])) + 2 * one;
-    let mut delivery = delivery_with_submission_cap(&dir, &key, cap);
+    let cap = framing_bytes(Payload::scrapes(vec![])) + 2 * one;
+    let mut delivery = delivery_with_submission_cap(&dir, cap);
     for secs in 1..=5 {
         delivery.push(&scrape_at(secs)).unwrap();
     }
     let open = |submission: &metsuke::delivery::SealedSubmission| {
-        envelope::open(
-            &key.verifying_key(),
-            &submission.wire_bytes,
-            &submission.signature,
-            TEST_LIMITS,
-        )
-        .unwrap()
+        envelope::open(&submission.attestation, &submission.wire_bytes, TEST_LIMITS).unwrap()
     };
 
     let first = delivery
@@ -397,27 +338,20 @@ fn a_submission_stops_at_the_configured_budget_and_the_rest_is_retaken() {
 #[test]
 fn no_submission_seals_a_body_past_the_budget() {
     let dir = tempfile::tempdir().unwrap();
-    let key = test_key();
     // Enough of both streams that the budget, not the spool, is what stops the
     // submission; the trace line is a real one, escaping and all.
     let line = trace_line(
         r#"{"at":"2026-08-25T18:19:38.018453907Z","ns":"Consensus.LeiosPeer.Announcement","data":{"msg":"\"quoted\""},"sev":"Info"}"#,
     );
-    let cap = framing_bytes(&key, Payload::trace_lines(vec![])) + 40 * line.to_line().len() as u64;
-    let mut delivery = delivery_with_submission_cap(&dir, &key, cap);
+    let cap = framing_bytes(Payload::trace_lines(vec![])) + 40 * line.to_line().len() as u64;
+    let mut delivery = delivery_with_submission_cap(&dir, cap);
     let mut lines = temp_log_spool(&dir);
     for secs in 1..=200 {
         delivery.push(&scrape_at(secs)).unwrap();
         lines.push(&line).unwrap();
     }
     let open = |submission: &metsuke::delivery::SealedSubmission| {
-        envelope::open(
-            &key.verifying_key(),
-            &submission.wire_bytes,
-            &submission.signature,
-            TEST_LIMITS,
-        )
-        .unwrap()
+        envelope::open(&submission.attestation, &submission.wire_bytes, TEST_LIMITS).unwrap()
     };
 
     let scrapes = open(&delivery.take_submission(test_now()).unwrap().unwrap());
@@ -434,13 +368,12 @@ fn no_submission_seals_a_body_past_the_budget() {
 #[test]
 fn a_line_larger_than_the_whole_budget_is_dropped_rather_than_sealed() {
     let dir = tempfile::tempdir().unwrap();
-    let key = test_key();
     let carriable = trace_line(
         r#"{"at":"2026-08-25T18:19:38.018453907Z","ns":"Consensus.LeiosPeer.Announcement","sev":"Info"}"#,
     );
     let carriable_bytes = line_row_bytes(&carriable);
-    let cap = framing_bytes(&key, Payload::trace_lines(vec![])) + 2 * carriable_bytes;
-    let mut delivery = delivery_with_submission_cap(&dir, &key, cap);
+    let cap = framing_bytes(Payload::trace_lines(vec![])) + 2 * carriable_bytes;
+    let mut delivery = delivery_with_submission_cap(&dir, cap);
     let mut lines = temp_log_spool(&dir);
     lines
         .push(&trace_line(&format!(
@@ -452,13 +385,8 @@ fn a_line_larger_than_the_whole_budget_is_dropped_rather_than_sealed() {
 
     let submission = delivery.take_line_submission(test_now()).unwrap().unwrap();
 
-    let opened = envelope::open(
-        &key.verifying_key(),
-        &submission.wire_bytes,
-        &submission.signature,
-        TEST_LIMITS,
-    )
-    .unwrap();
+    let opened =
+        envelope::open(&submission.attestation, &submission.wire_bytes, TEST_LIMITS).unwrap();
     assert_eq!(lines_of(&opened), [carriable]);
     assert!(body_bytes(&opened) <= cap, "{}", body_bytes(&opened));
     assert_eq!(delivery.take_uncarriable_report().oversized, 1);
@@ -470,17 +398,16 @@ fn a_line_larger_than_the_whole_budget_is_dropped_rather_than_sealed() {
 #[test]
 fn a_budget_the_framing_exhausts_fails_the_tick_and_keeps_the_rows() {
     let dir = tempfile::tempdir().unwrap();
-    let key = test_key();
     let line = trace_line(
         r#"{"at":"2026-08-25T18:19:38.018453907Z","ns":"Consensus.LeiosPeer.Announcement","sev":"Info"}"#,
     );
     let mut lines = temp_log_spool(&dir);
     lines.push(&line).unwrap();
-    let framing = framing_bytes(&key, Payload::trace_lines(vec![]));
+    let framing = framing_bytes(Payload::trace_lines(vec![]));
 
     // `framing_bytes` stamps UNIX_EPOCH, so this budget is the framing exactly
     // and what it leaves for rows is zero rather than negative.
-    let attempt = delivery_with_submission_cap(&dir, &key, framing)
+    let attempt = delivery_with_submission_cap(&dir, framing)
         .take_line_submission(OffsetDateTime::UNIX_EPOCH);
 
     match attempt {
@@ -488,17 +415,12 @@ fn a_budget_the_framing_exhausts_fails_the_tick_and_keeps_the_rows() {
         Err(other) => panic!("a budget under the framing reports itself, got {other:?}"),
         Ok(_) => panic!("a budget under the framing seals no submission"),
     }
-    let submission = delivery_with_submission_cap(&dir, &key, UNBOUNDED)
+    let submission = delivery_with_submission_cap(&dir, UNBOUNDED)
         .take_line_submission(test_now())
         .unwrap()
         .unwrap();
-    let opened = envelope::open(
-        &key.verifying_key(),
-        &submission.wire_bytes,
-        &submission.signature,
-        TEST_LIMITS,
-    )
-    .unwrap();
+    let opened =
+        envelope::open(&submission.attestation, &submission.wire_bytes, TEST_LIMITS).unwrap();
     assert_eq!(lines_of(&opened), [line]);
 }
 
@@ -523,8 +445,7 @@ fn charged_bytes(dir: &tempfile::TempDir, table: &str) -> u64 {
 #[test]
 fn the_spool_charges_a_row_what_the_server_inflates_for_it() {
     let dir = tempfile::tempdir().unwrap();
-    let key = test_key();
-    let mut delivery = temp_delivery(&dir, &key);
+    let mut delivery = temp_delivery(&dir);
     let mut lines = temp_log_spool(&dir);
     for secs in 1..=5 {
         delivery.push(&scrape_at(secs)).unwrap();
@@ -546,9 +467,8 @@ fn the_spool_charges_a_row_what_the_server_inflates_for_it() {
     for (charged, submission) in charged.into_iter().zip(submissions) {
         let opened = |max_decompressed_bytes| {
             envelope::open(
-                &key.verifying_key(),
+                &submission.attestation,
                 &submission.wire_bytes,
-                &submission.signature,
                 Limits {
                     max_header_bytes: TEST_LIMITS.max_header_bytes,
                     max_decompressed_bytes,

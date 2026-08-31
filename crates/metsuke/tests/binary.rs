@@ -8,14 +8,14 @@ use std::io::BufRead;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use metsuke_wire::envelope::PoolId;
 use metsuke_wire::envelope::{HEADER_SIGNATURE, HEADER_VKEY};
-use metsuke_wire::envelope::{PoolId, Signature, VerifyingKey};
 use wiremock::matchers::method;
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod support;
 use metsuke_wire::hex;
-use support::{TEST_LIMITS, sh_stand_in, test_key};
+use support::{TEST_LIMITS, attestation_of, sh_stand_in, test_key};
 
 const RECORDED_CHAIN: &str = include_str!("fixtures/recordings/leios-node.prom");
 
@@ -251,9 +251,8 @@ async fn binary_uploads_a_submission_signed_by_the_flag_key() {
     let vkey_bytes = hex::decode::<32>(header(HEADER_VKEY)).unwrap();
     let sig_bytes = hex::decode::<64>(header(HEADER_SIGNATURE)).unwrap();
     let opened = metsuke_wire::envelope::open(
-        &VerifyingKey::from_bytes(&vkey_bytes).unwrap(),
+        &attestation_of(&vkey_bytes, &sig_bytes),
         &post.body,
-        &Signature::from_bytes(&sig_bytes),
         TEST_LIMITS,
     )
     .unwrap();

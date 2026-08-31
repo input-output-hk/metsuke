@@ -10,6 +10,15 @@ repository.workspace = true
 [dependencies]
 bech32 = "0.12.0"
 blake2 = "0.10.6"
+# The Leios key's signatures (ADR 0011), and the same C library
+# cardano-crypto-class binds, so both ends compute over the same code.
+# `portable` because the default detects the *builder's* CPU and bakes the
+# result in: a substituted binary would then depend on the machine that built
+# it. `no-threads` because nothing here verifies more than one signature.
+blst = { version = "0.3.17", default-features = false, features = [
+  "no-threads",
+  "portable",
+] }
 ed25519-dalek = "3.0.0"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -34,6 +43,12 @@ zstd = "0.13.3"
 fixtures = []
 
 [dev-dependencies]
+# The consensus ciphersuite, to sign in it: the one test that shows a
+# submission signature and a vote signature cannot be each other (tests/leios.rs).
+blst = { version = "0.3.17", default-features = false, features = [
+  "no-threads",
+  "portable",
+] }
 # This crate's own tests, on itself, for `fixtures`: a crate cannot enable one
 # of its features for its own test targets any other way.
 metsuke-wire = { path = ".", features = ["fixtures"] }

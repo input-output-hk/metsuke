@@ -22,8 +22,8 @@ use metsuke_server::instructions;
 use metsuke_server::intake::Intake;
 use metsuke_server::serve;
 use metsuke_wire::envelope::{
-    AgentId, Envelope, Payload, PayloadLine, PoolId, Provenance, Scrape, Signature, SigningKey,
-    VerifyingKey, seal,
+    AgentId, Attestation, Envelope, Payload, PayloadLine, PoolId, Provenance, Scrape, SigningKey,
+    SubmissionKey, seal,
 };
 use metsuke_wire::fixtures;
 use time::OffsetDateTime;
@@ -59,7 +59,7 @@ pub fn test_now() -> OffsetDateTime {
 pub struct Object {
     pub key: String,
     pub wire_bytes: Vec<u8>,
-    pub signature: Signature,
+    pub attestation: Attestation,
     /// The key that sealed it, so a test can answer the pair beside the bytes
     /// or tamper with either half.
     pub signer: SigningKey,
@@ -70,7 +70,7 @@ pub struct Object {
 /// built on one could only ever exercise the unverifiable path; what a test
 /// seeds into `attested` is what the download then carries.
 /// Shared, so a test can answer a different pair after the server is up.
-pub type Attested = std::sync::Arc<std::sync::Mutex<HashMap<String, (VerifyingKey, Signature)>>>;
+pub type Attested = std::sync::Arc<std::sync::Mutex<HashMap<String, Attestation>>>;
 
 pub struct Attesting {
     inner: FilesystemArchive,
@@ -97,10 +97,7 @@ impl metsuke_server::archive::Bytes for Attesting {
                 .lock()
                 .expect("no panic holds this lock")
                 .get(key)
-                .map(|(vkey, signature)| metsuke_server::archive::Attestation {
-                    vkey: *vkey,
-                    signature: *signature,
-                }),
+                .cloned(),
             ..self.inner.reader(key)?
         })
     }
@@ -176,12 +173,7 @@ impl Server {
             false => HashMap::new(),
             true => objects
                 .iter()
-                .map(|object| {
-                    (
-                        object.key.clone(),
-                        (object.signer.verifying_key(), object.signature),
-                    )
-                })
+                .map(|object| (object.key.clone(), object.attestation.clone()))
                 .collect(),
         }));
         let intake = Intake::new(
@@ -190,6 +182,7 @@ impl Server {
                 inner: FilesystemArchive::new(&root),
                 attested: std::sync::Arc::clone(&attested),
             },
+            None,
         );
         std::thread::spawn(move || {
             match listener.serve(http_config(), intake, developer, instructions::page()) {
@@ -235,11 +228,11 @@ impl Server {
     }
 
     /// The pair this archive answers for `key`, replacing whatever it held.
-    fn answer_with(&self, key: &str, vkey: VerifyingKey, signature: Signature) {
+    fn answer_with(&self, key: &str, attestation: Attestation) {
         self.attested
             .lock()
             .expect("no panic holds this lock")
-            .insert(key.to_string(), (vkey, signature));
+            .insert(key.to_string(), attestation);
     }
 
     /// One byte of a stored object flipped, leaving the metadata beside it
@@ -276,9 +269,10 @@ impl Server {
                 .expect("a scrape stamps"),
             ]),
         );
-        let (wire_bytes, signature) = seal(signer, &envelope, 0).expect("a test envelope seals");
+        let (wire_bytes, attestation) = seal(&SubmissionKey::ColdKey(signer.clone()), &envelope, 0)
+            .expect("a test envelope seals");
         std::fs::write(self.root.join(key), &wire_bytes).expect("the object rewrites");
-        self.answer_with(key, signer.verifying_key(), signature);
+        self.answer_with(key, attestation);
     }
 
     /// An object under a key no `ObjectName::parse` reads, which is what
@@ -361,7 +355,8 @@ fn seeded(root: &Path, index: usize) -> Object {
         stamped,
         payload,
     );
-    let (wire_bytes, signature) = seal(&key, &envelope, 0).expect("a test envelope seals");
+    let (wire_bytes, attestation) =
+        seal(&SubmissionKey::ColdKey(key.clone()), &envelope, 0).expect("a test envelope seals");
     let name = ObjectName::stamped(stamped, pool_id, agent_id, kind);
     let path = root.join(name.to_key());
     std::fs::create_dir_all(path.parent().expect("a key has a folder")).expect("the folder writes");
@@ -370,7 +365,7 @@ fn seeded(root: &Path, index: usize) -> Object {
         key: name.to_key(),
         signer: key,
         wire_bytes,
-        signature,
+        attestation,
     }
 }
 
@@ -388,6 +383,7 @@ fn ingest_config() -> IngestConfig {
         max_timestamp_skew_secs: nonzero_u32(u32::MAX),
         rate_limit_uploads: nonzero_u32(1000),
         rate_limit_uploads_total: nonzero_u32(1000),
+        leios_roster: None,
         rate_limit_window_secs: nonzero_u32(3600),
     }
 }

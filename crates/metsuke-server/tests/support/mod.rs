@@ -13,14 +13,15 @@ use metsuke_server::applications::ApplicationCode;
 use metsuke_server::archive::{
     ArchiveError, Bytes, Kind, List, ObjectName, ObjectStream, Page, Store, StoredSubmission,
 };
-use metsuke_server::authority::Signed;
+use metsuke_server::authority::{Attributed, Signed};
 use metsuke_server::config::{AbsolutePath, DeveloperConfig, HttpConfig, IngestConfig};
 use metsuke_server::developer::percent_decoded;
 use metsuke_wire::envelope::{
-    self, AgentId, Envelope, Payload, PayloadLine, PoolId, Provenance, Scrape, Signature,
-    SigningKey, TraceLine, VerifyingKey,
+    self, AgentId, Attestation, Envelope, Payload, PayloadLine, PoolId, Provenance, Scrape,
+    SigningKey, SubmissionKey, TraceLine,
 };
 use metsuke_wire::fixtures;
+use metsuke_wire::leios::LeiosSigningKey;
 use time::OffsetDateTime;
 
 /// The all-sevens test seed, matching the agent suite.
@@ -121,18 +122,43 @@ pub fn envelope_carrying(
     )
 }
 
-/// The wire bytes and signature a client would send for this envelope.
-pub fn seal(key: &SigningKey, envelope: &Envelope) -> (Vec<u8>, Signature) {
+/// The wire bytes and the attestation a client would send for this envelope.
+pub fn seal(key: &SigningKey, envelope: &Envelope) -> (Vec<u8>, Attestation) {
+    seal_with(&SubmissionKey::ColdKey(key.clone()), envelope)
+}
+
+/// The same under whichever scheme the key is, for the tests that care which.
+pub fn seal_with(key: &SubmissionKey, envelope: &Envelope) -> (Vec<u8>, Attestation) {
     envelope::seal(key, envelope, 0).unwrap()
 }
 
-/// Assemble the headers-and-body pair the intake takes.
-pub fn submission(vkey: VerifyingKey, signature: Signature, wire_bytes: &[u8]) -> Signed<'_> {
-    Signed {
-        vkey,
-        signature,
-        wire_bytes,
-    }
+/// A Leios key from a fixed seed. It names no pool, so what a submission it
+/// signed is for comes from the roster the test pairs it with (ADR 0011).
+pub fn test_leios_key(seed: u8) -> SubmissionKey {
+    SubmissionKey::LeiosKey(
+        LeiosSigningKey::from_bytes(&[seed; 32]).expect("a fixed seed is a scalar"),
+    )
+}
+
+/// Assemble the headers-and-body pair the intake takes, for the pool the
+/// headers claim. `Attributed::filed` and not `decode`, because a test states
+/// the pair and the pool it is against directly.
+pub fn submission(attestation: Attestation, pool_id: PoolId, wire_bytes: &[u8]) -> Signed<'_> {
+    Attributed::filed(attestation, pool_id).over(wire_bytes)
+}
+
+/// The same for a cold key, which needs no pool stated: it derives one.
+pub fn cold_submission(attestation: Attestation, wire_bytes: &[u8]) -> Signed<'_> {
+    let pool_id = attestation
+        .attributes()
+        .expect("a cold key derives its pool");
+    submission(attestation, pool_id, wire_bytes)
+}
+
+/// The pair a cold key would present over bytes a test wrote itself, for the
+/// bodies that are not sealed envelopes.
+pub fn attested(key: &SigningKey, wire_bytes: &[u8]) -> Attestation {
+    SubmissionKey::ColdKey(key.clone()).attest(wire_bytes)
 }
 
 /// The application code every test pool is allowlisted against.
@@ -251,6 +277,7 @@ pub fn ingest_toml(config: &IngestConfig) -> String {
         rate_limit_uploads,
         rate_limit_uploads_total,
         rate_limit_window_secs,
+        leios_roster,
     } = config;
     format!(
         "[ingest]
@@ -261,8 +288,16 @@ max_timestamp_skew_secs = {max_timestamp_skew_secs}
 rate_limit_uploads = {rate_limit_uploads}
 rate_limit_uploads_total = {rate_limit_uploads_total}
 rate_limit_window_secs = {rate_limit_window_secs}
-",
+{roster}",
         allowlist = allowlist_toml(allowlist),
+        roster = match leios_roster {
+            None => String::new(),
+            Some(path) => format!(
+                "leios_roster = \"{}\"
+",
+                path.as_path().display()
+            ),
+        },
     )
 }
 
@@ -276,6 +311,7 @@ pub fn permissive_config(allowed: &[PoolId]) -> IngestConfig {
         rate_limit_uploads: nonzero_u32(100),
         rate_limit_uploads_total: nonzero_u32(1000),
         rate_limit_window_secs: nonzero_u32(3600),
+        leios_roster: None,
     }
 }
 
@@ -292,15 +328,13 @@ pub fn nonzero_u32(value: u32) -> NonZeroU32 {
 /// The submission `seal` produced, as the archive is asked to store it. The
 /// name is stamped here, so a test that has to know the key holds it.
 pub fn stored_submission<'a>(
-    key: &SigningKey,
     name: ObjectName,
-    signature: Signature,
+    attestation: Attestation,
     wire_bytes: &'a [u8],
 ) -> StoredSubmission<'a> {
     StoredSubmission {
         name,
-        vkey: key.verifying_key(),
-        signature,
+        attestation,
         wire_bytes,
     }
 }

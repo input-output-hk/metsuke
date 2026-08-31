@@ -11,13 +11,30 @@ use std::path::{Path, PathBuf};
 use metsuke::config::{Config, LogConfig};
 use metsuke::logselect::SelectConfig;
 use metsuke::logsource::{JournalConfig, JournalSource, Spawned, StartError};
-use metsuke_wire::envelope::{AgentId, Limits, PoolId, Provenance, Scrape, SigningKey, TraceLine};
+use metsuke_wire::envelope::{
+    AgentId, Attestation, Limits, PoolId, Provenance, Scrape, SigningKey, SubmissionKey, TraceLine,
+};
 use metsuke_wire::fixtures;
 use time::OffsetDateTime;
 
 /// The all-sevens test seed used across the suite.
 pub fn test_key() -> SigningKey {
     SigningKey::from_bytes(&[7u8; 32])
+}
+
+/// The same seed as the submission key an Agent signs with.
+pub fn test_submission_key() -> SubmissionKey {
+    SubmissionKey::ColdKey(test_key())
+}
+
+/// The pair an upload presented, as its two headers carried them: what a test
+/// that reads them off a recorded request opens the body with.
+pub fn attestation_of(vkey: &[u8], signature: &[u8]) -> Attestation {
+    Attestation::decode(
+        Some(&metsuke_wire::hex::encode(vkey)),
+        Some(&metsuke_wire::hex::encode(signature)),
+    )
+    .expect("a recorded upload carries a pair of one scheme")
 }
 
 /// The machine name every submission in the suite is stamped with.

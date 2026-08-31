@@ -6,10 +6,11 @@ loopback and sends a signed submission. A server verifies the signature, checks
 the pool against an allowlist, and writes the raw signed bytes to S3. Nothing
 else is stored, and no state lives on the server.
 
-Which pool a submission is from is never claimed, it is derived. The pool id is
-the hash of the cold key that signed the submission, so the server computes it
-rather than believing a field. `metsuke::identity::check_pool_id` and
-`metsuke_server::authority::Signed::pool_id` are the two ends that enforce that.
+Which pool a submission is from follows from the key that signed it. A cold key
+hashes to the pool id, so the server derives it rather than believing a field. A
+Leios key hashes to nothing, so a submission it signed claims its pool in a
+header and the server believes the claim only where a roster file lists that key
+for that pool. docs/adr/0011 is the decision and what each key costs.
 
 ## The four crates
 

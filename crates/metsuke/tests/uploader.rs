@@ -8,16 +8,15 @@ use std::time::Duration;
 use metsuke::delivery::Delivery;
 use metsuke::spool::{Spool, SpoolConfig};
 use metsuke::uploader::{UploadConfig, UploadOutcome, upload};
-use metsuke_wire::envelope::{
-    self, HEADER_SIGNATURE, HEADER_VKEY, PoolId, Signature, VerifyingKey,
-};
+use metsuke_wire::envelope::{self, Attestation, HEADER_POOL, HEADER_SIGNATURE, HEADER_VKEY};
 use time::OffsetDateTime;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod support;
-use metsuke_wire::hex;
-use support::{TEST_LIMITS, block_number, scrape_at, test_key, test_provenance};
+use support::{
+    TEST_LIMITS, block_number, scrape_at, test_pool_id, test_provenance, test_submission_key,
+};
 
 const UNBOUNDED: u64 = 64 * 1024 * 1024;
 
@@ -29,7 +28,7 @@ fn sealed_test_submission(dir: &tempfile::TempDir) -> metsuke::delivery::SealedS
         provenance: test_provenance(),
     })
     .unwrap();
-    let mut delivery = Delivery::new(spool, test_key(), 0, UNBOUNDED);
+    let mut delivery = Delivery::new(spool, test_submission_key(), 0, UNBOUNDED);
     delivery.push(&scrape_at(5)).unwrap();
     delivery
         .take_submission(OffsetDateTime::UNIX_EPOCH)
@@ -72,11 +71,9 @@ async fn server_error_is_retryable() {
     let dir = tempfile::tempdir().unwrap();
     let submission = sealed_test_submission(&dir);
     let config = upload_config(&server.uri());
-    let outcome = tokio::task::spawn_blocking(move || {
-        upload(&config, &test_key().verifying_key(), &submission)
-    })
-    .await
-    .unwrap();
+    let outcome = tokio::task::spawn_blocking(move || upload(&config, test_pool_id(), &submission))
+        .await
+        .unwrap();
     // The server's own words reach the journal on this path too, not just on
     // a rejection.
     let UploadOutcome::Retryable(reason) = outcome else {
@@ -95,11 +92,9 @@ async fn unreachable_server_is_retryable() {
         // TEST-NET-1 (RFC 5737) is unroutable: connect fails, nothing answers.
         ..upload_config("https://192.0.2.1:9")
     };
-    let outcome = tokio::task::spawn_blocking(move || {
-        upload(&config, &test_key().verifying_key(), &submission)
-    })
-    .await
-    .unwrap();
+    let outcome = tokio::task::spawn_blocking(move || upload(&config, test_pool_id(), &submission))
+        .await
+        .unwrap();
     assert!(
         matches!(outcome, UploadOutcome::Retryable(_)),
         "expected retryable, got {outcome:?}"
@@ -146,7 +141,7 @@ fn an_https_upload_url_speaks_tls() {
     let dir = tempfile::tempdir().unwrap();
     let submission = sealed_test_submission(&dir);
     let config = upload_config(&format!("https://127.0.0.1:{port}"));
-    let outcome = upload(&config, &test_key().verifying_key(), &submission);
+    let outcome = upload(&config, test_pool_id(), &submission);
 
     let bytes = peer.join().unwrap();
     assert_eq!(
@@ -175,11 +170,9 @@ async fn client_error_is_rejected_with_the_server_reason() {
     let dir = tempfile::tempdir().unwrap();
     let submission = sealed_test_submission(&dir);
     let config = upload_config(&server.uri());
-    let outcome = tokio::task::spawn_blocking(move || {
-        upload(&config, &test_key().verifying_key(), &submission)
-    })
-    .await
-    .unwrap();
+    let outcome = tokio::task::spawn_blocking(move || upload(&config, test_pool_id(), &submission))
+        .await
+        .unwrap();
     let UploadOutcome::Rejected { status, reason } = outcome else {
         panic!("expected rejected, got {outcome:?}");
     };
@@ -203,11 +196,9 @@ async fn a_rate_limit_is_retryable() {
     let dir = tempfile::tempdir().unwrap();
     let submission = sealed_test_submission(&dir);
     let config = upload_config(&server.uri());
-    let outcome = tokio::task::spawn_blocking(move || {
-        upload(&config, &test_key().verifying_key(), &submission)
-    })
-    .await
-    .unwrap();
+    let outcome = tokio::task::spawn_blocking(move || upload(&config, test_pool_id(), &submission))
+        .await
+        .unwrap();
     let UploadOutcome::Retryable(reason) = outcome else {
         panic!("expected retryable, got {outcome:?}");
     };
@@ -233,11 +224,9 @@ async fn acked_upload_carries_verifiable_headers_and_body() {
     let submission = sealed_test_submission(&dir);
     let config = upload_config(&server.uri());
 
-    let outcome = tokio::task::spawn_blocking(move || {
-        upload(&config, &test_key().verifying_key(), &submission)
-    })
-    .await
-    .unwrap();
+    let outcome = tokio::task::spawn_blocking(move || upload(&config, test_pool_id(), &submission))
+        .await
+        .unwrap();
 
     let UploadOutcome::Acked(ack) = outcome else {
         panic!("expected ack, got {outcome:?}");
@@ -248,21 +237,17 @@ async fn acked_upload_carries_verifiable_headers_and_body() {
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
     let header = |name: &str| request.headers.get(name).unwrap().to_str().unwrap();
-    // No pool id header: the pool is the hash of the key in HEADER_VKEY, so the
-    // server derives it (metsuke-jfb.4).
-    assert!(request.headers.get("x-metsuke-pool-id").is_none());
+    // The pool travels beside the key now: under a Leios key it is the only
+    // thing that names one, and under this cold key it is the derivation
+    // stated twice (ADR 0011).
+    assert_eq!(header(HEADER_POOL), test_pool_id().to_bech32());
     assert_eq!(header("content-encoding"), "zstd");
-    let vkey_bytes = hex::decode::<32>(header(HEADER_VKEY)).unwrap();
-    let vkey = VerifyingKey::from_bytes(&vkey_bytes).unwrap();
-    let sig_bytes = hex::decode::<64>(header(HEADER_SIGNATURE)).unwrap();
-    let signature = Signature::from_bytes(&sig_bytes);
-    let opened = envelope::open(&vkey, &request.body, &signature, TEST_LIMITS).unwrap();
+    let attestation =
+        Attestation::decode(Some(header(HEADER_VKEY)), Some(header(HEADER_SIGNATURE))).unwrap();
+    let opened = envelope::open(&attestation, &request.body, TEST_LIMITS).unwrap();
     let scrapes = opened
         .scrapes()
         .expect("a scrape submission carries scrapes");
     assert_eq!(block_number(&scrapes[0]), Some(5));
-    assert_eq!(
-        opened.provenance.pool_id,
-        PoolId::from_cold_key(&test_key().verifying_key())
-    );
+    assert_eq!(opened.provenance.pool_id, test_pool_id());
 }

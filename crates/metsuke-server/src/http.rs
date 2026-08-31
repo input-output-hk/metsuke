@@ -15,13 +15,12 @@
 //! nothing more: what the server refuses on its own it refuses with nothing in
 //! front of it (`config::HttpConfig`).
 
-use metsuke_wire::envelope::{HEADER_SIGNATURE, HEADER_VKEY, PoolId, Signature, VerifyingKey};
-use metsuke_wire::hex::{self, HexError};
+use metsuke_wire::envelope::PoolId;
 use metsuke_wire::journal::{ERR, WARNING};
 use time::OffsetDateTime;
 
 use crate::archive::{ArchiveError, Attestation, Bytes, List, ObjectStream, Store};
-use crate::authority::Signed;
+use crate::authority::{Attributed, AttributionError};
 use crate::developer::{self, Developer, Filters, Unauthorized};
 use crate::instructions;
 use crate::intake::{IngestError, Intake, Rejection};
@@ -49,10 +48,10 @@ pub struct Request {
     /// The target as sent, path and query together: the filters and the object
     /// key are read off it (`developer::Filters`).
     pub target: String,
-    /// The two ADR-0001 headers, decoded once by whoever built this, because
+    /// The signing headers, decoded once by whoever built this, because
     /// whether they decode is also what decides if a body is worth reading
     /// (`serve::handle`). `Err` names the first header that did not decode.
-    pub submission: Result<SubmissionHeaders, HeaderError>,
+    pub submission: Result<Attributed, AttributionError>,
     pub authorization: Option<String>,
     pub body: Vec<u8>,
 }
@@ -62,70 +61,6 @@ impl Request {
     pub fn path(&self) -> &str {
         self.target.split('?').next().unwrap_or_default()
     }
-}
-
-/// The identity a request presents. Holding one means the two ADR-0001 headers
-/// were present and well formed; whether the signature verifies is the
-/// intake's answer, not this type's.
-#[derive(Debug)]
-pub struct SubmissionHeaders {
-    pub vkey: VerifyingKey,
-    pub signature: Signature,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum HeaderError {
-    #[error("{header} header is missing")]
-    Missing { header: &'static str },
-    #[error("{header} is not hex")]
-    NotHex { header: &'static str },
-    #[error("{header} decodes to {found} bytes, expected {expected}")]
-    WrongLength {
-        header: &'static str,
-        found: usize,
-        expected: usize,
-    },
-    #[error("{HEADER_VKEY} is not an Ed25519 verification key: {reason}")]
-    Vkey { reason: String },
-}
-
-impl SubmissionHeaders {
-    pub fn decode(
-        vkey: Option<&str>,
-        signature: Option<&str>,
-    ) -> Result<SubmissionHeaders, HeaderError> {
-        let vkey: [u8; 32] = decode_hex(vkey, HEADER_VKEY)?;
-        let signature: [u8; 64] = decode_hex(signature, HEADER_SIGNATURE)?;
-        Ok(SubmissionHeaders {
-            vkey: VerifyingKey::from_bytes(&vkey).map_err(|error| HeaderError::Vkey {
-                reason: error.to_string(),
-            })?,
-            signature: Signature::from_bytes(&signature),
-        })
-    }
-
-    /// Whose upload this is (`authority`). Derived, so it holds before the
-    /// signature is checked and says nothing about whether it will pass.
-    pub fn pool_id(&self) -> PoolId {
-        PoolId::from_cold_key(&self.vkey)
-    }
-}
-
-/// Carries which header was wrong into `HeaderError`, so a refusal names the
-/// one the operator has to fix.
-fn decode_hex<const N: usize>(
-    value: Option<&str>,
-    header: &'static str,
-) -> Result<[u8; N], HeaderError> {
-    let value = value.ok_or(HeaderError::Missing { header })?;
-    hex::decode(value).map_err(|error| match error {
-        HexError::NotHex => HeaderError::NotHex { header },
-        HexError::WrongLength { found, expected } => HeaderError::WrongLength {
-            header,
-            found,
-            expected,
-        },
-    })
 }
 
 /// The status a rejected submission answers with. Takes a `Rejection` and not
@@ -138,7 +73,7 @@ pub fn status_for(rejection: &Rejection) -> u16 {
     match rejection {
         Rejection::OversizedBody { .. } => 413,
         Rejection::RateLimited { .. } | Rejection::ServerBusy { .. } => 429,
-        Rejection::UnknownPool { .. } | Rejection::BadSignature => 403,
+        Rejection::UnknownPool { .. } | Rejection::BadSignature | Rejection::Unauthorised(_) => 403,
         Rejection::NotASubmission(_)
         | Rejection::UnreadableHeader(_)
         | Rejection::KeylessSchema { .. }
@@ -304,6 +239,7 @@ fn object<A: Store + Bytes>(intake: &Intake<A>, target: &str) -> Answer {
 /// download would only withhold the bytes as well.
 fn attested(attestation: &Option<Attestation>) -> Vec<(&'static str, String)> {
     attestation
+        .as_ref()
         .map(|attestation| attestation.headers().to_vec())
         .unwrap_or_default()
 }
@@ -321,12 +257,8 @@ fn submit<A: Store>(intake: &Intake<A>, request: &Request) -> Answer {
         Ok(headers) => headers,
         Err(error) => return refuse(None, 400, error.to_string()),
     };
-    let signer = headers.pool_id();
-    let submission = Signed {
-        vkey: headers.vkey,
-        signature: headers.signature,
-        wire_bytes: &request.body,
-    };
+    let claimed = headers.pool_id();
+    let submission = headers.over(&request.body);
     match intake.submit(&submission, OffsetDateTime::now_utc()) {
         Ok(ack) => Answer {
             status: 200,
@@ -339,10 +271,10 @@ fn submit<A: Store>(intake: &Intake<A>, request: &Request) -> Answer {
             headers: Vec::new(),
         },
         Err(IngestError::Rejected(rejection)) => {
-            refuse(Some(signer), status_for(&rejection), rejection.to_string())
+            refuse(Some(claimed), status_for(&rejection), rejection.to_string())
         }
         Err(IngestError::Archive(error)) => unavailable(
-            Some(signer),
+            Some(claimed),
             "the archive cannot be written",
             &error.to_string(),
         ),

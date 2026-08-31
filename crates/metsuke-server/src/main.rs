@@ -13,6 +13,7 @@ use metsuke_server::developer::Developer;
 use metsuke_server::http;
 use metsuke_server::instructions;
 use metsuke_server::intake::Intake;
+use metsuke_server::roster::{Roster, RosterError};
 use metsuke_server::s3::{S3Archive, S3Error};
 use metsuke_server::serve;
 use metsuke_server::verify::{Audit, AuditError, audit};
@@ -39,6 +40,8 @@ enum Fatal {
     },
     #[error("the developer password {path} is empty, which would authorize anyone")]
     EmptyDeveloperPassword { path: String },
+    #[error(transparent)]
+    Roster(#[from] RosterError),
     #[error(transparent)]
     S3(#[from] S3Error),
     #[error("the S3 archive needs AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in the environment")]
@@ -166,10 +169,23 @@ fn dispatch<A: Store + List + Bytes + Send + Sync + 'static>(
 /// "did not verify" and "could not be read" are different news.
 fn report_audit(found: Audit) -> Result<(), Fatal> {
     println!("verified {} objects", found.verified);
+    if found.unattributed > 0 {
+        println!(
+            "{} objects verified in every part but the pool they are filed under, \
+             which a Leios key cannot re-derive (ADR 0011)",
+            found.unattributed
+        );
+    }
     for failure in &found.failures {
         println!("{failure}");
     }
-    match (found.failed(), found.unreadable(), found.verified) {
+    // An object checked in every part but its filing is still an object that
+    // was read and verified, so a bucket holding only those is not empty.
+    match (
+        found.failed(),
+        found.unreadable(),
+        found.verified + found.unattributed,
+    ) {
         (0, 0, 0) => Err(Fatal::ArchiveEmpty),
         (0, 0, _) => Ok(()),
         (failed, unreadable, _) => Err(Fatal::ArchiveNotVerified { failed, unreadable }),
@@ -195,6 +211,14 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
     // request, so a credential file only this path needs must not decide
     // whether it runs.
     let developer = developer(&credentials)?;
+    // Same reason, and the same loud failure: a server told where its roster
+    // is and unable to read it would otherwise start and refuse every pool
+    // that signs with a Leios key (ADR 0011).
+    let roster = ingest
+        .leios_roster
+        .as_ref()
+        .map(|path| Roster::load(path.as_path()))
+        .transpose()?;
     // Built from files compiled in, so a broken one is a build that must not
     // reach an operator asking for it.
     let page = instructions::page();
@@ -210,7 +234,14 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
         listener.address(),
         http::SUBMIT_PATH,
     );
-    let intake = Intake::new(ingest, archive);
+    match &roster {
+        Some(roster) => {
+            let (epoch, slot) = roster.position();
+            eprintln!("{INFO}Leios keys from a roster taken in epoch {epoch} at slot {slot}");
+        }
+        None => eprintln!("{INFO}cold-key submissions only: no Leios key roster is configured"),
+    }
+    let intake = Intake::new(ingest, archive, roster);
     match listener.serve(limits, intake, developer, page)? {}
 }
 

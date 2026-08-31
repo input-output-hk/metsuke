@@ -11,13 +11,16 @@ use crate::scrape::Refused;
 use crate::scraper::{ScraperConfig, scrape_once};
 use crate::spool::UncarriableReport;
 use crate::uploader::{UploadConfig, UploadOutcome, upload};
-use metsuke_wire::envelope::VerifyingKey;
+use metsuke_wire::envelope::PoolId;
 
 pub struct Agent {
     scraper: ScraperConfig,
     delivery: Delivery,
     upload: UploadConfig,
-    vkey: VerifyingKey,
+    /// Which pool every submission names. A Leios key derives none, so this
+    /// is what the header carries and what the server looks the key up under
+    /// (ADR 0011).
+    pool_id: PoolId,
     /// Rows the spool's cap dropped since the last report. Accumulated rather
     /// than logged per row: under sustained overload the drop rate is the
     /// spool's write rate, and one line each would be the loudest thing in the
@@ -74,13 +77,13 @@ impl Agent {
         scraper: ScraperConfig,
         delivery: Delivery,
         upload: UploadConfig,
-        vkey: VerifyingKey,
+        pool_id: PoolId,
     ) -> Self {
         Agent {
             scraper,
             delivery,
             upload,
-            vkey,
+            pool_id,
             dropped_since_report: 0,
         }
     }
@@ -139,7 +142,7 @@ impl Agent {
             return Ok(None);
         };
         let sent = Uploaded {
-            outcome: upload(&self.upload, &self.vkey, &submission),
+            outcome: upload(&self.upload, self.pool_id, &submission),
             counter: submission.counter,
             lines: submission.lines(),
             carried: submission.carried(),

@@ -171,10 +171,10 @@ impl Server {
     /// the body, which is the Ack on success and the rejection text
     /// otherwise.
     fn post(&self, key: &SigningKey, envelope: &Envelope) -> (u16, String) {
-        let (wire_bytes, signature) = seal(key, envelope);
+        let (wire_bytes, attestation) = seal(key, envelope);
         self.post_raw(
-            &hex::encode(key.verifying_key().as_bytes()),
-            &hex::encode(&signature.to_bytes()),
+            &hex::encode(&attestation.key_bytes()),
+            &hex::encode(&attestation.signature_bytes()),
             wire_bytes,
         )
     }
@@ -184,9 +184,9 @@ impl Server {
     /// it claims does not hold it up.
     fn posting(&self, key: &SigningKey, envelope: &Envelope) -> Upload {
         let url = self.url.clone();
-        let (wire_bytes, signature) = seal(key, envelope);
-        let vkey = hex::encode(key.verifying_key().as_bytes());
-        let signature = hex::encode(&signature.to_bytes());
+        let (wire_bytes, attestation) = seal(key, envelope);
+        let vkey = hex::encode(&attestation.key_bytes());
+        let signature = hex::encode(&attestation.signature_bytes());
         let (done, answered) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let status = agent()
@@ -914,7 +914,6 @@ fn an_object_the_archive_does_not_hold_is_not_found() {
     let key = test_key();
     let server = Server::start(&[pool_of(&key)]);
     let never_stored = stored_submission(
-        &key,
         object_name(
             &key,
             OffsetDateTime::from_unix_timestamp(1_755_000_000).unwrap(),
@@ -1178,7 +1177,7 @@ impl Raw {
 /// `framing` saying how the body that follows is delimited. What follows it is
 /// the test's to send, or not to.
 fn submission_head(key: &SigningKey, framing: &str) -> Vec<u8> {
-    let (_, signature) = seal(key, &envelope_now(key, 1));
+    let (_, attestation) = seal(key, &envelope_now(key, 1));
     format!(
         "POST {path} HTTP/1.1\r\n\
          Host: localhost\r\n\
@@ -1186,8 +1185,8 @@ fn submission_head(key: &SigningKey, framing: &str) -> Vec<u8> {
          {HEADER_SIGNATURE}: {signature}\r\n\
          {framing}\r\n\r\n",
         path = metsuke_server::http::SUBMIT_PATH,
-        vkey = hex::encode(key.verifying_key().as_bytes()),
-        signature = hex::encode(&signature.to_bytes()),
+        vkey = hex::encode(&attestation.key_bytes()),
+        signature = hex::encode(&attestation.signature_bytes()),
     )
     .into_bytes()
 }

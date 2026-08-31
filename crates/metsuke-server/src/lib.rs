@@ -13,6 +13,7 @@ pub mod http;
 pub mod instructions;
 pub mod intake;
 pub mod ratelimit;
+pub mod roster;
 pub mod s3;
 pub mod serve;
 pub mod verify;

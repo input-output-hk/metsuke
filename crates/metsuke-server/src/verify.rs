@@ -8,7 +8,7 @@
 use metsuke_wire::envelope::{Header, read_header};
 
 use crate::archive::{ArchiveError, Fetch, FetchedObject, Kind, List, ObjectName};
-use crate::authority::Signed;
+use crate::authority::Attributed;
 
 #[derive(Debug, thiserror::Error)]
 pub enum VerifyError {
@@ -29,11 +29,8 @@ pub enum VerifyError {
 /// reported as misfiled.
 pub fn verify(object: &FetchedObject, max_header_bytes: u64) -> Result<Header, VerifyError> {
     let key = object.name.to_key();
-    let signed = Signed {
-        vkey: object.vkey,
-        signature: object.signature,
-        wire_bytes: &object.wire_bytes,
-    };
+    let attributed = Attributed::filed(object.attestation.clone(), object.name.pool_id);
+    let signed = attributed.over(&object.wire_bytes);
     if !signed.verifies() {
         return Err(VerifyError::BadSignature { key });
     }
@@ -50,9 +47,18 @@ pub fn verify(object: &FetchedObject, max_header_bytes: u64) -> Result<Header, V
     // The key is `store`'s output, so re-deriving it checks the pool, the agent
     // and the kind it was filed under in one go. The id is the key's own, being
     // the one thing about an object that is not inside it.
+    //
+    // Except the pool under a Leios key, which derives none: there the signed
+    // header's own claim stands in, which catches a misfiling without the
+    // roster that admitted the object, but cannot say the claim was true.
+    // `audit` counts those separately rather than calling them checked
+    // (ADR 0011).
     let expected = ObjectName {
         id: object.name.id,
-        pool_id: signed.pool_id(),
+        pool_id: object
+            .attestation
+            .attributes()
+            .unwrap_or(header.provenance.pool_id),
         agent_id: header.provenance.agent_id.clone(),
         kind,
     }
@@ -67,6 +73,10 @@ pub fn verify(object: &FetchedObject, max_header_bytes: u64) -> Result<Header, V
 #[derive(Debug)]
 pub struct Audit {
     pub verified: usize,
+    /// Checked in every part but the pool, because a Leios key names none and
+    /// the roster that admitted the object is gone (ADR 0011). Not a failure
+    /// and not a verification: counted apart so neither number claims it.
+    pub unattributed: usize,
     pub failures: Vec<AuditFailure>,
 }
 
@@ -107,6 +117,7 @@ pub enum AuditError {
 /// be read or does not verify stops nothing: the point is to find all of them.
 pub fn audit(archive: &(impl List + Fetch), max_header_bytes: u64) -> Result<Audit, AuditError> {
     let mut verified = 0;
+    let mut unattributed = 0;
     let mut failures = Vec::new();
     // The whole listing first: fetching inside the visitor would hold the
     // listing open for as long as re-verifying the bucket takes.
@@ -117,10 +128,17 @@ pub fn audit(archive: &(impl List + Fetch), max_header_bytes: u64) -> Result<Aud
                 reason: error.to_string(),
             }),
             Ok(object) => match verify(&object, max_header_bytes) {
-                Ok(_) => verified += 1,
+                Ok(_) => match object.attestation.attributes() {
+                    Some(_) => verified += 1,
+                    None => unattributed += 1,
+                },
                 Err(error) => failures.push(error.into()),
             },
         }
     }
-    Ok(Audit { verified, failures })
+    Ok(Audit {
+        verified,
+        unattributed,
+        failures,
+    })
 }

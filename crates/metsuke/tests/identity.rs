@@ -6,7 +6,7 @@ use metsuke::identity::{self, IdentityError};
 use metsuke_wire::envelope::{PoolId, SigningKey};
 
 mod support;
-use support::test_key;
+use support::{test_key, test_submission_key};
 
 #[test]
 fn a_configured_agent_id_is_slugified() {
@@ -38,7 +38,7 @@ fn the_pool_a_key_hashes_to_is_accepted() {
     let key = test_key();
     identity::check_pool_id(
         PoolId::from_cold_key(&key.verifying_key()),
-        &key.verifying_key(),
+        &test_submission_key(),
     )
     .unwrap();
 }
@@ -51,7 +51,7 @@ fn a_pool_id_the_key_does_not_hash_to_is_refused() {
     let key = test_key();
     let other = PoolId::from_cold_key(&SigningKey::from_bytes(&[9u8; 32]).verifying_key());
 
-    let error = identity::check_pool_id(other, &key.verifying_key()).unwrap_err();
+    let error = identity::check_pool_id(other, &test_submission_key()).unwrap_err();
 
     let IdentityError::PoolIdMismatch {
         configured,

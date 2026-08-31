@@ -20,10 +20,22 @@ _Avoid_: SPO, owner, user
 The identifier a **Pool** is known by everywhere, on chain and in a **Submission**.
 
 **Cold Key**:
-A **Pool**'s long-lived identity key, and the only key that speaks for it. The
-**Pool ID** is its hash, so nothing has to be looked up to know whose a
-**Submission** is.
+A **Pool**'s long-lived identity key. The **Pool ID** is its hash, so a
+**Submission** it signed needs nothing looked up to say whose it is.
 _Avoid_: pool key, node key
+
+**Leios Key**:
+A **Pool**'s BLS key, registered on chain in its pool registration and held on
+the machines that forge and vote. A **Submission** may be signed by it instead
+of by the **Cold Key**, and then whose it is has to be looked up in the **Key
+Roster**.
+_Avoid_: BLS key (the algorithm, not the role), hot key, vote key
+
+**Key Roster**:
+Which **Leios Keys** the chain currently registers for each **Pool**, read off
+the chain and handed to the server as a file. The server signs nothing and
+queries nothing: it believes the roster it was given.
+_Avoid_: snapshot (the stake distribution already has that name), keyset, cache
 
 ### Reporting
 
@@ -44,9 +56,9 @@ reason it failed.
 _Avoid_: sample, snapshot, poll, metrics, measurement
 
 **Submission**:
-One report an **Agent** sends the server, signed by its **Pool**'s **Cold
-Key**. Which **Pool** it is from is the hash of that key, never something the
-report claims.
+One report an **Agent** sends the server, signed by its **Pool**'s **Cold Key**
+or its **Leios Key**. Which **Pool** it is from is settled by the key that
+signed it, never by the report.
 _Avoid_: upload, batch, post, payload
 
 **Frame**:
@@ -68,7 +80,7 @@ _Avoid_: counter, nonce, offset
 The set of **Pools** the rewards program accepts **Submissions** from. Separate
 from, and prior to, the signature. A **Pool** off it is refused before any
 cryptography runs.
-_Avoid_: whitelist, roster, participants
+_Avoid_: whitelist, roster (see **Key Roster**), participants
 
 **Application**:
 An **Operator** asking for their **Pool** to join the rewards program, carrying
@@ -91,6 +103,8 @@ _Avoid_: user, consumer, analyst, client
 ## Relationships
 
 - A **Pool** has exactly one **Cold Key**, and the **Pool ID** is that key's hash
+- A **Pool** has as many **Leios Keys** as the **Key Roster** lists for it, and
+  none of them names it
 - A **Pool** may report from many **Agents**, each with its own **Agent ID** and
   its own **Sequence Number** run
 - A **Submission** is signed by one key, and that key is what names its **Pool**
@@ -116,7 +130,20 @@ _Avoid_: user, consumer, analyst, client
 > gap is usually the retry rather than a loss. What was actually collected is
 > what the **Scrapes** say they were taken at."
 
+> **Dev:** "If a **Submission** is signed by a **Leios Key**, how do we know
+> whose it is? The key does not hash to the **Pool ID**."
+>
+> **Domain expert:** "It says which **Pool** it claims, and we believe that
+> only once the signature stands under a key the **Key Roster** files for that
+> pool. A pool cannot claim another's, because it cannot sign for it. What we
+> lose is that the answer now depends on the roster: the **Cold Key** settles
+> it alone and forever, and a **Leios Key** settles it only against a roster
+> that was current."
+
 ## Flagged ambiguities
 
 - "upload" and "submission" are both used throughout the code for the same thing.
   **Submission** is canonical here; the naming in code is not yet aligned.
+- "BLS key" is what the cli, the node flag and the operators say; the ledger
+  says `leiosKey`. **Leios Key** is canonical here, because "BLS" names an
+  algorithm and several other things could use one.

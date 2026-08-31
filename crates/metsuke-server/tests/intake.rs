@@ -14,9 +14,9 @@ use time::Duration;
 
 mod support;
 use support::{
-    FailingArchive, envelope_at, envelope_for, lines_envelope_at, nonzero_u32, nonzero_u64,
-    other_key, permissive_config, pool_of, seal, submission, test_agent_id, test_key, test_now,
-    trace_line,
+    FailingArchive, attested, cold_submission, envelope_at, envelope_for, lines_envelope_at,
+    nonzero_u32, nonzero_u64, other_key, permissive_config, pool_of, seal, test_agent_id, test_key,
+    test_now, trace_line,
 };
 
 /// An intake wired to a temporary directory, ready to submit to. The
@@ -24,7 +24,7 @@ use support::{
 fn intake_with(config: IngestConfig) -> (Intake<FilesystemArchive>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let archive = FilesystemArchive::new(&dir.path().join("archive"));
-    (Intake::new(config, archive), dir)
+    (Intake::new(config, archive, None), dir)
 }
 
 fn intake_for(pools: &[PoolId]) -> (Intake<FilesystemArchive>, tempfile::TempDir) {
@@ -52,11 +52,8 @@ fn submit(
     key: &SigningKey,
     envelope: &Envelope,
 ) -> Result<metsuke_wire::envelope::Ack, IngestError> {
-    let (body, signature) = seal(key, envelope);
-    intake.submit(
-        &submission(key.verifying_key(), signature, &body),
-        test_now(),
-    )
+    let (body, attestation) = seal(key, envelope);
+    intake.submit(&cold_submission(attestation, &body), test_now())
 }
 
 /// Every key the archive holds, in key order.
@@ -83,13 +80,9 @@ fn submit_container(
     declared: u32,
     data: &[u8],
 ) -> Result<metsuke_wire::envelope::Ack, IngestError> {
-    use ed25519_dalek::Signer;
     let bytes = container(header, declared, data);
-    let signature = key.sign(&bytes);
-    intake.submit(
-        &submission(key.verifying_key(), signature, &bytes),
-        test_now(),
-    )
+    let attestation = attested(key, &bytes);
+    intake.submit(&cold_submission(attestation, &bytes), test_now())
 }
 
 /// A container built byte by byte around `data`, which is compressed here so
@@ -135,13 +128,10 @@ fn valid_submission_is_archived_raw_and_acked() {
     let key = test_key();
     let (intake, dir) = intake_for(&[pool_of(&key)]);
     let envelope = envelope_for(&key, 1);
-    let (body, signature) = seal(&key, &envelope);
+    let (body, attestation) = seal(&key, &envelope);
 
     let ack = intake
-        .submit(
-            &submission(key.verifying_key(), signature, &body),
-            test_now(),
-        )
+        .submit(&cold_submission(attestation, &body), test_now())
         .unwrap();
 
     assert_eq!(ack.latest_version, metsuke_server::CLIENT_VERSION);
@@ -230,13 +220,10 @@ fn a_key_that_is_not_the_pools_cold_key_speaks_for_nobody() {
     // The submission's own header still names the allowlisted pool: the server does
     // not read it, so the claim buys the impostor nothing.
     let envelope = envelope_for(&impostor, 1);
-    let (body, signature) = seal(&impostor, &envelope);
+    let (body, attestation) = seal(&impostor, &envelope);
 
     let error = intake
-        .submit(
-            &submission(impostor.verifying_key(), signature, &body),
-            test_now(),
-        )
+        .submit(&cold_submission(attestation, &body), test_now())
         .unwrap_err();
 
     match rejection(error) {
@@ -253,14 +240,11 @@ fn tampered_body_is_rejected() {
     let key = test_key();
     let (intake, _dir) = intake_for(&[pool_of(&key)]);
     let envelope = envelope_for(&key, 1);
-    let (mut body, signature) = seal(&key, &envelope);
+    let (mut body, attestation) = seal(&key, &envelope);
     *body.last_mut().unwrap() ^= 0xff;
 
     let error = intake
-        .submit(
-            &submission(key.verifying_key(), signature, &body),
-            test_now(),
-        )
+        .submit(&cold_submission(attestation, &body), test_now())
         .unwrap_err();
 
     let rejection = rejection(error);
@@ -284,14 +268,10 @@ fn a_data_frame_that_is_not_zstd_is_archived_unread() {
     bytes.extend_from_slice(&(header.len() as u32).to_le_bytes());
     bytes.extend_from_slice(header.as_bytes());
     bytes.extend_from_slice(b"not a zstd frame");
-    use ed25519_dalek::Signer;
-    let signature = key.sign(&bytes);
+    let attestation = attested(&key, &bytes);
 
     intake
-        .submit(
-            &submission(key.verifying_key(), signature, &bytes),
-            test_now(),
-        )
+        .submit(&cold_submission(attestation, &bytes), test_now())
         .unwrap();
 }
 
@@ -365,14 +345,11 @@ fn a_forged_body_spends_none_of_the_pools_budget() {
         ..permissive_config(&[pool_of(&key)])
     };
     let (intake, _dir) = intake_with(config);
-    let (mut body, signature) = seal(&key, &envelope_for(&key, 1));
+    let (mut body, attestation) = seal(&key, &envelope_for(&key, 1));
     *body.last_mut().unwrap() ^= 0xff;
 
     let error = intake
-        .submit(
-            &submission(key.verifying_key(), signature, &body),
-            test_now(),
-        )
+        .submit(&cold_submission(attestation, &body), test_now())
         .unwrap_err();
     assert!(
         matches!(rejection(error), Rejection::BadSignature),
@@ -392,13 +369,10 @@ fn a_submission_sealed_outside_the_window_is_refused() {
     let (intake, _dir) = intake_with(skew_of(300, &key));
     for offset in [Duration::seconds(-301), Duration::seconds(301)] {
         let sealed_at = test_now() + offset;
-        let (body, signature) = seal(&key, &envelope_at(&key, 1, sealed_at));
+        let (body, attestation) = seal(&key, &envelope_at(&key, 1, sealed_at));
 
         let error = intake
-            .submit(
-                &submission(key.verifying_key(), signature, &body),
-                test_now(),
-            )
+            .submit(&cold_submission(attestation, &body), test_now())
             .unwrap_err();
 
         let rejection = rejection(error);
@@ -418,13 +392,10 @@ fn a_submission_sealed_at_the_window_is_accepted() {
     let key = test_key();
     let (intake, _dir) = intake_with(skew_of(300, &key));
     let sealed_at = test_now() - Duration::seconds(300);
-    let (body, signature) = seal(&key, &envelope_at(&key, 1, sealed_at));
+    let (body, attestation) = seal(&key, &envelope_at(&key, 1, sealed_at));
 
     intake
-        .submit(
-            &submission(key.verifying_key(), signature, &body),
-            test_now(),
-        )
+        .submit(&cold_submission(attestation, &body), test_now())
         .unwrap();
 }
 
@@ -439,13 +410,10 @@ fn a_replayed_submission_spends_none_of_the_pools_budget() {
         ..skew_of(300, &key)
     };
     let (intake, _dir) = intake_with(config);
-    let (body, signature) = seal(&key, &envelope_at(&key, 1, test_now() - Duration::hours(2)));
+    let (body, attestation) = seal(&key, &envelope_at(&key, 1, test_now() - Duration::hours(2)));
 
     let error = intake
-        .submit(
-            &submission(key.verifying_key(), signature, &body),
-            test_now(),
-        )
+        .submit(&cold_submission(attestation, &body), test_now())
         .unwrap_err();
     assert!(
         matches!(rejection(error), Rejection::StaleTimestamp { .. }),
@@ -464,14 +432,10 @@ fn a_body_that_is_not_a_container_is_refused_before_the_allowlist() {
     let key = test_key();
     let (intake, _dir) = intake_for(&[]);
     let bytes = zstd::encode_all(&b"{}\n"[..], 0).unwrap();
-    use ed25519_dalek::Signer;
-    let signature = key.sign(&bytes);
+    let attestation = attested(&key, &bytes);
 
     let error = intake
-        .submit(
-            &submission(key.verifying_key(), signature, &bytes),
-            test_now(),
-        )
+        .submit(&cold_submission(attestation, &bytes), test_now())
         .unwrap_err();
 
     let rejection = rejection(error);
@@ -561,13 +525,10 @@ fn a_trace_line_upload_is_accepted_and_filed_as_logs() {
     )];
     let envelope = lines_envelope_at(&key, 1, test_now(), lines);
     assert_eq!(envelope.schema_version(), SCHEMA_VERSION_LINES);
-    let (body, signature) = seal(&key, &envelope);
+    let (body, attestation) = seal(&key, &envelope);
 
     let ack = intake
-        .submit(
-            &submission(key.verifying_key(), signature, &body),
-            test_now(),
-        )
+        .submit(&cold_submission(attestation, &body), test_now())
         .unwrap();
 
     assert_eq!(ack.latest_version, metsuke_server::CLIENT_VERSION);
@@ -589,15 +550,13 @@ fn archive_failure_is_not_a_rejection() {
         FailingArchive {
             reason: "archive is down",
         },
+        None,
     );
     let envelope = envelope_for(&key, 1);
-    let (body, signature) = seal(&key, &envelope);
+    let (body, attestation) = seal(&key, &envelope);
 
     let error = intake
-        .submit(
-            &submission(key.verifying_key(), signature, &body),
-            test_now(),
-        )
+        .submit(&cold_submission(attestation, &body), test_now())
         .unwrap_err();
 
     assert!(

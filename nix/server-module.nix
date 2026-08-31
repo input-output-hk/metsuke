@@ -54,7 +54,14 @@ let
     };
   };
 
-  configFile = toml.generate "metsuke-server-config.toml" cfg.settings;
+  # The one nullable setting is absent rather than null in the file: TOML has
+  # no null, and the server reads absence as "no Leios keys" (ADR 0011).
+  configFile = toml.generate "metsuke-server-config.toml" (
+    cfg.settings
+    // {
+      ingest = lib.filterAttrs (_: value: value != null) cfg.settings.ingest;
+    }
+  );
 in
 {
   options.services.metsuke-server = {
@@ -129,6 +136,15 @@ in
                 allowlist = mkOption {
                   type = types.attrsOf types.str;
                   description = "As the offline allowlist generator emits them.";
+                };
+                leios_roster = mkOption {
+                  type = types.nullOr types.str;
+                  default = null;
+                  description = ''
+                    Where the Leios key roster is read from, as the roster
+                    generator writes it. The one setting that may be absent:
+                    null takes cold-key submissions only (ADR 0011).
+                  '';
                 };
                 max_body_bytes = positive;
                 max_header_bytes = positive;

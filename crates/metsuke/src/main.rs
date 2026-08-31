@@ -85,7 +85,7 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
     let config = Config::from_toml(&text)?;
     let key =
         keys::resolve_signing_key(args.signing_key.as_deref(), config.signing_key.as_deref())?;
-    identity::check_pool_id(config.pool_id, &key.verifying_key())?;
+    identity::check_pool_id(config.pool_id, &key)?;
     let agent_id = identity::agent_id(config.agent_id.as_deref())?;
     // Resolved once and handed to both spool writers: it is what stamps every
     // line and what a submission's header names, so one value or they could
@@ -101,7 +101,6 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         busy_timeout,
         provenance: provenance.clone(),
     })?;
-    let vkey = key.verifying_key();
     eprintln!(
         "{INFO}metsuke on {agent_id} scraping {} for {}",
         config.metrics_url, config.pool_id,
@@ -129,7 +128,7 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
             timeout: Duration::from_secs(config.upload_timeout_secs),
             max_submissions: config.upload_max_submissions,
         },
-        vkey,
+        config.pool_id,
     );
     if let Some(log) = &config.log {
         start_trace_collection(log, &config.spool_path, busy_timeout, provenance)?;

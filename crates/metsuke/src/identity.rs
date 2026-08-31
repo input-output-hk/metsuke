@@ -2,7 +2,7 @@
 //! the key it signs with speaks for the pool it claims. Both are answered once
 //! at startup, so an Agent that cannot say either never spools a row.
 
-use metsuke_wire::envelope::{AgentId, AgentIdError, PoolId, VerifyingKey};
+use metsuke_wire::envelope::{AgentId, AgentIdError, PoolId, SubmissionKey};
 
 #[derive(Debug, thiserror::Error)]
 pub enum IdentityError {
@@ -36,11 +36,18 @@ pub fn agent_id(configured: Option<&str>) -> Result<AgentId, IdentityError> {
 /// Refuse a key that does not hash to the configured pool id. The server
 /// checks the same thing per upload; failing here means an operator hears it
 /// once at startup rather than as a rejection an hour later.
-pub fn check_pool_id(configured: PoolId, key: &VerifyingKey) -> Result<(), IdentityError> {
-    configured
-        .check_cold_key(key)
-        .map_err(|implied| IdentityError::PoolIdMismatch {
+///
+/// A Leios key hashes to nothing, so there is nothing to disagree with and
+/// nothing to check: what it signs is admitted against the server's roster, and
+/// the earliest an Agent holding the wrong one hears about it is that refusal
+/// (ADR 0011).
+pub fn check_pool_id(configured: PoolId, key: &SubmissionKey) -> Result<(), IdentityError> {
+    match key.attributes() {
+        None => Ok(()),
+        Some(implied) if implied == configured => Ok(()),
+        Some(implied) => Err(IdentityError::PoolIdMismatch {
             configured,
             implied,
-        })
+        }),
+    }
 }

@@ -11,6 +11,8 @@ use std::io::Read;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
+use crate::leios::{self, LeiosPublicKey, LeiosSignature, LeiosSigningKey};
+
 pub use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 
 /// The schema versions this crate speaks, one per `Payload` variant; which one
@@ -27,43 +29,214 @@ pub const CONTAINER_MAGIC: u32 = 0x184D_2A50;
 pub const HEADER_OFFSET: usize = 8;
 
 /// Upload request headers (ADR 0001): verification key and detached signature
-/// as lowercase hex over the body bytes as sent. No pool id: the key is what
-/// the pool is derived from, so a claimed one would be a second answer to a
-/// question the key already settles.
+/// as lowercase hex over the body bytes as sent.
 pub const HEADER_VKEY: &str = "x-metsuke-vkey";
 pub const HEADER_SIGNATURE: &str = "x-metsuke-signature";
+
+/// Which pool the submission is from, bech32. A **Cold Key** answers this on
+/// its own, so under one this header is a second copy that has to agree; a
+/// **Leios Key** answers nothing, so under one it is the only thing that says
+/// where to look and it is believed only once the roster and the signature
+/// agree with it (ADR 0011).
+pub const HEADER_POOL: &str = "x-metsuke-pool";
+
+/// The Ed25519 lengths, named because the decoder tells the two schemes apart
+/// by them.
+const VKEY_BYTES: usize = 32;
+const SIGNATURE_BYTES: usize = 64;
 
 /// What a stored object's signature is checked with, as it travels: the archive
 /// holds it beside the bytes (ADR 0005) and a download carries it back in the
 /// same two headers an upload arrived with. Both or neither, because a check
 /// needs the pair, so half of it is the same as none of it.
-#[derive(Debug, Clone, Copy)]
-pub struct Attestation {
-    pub vkey: VerifyingKey,
-    pub signature: Signature,
+///
+/// Which scheme signed is the length of the pair and nothing else. The two are
+/// 32/64 and 96/48, so no third header has to be agreed on and no submission
+/// can name one scheme while carrying another's bytes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Attestation {
+    ColdKey {
+        vkey: VerifyingKey,
+        signature: Signature,
+    },
+    LeiosKey {
+        key: LeiosPublicKey,
+        signature: LeiosSignature,
+    },
+}
+
+/// Which of the pair was wrong and how. Every seam that reads the pair uses
+/// this one decoder, so a refusal reads the same off an upload's headers and
+/// off a stored object's metadata (metsuke-jfb.41).
+#[derive(Debug, thiserror::Error)]
+pub enum AttestationError {
+    #[error("{header} header is missing")]
+    Missing { header: &'static str },
+    #[error("{header} is not hex")]
+    NotHex { header: &'static str },
+    #[error(
+        "a {key} byte key with a {signature} byte signature is neither an \
+         Ed25519 pair ({VKEY_BYTES}/{SIGNATURE_BYTES}) nor a Leios one \
+         ({leios_key}/{leios_signature})",
+        leios_key = leios::PUBLIC_KEY_BYTES,
+        leios_signature = leios::SIGNATURE_BYTES,
+    )]
+    NoSuchScheme { key: usize, signature: usize },
+    #[error("{HEADER_VKEY} is not an Ed25519 verification key: {reason}")]
+    Vkey { reason: String },
+    #[error(transparent)]
+    Leios(#[from] leios::LeiosKeyError),
 }
 
 impl Attestation {
-    /// The pair as a download's headers, in the encoding `from_headers` reads.
+    /// The pair as a download's headers, in the encoding `decode` reads.
     pub fn headers(&self) -> [(&'static str, String); 2] {
         [
-            (HEADER_VKEY, crate::hex::encode(self.vkey.as_bytes())),
+            (HEADER_VKEY, crate::hex::encode(&self.key_bytes())),
             (
                 HEADER_SIGNATURE,
-                crate::hex::encode(&self.signature.to_bytes()),
+                crate::hex::encode(&self.signature_bytes()),
             ),
         ]
+    }
+
+    /// The verification key as it travels.
+    pub fn key_bytes(&self) -> Vec<u8> {
+        match self {
+            Attestation::ColdKey { vkey, .. } => vkey.as_bytes().to_vec(),
+            Attestation::LeiosKey { key, .. } => key.to_bytes().to_vec(),
+        }
+    }
+
+    /// The signature as it travels.
+    pub fn signature_bytes(&self) -> Vec<u8> {
+        match self {
+            Attestation::ColdKey { signature, .. } => signature.to_bytes().to_vec(),
+            Attestation::LeiosKey { signature, .. } => signature.to_bytes().to_vec(),
+        }
+    }
+
+    /// The pool this attestation names on its own. `None` under a **Leios
+    /// Key**, which names none: a caller holding one has to look it up and
+    /// cannot mistake the absence for a pool.
+    pub fn attributes(&self) -> Option<PoolId> {
+        match self {
+            Attestation::ColdKey { vkey, .. } => Some(PoolId::from_cold_key(vkey)),
+            Attestation::LeiosKey { .. } => None,
+        }
+    }
+
+    /// Whether the signature stands over `message` as given. Ed25519 goes
+    /// through `verify_strict`, which rejects signatures that only pass under
+    /// malleable or mixed-order-point interpretations.
+    pub fn verifies(&self, message: &[u8]) -> bool {
+        match self {
+            Attestation::ColdKey { vkey, signature } => {
+                vkey.verify_strict(message, signature).is_ok()
+            }
+            Attestation::LeiosKey { key, signature } => signature.verifies(message, key),
+        }
+    }
+
+    /// The pair as two hex strings, whichever scheme they are.
+    pub fn decode(
+        vkey: Option<&str>,
+        signature: Option<&str>,
+    ) -> Result<Attestation, AttestationError> {
+        let key = decode_hex(vkey, HEADER_VKEY)?;
+        let signature = decode_hex(signature, HEADER_SIGNATURE)?;
+        match (key.len(), signature.len()) {
+            (VKEY_BYTES, SIGNATURE_BYTES) => Ok(Attestation::ColdKey {
+                vkey: VerifyingKey::from_bytes(&sized(&key)).map_err(|error| {
+                    AttestationError::Vkey {
+                        reason: error.to_string(),
+                    }
+                })?,
+                signature: Signature::from_bytes(&sized(&signature)),
+            }),
+            (leios::PUBLIC_KEY_BYTES, leios::SIGNATURE_BYTES) => Ok(Attestation::LeiosKey {
+                key: LeiosPublicKey::from_bytes(&sized(&key))?,
+                signature: LeiosSignature::from_bytes(&sized(&signature))?,
+            }),
+            (key, signature) => Err(AttestationError::NoSuchScheme { key, signature }),
+        }
     }
 
     /// The pair off an answer's head. `None` where either header is absent or
     /// unreadable: what an unverifiable object means is the caller's to say,
     /// and on this path a download is not refused for it.
     pub fn from_headers(vkey: Option<&str>, signature: Option<&str>) -> Option<Attestation> {
-        Some(Attestation {
-            vkey: VerifyingKey::from_bytes(&crate::hex::decode::<32>(vkey?).ok()?).ok()?,
-            signature: Signature::from_bytes(&crate::hex::decode::<64>(signature?).ok()?),
-        })
+        Attestation::decode(Some(vkey?), Some(signature?)).ok()
     }
+}
+
+/// The key an Agent signs with. Which one it holds is what its key file said
+/// it was, and it is the only thing that decides which scheme a submission
+/// goes out under (`metsuke::keys`).
+pub enum SubmissionKey {
+    ColdKey(SigningKey),
+    LeiosKey(LeiosSigningKey),
+}
+
+impl SubmissionKey {
+    /// The signature over these bytes, beside the key that made it: the two
+    /// halves an upload presents, produced together so they cannot disagree.
+    pub fn attest(&self, wire_bytes: &[u8]) -> Attestation {
+        match self {
+            SubmissionKey::ColdKey(key) => {
+                use ed25519_dalek::Signer;
+                Attestation::ColdKey {
+                    vkey: key.verifying_key(),
+                    signature: key.sign(wire_bytes),
+                }
+            }
+            SubmissionKey::LeiosKey(key) => Attestation::LeiosKey {
+                key: key.public_key(),
+                signature: key.sign(wire_bytes),
+            },
+        }
+    }
+
+    /// The pool this key speaks for on its own, which only a cold key does.
+    pub fn attributes(&self) -> Option<PoolId> {
+        match self {
+            SubmissionKey::ColdKey(key) => Some(PoolId::from_cold_key(&key.verifying_key())),
+            SubmissionKey::LeiosKey(_) => None,
+        }
+    }
+
+    /// The public half, hex, as it goes in `HEADER_VKEY`. What a test or a log
+    /// line names a loaded key by, since neither may see the other half.
+    pub fn public_key_hex(&self) -> String {
+        match self {
+            SubmissionKey::ColdKey(key) => crate::hex::encode(key.verifying_key().as_bytes()),
+            SubmissionKey::LeiosKey(key) => crate::hex::encode(&key.public_key().to_bytes()),
+        }
+    }
+}
+
+impl std::fmt::Debug for SubmissionKey {
+    /// The scheme and the public half. A signing key that renders itself into
+    /// a log line or a test failure is a signing key in the log.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let scheme = match self {
+            SubmissionKey::ColdKey(_) => "ColdKey",
+            SubmissionKey::LeiosKey(_) => "LeiosKey",
+        };
+        f.debug_tuple(scheme).field(&self.public_key_hex()).finish()
+    }
+}
+
+/// Hex to bytes, carrying which header was wrong. The width is not fixed here:
+/// which scheme the pair is comes from what the widths turn out to be.
+fn decode_hex(value: Option<&str>, header: &'static str) -> Result<Vec<u8>, AttestationError> {
+    let value = value.ok_or(AttestationError::Missing { header })?;
+    crate::hex::decode_bytes(value).map_err(|_| AttestationError::NotHex { header })
+}
+
+/// The slice as the array its length already is.
+fn sized<const N: usize>(bytes: &[u8]) -> [u8; N] {
+    bytes.try_into().expect("N bytes, as the match arm says")
 }
 
 /// The server's answer to an accepted upload. `latest_version` is the
@@ -165,6 +338,8 @@ pub enum PoolIdError {
     WrongHrp { found: String },
     #[error("payload is {found} bytes, expected 28")]
     WrongLength { found: usize },
+    #[error("not 28 bytes of hex: {0}")]
+    Hex(#[from] crate::hex::HexError),
 }
 
 impl PoolId {
@@ -184,23 +359,18 @@ impl PoolId {
         Ok(PoolId(hash))
     }
 
+    /// The hex form, which is how the chain's own tooling answers: the key of
+    /// a `cardano-cli query pool-state` map (ADR 0011).
+    pub fn from_hex(text: &str) -> Result<Self, PoolIdError> {
+        Ok(PoolId(crate::hex::decode::<28>(text)?))
+    }
+
     /// The pool id a cold verification key hashes to. See CONTEXT.md,
     /// **Cold Key**.
     pub fn from_cold_key(key: &VerifyingKey) -> Self {
         use blake2::digest::consts::U28;
         use blake2::{Blake2b, Digest};
         PoolId(Blake2b::<U28>::digest(key.as_bytes()).into())
-    }
-
-    /// Whether `key` is the cold key this pool id derives from, and the id it
-    /// derives to where it is not. Every caller refuses in its own words and
-    /// names both ids doing it, so the id comes back rather than a bool.
-    pub fn check_cold_key(&self, key: &VerifyingKey) -> Result<(), PoolId> {
-        let implied = PoolId::from_cold_key(key);
-        match implied == *self {
-            true => Ok(()),
-            false => Err(implied),
-        }
     }
 
     /// The 28 bytes themselves, for the one caller that reads a pool id out of
@@ -635,8 +805,8 @@ pub enum ContainerError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum OpenError {
-    #[error("signature verification failed: {0}")]
-    Signature(#[from] ed25519_dalek::SignatureError),
+    #[error("signature does not verify over the bytes as given")]
+    Signature,
     #[error(transparent)]
     Container(#[from] ContainerError),
     #[error("zstd decompression failed: {0}")]
@@ -821,10 +991,10 @@ pub fn payload_digest(envelope: &Envelope) -> String {
 /// as they must be sent and archived, plus the detached signature over them.
 /// `level` is the zstd compression level (0 = zstd's default).
 pub fn seal(
-    key: &SigningKey,
+    key: &SubmissionKey,
     envelope: &Envelope,
     level: i32,
-) -> Result<(Vec<u8>, Signature), SealError> {
+) -> Result<(Vec<u8>, Attestation), SealError> {
     let header = header_json(envelope)?;
     let declared = u32::try_from(header.len()).map_err(|_| SealError::HeaderTooLarge {
         found: header.len(),
@@ -838,9 +1008,8 @@ pub fn seal(
     wire_bytes.extend_from_slice(&header);
     wire_bytes.extend_from_slice(&data);
 
-    use ed25519_dalek::Signer;
-    let signature = key.sign(&wire_bytes);
-    Ok((wire_bytes, signature))
+    let attestation = key.attest(&wire_bytes);
+    Ok((wire_bytes, attestation))
 }
 
 /// How much decompressed output `open` copies per read. Granularity, not a
@@ -853,12 +1022,13 @@ const DECOMPRESS_CHUNK_BYTES: usize = 64 * 1024;
 /// reject signatures that only pass under malleable or mixed-order-point
 /// interpretations.
 pub fn open(
-    key: &VerifyingKey,
+    attestation: &Attestation,
     wire_bytes: &[u8],
-    signature: &Signature,
     limits: Limits,
 ) -> Result<Envelope, OpenError> {
-    key.verify_strict(wire_bytes, signature)?;
+    if !attestation.verifies(wire_bytes) {
+        return Err(OpenError::Signature);
+    }
     let frames = split(wire_bytes, limits.max_header_bytes)?;
     // The version alone first, so a version this build never spoke is named as
     // such whatever else its header holds. A v3 that dropped a field every

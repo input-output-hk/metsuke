@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use crate::delivery::SealedSubmission;
 use crate::endpoint::UploadUrl;
-use metsuke_wire::envelope::{Ack, HEADER_SIGNATURE, HEADER_VKEY, VerifyingKey};
-use metsuke_wire::{hex, http};
+use metsuke_wire::envelope::{Ack, HEADER_POOL, PoolId};
+use metsuke_wire::http;
 
 pub struct UploadConfig {
     pub upload_url: UploadUrl,
@@ -35,16 +35,18 @@ pub enum UploadOutcome {
 /// scheduling decision, not an error path.
 pub fn upload(
     config: &UploadConfig,
-    vkey: &VerifyingKey,
+    pool_id: PoolId,
     submission: &SealedSubmission,
 ) -> UploadOutcome {
+    let [vkey, signature] = submission.attestation.headers();
     let response = http::agent(config.timeout)
         .post(config.upload_url.as_str())
-        .header(HEADER_VKEY, hex::encode(vkey.as_bytes()))
-        .header(
-            HEADER_SIGNATURE,
-            hex::encode(&submission.signature.to_bytes()),
-        )
+        .header(vkey.0, vkey.1)
+        .header(signature.0, signature.1)
+        // Sent whichever key signed: under a Leios key it is the only thing
+        // that says which pool this is, and under a cold key it is the
+        // derivation stated twice, which the server checks (ADR 0011).
+        .header(HEADER_POOL, pool_id.to_bech32())
         .header("content-encoding", "zstd")
         .content_type("application/json")
         .send(&submission.wire_bytes[..]);

@@ -13,14 +13,17 @@ use metsuke::scraper::ScraperConfig;
 use metsuke::sntp::SntpConfig;
 use metsuke::spool::{LogSpool, LogSpoolConfig, Spool, SpoolConfig};
 use metsuke::uploader::{UploadConfig, UploadOutcome};
-use metsuke_wire::envelope::{self, Signature, VerifyingKey};
+use metsuke_wire::envelope::{self};
 use metsuke_wire::envelope::{HEADER_SIGNATURE, HEADER_VKEY};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod support;
 use metsuke_wire::hex;
-use support::{TEST_LIMITS, block_number, test_key, test_provenance, trace_line};
+use support::{
+    TEST_LIMITS, attestation_of, block_number, test_pool_id, test_provenance, test_submission_key,
+    trace_line,
+};
 
 const RECORDED_CHAIN: &str = include_str!("fixtures/recordings/leios-node.prom");
 
@@ -85,13 +88,13 @@ fn agent_with(
                 timeout: Duration::from_millis(50),
             },
         },
-        Delivery::new(spool, test_key(), 0, batch_max_bytes),
+        Delivery::new(spool, test_submission_key(), 0, batch_max_bytes),
         UploadConfig {
             upload_url: format!("{}/v1/submit", uploads.uri()).try_into().unwrap(),
             timeout: Duration::from_secs(5),
             max_submissions: NonZeroUsize::new(max_submissions).expect("the allowance is not zero"),
         },
-        test_key().verifying_key(),
+        test_pool_id(),
     )
 }
 
@@ -151,9 +154,8 @@ async fn scraped_metrics_upload_as_a_verified_submission_and_ack_drains_the_spoo
     let vkey_bytes = hex::decode::<32>(header(HEADER_VKEY)).unwrap();
     let sig_bytes = hex::decode::<64>(header(HEADER_SIGNATURE)).unwrap();
     let opened = envelope::open(
-        &VerifyingKey::from_bytes(&vkey_bytes).unwrap(),
+        &attestation_of(&vkey_bytes, &sig_bytes),
         &request.body,
-        &Signature::from_bytes(&sig_bytes),
         TEST_LIMITS,
     )
     .unwrap();
@@ -235,9 +237,8 @@ async fn one_tick_uploads_both_the_scrapes_and_the_trace_lines() {
             )
             .unwrap();
             envelope::open(
-                &VerifyingKey::from_bytes(&vkey).unwrap(),
+                &attestation_of(&vkey, &signature),
                 &request.body,
-                &Signature::from_bytes(&signature),
                 TEST_LIMITS,
             )
             .unwrap()

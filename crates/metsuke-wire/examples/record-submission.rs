@@ -9,7 +9,7 @@ use serde_json::Number;
 
 use metsuke_wire::envelope::{
     AgentId, Envelope, Failure, Metric, Payload, PayloadLine, PoolId, Provenance, Reason, Scrape,
-    SigningKey, TraceLine, seal,
+    SigningKey, SubmissionKey, TraceLine, seal,
 };
 use time::OffsetDateTime;
 
@@ -82,6 +82,7 @@ fn main() {
         other => panic!("unknown payload shape {other:?}"),
     };
     let envelope = Envelope::new(provenance, "0.1.0".to_string(), 42, at, payload);
-    let (bytes, _) = seal(&key, &envelope, 0).expect("the recorded envelope seals");
+    let (bytes, _) = seal(&SubmissionKey::ColdKey(key.clone()), &envelope, 0)
+        .expect("the recorded envelope seals");
     println!("{}", metsuke_wire::hex::encode(&bytes));
 }

@@ -85,6 +85,25 @@ let
   # changed the demo's pool1 would silently move a derived value, where this
   # shows up as a diff. `poolIdRecorded` below is what asserts they still agree.
   poolId = "pool1awyxt3egwmunup7nmd2uznqr54p2lgdt3tvrqetj8geqgfz26x9";
+  # The same id in the hex the roster is keyed by (ADR 0011), and the Leios key
+  # the demo's genesis registers for it, both recorded for the reason above.
+  # `poolIdRecorded` asserts both against the pinned tree.
+  poolIdHex = "eb8865c72876f93e07d3db55c14c03a542afa1ab8ad83065723a3204";
+  leiosKey =
+    "ae23eff571532a2e0542b2f7a4e8ae59c1dc40aafdec0ce3a3e2d36d0240e1bb"
+    + "b02d417f56388cd44bd553679e6c6dc40173b5c7dcb94ba6f08a1ba20796d0c2"
+    + "43ea2a5e913a8dd0dfce27822405b2daa53c60557645d9320908690e888eefcf";
+
+  # The roster the server is given, as the generator writes one. Written here
+  # rather than queried from the guest's node: the tool's own recording
+  # (tools/roster/fixtures) is what shows a query becomes this, and this test is
+  # about the submission path. epoch 0 because the demo's genesis is where these
+  # keys are registered, and nothing here rotates.
+  rosterFile = (pkgs.formats.json { }).generate "metsuke-leios-roster.json" {
+    epoch = 0;
+    slot = 0;
+    pools.${poolIdHex} = [ leiosKey ];
+  };
 
   # The guest's hostname is its node name below, and the agent is given no
   # agent_id, so this is the slug it stamps every line with.
@@ -225,10 +244,23 @@ let
   poolIdRecorded =
     pkgs.runCommand "pool-id-is-the-pinned-one" { nativeBuildInputs = [ cardano-cli ]; }
       ''
-        derived=$(cardano-cli latest stake-pool id --output-bech32 \
-          --cold-verification-key-file ${poolKeys}/cold.vkey)
-        [ "$derived" = "${poolId}" ] || {
-          echo "nix/e2e-test.nix records ${poolId}; the pinned tag's pool1 is $derived"
+        for form in bech32 hex; do
+          derived=$(cardano-cli latest stake-pool id --output-$form \
+            --cold-verification-key-file ${poolKeys}/cold.vkey)
+          case $form in
+            bech32) recorded=${poolId} ;;
+            hex) recorded=${poolIdHex} ;;
+          esac
+          [ "$derived" = "$recorded" ] || {
+            echo "nix/e2e-test.nix records $recorded; the pinned tag's pool1 is $derived"
+            exit 1
+          }
+        done
+        # The Leios key the same pool1 registers, as the roster lists it: the
+        # envelope's cborHex is 5860 (CBOR bytes(96)) then the key.
+        registered=$(${pkgs.jq}/bin/jq -r .cborHex ${poolKeys}/bls.vkey)
+        [ "$registered" = "5860${leiosKey}" ] || {
+          echo "nix/e2e-test.nix records 5860${leiosKey}; the pinned tag's is $registered"
           exit 1
         }
         touch $out
@@ -240,8 +272,10 @@ let
     nodes.e2e =
       { config, ... }:
       let
-        # The second agent's own config: same pool, same key, a different
-        # machine name and its own spool. Run as a plain unit rather than a
+        # The second agent's own config: same pool, a different machine name,
+        # its own spool, and the pool's Leios key rather than its cold key
+        # (ADR 0011) -- the case an operator asked for, which is a reporting
+        # machine that holds no cold key. Run as a plain unit rather than a
         # second module instance. What the module renders for one agent is
         # covered by `metsuke.service`, and this is about the server.
         secondConfig = (pkgs.formats.toml { }).generate "metsuke-two.toml" {
@@ -269,7 +303,7 @@ let
             ExecStart = pkgs.lib.concatStringsSep " " [
               "${config.services.metsuke.package}/bin/metsuke"
               "--config ${secondConfig}"
-              "--signing-key ${poolKeys}/cold.skey"
+              "--signing-key ${poolKeys}/bls.skey"
             ];
             StateDirectory = "metsuke-two";
             Restart = "always";
@@ -410,6 +444,7 @@ let
             };
             ingest = {
               allowlist.${poolId} = "MUSA-0000";
+              leios_roster = "${rosterFile}";
               max_body_bytes = 4194304;
               max_header_bytes = 4096;
               max_timestamp_skew_secs = 300;
@@ -507,6 +542,12 @@ let
           # The motivating bug: one pool, two agents. Nothing here is keyed per
           # pool alone, so both objects are in the bucket under their own agent
           # id (metsuke-jfb.4).
+          #
+          # This one signs with the pool's Leios key, so what lands proves the
+          # whole of ADR 0011 on real parts: a key that names no pool, a pool id
+          # claimed in a header, the roster the server was given saying the
+          # chain registers that key for that pool, and the object filed under
+          # it all the same.
           e2e.wait_for_unit("metsuke-two.service")
           e2e.wait_until_succeeds(
               "journalctl -u metsuke-two.service | grep -qE 'submission [0-9]+ accepted'",
@@ -520,6 +561,24 @@ let
           )
           for agent in ["${agentId}", "${secondAgentId}"]:
               assert f"-${poolId}-{agent}-metrics.jsonl.zst" in listing, listing
+          # And the two were signed by different schemes: the object metadata
+          # carries the key that signed (ADR 0005), 32 bytes of Ed25519 for the
+          # cold key and 96 of BLS12-381 for the Leios one.
+          signed_by = {}
+          for agent in ["${agentId}", "${secondAgentId}"]:
+              key = [
+                  candidate
+                  for candidate in listing.split()
+                  if f"-{agent}-metrics.jsonl.zst" in candidate
+              ][0]
+              head = json.loads(e2e.succeed(
+                  "set -a; . ${awsEnvironment}; AWS_DEFAULT_REGION=${region};"
+                  " aws --endpoint-url http://127.0.0.1:${toString s3Port}"
+                  f" s3api head-object --bucket ${bucket} --key {key}"
+              ))
+              signed_by[agent] = head["Metadata"]["vkey"]
+          assert len(signed_by["${agentId}"]) == 64, signed_by
+          assert signed_by["${secondAgentId}"] == "${leiosKey}", signed_by
 
       with subtest("the agent reads the node's journal"):
           # The grant and the child, before any line has to have travelled

@@ -297,6 +297,7 @@
             metsuke = craneLib.buildPackage agentArgs;
             metsuke-unit = contribUnit;
             metsuke-allowlist = (import ./nix/allowlist.nix { inherit pkgs; }).package;
+            metsuke-roster = (import ./nix/roster.nix { inherit pkgs; }).package;
             # The developer's pull tool, which links the wire crate alone. The
             # server tree is here because cargo loads every workspace member's
             # manifest, and this crate dev-depends on the server: sources it
@@ -333,6 +334,8 @@
             inherit (config.packages) metsuke metsuke-server metsuke-fetch;
 
             allowlist = (import ./nix/allowlist.nix { inherit pkgs; }).tests;
+
+            roster = (import ./nix/roster.nix { inherit pkgs; }).tests;
 
             server-config = import ./nix/server-config-test.nix {
               inherit pkgs;

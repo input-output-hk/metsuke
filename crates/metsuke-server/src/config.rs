@@ -159,6 +159,14 @@ pub struct IngestConfig {
     /// pool outside it is rejected before any cryptography runs; the code is
     /// what says why the pool is here, and nothing at ingest reads it.
     pub allowlist: Codes,
+    /// Where the **Key Roster** is read from (ADR 0011): which Leios keys the
+    /// chain registers for each pool, written by something outside this
+    /// server. The one field here that may be absent, because a network with
+    /// no Leios keys has no roster to point at, and absent is what refuses a
+    /// Leios-key submission with a reason instead of accepting one against
+    /// nothing.
+    #[serde(default)]
+    pub leios_roster: Option<AbsolutePath>,
     /// Cap on the body as sent, header frame and data frame together.
     /// `intake` measures what it was handed; `http::read_body` is what refuses
     /// an oversized upload before reading it.

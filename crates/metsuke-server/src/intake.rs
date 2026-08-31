@@ -1,5 +1,5 @@
 //! The one path an upload takes. `submit` read top to bottom is the check
-//! order, and there are four checks: the pool is allowlisted, the signature
+//! order: the pool is allowlisted, the key may speak for it, the signature
 //! stands, the submission was sealed near this clock, the traffic is within its
 //! budget.
 //!
@@ -14,9 +14,10 @@ use metsuke_wire::journal::INFO;
 use time::{Duration, OffsetDateTime};
 
 use crate::archive::{ArchiveError, Kind, ObjectName, Store, StoredSubmission};
-use crate::authority::Signed;
+use crate::authority::{Signed, Unauthorised};
 use crate::config::IngestConfig;
 use crate::ratelimit::{Charged, RateLimiter};
+use crate::roster::Roster;
 
 /// Why the server refused. Every variant is the client's fault and its text
 /// is what the client logs, so each names what to change.
@@ -42,6 +43,10 @@ pub enum Rejection {
     ServerBusy { max: u32, window_secs: u32 },
     #[error("signature does not verify over the body as received")]
     BadSignature,
+    /// The key presented does not speak for the pool claimed, whatever it
+    /// signed (`authority::Signed::authorised`).
+    #[error(transparent)]
+    Unauthorised(#[from] Unauthorised),
     /// The signature stands, so the pool sealed these bytes, and it sealed
     /// them too far from this server's clock for this to be the upload they
     /// were sealed for. A replay is what it refuses; a drifted clock is what
@@ -85,10 +90,14 @@ pub struct Intake<A: Store> {
     config: IngestConfig,
     limiter: Mutex<RateLimiter>,
     archive: A,
+    /// Absent where this server was given no roster, which is what makes a
+    /// Leios-key submission refusable with a reason rather than by a
+    /// deployment that forgot to configure one (ADR 0011).
+    roster: Option<Roster>,
 }
 
 impl<A: Store> Intake<A> {
-    pub fn new(config: IngestConfig, archive: A) -> Self {
+    pub fn new(config: IngestConfig, archive: A, roster: Option<Roster>) -> Self {
         let limiter = RateLimiter::new(
             config.rate_limit_uploads,
             config.rate_limit_uploads_total,
@@ -98,6 +107,7 @@ impl<A: Store> Intake<A> {
             config,
             limiter: Mutex::new(limiter),
             archive,
+            roster,
         }
     }
 
@@ -133,11 +143,17 @@ impl<A: Store> Intake<A> {
         if !self.config.allowlist.contains_key(&pool_id) {
             return Err(Rejection::UnknownPool { pool_id }.into());
         }
-        // Before the limiter rather than after it. A cold verification key is
+        // Before the signature, because it is a lookup against a signature's
+        // pairing and answers the same question earlier: a key that cannot
+        // speak for this pool is refused whatever it signed.
+        signed
+            .authorised(self.roster.as_ref())
+            .map_err(Rejection::Unauthorised)?;
+        // Before the limiter rather than after it. A verification key is
         // public, so anyone can present an allowlisted pool's and spend that
         // pool's window on bodies it never signed, which reaches the pool's
         // agent as a 429. Only what the signature has proved is charged, and
-        // the cost of the reordering is one Ed25519 verify per forged body.
+        // the cost of the reordering is one verify per forged body.
         if !signed.verifies() {
             return Err(Rejection::BadSignature.into());
         }
@@ -202,8 +218,7 @@ impl<A: Store> Intake<A> {
         // not something the server has any other account of.
         let stored = StoredSubmission {
             name: ObjectName::stamped(now, pool_id, header.provenance.agent_id, kind),
-            vkey: signed.vkey,
-            signature: signed.signature,
+            attestation: signed.attestation.clone(),
             wire_bytes: signed.wire_bytes,
         };
         self.archive.store(&stored)?;

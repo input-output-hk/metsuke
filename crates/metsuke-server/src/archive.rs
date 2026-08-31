@@ -7,20 +7,17 @@ use std::io;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
-use metsuke_wire::envelope::{Signature, VerifyingKey};
-
 /// How objects are named (`metsuke_wire::key`), re-exported because this is the
 /// module every caller reaches the archive through.
 pub use metsuke_wire::key::{KEY_PREFIX, Kind, ObjectName, ObjectNameError};
 
 /// One accepted submission: the bytes to store under `name`, plus what
 /// `S3Archive` writes as object metadata. `FilesystemArchive` writes the bytes
-/// only: the metadata is `vkey` and `signature`, and why only those two is
+/// only: the metadata is the key and the signature, and why only those two is
 /// ADR 0005's.
 pub struct StoredSubmission<'a> {
     pub name: ObjectName,
-    pub vkey: VerifyingKey,
-    pub signature: Signature,
+    pub attestation: Attestation,
     /// The body as received: compressed, signed, untouched.
     pub wire_bytes: &'a [u8],
 }
@@ -37,8 +34,7 @@ impl StoredSubmission<'_> {
 #[derive(Debug)]
 pub struct FetchedObject {
     pub name: ObjectName,
-    pub vkey: VerifyingKey,
-    pub signature: Signature,
+    pub attestation: Attestation,
     pub wire_bytes: Vec<u8>,
 }
 
