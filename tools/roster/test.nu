@@ -7,6 +7,8 @@ use roster.nu *
 # taken from the local Leios devnet (docs/research/leios-devnet.md) with
 # cardano-cli 11.1.0.0. Every pool in it has one registered key and no announced
 # one, so the recording covers the roster's shape and not a rotation in flight.
+# Re-record it from a node at the tip: its syncProgress has to clear `as-file`'s
+# own default or every test here refuses it.
 const ANSWER = path self fixtures/query-answer.json
 const ROSTER = path self roster.nu
 
@@ -78,6 +80,27 @@ def an-answer-missing-a-half-is-an-error [] {
   assert error { {tip: {epoch: 1, slot: 2}} | as-file }
 }
 
+def a-node-still-catching-up-is-an-error [] {
+  let syncing = recorded | upsert tip.syncProgress "12.34"
+
+  assert error { $syncing | as-file }
+}
+
+# The recording is a caught-up node, so the threshold is what decides rather
+# than the shape of the answer.
+def the-threshold-is-what-refuses-an-answer [] {
+  assert equal (generated | get epoch) 2
+  assert error { recorded | as-file --min-sync 99.9 }
+}
+
+# Refused rather than assumed caught up: a cli that stops reporting it must not
+# silently start writing rosters off a node nobody checked.
+def an-answer-with-no-sync-figure-is-an-error [] {
+  let quiet = recorded | update tip { reject syncProgress }
+
+  assert error { $quiet | as-file }
+}
+
 def a-key-that-is-not-a-pool-id-is-an-error [] {
   let answer = recorded
   let renamed = {
@@ -115,5 +138,8 @@ def main [] {
   a-key-that-is-not-96-bytes-is-an-error
   an-answer-missing-a-half-is-an-error
   a-key-that-is-not-a-pool-id-is-an-error
+  a-node-still-catching-up-is-an-error
+  the-threshold-is-what-refuses-an-answer
+  an-answer-with-no-sync-figure-is-an-error
   print "roster: ok"
 }

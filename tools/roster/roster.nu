@@ -45,10 +45,17 @@ export def keys-of []: record -> list<string> {
 # What the server reads: the chain position the answer was taken at, so a roster
 # nobody has updated is diagnosable, and every pool against every key it
 # registers.
-export def as-file []: record -> string {
+export def as-file [--min-sync: float = 99.8]: record -> string {
   let answer = $in
   let tip = demand ($answer | get --optional tip) "tip"
   let pools = demand ($answer | get --optional pool_state) "pool_state"
+
+  # A node short of the tip lists no key registered past where it has reached,
+  # and the epoch and slot it carries make that read as merely older.
+  let synced = demand ($tip | get --optional syncProgress) "tip.syncProgress" | into float
+  if $synced < $min_sync {
+    error make {msg: $"the node has synced ($synced)% of the chain, under the ($min_sync)% asked for"}
+  }
   {
     epoch: (demand ($tip | get --optional epoch) "tip.epoch")
     slot: (demand ($tip | get --optional slot) "tip.slot")
@@ -107,8 +114,8 @@ def cli [command: list<string>, common: list<string>]: nothing -> any {
 # Write the file the server reads: beside it, then renamed over it. Taking the
 # destination rather than stdout is what keeps a caller from redirecting over a
 # roster in use. ADR 0011 has why the swap has to be a rename.
-def "main generate" [answer: path, into: path]: nothing -> nothing {
+def "main generate" [answer: path, into: path, --min-sync: float = 99.8]: nothing -> nothing {
   let next = $"($into).next"
-  open --raw $answer | from json | as-file | save --force $next
+  open --raw $answer | from json | as-file --min-sync $min_sync | save --force $next
   mv --force $next $into
 }
