@@ -562,8 +562,12 @@ fn an_interrupted_sync_resumes_after_the_object_it_last_wrote() {
         .expect_err("a download that cannot be written stops the sync");
 
     assert_eq!(landed, keys[..2].to_vec(), "stopped early: {error}");
-    let cursor =
-        Cursor::read(&state_of(dir.path()), &everything().filters()).expect("the cursor reads");
+    let cursor = Cursor::read(
+        &state_of(dir.path()),
+        &everything().filters(),
+        Insist::Nothing,
+    )
+    .expect("the cursor reads");
     assert_eq!(cursor.after, keys[1]);
     // Unblocked, and the two already written deleted: a resumed run must not
     // fetch them, so their absence afterwards is what says it resumed.
@@ -692,8 +696,12 @@ fn a_filtered_sync_downloads_only_what_it_selected() {
 
     assert_eq!(synced.landed, vec![keys[1].clone()]);
     assert_eq!(synced.report.passed, 2);
-    let cursor =
-        Cursor::read(&state_of(synced.dir.path()), &asked.filters()).expect("the cursor reads");
+    let cursor = Cursor::read(
+        &state_of(synced.dir.path()),
+        &asked.filters(),
+        Insist::Nothing,
+    )
+    .expect("the cursor reads");
     assert_eq!(cursor.after, keys[2]);
 }
 
@@ -738,8 +746,12 @@ fn an_object_this_build_cannot_name_is_counted_and_left() {
     assert_eq!(synced.report.unnameable, 1);
     assert!(!synced.path(foreign).exists());
     // Past it, so the next run does not stop there either.
-    let cursor =
-        Cursor::read(&state_of(synced.dir.path()), &asked.filters()).expect("the cursor reads");
+    let cursor = Cursor::read(
+        &state_of(synced.dir.path()),
+        &asked.filters(),
+        Insist::Nothing,
+    )
+    .expect("the cursor reads");
     assert_eq!(cursor.after, foreign);
 }
 

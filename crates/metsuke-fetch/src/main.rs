@@ -29,7 +29,7 @@ enum Fatal {
     Sync(#[from] SyncError),
     /// Not a failure to sync: the run did what it could and the objects it
     /// refused are named above this. The code is what a script reads.
-    #[error("{count} object(s) did not verify and were not written")]
+    #[error("{count} object(s) were not written, each named above")]
     NotWritten { count: usize },
 }
 

@@ -8,6 +8,8 @@ use std::io::Write as _;
 use std::num::NonZeroU64;
 use std::path::{Component, Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::cursor::{Cursor, CursorError};
 use crate::pull::{Archive, Object, PullError};
 use crate::select::{Filters, Selected};
@@ -80,7 +82,8 @@ pub struct Verification {
 ///
 /// Declared weakest first, and the order is load-bearing: `Ord` is derived
 /// from it, so two flags given at once resolve to the stricter by `max`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Insist {
     #[default]
     Nothing,
@@ -89,6 +92,18 @@ pub enum Insist {
     /// Refuse that, and what a Leios Key signed: the bytes are checked either
     /// way, and only a Cold Key proves the pool as well.
     ColdSigned,
+}
+
+impl std::fmt::Display for Insist {
+    /// The flag that asks for it, so a refusal names what an operator would
+    /// have typed rather than a variant they have never seen.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Insist::Nothing => "no --require flag",
+            Insist::Attested => "--require-attested",
+            Insist::ColdSigned => "--require-cold-signed",
+        })
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -132,7 +147,7 @@ pub fn run(
     verification: Verification,
     mut landed: impl FnMut(&str),
 ) -> Result<Report, SyncError> {
-    let mut cursor = Cursor::read(destination.state, filters)?;
+    let mut cursor = Cursor::read(destination.state, filters, verification.insist)?;
     let mut report = Report::default();
     for page in Pages::from(archive, filters.prefix, &cursor.after) {
         for key in page? {

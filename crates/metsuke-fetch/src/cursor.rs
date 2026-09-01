@@ -13,18 +13,33 @@ use serde::{Deserialize, Serialize};
 
 use crate::select::{Filters, Selection};
 use crate::staged;
+use crate::sync::Insist;
 
-/// The state file's whole content. The filters are in it because a cursor only
-/// means anything against the listing it was taken from: a run advances past
-/// every key it saw, downloaded or filtered out, so the same cursor read under
-/// other filters would skip objects it never fetched.
+/// The state file's whole content. What a run was asked for is in it because a
+/// cursor only means anything against that: a run advances past every key it
+/// saw, downloaded, filtered out or refused alike, so the same cursor read
+/// under anything else would skip objects it never fetched.
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct Cursor {
     pub prefix: String,
     pub selection: Selection,
+    /// What the run insisted on. Here for the same reason the filters are: a
+    /// refusal advances the cursor too, so a cursor taken under one bar and
+    /// read under a lower one resumes past objects that bar refused and this
+    /// one wants. Defaulted, so a state file written before this field reads as
+    /// `Nothing` and is refused for any run that asks for more.
+    #[serde(default)]
+    pub insist: Insist,
     /// The last key seen. Empty is the archive's start, which is also what a
     /// state file that does not exist yet means.
     pub after: String,
+}
+
+/// What a state file is for, as one line: the prefix, the selection and the
+/// bar. Built in one place so `held` and `asked` cannot describe two different
+/// shapes.
+fn describe(prefix: &str, selection: &Selection, insist: Insist) -> String {
+    format!("prefix {prefix:?}, {selection}, {insist}")
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -37,14 +52,14 @@ pub enum CursorError {
     },
     #[error("the state file {path} does not parse: {reason}")]
     Unreadable { path: PathBuf, reason: String },
-    /// Refused rather than reset: a cursor taken under `v1/2026-08-01/` or
-    /// under one pool, read under wider filters, would skip everything before
-    /// it and report a whole sync.
+    /// Refused rather than reset: a cursor taken under `v1/2026-08-01/`, under
+    /// one pool, or under a higher bar, read under anything wider would skip
+    /// everything before it and report a whole sync.
     #[error(
-        "the state file {path} is for other filters\n  \
+        "the state file {path} is for another run\n  \
          holds: {held}\n  \
          asked: {asked}\n  \
-         name a state file of its own for these filters"
+         name a state file of its own for this one"
     )]
     OtherFilters {
         path: PathBuf,
@@ -60,16 +75,16 @@ pub enum CursorError {
 }
 
 impl Cursor {
-    /// The cursor `path` holds for `filters`, or a fresh one when there is no
-    /// state file yet.
-    pub fn read(path: &Path, filters: &Filters<'_>) -> Result<Cursor, CursorError> {
-        let asked = || format!("prefix {:?} and {}", filters.prefix, filters.selection);
+    /// The cursor `path` holds for `filters` at `insist`, or a fresh one when
+    /// there is no state file yet.
+    pub fn read(path: &Path, filters: &Filters<'_>, insist: Insist) -> Result<Cursor, CursorError> {
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok(Cursor {
                     prefix: filters.prefix.to_string(),
                     selection: filters.selection.clone(),
+                    insist,
                     after: String::new(),
                 });
             }
@@ -85,12 +100,18 @@ impl Cursor {
                 path: path.to_path_buf(),
                 reason: error.to_string(),
             })?;
-        match held.prefix == filters.prefix && held.selection == *filters.selection {
+        // Any difference and not just a lower bar: raising it leaves objects on
+        // disk the new bar would never have written, so the directory stops
+        // matching what the flags say it holds either way.
+        match held.prefix == filters.prefix
+            && held.selection == *filters.selection
+            && held.insist == insist
+        {
             true => Ok(held),
             false => Err(CursorError::OtherFilters {
                 path: path.to_path_buf(),
-                held: format!("prefix {:?} and {}", held.prefix, held.selection),
-                asked: asked(),
+                held: describe(&held.prefix, &held.selection, held.insist),
+                asked: describe(filters.prefix, filters.selection, insist),
             }),
         }
     }
