@@ -43,46 +43,39 @@ pub const USAGE: &str = "metsuke-fetch downloads the signed telemetry archive to
 
 usage:
   metsuke-fetch list <access> [filters]
-      print the keys the filters match, downloading nothing
   metsuke-fetch sync <access> [filters] --state <path> --into <dir>
-      download the ones the cursor has not seen, then advance it
   metsuke-fetch --help | --version
 
-access, which every command needs and none of which has a default. Each may
-come from the environment instead, and the flag wins where both are given:
-  --server <url>           where the archive is, e.g. https://archive.example
-                           METSUKE_FETCH_SERVER
-  --user <name>            the developer account the server was configured with
-                           METSUKE_FETCH_USER
-  --password-file <path>   a file holding that account's password and nothing else
-                           METSUKE_FETCH_PASSWORD_FILE
-  --timeout-ms <n>         how long one request may take, in milliseconds
-                           METSUKE_FETCH_TIMEOUT_MS
+  list   print the keys the filters match, downloading nothing
+  sync   download the ones the cursor has not seen, then advance the cursor
 
-  The password variable holds the path, as its flag does; the password itself
-  does not belong in the environment. A variable set to nothing counts as unset.
+access, which every command needs:
+  --server <url>          where the archive is
+  --user <name>           the developer account to authenticate as
+  --password-file <path>  a file holding that account's password, nothing else
+  --timeout-ms <n>        how long one request may take, in milliseconds
 
 sync:
-  --state <path>           the cursor file; a run resumes from it and advances it
-  --into <dir>             where objects land, each under its own key
-  --max-object-bytes <n>   the largest size each object can be;
-                           16777216 by default
-  --require-verified       refuse an object the download carries no key and
-                           signature for, rather than counting it
+  --state <path>          the cursor; a run resumes from it and advances it
+  --into <dir>            where objects land, each under its own key
+  --max-object-bytes <n>  the largest size each object can be;
+                          16777216 by default
+  --require-verified      refuse an object with no key and signature to check
 
 filters, which default to the whole archive:
-  --prefix <key prefix>    only keys starting with this
-  --pool <pool1...>        only this pool, bech32 as the archive keys it
-  --agent <id>             only this agent
-  --kind metrics|logs      only this kind
+  --prefix <key prefix>   only keys starting with this
+  --pool <bech32>         only this pool, as the archive keys it
+  --agent <id>            only this agent
+  --kind metrics|logs     only this kind
+
+No access flag has a default. Each also reads METSUKE_FETCH_<FLAG>, its own
+name upper-cased with dashes as underscores, and the flag wins where both are
+given. A variable set to nothing counts as unset, and the password variable
+carries the path, never the password.
 
 example:
-  metsuke-fetch sync --server https://archive.example --user dev \\
-    --password-file ~/.config/metsuke/password --timeout-ms 30000 \\
-    --state ~/.local/state/metsuke-fetch/cursor.json --into ~/archive
-
-  the same run, with the access named once in the environment:
-  export METSUKE_FETCH_SERVER=https://archive.example METSUKE_FETCH_USER=dev
+  export METSUKE_FETCH_SERVER=https://archive.example
+  export METSUKE_FETCH_USER=dev
   export METSUKE_FETCH_PASSWORD_FILE=~/.config/metsuke/password
   export METSUKE_FETCH_TIMEOUT_MS=30000
   metsuke-fetch sync --state ~/.local/state/metsuke-fetch/cursor.json \\

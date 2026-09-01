@@ -270,8 +270,23 @@ fn a_variable_set_to_nothing_counts_as_unset() {
     );
 }
 
-/// Every variable reaches the help text, so one added here cannot go
-/// undocumented.
+/// The help states the naming as a rule rather than listing four names, so
+/// the rule is what has to hold.
+#[test]
+fn every_variable_is_its_own_flag_upper_cased() {
+    for ([flag, _], (variable, _)) in ACCESS.iter().zip(ENVIRONMENT) {
+        let expected = format!(
+            "METSUKE_FETCH_{}",
+            flag.trim_start_matches("--")
+                .replace('-', "_")
+                .to_uppercase()
+        );
+        assert_eq!(variable, expected, "{flag}");
+    }
+}
+
+/// Every variable still reaches the help text, now through the worked example,
+/// so one added here cannot go undocumented.
 #[test]
 fn usage_names_every_access_variable() {
     for (variable, _) in ENVIRONMENT {
