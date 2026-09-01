@@ -17,9 +17,9 @@ use metsuke_wire::http::{
 /// Not a limit on the object, which is `--max-object-bytes`; this is how much
 /// of a stranger's arithmetic the process acts on in advance.
 ///
-/// A constant rather than configuration, against the convention: raising it
-/// only buys back one `Vec` growth and hands a lying `Content-Length` that much
-/// more of this process's memory, so there is nothing here worth exposing.
+/// Allocation staging, not a bound anything can observe (CLAUDE.md
+/// `## Conventions`): `io::copy` grows past it, and what an object may weigh is
+/// `--max-object-bytes`.
 const PREALLOCATED_MAX: u64 = 1024 * 1024;
 
 /// One object as it came back: the bytes to write, and the pair that says
