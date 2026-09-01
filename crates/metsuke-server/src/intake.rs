@@ -64,6 +64,14 @@ pub enum Rejection {
     /// frame is not one this build can read a name out of.
     #[error("header frame does not read: {0}")]
     UnreadableHeader(#[from] HeaderError),
+    /// The signature says whose these bytes are and the header inside them
+    /// says another pool. Every payload line carries the header's answer, so
+    /// accepting it files one pool's lines under another pool's name.
+    #[error(
+        "the signed header names pool {claimed}, and the key that signed it \
+         speaks for {pool_id}: a submission says which pool it is from once"
+    )]
+    NotItsProvenance { claimed: PoolId, pool_id: PoolId },
     /// Not schema gating: an accepted submission is filed under what it carries.
     /// The key scheme's kind segment is `<metrics|logs>` (`archive::Kind`), and
     /// a version this build has no `Kind` for has nothing to put in that
@@ -202,7 +210,7 @@ impl<A: Store> Intake<A> {
     }
 
     /// The post-signature half: the submission is the pool's, so what it says about
-    /// itself is what the object is filed under.
+    /// itself is what the object is filed under, once it agrees with the key.
     fn accept(
         &self,
         signed: &Signed<'_>,
@@ -213,9 +221,19 @@ impl<A: Store> Intake<A> {
         let kind = Kind::of(header.schema_version).ok_or(Rejection::KeylessSchema {
             schema_version: header.schema_version,
         })?;
-        // The pool comes from the key and the agent from the header: the pool
-        // is what the allowlist admitted, and which of its Agents reported is
-        // not something the server has any other account of.
+        // The header names the pool too, and the signature does not make that
+        // name true, only the pool's own. Asking the two to agree is what stops
+        // an allowlisted pool writing lines under another pool's name.
+        if header.provenance.pool_id != pool_id {
+            return Err(Rejection::NotItsProvenance {
+                claimed: header.provenance.pool_id,
+                pool_id,
+            }
+            .into());
+        }
+        // The pool comes from the key and the agent from the header: which of
+        // its Agents reported is not something the server has any other account
+        // of.
         let stored = StoredSubmission {
             name: ObjectName::stamped(now, pool_id, header.provenance.agent_id, kind),
             attestation: signed.attestation.clone(),

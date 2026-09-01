@@ -150,6 +150,30 @@ fn a_registered_key_over_bytes_it_did_not_sign_is_refused() {
     assert!(matches!(rejection(error), Rejection::BadSignature));
 }
 
+/// The roster and the claim settle which pool the key speaks for; the header
+/// inside the signed bytes claims a pool of its own, and every payload line
+/// carries that one. A Leios key derives nothing, so the two are asked to
+/// agree or nothing catches them disagreeing.
+#[test]
+fn a_leios_submission_whose_header_names_another_pool_is_refused() {
+    let pool = pool_of(&test_key());
+    let key = test_leios_key(1);
+    let (intake, _dir) = intake_listing(pool, &[&key]);
+    let stranger = pool_of(&support::other_key());
+    let (body, attestation) = seal_with(&key, &support::envelope_claiming(stranger, 1));
+
+    let error = intake
+        .submit(&submission(attestation, pool, &body), test_now())
+        .unwrap_err();
+
+    let rejection = rejection(error);
+    assert!(
+        matches!(rejection, Rejection::NotItsProvenance { .. }),
+        "got: {rejection:?}"
+    );
+    assert!(intake.archive().keys().unwrap().is_empty());
+}
+
 /// Both keys listed at once is a rotation in flight, and both are accepted for
 /// as long as the chain registers both.
 #[test]

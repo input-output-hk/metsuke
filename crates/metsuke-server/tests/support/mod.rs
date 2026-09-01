@@ -122,6 +122,24 @@ pub fn envelope_carrying(
     )
 }
 
+/// An envelope naming `claimed`, header and lines alike, for the cases about a
+/// submission whose header says a pool its signing key does not.
+pub fn envelope_claiming(claimed: PoolId, counter: u64) -> Envelope {
+    let now = test_now();
+    let provenance = Provenance {
+        pool_id: claimed,
+        agent_id: test_agent_id(),
+    };
+    let line = PayloadLine::scrape(&test_scrape(now), &provenance).expect("a test scrape stamps");
+    Envelope::new(
+        provenance,
+        metsuke_server::CLIENT_VERSION.to_string(),
+        counter,
+        now,
+        Payload::scrapes(vec![line]),
+    )
+}
+
 /// The wire bytes and the attestation a client would send for this envelope.
 pub fn seal(key: &SigningKey, envelope: &Envelope) -> (Vec<u8>, Attestation) {
     seal_with(&SubmissionKey::ColdKey(key.clone()), envelope)

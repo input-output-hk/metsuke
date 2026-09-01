@@ -5,7 +5,7 @@
 //! its signature and its header frame say, so that is what re-deriving the key
 //! checks. The payload is the consumer's to read.
 
-use metsuke_wire::envelope::{Header, read_header};
+use metsuke_wire::envelope::{Header, PoolId, read_header};
 
 use crate::archive::{ArchiveError, Fetch, FetchedObject, Kind, List, ObjectName};
 use crate::authority::Attributed;
@@ -20,6 +20,10 @@ pub enum VerifyError {
     UnnameableKind { key: String, schema_version: u32 },
     #[error("{key}: the submission inside belongs at {expected}")]
     Misfiled { key: String, expected: String },
+    /// Separate from `Misfiled`: the object sits where its own header says it
+    /// should, and the key that signed it speaks for someone else.
+    #[error("{key}: the key that signed it speaks for {derived}")]
+    NotItsKey { key: String, derived: PoolId },
 }
 
 /// Verify one stored object, yielding the header frame it carries.
@@ -46,25 +50,28 @@ pub fn verify(object: &FetchedObject, max_header_bytes: u64) -> Result<Header, V
     })?;
     // The key is `store`'s output, so re-deriving it checks the pool, the agent
     // and the kind it was filed under in one go. The id is the key's own, being
-    // the one thing about an object that is not inside it.
-    //
-    // Except the pool under a Leios key, which derives none: there the signed
-    // header's own claim stands in, which catches a misfiling without the
-    // roster that admitted the object, but cannot say the claim was true.
-    // `audit` counts those separately rather than calling them checked
-    // (ADR 0011).
+    // the one thing about an object that is not inside it. The pool here is the
+    // signed header's own claim, which every payload line also carries, so this
+    // is what says the object sits where its contents say it does.
     let expected = ObjectName {
         id: object.name.id,
-        pool_id: object
-            .attestation
-            .attributes()
-            .unwrap_or(header.provenance.pool_id),
+        pool_id: header.provenance.pool_id,
         agent_id: header.provenance.agent_id.clone(),
         kind,
     }
     .to_key();
     if expected != key {
         return Err(VerifyError::Misfiled { key, expected });
+    }
+    // A header agreeing with itself is not the key agreeing with either. A cold
+    // key derives its pool, so that agreement is checkable here and forever;
+    // under a Leios key it is not, because the roster that admitted the object
+    // is gone, and `audit` counts those apart rather than calling them checked
+    // (ADR 0011).
+    if let Some(derived) = object.attestation.attributes()
+        && derived != object.name.pool_id
+    {
+        return Err(VerifyError::NotItsKey { key, derived });
     }
     Ok(header)
 }

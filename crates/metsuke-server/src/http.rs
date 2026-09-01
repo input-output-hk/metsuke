@@ -77,6 +77,7 @@ pub fn status_for(rejection: &Rejection) -> u16 {
         Rejection::NotASubmission(_)
         | Rejection::UnreadableHeader(_)
         | Rejection::KeylessSchema { .. }
+        | Rejection::NotItsProvenance { .. }
         | Rejection::StaleTimestamp { .. } => 400,
     }
 }
