@@ -333,7 +333,7 @@ fn checked(key: &str, object: &Object, insist: Insist) -> Result<fn(u64) -> Land
     let Some(attestation) = &object.attestation else {
         return match insist {
             Insist::Nothing => Ok(Landed::Unattested),
-            _ => Err("carries no key and signature to check it with".to_string()),
+            _ => Err("unattested: no key and signature to check it with".to_string()),
         };
     };
     if !attestation.verifies(&object.bytes) {
@@ -342,9 +342,7 @@ fn checked(key: &str, object: &Object, insist: Insist) -> Result<fn(u64) -> Land
     let name = ObjectName::parse(key).map_err(|error| error.to_string())?;
     let Some(signer) = attestation.attributes() else {
         return match insist {
-            Insist::ColdSigned => Err("signature verified, pool unproven: a Leios \
-                                     key names none"
-                .to_string()),
+            Insist::ColdSigned => Err("Leios signature verified, not cold-signed".to_string()),
             _ => Ok(Landed::LeiosSigned),
         };
     };

@@ -268,7 +268,7 @@ fn require_attested_refuses_an_object_with_nothing_to_check_it_by() {
     assert!(
         synced.report.rejected[0]
             .reason
-            .contains("no key and signature"),
+            .contains("unattested: no key and signature"),
         "got: {}",
         synced.report.rejected[0].reason
     );
@@ -372,7 +372,7 @@ fn require_cold_signed_refuses_a_leios_signed_object() {
     assert!(
         synced.report.rejected[0]
             .reason
-            .contains("signature verified"),
+            .contains("Leios signature verified, not cold-signed"),
         "got: {}",
         synced.report.rejected[0].reason
     );
