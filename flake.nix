@@ -43,27 +43,54 @@
         inputs.git-hooks.flakeModule
       ];
 
-      flake.hydraJobs = {
-        # A hydraJob, not a check: runNixOSTest wants /dev/kvm, and `nix flake
-        # check` has to stay runnable wherever the crates build. The end-to-end
-        # job is devnet/flake.nix's, which is where the node it needs is pinned.
-        units = lib.genAttrs systems (
-          system:
-          import ./nix/unit-test.nix {
-            pkgs = inputs.nixpkgs.legacyPackages.${system};
-            agentModule = self.nixosModules.metsuke;
-            serverModule = self.nixosModules.metsuke-server;
-            metrics = ./crates/metsuke/tests/fixtures/recordings/leios-node.prom;
-            traces = ./crates/metsuke/tests/fixtures/recordings/leios-node-traces.log;
-            contribUnit = ./contrib/metsuke.service;
-            agent = self.packages.${system}.metsuke;
-          }
-        );
+      flake.hydraJobs =
+        let
+          jobs = {
+            # A hydraJob, not a check: runNixOSTest wants /dev/kvm, and `nix flake
+            # check` has to stay runnable wherever the crates build. The end-to-end
+            # job is devnet/flake.nix's, which is where the node it needs is pinned.
+            units = lib.genAttrs systems (
+              system:
+              import ./nix/unit-test.nix {
+                pkgs = inputs.nixpkgs.legacyPackages.${system};
+                agentModule = self.nixosModules.metsuke;
+                serverModule = self.nixosModules.metsuke-server;
+                metrics = ./crates/metsuke/tests/fixtures/recordings/leios-node.prom;
+                traces = ./crates/metsuke/tests/fixtures/recordings/leios-node-traces.log;
+                contribUnit = ./contrib/metsuke.service;
+                agent = self.packages.${system}.metsuke;
+              }
+            );
 
-        packages = lib.genAttrs systems (system: removeAttrs self.packages.${system} [ "default" ]);
-        checks = lib.genAttrs systems (system: self.checks.${system});
-        devShells = lib.genAttrs systems (system: self.devShells.${system});
-      };
+            packages = lib.genAttrs systems (system: removeAttrs self.packages.${system} [ "default" ]);
+            checks = lib.genAttrs systems (system: self.checks.${system});
+            devShells = lib.genAttrs systems (system: self.devShells.${system});
+          };
+
+          # Every job above that this system has one of. Collected rather than
+          # listed, so a job added to `jobs` is a job the aggregate covers and a
+          # green tick keeps meaning the whole jobset.
+          builtFor =
+            system: lib.collect lib.isDerivation (lib.mapAttrs (_: bySystem: bySystem.${system}) jobs);
+
+          aggregate =
+            system: name: constituents:
+            inputs.nixpkgs.legacyPackages.${system}.releaseTools.aggregate {
+              inherit name constituents;
+            };
+
+          # One per system, so a failure says which arch without opening the
+          # jobset, and the arches can be required separately while one is new.
+          perSystem = lib.genAttrs systems (system: aggregate system "required-${system}" (builtFor system));
+        in
+        jobs
+        // lib.mapAttrs' (system: job: lib.nameValuePair "required-${system}" job) perSystem
+        // {
+          # What a branch protects on: one status check standing for every
+          # arch's aggregate, so a system added to `systems` cannot quietly
+          # stop being required.
+          required = aggregate (builtins.head systems) "required" (lib.attrValues perSystem);
+        };
 
       flake.nixosModules = {
         metsuke =
