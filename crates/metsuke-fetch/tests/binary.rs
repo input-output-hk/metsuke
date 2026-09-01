@@ -62,6 +62,31 @@ fn a_sync_prints_the_keys_it_wrote_and_exits_zero() {
     }
 }
 
+/// Every count is of what the prefix listed and not of the archive, so the
+/// line states the prefix and its three parts add up to what came back. Called
+/// "outside the filters" the middle number read as everything the run did not
+/// take, and was short by every key the prefix never listed.
+#[test]
+fn the_listing_line_names_its_prefix_and_its_counts_add_up() {
+    let server = Server::with_objects(4, 10);
+    let dir = tempfile::tempdir().expect("a temp dir");
+
+    let output = run(&server, dir.path(), &["list", "--kind", "metrics"]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "4 keys under v1/; 2 selected, 2 outside the selection, 0 this build cannot name"
+        ),
+        "got: {stderr}"
+    );
+}
+
 /// Paths named without a directory, which is what an operator types in the
 /// directory they are syncing into. `Path::parent` answers `Some("")` for one,
 /// and the run stopped after its first object with the cursor already renamed

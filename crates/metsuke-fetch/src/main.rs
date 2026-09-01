@@ -80,10 +80,10 @@ fn fetch(args: Args) -> Result<(), Fatal> {
         prefix: &prefix,
         selection: &selection,
     };
-    let (report, what, read) = match command {
+    let (report, landed, read) = match command {
         Command::List => (
             sync::list(&archive, &filters, |key| println!("{key}"))?,
-            "listed".to_string(),
+            None,
             None,
         ),
         Command::Sync { state, into } => {
@@ -94,8 +94,12 @@ fn fetch(args: Args) -> Result<(), Fatal> {
             let report = sync::run(&archive, &filters, &destination, verification, |key| {
                 println!("{key}")
             })?;
-            let what = format!("into {}, {} bytes", into.display(), report.bytes);
-            (report, what, Some(recipe::read(&into, selection.kind)))
+            let landed = format!("into {}, {} bytes", into.display(), report.bytes);
+            (
+                report,
+                Some(landed),
+                Some(recipe::read(&into, selection.kind)),
+            )
         }
     };
     // Before the summary, because a key nobody may trust is the news and the
@@ -103,16 +107,27 @@ fn fetch(args: Args) -> Result<(), Fatal> {
     for rejected in &report.rejected {
         eprintln!("not written: {} {}", rejected.key, rejected.reason);
     }
+    // The listing first, and under the prefix that bounded it: every count
+    // here is of the keys that prefix returned, so a bare "outside the
+    // filters" would read as the whole archive and be short by everything the
+    // prefix never listed.
     eprintln!(
-        "{} objects {what}; {} verified, {} unverifiable, {} not written; \
-         {} outside the filters, {} this build cannot name",
+        "{} keys under {prefix}; {} selected, {} outside the selection, \
+         {} this build cannot name",
+        report.objects + report.passed + report.unnameable,
         report.objects,
-        report.verified,
-        report.unverifiable,
-        report.rejected.len(),
         report.passed,
         report.unnameable
     );
+    if let Some(landed) = landed {
+        eprintln!(
+            "{} objects {landed}; {} verified, {} unverifiable, {} not written",
+            report.objects,
+            report.verified,
+            report.unverifiable,
+            report.rejected.len()
+        );
+    }
     // Printed rather than left to the reader, because the read a consumer
     // reaches for first is lossy here. See docs/reading-the-archive.md.
     if let Some(read) = read {
