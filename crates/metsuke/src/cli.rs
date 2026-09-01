@@ -14,6 +14,7 @@ pub const USAGE: &str = "metsuke reports a cardano-node's telemetry for a Musash
 
 usage:
   metsuke [--config <path>] [--signing-key <path>]
+  cardano-node run ... | metsuke [--config <path>] [--signing-key <path>]
   metsuke --help | --version
 
 flags:
@@ -25,8 +26,15 @@ flags:
 
 The agent scrapes the loopback Prometheus endpoint the config names, spools
 what it read, and uploads signed submissions to the config's upload_url. It
-runs until stopped. Every limit, cadence and path other than the two above is
-configuration: contrib/config.example.toml is the annotated example.";
+runs until stopped. Every limit, cadence and path other than these two flags is
+configuration: contrib/config.example.toml is the annotated example.
+
+Trace lines are collected only where the config has a [log] section, and its
+source says where from. \"journald\" reads the node's unit and needs the agent
+in the systemd-journal group. \"pipe\" is the second usage above: the node's
+stdout arrives on this agent's stdin, and every line is written through to its
+own stdout unchanged, so the agent sits between the node and whatever collected
+its output before. docs/adr/0010 is what each costs.";
 
 /// Where a refusal sends the operator, rather than printing all of `USAGE` on
 /// top of the error.

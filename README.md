@@ -104,7 +104,10 @@ pool id or the agent refuses to start; a Leios key hashes to nothing, and
 keeping the cold key off a reporting machine is what it is for (ADR 0011).
 
 What the `[log]` section costs in privilege, and why that made the feature
-opt-in, is ADR 0010. `CLAUDE.md` states the invariant.
+opt-in, is ADR 0010. Its two sources do not cost the same: `journald` needs the
+`systemd-journal` group, which reads every unit's journal, and `pipe` reads the
+node's stdout on the agent's stdin and needs no group at all. `CLAUDE.md`
+states the invariant.
 
 Report a vulnerability to the maintainers privately rather than opening a public
 issue.

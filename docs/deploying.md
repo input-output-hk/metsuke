@@ -177,6 +177,14 @@ adds `SupplementaryGroups=systemd-journal` and turns `ProcSubset=pid` into
 the entire privilege difference and it is the reason ADR 0010 made the feature
 opt-in.
 
+The module offers only `source = "journald"`. The other source, `"pipe"`, puts
+the agent downstream of the node on a shell pipeline, so it is the node's unit
+that changes and the agent has none of its own; a module that rendered it would
+give the agent `/dev/null` for stdin and respawn it forever on the EOF. Nothing
+here stops a NixOS host running that shape, but it is the node's unit to write,
+and `contrib/metsuke.service` has the line. It costs no group at all, which is
+why an operator who must not grant `systemd-journal` picks it.
+
 The agent's spool has to be under `/var/lib/metsuke`, which the module asserts.
 
 Either key signs. The cold key needs no roster on the server and is what a

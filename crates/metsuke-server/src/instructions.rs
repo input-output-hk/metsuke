@@ -213,11 +213,34 @@ There is no <code>""</code> key in this snippet, so it cannot disturb the root
 entry step 4 touched. <code>maxFrequency: 0</code> is not a typo, it means no
 rate limit, and leaving it out silently caps the stream.</p>
 
-<p>Restart the node. Its lines then go to the journal under its own unit, which
-is what the agent's <code>[log]</code> section in step 7 points at. That read
-costs the agent membership of the <code>systemd-journal</code> group, the one
-privilege it holds beyond scraping loopback; if you would rather it did not
-hold that, skip this step and leave <code>[log]</code> out.</p>
+<p>Restart the node. What it emits is the same either way; how the agent gets
+it is a choice, and <code>[log].source</code> in step 7 is where you make it.</p>
+
+<p><code>"journald"</code> reads the node's journal under its own unit. That
+costs the agent membership of the <code>systemd-journal</code> group, which
+reads every unit's journal on the host and is the one privilege it holds beyond
+scraping loopback.</p>
+
+<p><code>"pipe"</code> reads the node's stdout on the agent's own stdin, so it
+holds no group at all. The agent goes downstream of the node, whatever starts
+the node:</p>
+
+<pre>cardano-node run ... | {binary} --config {config_path}</pre>
+
+<p>It writes every line through to its own stdout unchanged, so whatever read
+the node's output before still reads it. That is the whole shape, and the only
+question is how the thing that starts your node expresses a pipeline. A shell
+or a terminal writes it as it stands. systemd has no pipelines, so step 8 wraps
+it in <code>/bin/sh -c</code>. In a container it goes inside, as the entrypoint,
+with the agent's binary and config in the image beside the node; written around
+the command that starts the container instead, it only works while that command
+stays attached, since a detached one prints an id rather than the node's
+output.</p>
+
+<p>The journal is the smaller change if your agent may hold that group. The
+pipe is the one that costs no privilege. If neither appeals, skip this step and
+leave <code>[log]</code> out: the agent then stays exactly as step 4 left
+it.</p>
 
 <h2>6. Install the agent</h2>
 
@@ -252,8 +275,8 @@ anything else.</p>
 
 <p>This unit runs the agent with no privileges beyond reading its own config
 and writing its spool; its own header says where to install it and how to hand
-it the signing key. If you did step 5, two directives change: add
-<code>SupplementaryGroups=systemd-journal</code>, and turn
+it the signing key. Under <code>source = "journald"</code> two directives
+change: add <code>SupplementaryGroups=systemd-journal</code>, and turn
 <code>ProcSubset=pid</code> into <code>ProcSubset=all</code>. journalctl needs
 both, and they are the whole difference; the NixOS module makes them for you
 when <code>[log]</code> is set.</p>
@@ -262,6 +285,22 @@ when <code>[log]</code> is set.</p>
 
 <pre>sudo systemctl daemon-reload
 sudo systemctl enable --now metsuke</pre>
+
+<p>Do not install this unit if you chose <code>source = "pipe"</code>. The
+agent runs downstream of the node then, so it needs no unit of its own and this
+whole step is one you can skip. Step 5's pipeline goes wherever your node's
+command is already written, and if that is nowhere in particular, a shell is a
+perfectly good answer.</p>
+
+<p>Where that command is a systemd unit, it is the <em>node's</em> unit that
+gains the pipeline, wrapped in a shell because systemd has no pipelines:</p>
+
+<pre>ExecStart=/bin/sh -c 'cardano-node run ... | {binary} --config {config_path}'</pre>
+
+<p>What the pipe buys is an agent holding no group. What it costs is that the
+node and the agent now start and stop together, which is also why the NixOS
+module does not render this shape: an agent it started on its own would get
+<code>/dev/null</code> for stdin and respawn forever on the EOF.</p>
 
 <h2>9. Verify</h2>
 

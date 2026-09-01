@@ -280,6 +280,21 @@
             # append
             #   --signing-key ''${CREDENTIALS_DIRECTORY}/signing-key
             # to ExecStart, and leave signing_key out of config.toml.
+            #
+            # With [log].source = "journald", add
+            #   SupplementaryGroups=systemd-journal
+            # and change ProcSubset=pid to ProcSubset=all. journalctl needs
+            # both.
+            #
+            # Do not install this unit with [log].source = "pipe". The agent
+            # then runs downstream of the node and needs no unit of its own:
+            # the pipeline goes wherever the node's command is written, which
+            # may be a shell or a container entrypoint rather than systemd at
+            # all. Where it is a systemd unit, it is the node's that gains
+            #   ExecStart=/bin/sh -c 'cardano-node run ... | /usr/local/bin/metsuke \
+            #     --config /etc/metsuke/config.toml'
+            # with a shell because systemd has no pipelines. ADR 0010 has what
+            # each source costs.
 
             [Unit]
             Description=metsuke telemetry agent
