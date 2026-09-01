@@ -9,7 +9,7 @@ use metsuke_fetch::cursor::Cursor;
 
 use metsuke_fetch::recipe;
 use metsuke_fetch::select::{Filters, Selection};
-use metsuke_fetch::sync::{self, Destination, SyncError, Verification};
+use metsuke_fetch::sync::{self, Destination, Insist, SyncError, Verification};
 use metsuke_wire::envelope::{self, AgentId, Limits};
 use metsuke_wire::http::Listing;
 use metsuke_wire::key::{KEY_PREFIX, Kind, ObjectName};
@@ -69,12 +69,12 @@ fn only(selection: Selection) -> Asked {
 }
 
 /// What a test that is not about the checking asks for: an object bound no
-/// fixture reaches, and unverifiable objects counted rather than refused,
+/// fixture reaches, and unattested objects counted rather than refused,
 /// which is what a filesystem archive hands back.
 fn permissive() -> Verification {
     Verification {
         max_object_bytes: NonZeroU64::new(1 << 20).unwrap(),
-        require_verified: false,
+        insist: Insist::Nothing,
     }
 }
 
@@ -159,9 +159,10 @@ fn a_downloaded_object_is_the_archived_bytes_and_still_verifies() {
             unnameable: 0,
             // The suite's server stores to a filesystem archive, which
             // discards the pair at ingest, so nothing it serves can be checked
-            // by anybody. `verified` is the attesting server's to answer.
-            verified: 0,
-            unverifiable: 1,
+            // by anybody. `cold_signed` is the attesting server's to answer.
+            cold_signed: 0,
+            leios_signed: 0,
+            unattested: 1,
             rejected: Vec::new(),
         }
     );
@@ -176,8 +177,8 @@ fn an_object_that_carries_its_key_and_signature_is_checked() {
 
     let synced = synced(&server, &everything());
 
-    assert_eq!(synced.report.verified, 2);
-    assert_eq!(synced.report.unverifiable, 0);
+    assert_eq!(synced.report.cold_signed, 2);
+    assert_eq!(synced.report.unattested, 0);
     assert_eq!(synced.report.rejected, Vec::new());
     for key in server.keys() {
         assert!(synced.path(&key).is_file(), "{key} did not land");
@@ -195,7 +196,7 @@ fn an_object_whose_bytes_do_not_verify_is_not_written() {
 
     let synced = synced(&server, &everything());
 
-    assert_eq!(synced.report.verified, 0);
+    assert_eq!(synced.report.cold_signed, 0);
     assert_eq!(synced.report.objects, 0);
     assert!(!synced.path(&key).exists(), "{key} must not be on disk");
     assert_eq!(synced.report.rejected.len(), 1, "{:?}", synced.report);
@@ -230,7 +231,7 @@ fn an_object_signed_by_another_pool_is_not_written() {
     assert!(!synced.path(&key).exists(), "{key} must not be on disk");
 }
 
-/// An archive that stores no metadata leaves every object unverifiable, and a
+/// An archive that stores no metadata leaves every object unattested, and a
 /// run against one still syncs: refusing by default would leave the tool
 /// unable to read the archive a single-host deployment writes.
 #[test]
@@ -239,16 +240,16 @@ fn an_object_with_nothing_to_check_it_by_lands_and_is_counted() {
 
     let synced = synced(&server, &everything());
 
-    assert_eq!(synced.report.unverifiable, 1);
-    assert_eq!(synced.report.verified, 0);
+    assert_eq!(synced.report.unattested, 1);
+    assert_eq!(synced.report.cold_signed, 0);
     assert_eq!(synced.report.rejected, Vec::new());
     assert!(synced.path(&server.keys()[0]).is_file());
 }
 
-/// And what `--require-verified` is for: the consumer that needs the guarantee
-/// says so, and then unverifiable is a refusal like any other.
+/// And what `--require-attested` is for: the consumer that needs the guarantee
+/// says so, and then unattested is a refusal like any other.
 #[test]
-fn require_verified_refuses_an_object_with_nothing_to_check_it_by() {
+fn require_attested_refuses_an_object_with_nothing_to_check_it_by() {
     let server = Server::with_objects(1, 100);
     let asked = everything();
 
@@ -257,7 +258,7 @@ fn require_verified_refuses_an_object_with_nothing_to_check_it_by() {
         &asked,
         tempfile::tempdir().expect("a temp dir"),
         Verification {
-            require_verified: true,
+            insist: Insist::Attested,
             ..permissive()
         },
     )
@@ -272,6 +273,81 @@ fn require_verified_refuses_an_object_with_nothing_to_check_it_by() {
         synced.report.rejected[0].reason
     );
     assert!(!synced.path(&server.keys()[0]).exists());
+}
+
+/// A Leios key names no pool, so its object's filing is the server's word. Its
+/// bytes are not: the signature is checked here like any other's, and counting
+/// it beside an object that carried no signature at all would say the two were
+/// equally unchecked.
+#[test]
+fn a_leios_signed_object_is_counted_apart_from_one_carrying_no_signature() {
+    let server = Server::attesting(2, 100);
+    let leios = server.keys()[0].clone();
+    server.leios_sign(&leios);
+
+    let synced = synced(&server, &everything());
+
+    assert_eq!(synced.report.cold_signed, 1, "{:?}", synced.report);
+    assert_eq!(synced.report.leios_signed, 1, "{:?}", synced.report);
+    assert_eq!(synced.report.unattested, 0, "{:?}", synced.report);
+    assert_eq!(synced.report.rejected, Vec::new());
+    assert!(synced.path(&leios).is_file(), "{leios} did not land");
+}
+
+/// The flag a consumer wants once pools hold no cold key: the bytes are proven
+/// either way, so both land and only what carries no signature is refused.
+#[test]
+fn require_attested_takes_a_leios_signed_object() {
+    let server = Server::attesting(2, 100);
+    let leios = server.keys()[0].clone();
+    server.leios_sign(&leios);
+
+    let synced = sync_verifying(
+        &server,
+        &everything(),
+        tempfile::tempdir().expect("a temp dir"),
+        Verification {
+            insist: Insist::Attested,
+            ..permissive()
+        },
+    )
+    .unwrap_or_else(|(error, _, _)| panic!("the sync failed: {error}"));
+
+    assert_eq!(synced.report.rejected, Vec::new(), "{:?}", synced.report);
+    assert_eq!(synced.report.leios_signed, 1);
+    assert!(synced.path(&leios).is_file(), "{leios} did not land");
+}
+
+/// The strict flag, which keeps only what stays checkable from the object
+/// alone. The refusal says the signature stood, so it does not read as bad
+/// bytes.
+#[test]
+fn require_cold_signed_refuses_a_leios_signed_object() {
+    let server = Server::attesting(2, 100);
+    let leios = server.keys()[0].clone();
+    server.leios_sign(&leios);
+
+    let synced = sync_verifying(
+        &server,
+        &everything(),
+        tempfile::tempdir().expect("a temp dir"),
+        Verification {
+            insist: Insist::ColdSigned,
+            ..permissive()
+        },
+    )
+    .unwrap_or_else(|(error, _, _)| panic!("the sync failed: {error}"));
+
+    assert_eq!(synced.report.rejected.len(), 1, "{:?}", synced.report);
+    assert_eq!(synced.report.rejected[0].key, leios);
+    assert!(
+        synced.report.rejected[0]
+            .reason
+            .contains("signature verified"),
+        "got: {}",
+        synced.report.rejected[0].reason
+    );
+    assert!(!synced.path(&leios).exists(), "{leios} must not be on disk");
 }
 
 /// Checking an object means holding it, so the run states what it will hold.

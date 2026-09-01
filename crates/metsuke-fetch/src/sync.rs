@@ -26,14 +26,19 @@ pub struct Report {
     /// Listed, and not a key `ObjectName::parse` reads, so no selection could
     /// answer for it.
     pub unnameable: u64,
-    /// Landed and checked against the pair the download carried.
-    pub verified: u64,
-    /// Landed without both halves of the check: no pair to check it against,
-    /// which is every object from an archive that stores none (`pull::Object`),
-    /// or a signature that stands under a key naming no pool (`checked`).
-    /// Counted rather than refused, or a run against one would download
-    /// nothing; `--require-verified` is what turns it into a refusal.
-    pub unverifiable: u64,
+    /// Landed with both halves checked: the signature stands over the bytes
+    /// and the Cold Key that made it derives the pool it is filed under.
+    pub cold_signed: u64,
+    /// Landed with the signature checked and the pool not. A Leios Key names
+    /// no pool, so the filing is the server's word and no roster survives to
+    /// recheck it (ADR 0011). Apart from `cold_signed` because the pool is
+    /// unproven, and apart from `unattested` because the bytes are not.
+    pub leios_signed: u64,
+    /// Landed with nothing checked: no key and no signature travelled with it,
+    /// which is every object from an archive that stores none
+    /// (`pull::Object`). Counted rather than refused, or a run against one
+    /// would download nothing.
+    pub unattested: u64,
     /// Named rather than counted: an object nobody may trust is not a number,
     /// it is a key somebody has to look at. Each of these was not written.
     pub rejected: Vec<Rejected>,
@@ -52,11 +57,24 @@ pub struct Verification {
     /// Ceiling on one object, because checking it means holding it
     /// (`pull::Archive::object`).
     pub max_object_bytes: NonZeroU64,
-    /// Whether an object that carries no pair is a refusal rather than a
-    /// count. Off by default: the archive a developer reaches for is usually
-    /// S3, which carries one, but a filesystem archive never does and this
-    /// tool is how its objects are read.
-    pub require_verified: bool,
+    pub insist: Insist,
+}
+
+/// How much of the check an object has to pass before it is written down.
+/// `Nothing` by default, because a filesystem archive attests nothing and this
+/// tool is how its objects are read.
+///
+/// Declared weakest first, and the order is load-bearing: `Ord` is derived
+/// from it, so two flags given at once resolve to the stricter by `max`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub enum Insist {
+    #[default]
+    Nothing,
+    /// Refuse what carries no key and signature at all.
+    Attested,
+    /// Refuse that, and what a Leios Key signed: the bytes are checked either
+    /// way, and only a Cold Key proves the pool as well.
+    ColdSigned,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -107,16 +125,22 @@ pub fn run(
             match filters.selection.selects(&key) {
                 Selected::Yes => {
                     match download(archive, destination.into, &key, verification)? {
-                        Landed::Verified(bytes) => {
+                        Landed::ColdSigned(bytes) => {
                             report.bytes += bytes;
                             report.objects += 1;
-                            report.verified += 1;
+                            report.cold_signed += 1;
                             landed(&key);
                         }
-                        Landed::Unverifiable(bytes) => {
+                        Landed::LeiosSigned(bytes) => {
                             report.bytes += bytes;
                             report.objects += 1;
-                            report.unverifiable += 1;
+                            report.leios_signed += 1;
+                            landed(&key);
+                        }
+                        Landed::Unattested(bytes) => {
+                            report.bytes += bytes;
+                            report.objects += 1;
+                            report.unattested += 1;
                             landed(&key);
                         }
                         // Not handed to `landed`: that is the run's list of
@@ -228,8 +252,9 @@ impl Iterator for Pages<'_> {
 /// object's news and not the run's, so the sync goes on and the caller counts
 /// it (`Report::rejected`).
 enum Landed {
-    Verified(u64),
-    Unverifiable(u64),
+    ColdSigned(u64),
+    LeiosSigned(u64),
+    Unattested(u64),
     Rejected(String),
 }
 
@@ -252,7 +277,7 @@ fn download(
         }
         Err(error) => return Err(SyncError::Pull(error)),
     };
-    let landed = match checked(key, &object, verification.require_verified) {
+    let landed = match checked(key, &object, verification.insist) {
         Err(reason) => return Ok(Landed::Rejected(reason)),
         Ok(landed) => landed,
     };
@@ -274,16 +299,12 @@ fn download(
 /// tied it to one was the server's roster at the moment the object was
 /// accepted, which this tool does not keep and cannot reconstruct (ADR 0011).
 /// Such an object lands with its signature checked and its filing taken on the
-/// server's word, which is what `Unverifiable` says.
-fn checked(
-    key: &str,
-    object: &Object,
-    require_verified: bool,
-) -> Result<fn(u64) -> Landed, String> {
+/// server's word, which is what `LeiosSigned` says as against `Unattested`.
+fn checked(key: &str, object: &Object, insist: Insist) -> Result<fn(u64) -> Landed, String> {
     let Some(attestation) = &object.attestation else {
-        return match require_verified {
-            true => Err("carries no key and signature to check it with".to_string()),
-            false => Ok(Landed::Unverifiable),
+        return match insist {
+            Insist::Nothing => Ok(Landed::Unattested),
+            _ => Err("carries no key and signature to check it with".to_string()),
         };
     };
     if !attestation.verifies(&object.bytes) {
@@ -291,11 +312,11 @@ fn checked(
     }
     let name = ObjectName::parse(key).map_err(|error| error.to_string())?;
     let Some(signer) = attestation.attributes() else {
-        return match require_verified {
-            true => Err("signed by a Leios key, which names no pool to check \
-                         the filing against"
+        return match insist {
+            Insist::ColdSigned => Err("signature verified, pool unproven: a Leios \
+                                     key names none"
                 .to_string()),
-            false => Ok(Landed::Unverifiable),
+            _ => Ok(Landed::LeiosSigned),
         };
     };
     if signer != name.pool_id {
@@ -304,7 +325,7 @@ fn checked(
             name.pool_id
         ));
     }
-    Ok(Landed::Verified)
+    Ok(Landed::ColdSigned)
 }
 
 /// The file under `into` an object key names, or `None` for a key that names

@@ -16,7 +16,7 @@ use metsuke_wire::envelope::{AgentId, PoolId};
 use metsuke_wire::key::{KEY_PREFIX, Kind};
 
 use crate::select::Selection;
-use crate::sync::Verification;
+use crate::sync::{Insist, Verification};
 
 /// What one object may weigh before this run refuses to hold it to check it.
 /// Sixteen times the shipped `max_body_bytes`, so the ceiling is the tool's
@@ -60,7 +60,8 @@ sync:
   --into <dir>            where objects land, each under its own key
   --max-object-bytes <n>  the largest size each object can be;
                           16777216 by default
-  --require-verified      refuse an object with no key and signature to check
+  --require-attested      write only cold-signed and Leios-signed objects
+  --require-cold-signed   write only cold-signed objects
 
   One state file per set of filters. They may share one --into.
 
@@ -208,8 +209,14 @@ impl Invocation {
         let command = args.next().ok_or(ArgsError::NoCommand)?;
         let mut given = Given::default();
         while let Some(argument) = args.next() {
-            if argument == "--require-verified" {
-                given.require_verified = true;
+            // Each raises the bar and neither contradicts the other, so both
+            // given is the higher one rather than a refusal.
+            if let Some(insist) = match argument.as_str() {
+                "--require-attested" => Some(Insist::Attested),
+                "--require-cold-signed" => Some(Insist::ColdSigned),
+                _ => None,
+            } {
+                given.insist = given.insist.max(insist);
                 continue;
             }
             let (flag, value) = match argument.as_str() {
@@ -251,7 +258,7 @@ struct Given {
     agent: Option<String>,
     kind: Option<String>,
     max_object_bytes: Option<String>,
-    require_verified: bool,
+    insist: Insist,
 }
 
 impl Given {
@@ -299,10 +306,10 @@ impl Given {
                 }
             }
             // The same refusal, for the flag that carries no value to test.
-            if self.require_verified {
+            if self.insist != Insist::Nothing {
                 return Err(ArgsError::NotForCommand {
                     command: command.name(),
-                    flag: "--require-verified",
+                    flag: "--require-attested",
                 });
             }
         }
@@ -336,7 +343,7 @@ impl Given {
                         value: given.to_string(),
                     })?,
                 },
-                require_verified: self.require_verified,
+                insist: self.insist,
             },
             command,
         })

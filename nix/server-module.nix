@@ -419,7 +419,7 @@ in
         services.metsuke-server.settings.archive.filesystem stores the submission
         bytes alone and drops the key and signature they were checked with, so
         nothing can verify that archive afterwards, verify-archive refuses it, and
-        every download reaches a consumer unverifiable. S3 is what production runs
+        every download reaches a consumer unattested. S3 is what production runs
         (ADR 0005).
       '';
 

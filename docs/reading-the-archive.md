@@ -54,23 +54,32 @@ second says which pool that key speaks for. Checking one without the other
 accepts an object signed by a stranger, or one filed under a pool that never
 sent it.
 
+Only a Cold Key gives you the second half. A Leios Key hashes to nothing, so an
+object it signed has its signature checked like any other and its pool taken on
+the server's word, against a roster that no longer exists (ADR 0011). Its bytes
+are as proven as a cold-signed object's; only which pool sent them is not.
+
 An object that arrives without those headers cannot be checked at all. That is
 what a filesystem archive answers, having discarded the pair at ingest rather
 than merely not serving it, and what any object something other than this
 server wrote answers. Bytes without them are bytes the server is asking to be
 believed about.
 
-`metsuke-fetch sync` runs both halves on every object as it lands, so a
-directory it wrote holds nothing that failed. Its summary says how many of each
-it saw:
+`metsuke-fetch sync` checks every object as it lands and counts the three
+outcomes apart:
 
 ```
 3 keys under v1/; 3 selected, 0 outside the selection, 0 this build cannot name
-3 objects into ~/archive, 3145728 bytes; 3 verified, 0 unverifiable, 0 not written
+3 objects into ~/archive, 3145728 bytes; 1 cold-signed, 2 Leios-signed, 0 unattested, 0 not written
 ```
 
 The first line is of the keys the prefix listed, not of the archive: what the
 prefix never returned is counted nowhere.
+
+- **cold-signed** — signature checked and pool derived. Stays checkable from
+  the object alone, forever.
+- **Leios-signed** — signature checked, pool on the server's word.
+- **unattested** — nothing checked, because nothing came with it.
 
 An object that fails is named on stderr, is not written, and makes the run exit
 nonzero. The cursor still advances past it, because the archive is append-only
@@ -80,9 +89,22 @@ rewinding the state file. What to do about one is not this tool's:
 stored bytes and metadata disagree, and removing one is a bucket-admin action,
 since the server holds no delete.
 
-Unverifiable is counted rather than refused, or a run against a filesystem
-archive would download nothing. `--require-verified` turns it into a refusal,
-which is what a consumer computing anything that matters should pass.
+All three are counted rather than refused, or a run against a filesystem
+archive would download nothing. Two flags raise the bar, and each writes only
+what it names:
+
+```
+--require-attested      cold-signed and Leios-signed
+--require-cold-signed   cold-signed only
+```
+
+`--require-attested` is what most consumers want. Every object it writes has
+had its signature checked here, over the bytes as downloaded.
+
+`--require-cold-signed` keeps only what a later reader can recheck without
+this server. Note what that costs as pools stop holding cold keys on reporting
+machines, which is what ADR 0011 is for: it discards more and more of an
+archive whose bytes are all provably authentic, and eventually most of it.
 
 ## One state file per set of filters
 

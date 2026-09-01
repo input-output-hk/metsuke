@@ -118,7 +118,7 @@ fn run() -> Result<(), Fatal> {
                 "{WARNING}archiving to the filesystem at {}: this stores the submission bytes \
                  alone and drops the key and signature they were checked with, so nothing can \
                  verify this archive afterwards, verify-archive refuses it, and every download \
-                 reaches a consumer unverifiable. S3 is what production runs (ADR 0005).",
+                 reaches a consumer unattested. S3 is what production runs (ADR 0005).",
                 root.display()
             );
             dispatch(

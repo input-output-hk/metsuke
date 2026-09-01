@@ -163,7 +163,7 @@ impl Attestation {
     }
 
     /// The pair off an answer's head. `None` where either header is absent or
-    /// unreadable: what an unverifiable object means is the caller's to say,
+    /// unreadable: what an object carrying none means is the caller's to say,
     /// and on this path a download is not refused for it.
     pub fn from_headers(vkey: Option<&str>, signature: Option<&str>) -> Option<Attestation> {
         Attestation::decode(Some(vkey?), Some(signature?)).ok()

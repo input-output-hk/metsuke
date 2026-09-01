@@ -33,7 +33,7 @@ pub struct Object {
     pub attestation: Option<Attestation>,
 }
 
-/// The two headers off an answer's head. What an unverifiable object means is
+/// The two headers off an answer's head. What an object carrying none means is
 /// `sync`'s to say; `Attestation::from_headers` says when there is one.
 fn attestation(response: &ureq::http::Response<ureq::Body>) -> Option<Attestation> {
     let text = |header: &str| -> Option<&str> { response.headers().get(header)?.to_str().ok() };

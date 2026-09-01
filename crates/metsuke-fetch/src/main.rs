@@ -120,11 +120,16 @@ fn fetch(args: Args) -> Result<(), Fatal> {
         report.unnameable
     );
     if let Some(landed) = landed {
+        // Three states and not two: a Leios-signed object had its signature
+        // checked here and only its pool taken on the server's word, which is
+        // nothing like an object that carried no signature at all.
         eprintln!(
-            "{} objects {landed}; {} verified, {} unverifiable, {} not written",
+            "{} objects {landed}; {} cold-signed, {} Leios-signed, {} unattested, \
+             {} not written",
             report.objects,
-            report.verified,
-            report.unverifiable,
+            report.cold_signed,
+            report.leios_signed,
+            report.unattested,
             report.rejected.len()
         );
     }
