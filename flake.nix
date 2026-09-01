@@ -481,11 +481,24 @@
                       echo "clippy builds this workspace's build scripts and there is no cc here. Commit from the devShell: nix develop"
                       exit 1
                     fi
-                    if [ ! -d "''${CARGO_HOME:-$HOME/.cargo}/registry/index" ]; then
-                      echo "clippy resolves offline and this cargo home holds no registry index. Warm it once: nix develop -c cargo fetch"
-                      exit 1
+                    # Read off the run rather than predicted: what clippy needs
+                    # cached is what it resolves for this target, and probing
+                    # that with cargo fetch or cargo metadata over-resolves and
+                    # refuses a cargo home that would have linted fine.
+                    log=$(mktemp)
+                    trap 'rm -f "$log"' EXIT
+                    set -o pipefail
+                    cargo-clippy clippy --all-targets --offline -- --deny warnings 2>&1 | tee "$log"
+                    status=$?
+                    # Both of cargo's offline complaints: a crate the lock names
+                    # that is not cached, and one it wants to download.
+                    if [ "$status" -ne 0 ] && grep -qF \
+                      -e 'offline mode (via' \
+                      -e 'but --offline was specified' "$log"; then
+                      echo
+                      echo "A crate this workspace locks is not in this cargo home, so that is not a lint. Warm it once: nix develop -c cargo fetch"
                     fi
-                    exec cargo-clippy clippy --all-targets --offline -- --deny warnings
+                    exit "$status"
                   ''
                 )
               );
