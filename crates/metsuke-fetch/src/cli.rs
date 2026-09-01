@@ -3,7 +3,11 @@
 //!
 //! No access flag has a default. The endpoint, the account and the deadline are
 //! the deployment's, and a tool that guessed one would sync from somewhere the
-//! operator did not name.
+//! operator did not name. A variable is not a guess: it is the operator naming
+//! the same deployment once instead of per run.
+//!
+//! The environment is passed in rather than read here, so a run's answer never
+//! depends on what the machine happens to export.
 
 use std::num::NonZeroU64;
 use std::path::PathBuf;
@@ -23,6 +27,16 @@ const DEFAULT_MAX_OBJECT_BYTES: NonZeroU64 = NonZeroU64::new(16 * 1024 * 1024).u
 /// promises across builds is in docs/releasing.md.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// What stands in for each access flag. Named once, so `USAGE`, the fallback
+/// and the refusal cannot name three different sets.
+///
+/// `ENV_PASSWORD_FILE` carries the path, as its flag does: a password in the
+/// environment reaches every child and anything that may read /proc.
+pub const ENV_SERVER: &str = "METSUKE_FETCH_SERVER";
+pub const ENV_USER: &str = "METSUKE_FETCH_USER";
+pub const ENV_PASSWORD_FILE: &str = "METSUKE_FETCH_PASSWORD_FILE";
+pub const ENV_TIMEOUT_MS: &str = "METSUKE_FETCH_TIMEOUT_MS";
+
 /// What `--help` answers. A refusal points here instead of repeating it, so
 /// the error an operator has to read stays one line.
 pub const USAGE: &str = "metsuke-fetch downloads the signed telemetry archive to local files.
@@ -34,17 +48,25 @@ usage:
       download the ones the cursor has not seen, then advance it
   metsuke-fetch --help | --version
 
-access, which every command needs and none of which has a default:
+access, which every command needs and none of which has a default. Each may
+come from the environment instead, and the flag wins where both are given:
   --server <url>           where the archive is, e.g. https://archive.example
+                           METSUKE_FETCH_SERVER
   --user <name>            the developer account the server was configured with
+                           METSUKE_FETCH_USER
   --password-file <path>   a file holding that account's password and nothing else
+                           METSUKE_FETCH_PASSWORD_FILE
   --timeout-ms <n>         how long one request may take, in milliseconds
+                           METSUKE_FETCH_TIMEOUT_MS
+
+  The password variable holds the path, as its flag does; the password itself
+  does not belong in the environment. A variable set to nothing counts as unset.
 
 sync:
   --state <path>           the cursor file; a run resumes from it and advances it
   --into <dir>             where objects land, each under its own key
-  --max-object-bytes <n>   the most one object may weigh, since checking it
-                           means holding it; 16777216 by default
+  --max-object-bytes <n>   the largest size each object can be;
+                           16777216 by default
   --require-verified       refuse an object the download carries no key and
                            signature for, rather than counting it
 
@@ -57,7 +79,14 @@ filters, which default to the whole archive:
 example:
   metsuke-fetch sync --server https://archive.example --user dev \\
     --password-file ~/.config/metsuke/password --timeout-ms 30000 \\
-    --state ~/.local/state/metsuke-fetch/cursor.json --into ~/archive";
+    --state ~/.local/state/metsuke-fetch/cursor.json --into ~/archive
+
+  the same run, with the access named once in the environment:
+  export METSUKE_FETCH_SERVER=https://archive.example METSUKE_FETCH_USER=dev
+  export METSUKE_FETCH_PASSWORD_FILE=~/.config/metsuke/password
+  export METSUKE_FETCH_TIMEOUT_MS=30000
+  metsuke-fetch sync --state ~/.local/state/metsuke-fetch/cursor.json \\
+    --into ~/archive";
 
 /// Where a refusal sends the operator, rather than printing all of `USAGE` on
 /// top of the error.
@@ -136,6 +165,15 @@ pub enum ArgsError {
         command: &'static str,
         flag: &'static str,
     },
+    /// Its own variant because an access flag has a second way to arrive, and
+    /// naming only the flag sends an operator who set the variable looking in
+    /// the wrong place.
+    #[error("{command} needs {flag}, or {variable} in the environment\n{HELP_HINT}")]
+    MissingAccess {
+        command: &'static str,
+        flag: &'static str,
+        variable: &'static str,
+    },
     #[error("{command} takes no {flag}\n{HELP_HINT}")]
     NotForCommand {
         command: &'static str,
@@ -154,8 +192,12 @@ pub enum ArgsError {
 }
 
 impl Invocation {
-    /// Parse the arguments after the program name.
-    pub fn parse(args: impl Iterator<Item = String>) -> Result<Invocation, ArgsError> {
+    /// Parse the arguments after the program name, with `env` answering for
+    /// the access flags none of them carried.
+    pub fn parse(
+        args: impl Iterator<Item = String>,
+        env: impl Fn(&str) -> Option<String>,
+    ) -> Result<Invocation, ArgsError> {
         // Asked for anywhere rather than in the command's place, because that
         // is where an operator writes them and a refusal there teaches nothing
         // the answer would not have.
@@ -191,6 +233,7 @@ impl Invocation {
             };
             *value = Some(args.next().ok_or(ArgsError::MissingValue { flag })?);
         }
+        given.fill_from(env);
         given
             .into_args(&command)
             .map(|args| Invocation::Run(Box::new(args)))
@@ -217,6 +260,21 @@ struct Given {
 }
 
 impl Given {
+    /// The access flags nobody gave, from the environment. An empty value is
+    /// taken as unset: an exported-but-empty variable is not an endpoint.
+    fn fill_from(&mut self, env: impl Fn(&str) -> Option<String>) {
+        for (value, variable) in [
+            (&mut self.server, ENV_SERVER),
+            (&mut self.user, ENV_USER),
+            (&mut self.password_file, ENV_PASSWORD_FILE),
+            (&mut self.timeout_ms, ENV_TIMEOUT_MS),
+        ] {
+            if value.is_none() {
+                *value = env(variable).filter(|found| !found.is_empty());
+            }
+        }
+    }
+
     fn into_args(self, command: &str) -> Result<Args, ArgsError> {
         let command = match command {
             "list" => Command::List,
@@ -254,15 +312,16 @@ impl Given {
             }
         }
         let name = command.name();
-        let timeout_ms = required(&self.timeout_ms, name, "--timeout-ms")?;
+        let timeout_ms = access(&self.timeout_ms, name, "--timeout-ms", ENV_TIMEOUT_MS)?;
         Ok(Args {
             access: Access {
-                server: required(&self.server, name, "--server")?.to_string(),
-                user: required(&self.user, name, "--user")?.to_string(),
-                password_file: PathBuf::from(required(
+                server: access(&self.server, name, "--server", ENV_SERVER)?.to_string(),
+                user: access(&self.user, name, "--user", ENV_USER)?.to_string(),
+                password_file: PathBuf::from(access(
                     &self.password_file,
                     name,
                     "--password-file",
+                    ENV_PASSWORD_FILE,
                 )?),
                 timeout_ms: timeout_ms.parse().map_err(|_| ArgsError::NotADuration {
                     flag: "--timeout-ms",
@@ -340,4 +399,18 @@ fn required<'a>(
     flag: &'static str,
 ) -> Result<&'a str, ArgsError> {
     value.as_deref().ok_or(ArgsError::Missing { command, flag })
+}
+
+/// `required`, for the flags a variable can also carry.
+fn access<'a>(
+    value: &'a Option<String>,
+    command: &'static str,
+    flag: &'static str,
+    variable: &'static str,
+) -> Result<&'a str, ArgsError> {
+    value.as_deref().ok_or(ArgsError::MissingAccess {
+        command,
+        flag,
+        variable,
+    })
 }

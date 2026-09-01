@@ -1,10 +1,12 @@
 //! The flags, which are the whole operator interface. Nothing is defaulted, so
 //! every refusal here is a run that would otherwise have synced from somewhere
-//! nobody named.
+//! nobody named. The environment is handed in, never read, so no case here
+//! turns on what the machine running it exports.
 
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 
-use metsuke_fetch::cli::{Args, ArgsError, Command, Invocation};
+use metsuke_fetch::cli::{self, Access, Args, ArgsError, Command, Invocation};
 use metsuke_fetch::select::Selection;
 use metsuke_wire::envelope::{AgentId, PoolId, SigningKey};
 use metsuke_wire::key::{KEY_PREFIX, Kind};
@@ -17,8 +19,37 @@ const ACCESS: [[&str; 2]; 4] = [
     ["--timeout-ms", "30000"],
 ];
 
+/// The same values, named in the environment instead.
+const ENVIRONMENT: [(&str, &str); 4] = [
+    (cli::ENV_SERVER, ACCESS[0][1]),
+    (cli::ENV_USER, ACCESS[1][1]),
+    (cli::ENV_PASSWORD_FILE, ACCESS[2][1]),
+    (cli::ENV_TIMEOUT_MS, ACCESS[3][1]),
+];
+
+/// What either spelling of `ACCESS` has to parse to.
+fn expected_access() -> Access {
+    Access {
+        server: ACCESS[0][1].to_string(),
+        user: ACCESS[1][1].to_string(),
+        password_file: PathBuf::from(ACCESS[2][1]),
+        timeout_ms: ACCESS[3][1].parse::<NonZeroU64>().expect("a deadline"),
+    }
+}
+
+/// Parsed against an empty environment, so a case about flags stays about
+/// flags whatever the machine running it exports.
 fn invoked(args: &[&str]) -> Result<Invocation, ArgsError> {
-    Invocation::parse(args.iter().map(|argument| argument.to_string()))
+    invoked_with(args, &[])
+}
+
+/// The same, with `env` standing in for the environment.
+fn invoked_with(args: &[&str], env: &[(&str, &str)]) -> Result<Invocation, ArgsError> {
+    Invocation::parse(args.iter().map(|argument| argument.to_string()), |name| {
+        env.iter()
+            .find(|(variable, _)| *variable == name)
+            .map(|(_, value)| value.to_string())
+    })
 }
 
 /// The cases below are all about a command's flags, so they read the `Args` a
@@ -176,9 +207,75 @@ fn every_access_flag_is_required() {
         let error = parsed(&args).expect_err("nothing here has a default");
 
         assert!(
-            matches!(&error, ArgsError::Missing { flag: missing, .. } if *missing == flag),
+            matches!(&error, ArgsError::MissingAccess { flag: missing, .. } if *missing == flag),
             "{flag}: {error}"
         );
+    }
+}
+
+/// The refusal names both ways in, so an operator who set the variable is not
+/// sent looking at the flag.
+#[test]
+fn a_missing_access_flag_names_its_variable() {
+    let mut args = vec!["list"];
+    args.extend(
+        ACCESS
+            .iter()
+            .filter(|[name, _]| *name != "--server")
+            .flatten(),
+    );
+    let error = parsed(&args).expect_err("no --server and no variable");
+
+    assert!(error.to_string().contains(cli::ENV_SERVER), "got: {error}");
+}
+
+#[test]
+fn every_access_flag_can_come_from_the_environment_instead() {
+    let args = invoked_with(&["list"], &ENVIRONMENT).expect("the environment carries all four");
+
+    let Invocation::Run(args) = args else {
+        panic!("these arguments name a command");
+    };
+    assert_eq!(args.access, expected_access());
+}
+
+/// A run that says both means the flag, which is the one an operator wrote
+/// this time.
+#[test]
+fn a_flag_wins_over_the_variable_that_stands_in_for_it() {
+    let args = invoked_with(&["list", "--server", "http://named.example"], &ENVIRONMENT)
+        .expect("the environment carries the rest");
+
+    let Invocation::Run(args) = args else {
+        panic!("these arguments name a command");
+    };
+    assert_eq!(args.access.server, "http://named.example");
+}
+
+#[test]
+fn a_variable_set_to_nothing_counts_as_unset() {
+    let mut env = ENVIRONMENT;
+    env[0] = (cli::ENV_SERVER, "");
+    let error = invoked_with(&["list"], &env).expect_err("an empty variable is not an endpoint");
+
+    assert!(
+        matches!(
+            error,
+            ArgsError::MissingAccess {
+                flag: "--server",
+                ..
+            }
+        ),
+        "got: {error}"
+    );
+}
+
+/// Every variable reaches the help text, so one added here cannot go
+/// undocumented.
+#[test]
+fn usage_names_every_access_variable() {
+    for (variable, _) in ENVIRONMENT {
+        assert!(cli::USAGE.contains(variable), "{variable} is not in --help");
     }
 }
 

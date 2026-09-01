@@ -44,7 +44,7 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run() -> Result<(), Fatal> {
-    match Invocation::parse(std::env::args().skip(1))? {
+    match Invocation::parse(std::env::args().skip(1), |name| std::env::var(name).ok())? {
         // Asked for, so it is the run's answer and goes to stdout; the same
         // text reaching stderr under an error is a refusal, not an answer.
         Invocation::Help => {
