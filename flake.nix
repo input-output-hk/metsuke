@@ -502,8 +502,14 @@
                       lib.makeBinPath [
                         pkgs.cargo
                         pkgs.clippy
+                        pkgs.rustc
                       ]
                     }:$PATH
+                    # Named rather than left to PATH: an interactive devShell
+                    # sources the user's own rc, so a rustup shim can sit ahead
+                    # of this and hand cargo a different rustc than the clippy
+                    # beside it.
+                    export RUSTC=${lib.getExe' pkgs.rustc "rustc"}
                     if ! command -v cc >/dev/null; then
                       echo "clippy builds this workspace's build scripts and there is no cc here. Commit from the devShell: nix develop"
                       exit 1
@@ -524,6 +530,10 @@
                       -e 'but --offline was specified' "$log"; then
                       echo
                       echo "A crate this workspace locks is not in this cargo home, so that is not a lint. Warm it once: nix develop -c cargo fetch"
+                    fi
+                    if [ "$status" -ne 0 ] && grep -qF 'incompatible version of rustc' "$log"; then
+                      echo
+                      echo "The target dir holds artifacts from another rustc, so that is not a lint. Clear it once: nix develop -c cargo clean"
                     fi
                     exit "$status"
                   ''
