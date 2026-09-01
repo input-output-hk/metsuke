@@ -17,10 +17,12 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # same way.
 #   agent_id = "edge-1"
 
-# Path to the signing key (cardano-cli TextEnvelope). It has to be the cold key
-# pool_id above hashes from, or the agent refuses to start. The --signing-key
-# flag overrides this: with systemd, leave this unset and pass the key as a
-# credential. See contrib/metsuke.service.
+# Path to the signing key, a cardano-cli TextEnvelope: the cold key pool_id
+# above hashes from, or the pool's Leios key. A cold key that does not hash to
+# pool_id refuses to start; a Leios key hashes to nothing, so nothing is
+# checked here and the server's roster settles which pool it speaks for. The
+# --signing-key flag overrides this: with systemd, leave this unset and pass
+# the key as a credential. See contrib/metsuke.service.
 # signing_key = "/etc/metsuke/pool.skey"
 
 # Cadences: scraping and uploading are independent.

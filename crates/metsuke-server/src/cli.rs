@@ -14,20 +14,22 @@ pub const USAGE: &str = "metsuke-server accepts signed telemetry submissions and
 
 usage:
   metsuke-server [--config <path>]
-      serve: accept submissions, answer the developer routes, and render the
-      operator's onboarding page at /
   metsuke-server verify-archive [--config <path>]
-      re-verify every object already in the archive, report, and exit
   metsuke-server --help | --version
 
-flags:
-  --config <path>   the server's configuration, defaulting to
-                    /etc/metsuke-server/config.toml
+modes:
+  serving           the default: accept submissions, answer the developer
+                    routes, and render the onboarding page at /
+  verify-archive    re-verify every object in the archive, report, and exit
 
-The listen address, the pool allowlist, the archive and the developer account
-are all configuration. The S3 credentials are not: the server reads
-AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY from its environment so the config
-file stays readable in the open. docs/deploying.md is the procedure.";
+flags:
+  --config <path>   the server's configuration;
+                    /etc/metsuke-server/config.toml by default
+
+The listen address, the allowlist, the archive and the developer account are
+all configuration. The S3 credentials are not: the server reads
+AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY from its environment, so the
+config file stays readable in the open. docs/deploying.md is the procedure.";
 
 /// Where a refusal sends the operator, rather than printing all of `USAGE` on
 /// top of the error.

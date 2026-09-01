@@ -139,14 +139,26 @@ your submissions whatever key you sign them with.</p>
 
 <h2>3. Choose a signing key</h2>
 
-<p>Your pool's cold key signs submissions. That is the whole of it. A pool id is
-the hash of its cold verification key, so the key that signs is what says which
-pool a submission is for, and nothing else has to be looked up or believed.</p>
+<p>Either of your pool's keys may sign submissions, and the choice is about what
+has to sit on the machine running the agent.</p>
 
-<p>The agent reads the key as a cardano-cli TextEnvelope file, the
-<code>pool.skey</code> you already have. It refuses to start unless the key
-hashes to the <code>pool_id</code> you configured, which is the same check this
-server makes on every submission.</p>
+<p>Your <strong>cold key</strong> settles it alone. A pool id is the hash of its
+verification key, so the key that signs is what says which pool a submission is
+for, and nothing has to be looked up or believed. The cost is that the cold key
+has to be on the reporting machine.</p>
+
+<p>Your <strong>Leios key</strong>, the one your node forges and votes with,
+signs just as well but names no pool, so this server looks it up in the key
+roster it is given. That keeps your cold key off the reporting machine, which is
+the reason to prefer it. The cost is that such a submission can only be checked
+against a roster that was current when it arrived.</p>
+
+<p>The agent reads either as a cardano-cli TextEnvelope file, the
+<code>pool.skey</code> or <code>bls.skey</code> you already have. A cold key has
+to hash to the <code>pool_id</code> you configured or the agent refuses to
+start, which is the same check this server makes on every submission. A Leios
+key hashes to nothing, so nothing is checked at startup and the first you would
+hear of the wrong one is a refusal here.</p>
 
 <h2>4. Enable the node's metrics endpoint</h2>
 

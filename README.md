@@ -98,9 +98,10 @@ is why.
 ## Security
 
 Least privilege is the top constraint, and the agent is where it is spent. It
-never opens the node socket, and it reads exactly one key, the cold signing key
-the operator points it at, refusing to start unless that key hashes to the
-configured pool id.
+never opens the node socket, and it reads exactly one key, the cold or Leios
+signing key the operator points it at. A cold key has to hash to the configured
+pool id or the agent refuses to start; a Leios key hashes to nothing, and
+keeping the cold key off a reporting machine is what it is for (ADR 0011).
 
 What the `[log]` section costs in privilege, and why that made the feature
 opt-in, is ADR 0010. `CLAUDE.md` states the invariant.

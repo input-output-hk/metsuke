@@ -17,11 +17,11 @@ usage:
   metsuke --help | --version
 
 flags:
-  --config <path>        the agent's configuration, defaulting to
-                         /etc/metsuke/config.toml
-  --signing-key <path>   the pool's cold signing key, overriding the config's
-                         signing_key; this is what the unit's LoadCredential
-                         hands the agent
+  --config <path>        the agent's configuration;
+                         /etc/metsuke/config.toml by default
+  --signing-key <path>   the pool's cold or Leios signing key, overriding the
+                         config's signing_key; this is what the unit's
+                         LoadCredential hands the agent
 
 The agent scrapes the loopback Prometheus endpoint the config names, spools
 what it read, and uploads signed submissions to the config's upload_url. It

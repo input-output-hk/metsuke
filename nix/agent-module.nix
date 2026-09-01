@@ -59,8 +59,10 @@ in
       # and it is also what lets the key be replaced without a rebuild.
       type = lib.types.str;
       description = ''
-        The pool cold signing key, in cardano-cli TextEnvelope form. The agent
-        refuses to start unless it hashes to the configured pool id.
+        The pool's cold or Leios signing key, in cardano-cli TextEnvelope
+        form. A cold key has to hash to the configured pool id or the agent
+        refuses to start; a Leios key hashes to nothing, so the server's
+        roster settles which pool it speaks for.
         Read by systemd as root and handed to the agent as a credential, so
         the file itself stays unreadable to the service user.
       '';
