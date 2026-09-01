@@ -39,9 +39,8 @@ pub struct SealedSubmission {
     /// What the header stamped this with, so a journal line and an archived
     /// object can be matched by it.
     pub counter: u64,
-    /// What its rows are, rather than what this attempt at them is
-    /// (`envelope::payload_digest`). Everything else here is redrawn when a
-    /// refused submission is resealed, so this is what ties the two together.
+    /// What its rows are rather than what this attempt at them is
+    /// (`envelope::payload_digest`).
     pub payload_digest: String,
     rows: SubmissionRows,
 }

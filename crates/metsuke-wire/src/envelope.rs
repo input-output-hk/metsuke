@@ -973,14 +973,10 @@ pub fn payload_lines(envelope: &Envelope) -> Vec<u8> {
     body
 }
 
-/// A short digest of exactly the bytes `payload_lines` produces, which is what
-/// `zstd -d` emits for a stored object, so a consumer can recompute it from the
-/// archive rather than trust a log line.
-///
-/// The header is deliberately not covered. A submission the server did not take
-/// is resealed under a fresh counter and timestamp, so everything else about it
-/// changes: the bytes, their length and the signature. Its rows do not, and
-/// this is what says so.
+/// Over the bytes `payload_lines` produces, which is what `zstd -d` emits, so a
+/// consumer recomputes it from the archive. The header is not covered: a
+/// resealed submission redraws everything but its rows, and this is what says
+/// the rows are the same ones.
 pub fn payload_digest(envelope: &Envelope) -> String {
     use blake2::digest::consts::U8;
     use blake2::{Blake2b, Digest};

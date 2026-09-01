@@ -593,7 +593,7 @@ let
             # the server resolved the cold key to the pool id, PUT the bytes, and
             # answered.
             e2e.wait_until_succeeds(
-                "journalctl -u metsuke.service | grep -qE 'submission [0-9]+ accepted'",
+                "journalctl -u metsuke.service | grep -qE 'submission [0-9]+ payload [0-9a-f]+ accepted'",
                 timeout = timedelta(minutes = 5),
             )
             listing = e2e.succeed(
@@ -627,7 +627,7 @@ let
             # it all the same.
             e2e.wait_for_unit("metsuke-two.service")
             e2e.wait_until_succeeds(
-                "journalctl -u metsuke-two.service | grep -qE 'submission [0-9]+ accepted'",
+                "journalctl -u metsuke-two.service | grep -qE 'submission [0-9]+ payload [0-9a-f]+ accepted'",
                 timeout = timedelta(minutes = 5),
             )
             listing = e2e.succeed(

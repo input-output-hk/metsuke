@@ -67,8 +67,7 @@ pub struct Uploaded {
     pub carried: &'static str,
     /// The sealed bytes, as sent.
     pub bytes: usize,
-    /// What its rows are (`delivery::SealedSubmission::payload_digest`), so a
-    /// refusal and the attempt that later carried the same rows can be matched.
+    /// `delivery::SealedSubmission::payload_digest`.
     pub payload_digest: String,
 }
 
