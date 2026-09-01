@@ -6,11 +6,13 @@ use std::process::Command;
 mod support;
 use support::{PASSWORD, Server, USER};
 
-/// The tool with a password file the test wrote, against `server`.
+/// The tool with a password file the test wrote, against `server`. Run from
+/// `dir`, so a case may name its paths relatively as an operator would.
 fn run(server: &Server, dir: &std::path::Path, extra: &[&str]) -> std::process::Output {
     let password_file = dir.join("password");
     std::fs::write(&password_file, format!("{PASSWORD}\n")).expect("the password file writes");
     Command::new(env!("CARGO_BIN_EXE_metsuke-fetch"))
+        .current_dir(dir)
         .args(extra)
         .args([
             "--server",
@@ -58,6 +60,35 @@ fn a_sync_prints_the_keys_it_wrote_and_exits_zero() {
     for key in server.keys() {
         assert!(into.join(&key).is_file(), "{key} did not land");
     }
+}
+
+/// Paths named without a directory, which is what an operator types in the
+/// directory they are syncing into. `Path::parent` answers `Some("")` for one,
+/// and the run stopped after its first object with the cursor already renamed
+/// into place, so the whole sync failed on a file it had just written.
+#[test]
+fn a_sync_takes_paths_named_without_a_directory() {
+    let server = Server::with_objects(2, 1);
+    let dir = tempfile::tempdir().expect("a temp dir");
+
+    let output = run(
+        &server,
+        dir.path(),
+        &["sync", "--state", "cursor.json", "--into", "objects"],
+    );
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for key in server.keys() {
+        assert!(
+            dir.path().join("objects").join(&key).is_file(),
+            "{key} did not land"
+        );
+    }
+    assert!(dir.path().join("cursor.json").is_file(), "no cursor");
 }
 
 #[test]
