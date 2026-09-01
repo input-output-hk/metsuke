@@ -44,6 +44,20 @@ pub struct Report {
     pub rejected: Vec<Rejected>,
 }
 
+impl Report {
+    /// The keys the selection kept, landed or refused. A refusal increments
+    /// none of the landing counts, so it has to be added back here.
+    pub fn selected(&self) -> u64 {
+        self.objects + self.rejected.len() as u64
+    }
+
+    /// Every key the listing handed back under the prefix. Not the archive's
+    /// count: what the prefix never returned is counted nowhere.
+    pub fn listed(&self) -> u64 {
+        self.selected() + self.passed + self.unnameable
+    }
+}
+
 /// An object the run refused to write down, and why.
 #[derive(Debug, PartialEq)]
 pub struct Rejected {

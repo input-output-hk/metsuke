@@ -87,6 +87,34 @@ fn the_listing_line_names_its_prefix_and_its_counts_add_up() {
     );
 }
 
+/// A refused object lands in no count but its own, so the printed listing
+/// total has to add it back. Reported without that, a run refusing most of
+/// what it selected said fewer keys were listed than it had refused.
+#[test]
+fn the_listing_line_counts_refusals_too() {
+    let server = Server::attesting(3, 10);
+    let dir = tempfile::tempdir().expect("a temp dir");
+    server.tamper(&server.keys()[0]);
+
+    let output = run(
+        &server,
+        dir.path(),
+        &["sync", "--state", "cursor.json", "--into", "objects"],
+    );
+
+    // A refusal is a nonzero exit by design, so the run's own answer is on
+    // stderr rather than in the status.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("3 keys under v1/; 3 selected, 0 outside the selection"),
+        "got: {stderr}"
+    );
+    assert!(
+        stderr.contains("2 objects into objects,") && stderr.contains("1 not written"),
+        "got: {stderr}"
+    );
+}
+
 /// Paths named without a directory, which is what an operator types in the
 /// directory they are syncing into. `Path::parent` answers `Some("")` for one,
 /// and the run stopped after its first object with the cursor already renamed

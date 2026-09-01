@@ -114,8 +114,8 @@ fn fetch(args: Args) -> Result<(), Fatal> {
     eprintln!(
         "{} keys under {prefix}; {} selected, {} outside the selection, \
          {} this build cannot name",
-        report.objects + report.passed + report.unnameable,
-        report.objects,
+        report.listed(),
+        report.selected(),
         report.passed,
         report.unnameable
     );

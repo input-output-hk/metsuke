@@ -275,6 +275,35 @@ fn require_attested_refuses_an_object_with_nothing_to_check_it_by() {
     assert!(!synced.path(&server.keys()[0]).exists());
 }
 
+/// A refused object increments none of the landing counts, so the listing
+/// total has to add it back. Reported without that, a run that refused most of
+/// what it selected said the prefix had listed only what landed.
+#[test]
+fn the_listing_total_counts_what_was_refused() {
+    let server = Server::attesting(3, 100);
+    let refused = server.keys()[0].clone();
+    server.tamper(&refused);
+
+    let synced = synced(
+        &server,
+        &only(Selection {
+            kind: Some(Kind::Metrics),
+            ..Selection::default()
+        }),
+    );
+
+    let report = &synced.report;
+    assert_eq!(report.rejected.len(), 1, "{report:?}");
+    assert_eq!(report.selected(), report.objects + 1, "{report:?}");
+    assert_eq!(
+        report.listed(),
+        report.selected() + report.passed + report.unnameable,
+        "{report:?}"
+    );
+    // The archive holds three objects and every one of them was listed.
+    assert_eq!(report.listed(), 3, "{report:?}");
+}
+
 /// A Leios key names no pool, so its object's filing is the server's word. Its
 /// bytes are not: the signature is checked here like any other's, and counting
 /// it beside an object that carried no signature at all would say the two were
