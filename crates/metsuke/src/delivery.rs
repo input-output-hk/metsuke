@@ -1,4 +1,4 @@
-//! Batch delivery: the only path from spooled rows to a sealed upload.
+//! Submission delivery: the only path from spooled rows to a sealed upload.
 //! Owning the spool and the signing key makes one ordering (counter persisted
 //! before sealing, ack only for the rows that were sealed) the only
 //! expressible call sequence, and keeps SQLite row ids out of the main loop
@@ -11,36 +11,64 @@
 use time::OffsetDateTime;
 
 use crate::spool::{RowBudget, Spool, SpoolError, SpooledRow, UncarriableReport};
-use metsuke_wire::envelope::{self, Envelope, Payload, PayloadLine, Scrape, SigningKey};
+use metsuke_wire::envelope::{self, Envelope, Payload, PayloadLine, Scrape, SubmissionKey};
 
 pub struct Delivery {
-    /// Also where the pool and agent a batch names come from: the spool stamped
+    /// Also where the pool and agent a submission names come from: the spool stamped
     /// every line it holds with them, so taking the header's identity from
     /// anywhere else would let the two disagree.
     spool: Spool,
-    key: SigningKey,
+    key: SubmissionKey,
     /// zstd level passed to `seal` (0 = zstd's default).
     compression_level: i32,
     /// Pre-compression ceiling on one envelope: its header frame plus its
     /// payload lines. The server's own ceiling is `[ingest].max_body_bytes`, on
     /// the compressed bytes it receives. It is still the agent's own number:
-    /// nothing in the wire contract lets it discover the server's, so a batch
-    /// over that is rejected at upload and stays spooled.
+    /// nothing in the wire contract lets it discover the server's, so a
+    /// submission over that is rejected at upload and stays spooled.
     batch_max_bytes: u64,
 }
 
-/// One sealed upload: the bytes to PUT and the signature to send with them.
+/// One sealed upload: the bytes to PUT and what attests them.
 /// The rows it covers stay private, so the only rows an `ack` can delete are
-/// the ones sealed into this batch, and consuming it prevents a double ack.
-pub struct SealedBatch {
+/// the ones sealed into this submission, and consuming it prevents a double
+/// ack.
+pub struct SealedSubmission {
     pub wire_bytes: Vec<u8>,
-    pub signature: envelope::Signature,
-    rows: BatchRows,
+    pub attestation: envelope::Attestation,
+    /// What the header stamped this with, so a journal line and an archived
+    /// object can be matched by it.
+    pub counter: u64,
+    /// What its rows are rather than what this attempt at them is
+    /// (`envelope::payload_digest`).
+    pub payload_digest: String,
+    rows: SubmissionRows,
 }
 
-/// Which stream's rows a batch drew from, so `ack` deletes from the table it
-/// sealed rather than from whichever one the caller remembers.
-enum BatchRows {
+impl SealedSubmission {
+    /// How many lines it carries.
+    pub fn lines(&self) -> usize {
+        match &self.rows {
+            SubmissionRows::Scrapes(ids) | SubmissionRows::Lines(ids) => ids.len(),
+        }
+    }
+
+    /// What to call those lines, so an operator running `[log]` can tell the
+    /// two submissions of one tick apart in the journal. Agrees with the count
+    /// it is printed beside.
+    pub fn carried(&self) -> &'static str {
+        match (&self.rows, self.lines()) {
+            (SubmissionRows::Scrapes(_), 1) => "scrape",
+            (SubmissionRows::Scrapes(_), _) => "scrapes",
+            (SubmissionRows::Lines(_), 1) => "trace line",
+            (SubmissionRows::Lines(_), _) => "trace lines",
+        }
+    }
+}
+
+/// Which stream's rows a submission drew from, so `ack` deletes from the table
+/// it sealed rather than from whichever one the caller remembers.
+enum SubmissionRows {
     Scrapes(Vec<i64>),
     Lines(Vec<i64>),
 }
@@ -61,7 +89,7 @@ pub enum DeliveryError {
 impl Delivery {
     pub fn new(
         spool: Spool,
-        key: SigningKey,
+        key: SubmissionKey,
         compression_level: i32,
         batch_max_bytes: u64,
     ) -> Self {
@@ -79,41 +107,41 @@ impl Delivery {
         Ok(self.spool.push(scrape)?)
     }
 
-    /// Seal one batch of outstanding scrapes, drawing (and persisting) the
+    /// Seal one submission of outstanding scrapes, drawing (and persisting) the
     /// next counter. `None` when nothing is spooled. Rows stay spooled
-    /// until `ack`; a retry after a failed PUT simply takes a fresh batch.
-    pub fn take_batch(
+    /// until `ack`; a retry after a failed PUT simply takes a fresh submission.
+    pub fn take_submission(
         &mut self,
         now: OffsetDateTime,
-    ) -> Result<Option<SealedBatch>, DeliveryError> {
+    ) -> Result<Option<SealedSubmission>, DeliveryError> {
         let rows = self
             .spool
             .outstanding(self.row_budget(now, Payload::scrapes(vec![]))?)?;
-        self.batch(now, rows, Payload::scrapes, BatchRows::Scrapes)
+        self.seal_rows(now, rows, Payload::scrapes, SubmissionRows::Scrapes)
     }
 
     /// The same for outstanding trace lines.
-    pub fn take_line_batch(
+    pub fn take_line_submission(
         &mut self,
         now: OffsetDateTime,
-    ) -> Result<Option<SealedBatch>, DeliveryError> {
+    ) -> Result<Option<SealedSubmission>, DeliveryError> {
         let rows = self
             .spool
             .outstanding_lines(self.row_budget(now, Payload::trace_lines(vec![]))?)?;
-        self.batch(now, rows, Payload::trace_lines, BatchRows::Lines)
+        self.seal_rows(now, rows, Payload::trace_lines, SubmissionRows::Lines)
     }
 
     /// Seal what a stream offered, as the schema that stream holds. The rows
     /// arrive as the lines they will be on the wire, so the two streams differ
     /// only in which schema the payload declares and which table an ACK deletes
     /// from.
-    fn batch(
+    fn seal_rows(
         &mut self,
         now: OffsetDateTime,
         rows: Vec<SpooledRow>,
         payload: fn(Vec<PayloadLine>) -> Payload,
-        acks: fn(Vec<i64>) -> BatchRows,
-    ) -> Result<Option<SealedBatch>, DeliveryError> {
+        acks: fn(Vec<i64>) -> SubmissionRows,
+    ) -> Result<Option<SealedSubmission>, DeliveryError> {
         if rows.is_empty() {
             return Ok(None);
         }
@@ -124,7 +152,7 @@ impl Delivery {
     /// The budget the spool takes rows against (`spool::RowBudget`), measured by
     /// building the header rather than by a second account of its fields.
     /// `u64::MAX` is the widest counter this agent can ever draw, so the reserve
-    /// never comes up short of the counter the batch is actually stamped with.
+    /// never comes up short of the counter the submission is actually stamped with.
     ///
     /// A budget the framing already exhausts is an error, not a zero: every
     /// row is over a zero budget, so offering one would have the spool drop the
@@ -157,29 +185,33 @@ impl Delivery {
         &mut self,
         now: OffsetDateTime,
         payload: Payload,
-        rows: BatchRows,
-    ) -> Result<SealedBatch, DeliveryError> {
+        rows: SubmissionRows,
+    ) -> Result<SealedSubmission, DeliveryError> {
         let counter = self.spool.next_counter()?;
-        let batch = self.envelope(counter, now, payload);
-        let (wire_bytes, signature) = envelope::seal(&self.key, &batch, self.compression_level)?;
-        Ok(SealedBatch {
+        let envelope = self.envelope(counter, now, payload);
+        let payload_digest = envelope::payload_digest(&envelope);
+        let (wire_bytes, attestation) =
+            envelope::seal(&self.key, &envelope, self.compression_level)?;
+        Ok(SealedSubmission {
             wire_bytes,
-            signature,
+            attestation,
+            counter,
+            payload_digest,
             rows,
         })
     }
 
-    /// What the last batches dropped rather than sealed
+    /// What the last submissions dropped rather than sealed
     /// (`spool::Spool::take_uncarriable_report`).
     pub fn take_uncarriable_report(&mut self) -> UncarriableReport {
         self.spool.take_uncarriable_report()
     }
 
-    /// The server ACK'd this batch: delete exactly the rows it sealed.
-    pub fn ack(&mut self, batch: SealedBatch) -> Result<(), DeliveryError> {
-        match batch.rows {
-            BatchRows::Scrapes(ids) => self.spool.ack(&ids)?,
-            BatchRows::Lines(ids) => self.spool.ack_lines(&ids)?,
+    /// The server ACK'd this submission: delete exactly the rows it sealed.
+    pub fn ack(&mut self, submission: SealedSubmission) -> Result<(), DeliveryError> {
+        match submission.rows {
+            SubmissionRows::Scrapes(ids) => self.spool.ack(&ids)?,
+            SubmissionRows::Lines(ids) => self.spool.ack_lines(&ids)?,
         }
         Ok(())
     }

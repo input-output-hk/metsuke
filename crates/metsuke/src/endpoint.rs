@@ -27,7 +27,7 @@ pub enum UploadUrlError {
     #[error("upload_url {0}")]
     NotAbsolute(#[source] NotAbsolute),
     /// Plaintext to loopback cannot be intercepted, because it never leaves
-    /// the host. Anywhere else it exposes the whole batch.
+    /// the host. Anywhere else it exposes the whole submission.
     #[error("upload_url must be https, or http to a loopback address, got {0:?}")]
     Plaintext(String),
 }

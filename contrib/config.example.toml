@@ -42,16 +42,30 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # scrape_timeout_secs = 5
 # scrape_max_body_bytes = 4194304
 
-# Upload limits: request deadline, retry jitter bound after server/network
-# failures, and the clamp on the rejection backoff. upload_batch_max_bytes
-# counts the header frame and the payload before compression; the server's own
-# ceiling is [ingest].max_body_bytes on the compressed bytes
-# (contrib/server.example.toml), and nothing checks the two against each other.
-# Why the two count a line the same way: docs/adr/0010.
+# Upload limits: request deadline, the spread that places this agent within
+# the upload interval, and the clamp on the rejection backoff. The first
+# accepted submission picks a point in upload_jitter_max_secs and every upload
+# after it keeps that point, so agents installed together do not all upload in
+# the same second while yours still lands on a cadence you can watch for.
+#
+# upload_batch_max_bytes counts the header frame and the payload before
+# compression; the server's own ceiling is [ingest].max_body_bytes on the
+# compressed bytes (contrib/server.example.toml), and nothing checks the two
+# against each other. Raising this past what your server allows earns a 413 on
+# every attempt, and the same rows reseal to the same size, so they stay
+# spooled until the cap drops them. Why the two count a line the same way:
+# docs/adr/0010.
+#
+# upload_max_submissions is how many submissions one upload tick may send. A
+# node emits more trace lines between ticks than one submission carries, so at
+# one per tick the remainder is spooled until the cap drops it. Raise it if
+# your node still gains spool between uploads; the ceiling on it is whatever
+# the server allows per pool per window.
 # upload_timeout_secs = 60
 # upload_jitter_max_secs = 300
 # upload_backoff_max_secs = 86400
 # upload_batch_max_bytes = 4194304
+# upload_max_submissions = 16
 
 # zstd level for the upload body (0 = zstd's default).
 # compression_level = 0

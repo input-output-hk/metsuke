@@ -43,9 +43,9 @@ pub fn agent(timeout: Duration) -> ureq::Agent {
         .into()
 }
 
-/// A non-2xx answer, its body read as the reason. `retryable` separates an
-/// endpoint that may come back from a refusal that will answer the same way
-/// twice.
+/// A non-2xx answer, its body read as the reason and reduced to one line
+/// (`one_line`). `retryable` separates an endpoint that may come back from a
+/// refusal that will answer the same way twice.
 #[derive(Debug)]
 pub struct Refusal {
     pub status: u16,
@@ -53,10 +53,14 @@ pub struct Refusal {
     pub retryable: bool,
 }
 
+/// The one 4xx a retry answers differently: the window it names rolls whether
+/// or not anything is changed.
+const TOO_MANY_REQUESTS: u16 = 429;
+
 /// Split a 2xx from everything else, leaving a success's body unread for the
-/// caller. Only a 4xx is terminal: credentials, policy or a clock, which
-/// retrying delays the reason for without changing it. Everything else may
-/// answer differently next time.
+/// caller. A 4xx is terminal: credentials, policy or a clock, which retrying
+/// delays the reason for without changing it. Everything else may answer
+/// differently next time, `TOO_MANY_REQUESTS` included.
 pub fn classify(response: &mut ureq::http::Response<ureq::Body>) -> Result<(), Refusal> {
     let status = response.status().as_u16();
     if (200..300).contains(&status) {
@@ -64,10 +68,35 @@ pub fn classify(response: &mut ureq::http::Response<ureq::Body>) -> Result<(), R
     }
     Err(Refusal {
         status,
-        reason: response
-            .body_mut()
-            .read_to_string()
-            .unwrap_or_else(|error| format!("unreadable reason: {error}")),
-        retryable: !(400..500).contains(&status),
+        reason: one_line(
+            response
+                .body_mut()
+                .read_to_string()
+                .unwrap_or_else(|error| format!("unreadable reason: {error}")),
+        ),
+        retryable: status == TOO_MANY_REQUESTS || !(400..500).contains(&status),
     })
+}
+
+/// How much of a refusal's body is worth repeating. metsuke-server answers one
+/// sentence; this is for everything else that can answer instead.
+///
+/// Bounds the log line and nothing else (CLAUDE.md `## Conventions`): a reader
+/// sees where it cut, and nothing is accepted or refused differently for it.
+const REASON_MAX_CHARS: usize = 200;
+
+/// The body as one bounded line, because a refusal is logged and a log line is
+/// a line. metsuke-server states a reason in a sentence, but anything between
+/// an agent and it can answer first, and a proxy's HTML error page would
+/// otherwise reach the journal as a screenful of markup whose newlines leave
+/// every entry after the first without the severity prefix that was written
+/// once, at the front.
+fn one_line(body: String) -> String {
+    let collapsed = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    match collapsed.char_indices().nth(REASON_MAX_CHARS) {
+        None => collapsed,
+        // On a character boundary: a reason is whatever answered, so it is not
+        // this crate's to assume it is ASCII.
+        Some((cut, _)) => format!("{}…", &collapsed[..cut]),
+    }
 }

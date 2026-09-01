@@ -5,7 +5,7 @@
 
 listen = "127.0.0.1:8080"
 
-# Generous, because a pool on a bad link still has to get its batch in.
+# Generous, because a pool on a bad link still has to get its submission in.
 [http]
 idle_timeout_ms = 30000
 read_timeout_ms = 60000
@@ -34,8 +34,19 @@ list_max_pages = 1000
 # Change this: the pools you onboarded against the application code each came
 # in on, as the offline allowlist generator emits them.
 allowlist = { pool1CHANGEME = "MUSA-0000" }
-max_body_bytes = 1048576
+# At least the agents' upload_batch_max_bytes, which is what they seal before
+# compression, and which this counts after it. Set it under theirs and a
+# submission that compresses poorly earns a 413, which an agent reads as
+# terminal and reseals identically, so the same body is refused until its spool
+# cap drops those rows. Compression is the only margin between the two numbers
+# and nothing enforces it, so the margin belongs here.
+max_body_bytes = 4194304
 max_header_bytes = 4096
+# How far either way a submission may be sealed from this server's clock. One is
+# sealed at upload rather than when its scrapes were taken, so a spooled hour
+# still arrives fresh; what this refuses is a captured submission sent again,
+# and an agent whose host clock has drifted this far.
+max_timestamp_skew_secs = 300
 # A runaway-agent backstop, not abuse control: ~16x headroom over six agents
 # uploading once an hour.
 rate_limit_uploads = 100

@@ -1,26 +1,26 @@
-//! Upload seam tests (ticket metsuke-4zo.5): a sealed batch in, one POST
+//! Upload seam tests (ticket metsuke-4zo.5): a sealed submission in, one POST
 //! out carrying the ADR-0001 header contract, the server's answer classified
 //! into ack / retryable / rejected without touching the spool.
 
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
 use metsuke::delivery::Delivery;
 use metsuke::spool::{Spool, SpoolConfig};
 use metsuke::uploader::{UploadConfig, UploadOutcome, upload};
-use metsuke_wire::envelope::{
-    self, HEADER_SIGNATURE, HEADER_VKEY, PoolId, Signature, VerifyingKey,
-};
+use metsuke_wire::envelope::{self, Attestation, HEADER_POOL, HEADER_SIGNATURE, HEADER_VKEY};
 use time::OffsetDateTime;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod support;
-use metsuke_wire::hex;
-use support::{TEST_LIMITS, block_number, scrape_at, test_key, test_provenance};
+use support::{
+    TEST_LIMITS, block_number, scrape_at, test_pool_id, test_provenance, test_submission_key,
+};
 
 const UNBOUNDED: u64 = 64 * 1024 * 1024;
 
-fn sealed_test_batch(dir: &tempfile::TempDir) -> metsuke::delivery::SealedBatch {
+fn sealed_test_submission(dir: &tempfile::TempDir) -> metsuke::delivery::SealedSubmission {
     let spool = Spool::open(&SpoolConfig {
         path: dir.path().join("spool.sqlite"),
         max_bytes: UNBOUNDED,
@@ -28,10 +28,10 @@ fn sealed_test_batch(dir: &tempfile::TempDir) -> metsuke::delivery::SealedBatch 
         provenance: test_provenance(),
     })
     .unwrap();
-    let mut delivery = Delivery::new(spool, test_key(), 0, UNBOUNDED);
+    let mut delivery = Delivery::new(spool, test_submission_key(), 0, UNBOUNDED);
     delivery.push(&scrape_at(5)).unwrap();
     delivery
-        .take_batch(OffsetDateTime::UNIX_EPOCH)
+        .take_submission(OffsetDateTime::UNIX_EPOCH)
         .unwrap()
         .unwrap()
 }
@@ -40,6 +40,9 @@ fn upload_config(base_url: &str) -> UploadConfig {
     UploadConfig {
         upload_url: format!("{base_url}/v1/submit").try_into().unwrap(),
         timeout: Duration::from_secs(5),
+        // `upload` sends the one submission it is handed; the tick's allowance
+        // is `Agent::upload_once`'s, and tests/agent.rs is where it is read.
+        max_submissions: NonZeroUsize::new(1).expect("1 is not zero"),
     }
 }
 
@@ -66,12 +69,11 @@ async fn server_error_is_retryable() {
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
-    let batch = sealed_test_batch(&dir);
+    let submission = sealed_test_submission(&dir);
     let config = upload_config(&server.uri());
-    let outcome =
-        tokio::task::spawn_blocking(move || upload(&config, &test_key().verifying_key(), &batch))
-            .await
-            .unwrap();
+    let outcome = tokio::task::spawn_blocking(move || upload(&config, test_pool_id(), &submission))
+        .await
+        .unwrap();
     // The server's own words reach the journal on this path too, not just on
     // a rejection.
     let UploadOutcome::Retryable(reason) = outcome else {
@@ -84,16 +86,15 @@ async fn server_error_is_retryable() {
 #[tokio::test]
 async fn unreachable_server_is_retryable() {
     let dir = tempfile::tempdir().unwrap();
-    let batch = sealed_test_batch(&dir);
+    let submission = sealed_test_submission(&dir);
     let config = UploadConfig {
         timeout: Duration::from_millis(200),
         // TEST-NET-1 (RFC 5737) is unroutable: connect fails, nothing answers.
         ..upload_config("https://192.0.2.1:9")
     };
-    let outcome =
-        tokio::task::spawn_blocking(move || upload(&config, &test_key().verifying_key(), &batch))
-            .await
-            .unwrap();
+    let outcome = tokio::task::spawn_blocking(move || upload(&config, test_pool_id(), &submission))
+        .await
+        .unwrap();
     assert!(
         matches!(outcome, UploadOutcome::Retryable(_)),
         "expected retryable, got {outcome:?}"
@@ -138,9 +139,9 @@ fn an_https_upload_url_speaks_tls() {
     let peer = std::thread::spawn(move || opening_bytes(listener, Duration::from_secs(5)));
 
     let dir = tempfile::tempdir().unwrap();
-    let batch = sealed_test_batch(&dir);
+    let submission = sealed_test_submission(&dir);
     let config = upload_config(&format!("https://127.0.0.1:{port}"));
-    let outcome = upload(&config, &test_key().verifying_key(), &batch);
+    let outcome = upload(&config, test_pool_id(), &submission);
 
     let bytes = peer.join().unwrap();
     assert_eq!(
@@ -167,17 +168,44 @@ async fn client_error_is_rejected_with_the_server_reason() {
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
-    let batch = sealed_test_batch(&dir);
+    let submission = sealed_test_submission(&dir);
     let config = upload_config(&server.uri());
-    let outcome =
-        tokio::task::spawn_blocking(move || upload(&config, &test_key().verifying_key(), &batch))
-            .await
-            .unwrap();
+    let outcome = tokio::task::spawn_blocking(move || upload(&config, test_pool_id(), &submission))
+        .await
+        .unwrap();
     let UploadOutcome::Rejected { status, reason } = outcome else {
         panic!("expected rejected, got {outcome:?}");
     };
     assert_eq!(status, 403);
     assert_eq!(reason, "pool not on the allowlist");
+}
+
+// A rate limit is the 4xx an operator cannot act on: the window clears by
+// itself, so the agent schedules it as a retry rather than escalating the
+// rejection backoff a window's worth of refusals at a time.
+#[tokio::test]
+async fn a_rate_limit_is_retryable() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .set_body_string("pool pool1 is over its limit of 100 uploads per 3600s"),
+        )
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let submission = sealed_test_submission(&dir);
+    let config = upload_config(&server.uri());
+    let outcome = tokio::task::spawn_blocking(move || upload(&config, test_pool_id(), &submission))
+        .await
+        .unwrap();
+    let UploadOutcome::Retryable(reason) = outcome else {
+        panic!("expected retryable, got {outcome:?}");
+    };
+    assert_eq!(
+        reason,
+        "server answered 429: pool pool1 is over its limit of 100 uploads per 3600s"
+    );
 }
 
 // The full header contract: the request the server sees must verify with
@@ -193,13 +221,12 @@ async fn acked_upload_carries_verifiable_headers_and_body() {
         .mount(&server)
         .await;
     let dir = tempfile::tempdir().unwrap();
-    let batch = sealed_test_batch(&dir);
+    let submission = sealed_test_submission(&dir);
     let config = upload_config(&server.uri());
 
-    let outcome =
-        tokio::task::spawn_blocking(move || upload(&config, &test_key().verifying_key(), &batch))
-            .await
-            .unwrap();
+    let outcome = tokio::task::spawn_blocking(move || upload(&config, test_pool_id(), &submission))
+        .await
+        .unwrap();
 
     let UploadOutcome::Acked(ack) = outcome else {
         panic!("expected ack, got {outcome:?}");
@@ -210,19 +237,17 @@ async fn acked_upload_carries_verifiable_headers_and_body() {
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
     let header = |name: &str| request.headers.get(name).unwrap().to_str().unwrap();
-    // No pool id header: the pool is the hash of the key in HEADER_VKEY, so the
-    // server derives it (metsuke-jfb.4).
-    assert!(request.headers.get("x-metsuke-pool-id").is_none());
+    // The pool travels beside the key now: under a Leios key it is the only
+    // thing that names one, and under this cold key it is the derivation
+    // stated twice (ADR 0011).
+    assert_eq!(header(HEADER_POOL), test_pool_id().to_bech32());
     assert_eq!(header("content-encoding"), "zstd");
-    let vkey_bytes = hex::decode::<32>(header(HEADER_VKEY)).unwrap();
-    let vkey = VerifyingKey::from_bytes(&vkey_bytes).unwrap();
-    let sig_bytes = hex::decode::<64>(header(HEADER_SIGNATURE)).unwrap();
-    let signature = Signature::from_bytes(&sig_bytes);
-    let opened = envelope::open(&vkey, &request.body, &signature, TEST_LIMITS).unwrap();
-    let scrapes = opened.scrapes().expect("a scrape batch carries scrapes");
+    let attestation =
+        Attestation::decode(Some(header(HEADER_VKEY)), Some(header(HEADER_SIGNATURE))).unwrap();
+    let opened = envelope::open(&attestation, &request.body, TEST_LIMITS).unwrap();
+    let scrapes = opened
+        .scrapes()
+        .expect("a scrape submission carries scrapes");
     assert_eq!(block_number(&scrapes[0]), Some(5));
-    assert_eq!(
-        opened.provenance.pool_id,
-        PoolId::from_cold_key(&test_key().verifying_key())
-    );
+    assert_eq!(opened.provenance.pool_id, test_pool_id());
 }

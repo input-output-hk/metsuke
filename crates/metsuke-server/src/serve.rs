@@ -16,16 +16,17 @@ use http_body_util::{BodyExt as _, Full};
 use hyper::body::{Body, Frame, Incoming};
 use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
-use metsuke_wire::envelope::{HEADER_SIGNATURE, HEADER_VKEY, PoolId};
+use metsuke_wire::envelope::{HEADER_POOL, HEADER_SIGNATURE, HEADER_VKEY, PoolId};
 use metsuke_wire::journal::{ERR, WARNING};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Semaphore, mpsc};
 
 use crate::archive::{Bytes as ArchiveBytes, List, ObjectStream, Store};
+use crate::authority::Attributed;
 use crate::config::HttpConfig;
 use crate::developer::Developer;
-use crate::http::{self, Answer, AnswerBody, Method, Request, SubmissionHeaders};
+use crate::http::{self, Answer, AnswerBody, Method, Request};
 use crate::intake::Intake;
 
 /// How much of an object is moved per read: copy granularity, not a bound
@@ -152,7 +153,7 @@ async fn accept<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
             // An idle connection reaching `idle_timeout_ms` is the configured
             // behaviour and no news. Everything else is: a connection that
             // ended early may have lost an ack, and an agent that never saw
-            // one sends the batch again.
+            // one sends the submission again.
             if let Err(error) = served
                 && !error.is_timeout()
             {
@@ -226,9 +227,10 @@ async fn handle<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
     };
     let decoded = Request {
         method,
-        submission: SubmissionHeaders::decode(
+        submission: Attributed::decode(
             text(HEADER_VKEY).as_deref(),
             text(HEADER_SIGNATURE).as_deref(),
+            text(HEADER_POOL).as_deref(),
         ),
         authorization: text("authorization"),
         body: Vec::new(),
@@ -362,7 +364,7 @@ fn respond(answer: Answer) -> hyper::Response<ResponseBody> {
         // A stream does not, so what the archive declared is stated instead.
         AnswerBody::Stream(stream) => {
             response = response.header(hyper::header::CONTENT_LENGTH, stream.length);
-            streamed(stream).boxed()
+            streamed(*stream).boxed()
         }
     };
     response
@@ -375,10 +377,13 @@ fn respond(answer: Answer) -> hyper::Response<ResponseBody> {
 /// next chunk once the last one has gone out, so a developer that stops
 /// reading stalls its own download and nothing else.
 fn streamed(stream: ObjectStream) -> Streamed {
+    // The attestation went out with the head (`http::attested`), so what is
+    // left here is the body and what bounds it.
     let ObjectStream {
         key,
         length,
         mut reader,
+        ..
     } = stream;
     let (frames, receiver) = mpsc::channel(1);
     tokio::task::spawn_blocking(move || {

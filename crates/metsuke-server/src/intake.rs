@@ -1,6 +1,7 @@
 //! The one path an upload takes. `submit` read top to bottom is the check
-//! order, and there are three checks: the pool is allowlisted, the traffic is
-//! within its budget, the signature stands.
+//! order: the pool is allowlisted, the key may speak for it, the signature
+//! stands, the submission was sealed near this clock, the traffic is within its
+//! budget.
 //!
 //! Nothing here decompresses and nothing reads a payload. The header frame is
 //! plaintext inside the signed bytes, so what an object is filed under comes
@@ -8,13 +9,15 @@
 
 use std::sync::Mutex;
 
-use metsuke_wire::envelope::{Ack, ContainerError, HeaderError, PoolId, read_header};
-use time::OffsetDateTime;
+use metsuke_wire::envelope::{Ack, ContainerError, Header, HeaderError, PoolId, read_header};
+use metsuke_wire::journal::INFO;
+use time::{Duration, OffsetDateTime};
 
 use crate::archive::{ArchiveError, Kind, ObjectName, Store, StoredSubmission};
-use crate::authority::Signed;
+use crate::authority::{Signed, Unauthorised};
 use crate::config::IngestConfig;
 use crate::ratelimit::{Charged, RateLimiter};
+use crate::roster::Roster;
 
 /// Why the server refused. Every variant is the client's fault and its text
 /// is what the client logs, so each names what to change.
@@ -40,11 +43,28 @@ pub enum Rejection {
     ServerBusy { max: u32, window_secs: u32 },
     #[error("signature does not verify over the body as received")]
     BadSignature,
+    /// The key presented does not speak for the pool claimed, whatever it
+    /// signed (`authority::Signed::authorised`).
+    #[error(transparent)]
+    Unauthorised(#[from] Unauthorised),
+    /// The signature stands, so the pool sealed these bytes, and it sealed
+    /// them too far from this server's clock for this to be the upload they
+    /// were sealed for. A replay is what it refuses; a drifted clock is what
+    /// an operator meets, so the refusal states both clocks.
+    #[error(
+        "sealed at {sealed_at}, and this server's clock reads {now}: over the \
+         {max_secs}s either way that a submission may be sealed from"
+    )]
+    StaleTimestamp {
+        sealed_at: OffsetDateTime,
+        now: OffsetDateTime,
+        max_secs: u32,
+    },
     /// The signature stands, so these bytes are the pool's, and its header
     /// frame is not one this build can read a name out of.
     #[error("header frame does not read: {0}")]
     UnreadableHeader(#[from] HeaderError),
-    /// Not schema gating: an accepted batch is filed under what it carries.
+    /// Not schema gating: an accepted submission is filed under what it carries.
     /// The key scheme's kind segment is `<metrics|logs>` (`archive::Kind`), and
     /// a version this build has no `Kind` for has nothing to put in that
     /// segment. The refusal is the key, not the schema, having no name.
@@ -70,10 +90,14 @@ pub struct Intake<A: Store> {
     config: IngestConfig,
     limiter: Mutex<RateLimiter>,
     archive: A,
+    /// Absent where this server was given no roster, which is what makes a
+    /// Leios-key submission refusable with a reason rather than by a
+    /// deployment that forgot to configure one (ADR 0011).
+    roster: Option<Roster>,
 }
 
 impl<A: Store> Intake<A> {
-    pub fn new(config: IngestConfig, archive: A) -> Self {
+    pub fn new(config: IngestConfig, archive: A, roster: Option<Roster>) -> Self {
         let limiter = RateLimiter::new(
             config.rate_limit_uploads,
             config.rate_limit_uploads_total,
@@ -83,6 +107,7 @@ impl<A: Store> Intake<A> {
             config,
             limiter: Mutex::new(limiter),
             archive,
+            roster,
         }
     }
 
@@ -118,6 +143,36 @@ impl<A: Store> Intake<A> {
         if !self.config.allowlist.contains_key(&pool_id) {
             return Err(Rejection::UnknownPool { pool_id }.into());
         }
+        // Before the signature, because it is a lookup against a signature's
+        // pairing and answers the same question earlier: a key that cannot
+        // speak for this pool is refused whatever it signed.
+        signed
+            .authorised(self.roster.as_ref())
+            .map_err(Rejection::Unauthorised)?;
+        // Before the limiter rather than after it. A verification key is
+        // public, so anyone can present an allowlisted pool's and spend that
+        // pool's window on bodies it never signed, which reaches the pool's
+        // agent as a 429. Only what the signature has proved is charged, and
+        // the cost of the reordering is one verify per forged body.
+        if !signed.verifies() {
+            return Err(Rejection::BadSignature.into());
+        }
+        // The header is read once, here, and handed to `accept`: the freshness
+        // check needs it before the limiter is charged, because a replayed body
+        // carries a signature that verifies and would otherwise spend the
+        // window of the pool it was captured from.
+        let header = read_header(signed.wire_bytes, self.config.max_header_bytes.get())
+            .map_err(Rejection::UnreadableHeader)?;
+        let skew = now - header.timestamp;
+        let max_secs = self.config.max_timestamp_skew_secs.get();
+        if skew.abs() > Duration::seconds(max_secs.into()) {
+            return Err(Rejection::StaleTimestamp {
+                sealed_at: header.timestamp,
+                now,
+                max_secs,
+            }
+            .into());
+        }
         // A temporary of this statement, so the guard is released before the
         // match reads it rather than at the end of the block.
         let charged = self
@@ -143,22 +198,18 @@ impl<A: Store> Intake<A> {
                 .into());
             }
         }
-        if !signed.verifies() {
-            return Err(Rejection::BadSignature.into());
-        }
-        self.accept(signed, pool_id, now)
+        self.accept(signed, pool_id, now, header)
     }
 
-    /// The post-signature half: the batch is the pool's, so what it says about
+    /// The post-signature half: the submission is the pool's, so what it says about
     /// itself is what the object is filed under.
     fn accept(
         &self,
         signed: &Signed<'_>,
         pool_id: PoolId,
         now: OffsetDateTime,
+        header: Header,
     ) -> Result<Ack, IngestError> {
-        let header = read_header(signed.wire_bytes, self.config.max_header_bytes.get())
-            .map_err(Rejection::UnreadableHeader)?;
         let kind = Kind::of(header.schema_version).ok_or(Rejection::KeylessSchema {
             schema_version: header.schema_version,
         })?;
@@ -167,11 +218,24 @@ impl<A: Store> Intake<A> {
         // not something the server has any other account of.
         let stored = StoredSubmission {
             name: ObjectName::stamped(now, pool_id, header.provenance.agent_id, kind),
-            vkey: signed.vkey,
-            signature: signed.signature,
+            attestation: signed.attestation.clone(),
             wire_bytes: signed.wire_bytes,
         };
         self.archive.store(&stored)?;
+        // Said here rather than beside `http::refuse`, because what is worth
+        // saying about an accepted submission is the object it became, and
+        // this is where that name is. The key carries the pool, the agent and
+        // the kind (`archive::ObjectName`), so one line answers whose it was,
+        // which of their Agents sent it and what it held, and naming the pool
+        // beside it would only be that key's own middle segment again. A
+        // refusal states the pool because it has no key to carry one. Without
+        // this a journal shows only refusals, and an operator watching a
+        // working server sees nothing but whatever scans the internet.
+        eprintln!(
+            "{INFO}accepted {}, {} bytes",
+            stored.object_key(),
+            signed.wire_bytes.len()
+        );
         Ok(Ack {
             latest_version: crate::CLIENT_VERSION.to_string(),
         })

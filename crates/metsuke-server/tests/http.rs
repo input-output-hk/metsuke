@@ -4,10 +4,11 @@
 //! the body cap, streaming) is left to `tests/binary.rs`.
 
 use metsuke_server::archive::FilesystemArchive;
+use metsuke_server::authority::{Attributed, AttributionError};
 use metsuke_server::developer::Developer;
 use metsuke_server::http::{
-    self, Answer, AnswerBody, HeaderError, KEY_FIELD, Method, OBJECT_PATH, Request,
-    SUBMISSIONS_PATH, SUBMIT_PATH, SubmissionHeaders, UNAUTHORIZED_BODY,
+    self, Answer, AnswerBody, KEY_FIELD, Method, OBJECT_PATH, Request, SUBMISSIONS_PATH,
+    SUBMIT_PATH, UNAUTHORIZED_BODY,
 };
 use metsuke_server::instructions;
 use metsuke_server::intake::Intake;
@@ -66,7 +67,7 @@ fn unreachable_archive() -> Server<FailingArchive> {
 fn over<A: metsuke_server::archive::Store>(archive: A, dir: tempfile::TempDir) -> Server<A> {
     let developer = Developer::new(&developer_config(dir.path()), DEVELOPER_PASSWORD);
     Server {
-        intake: Intake::new(permissive_config(&[pool_of(&test_key())]), archive),
+        intake: Intake::new(permissive_config(&[pool_of(&test_key())]), archive, None),
         developer,
         page: bytes::Bytes::from(instructions::page()),
         _dir: dir,
@@ -77,7 +78,7 @@ fn get(target: &str) -> Request {
     Request {
         method: Method::Get,
         target: target.to_string(),
-        submission: SubmissionHeaders::decode(None, None),
+        submission: Attributed::decode(None, None, None),
         authorization: None,
         body: Vec::new(),
     }
@@ -97,13 +98,14 @@ fn pull(target: &str) -> Request {
 /// A sealed submission with the two ADR-0001 headers a well-formed upload
 /// carries.
 fn post(key: &SigningKey, counter: u64) -> Request {
-    let (body, signature) = seal(key, &envelope_for(key, counter));
+    let (body, attestation) = seal(key, &envelope_for(key, counter));
     Request {
         method: Method::Post,
         target: SUBMIT_PATH.to_string(),
-        submission: SubmissionHeaders::decode(
-            Some(&hex::encode(key.verifying_key().as_bytes())),
-            Some(&hex::encode(&signature.to_bytes())),
+        submission: Attributed::decode(
+            Some(&hex::encode(&attestation.key_bytes())),
+            Some(&hex::encode(&attestation.signature_bytes())),
+            None,
         ),
         authorization: None,
         body,
@@ -241,7 +243,7 @@ fn an_archive_that_cannot_store_is_unavailable() {
 #[test]
 fn a_submission_without_the_headers_names_the_missing_one() {
     let answer = server().answer(Request {
-        submission: SubmissionHeaders::decode(None, None),
+        submission: Attributed::decode(None, None, None),
         ..post(&test_key(), 1)
     });
 
@@ -347,6 +349,108 @@ fn a_download_of_an_object_the_archive_does_not_hold_is_not_found() {
     assert_eq!(answer.status, 404, "{}", body(&answer));
 }
 
+/// A filesystem archive that answers the metadata an S3 one holds beside an
+/// object, so the download route's half of the check a consumer runs is
+/// reachable without a bucket.
+struct Attested {
+    inner: FilesystemArchive,
+    attestation: metsuke_server::archive::Attestation,
+}
+
+impl metsuke_server::archive::Store for Attested {
+    fn store(
+        &self,
+        submission: &metsuke_server::archive::StoredSubmission<'_>,
+    ) -> Result<(), metsuke_server::archive::ArchiveError> {
+        self.inner.store(submission)
+    }
+}
+
+impl metsuke_server::archive::Bytes for Attested {
+    fn reader(
+        &self,
+        key: &str,
+    ) -> Result<metsuke_server::archive::ObjectStream, metsuke_server::archive::ArchiveError> {
+        Ok(metsuke_server::archive::ObjectStream {
+            attestation: Some(self.attestation.clone()),
+            ..self.inner.reader(key)?
+        })
+    }
+}
+
+impl metsuke_server::archive::List for Attested {
+    fn location(&self) -> String {
+        self.inner.location()
+    }
+
+    fn for_each_key<E: From<metsuke_server::archive::ArchiveError>>(
+        &self,
+        visit: impl FnMut(&str) -> Result<(), E>,
+    ) -> Result<(), E> {
+        self.inner.for_each_key(visit)
+    }
+
+    fn page(
+        &self,
+        prefix: &str,
+        after: &str,
+        max_keys: std::num::NonZeroU32,
+    ) -> Result<metsuke_server::archive::Page, metsuke_server::archive::ArchiveError> {
+        self.inner.page(prefix, after, max_keys)
+    }
+}
+
+/// What a consumer checks the bytes with travels with them: the same two
+/// headers the pool sent, so a download is verifiable without asking the
+/// server to be believed about anything.
+#[test]
+fn a_download_carries_the_key_and_signature_the_pool_sent() {
+    let key = test_key();
+    let (_, attestation) = seal(&key, &envelope_for(&key, 4));
+    let dir = tempfile::tempdir().unwrap();
+    let server = over(
+        Attested {
+            inner: FilesystemArchive::new(&dir.path().join("archive")),
+            attestation: attestation.clone(),
+        },
+        dir,
+    );
+    assert_eq!(server.answer(post(&key, 4)).status, 200);
+
+    let answer = server.answer(pull(&format!(
+        "{OBJECT_PATH}?{KEY_FIELD}={}",
+        stored_key(&server)
+    )));
+
+    let sent: std::collections::HashMap<&str, String> = answer.headers.into_iter().collect();
+    assert_eq!(
+        sent.get(HEADER_VKEY),
+        Some(&hex::encode(key.verifying_key().as_bytes()))
+    );
+    assert_eq!(
+        sent.get(HEADER_SIGNATURE),
+        Some(&hex::encode(&attestation.signature_bytes()))
+    );
+}
+
+/// And an archive that holds no metadata says so by sending none, rather than
+/// by withholding the bytes: what to do about an object it cannot check is the
+/// consumer's to decide.
+#[test]
+fn a_download_from_an_archive_without_metadata_carries_no_headers() {
+    let server = server();
+    let key = test_key();
+    assert_eq!(server.answer(post(&key, 4)).status, 200);
+
+    let answer = server.answer(pull(&format!(
+        "{OBJECT_PATH}?{KEY_FIELD}={}",
+        stored_key(&server)
+    )));
+
+    assert_eq!(answer.status, 200);
+    assert!(answer.headers.is_empty(), "got: {:?}", answer.headers);
+}
+
 /// The download hands back the archive's reader (metsuke-4zo.72).
 #[test]
 fn a_download_answers_the_stored_bytes_as_a_stream() {
@@ -379,7 +483,12 @@ fn a_download_answers_the_stored_bytes_as_a_stream() {
 
 /// The key of the one object the archive holds, read off the listing because
 /// the id in it is the server's, stamped at receipt.
-fn stored_key(server: &Server<FilesystemArchive>) -> String {
+fn stored_key<A>(server: &Server<A>) -> String
+where
+    A: metsuke_server::archive::Store
+        + metsuke_server::archive::Bytes
+        + metsuke_server::archive::List,
+{
     let answer = server.answer(pull(SUBMISSIONS_PATH));
     let page: serde_json::Value = serde_json::from_str(&body(&answer)).unwrap();
     match page["keys"].as_array().unwrap().as_slice() {
@@ -396,19 +505,19 @@ mod headers {
 
     /// The pair a well-formed upload from `key` carries.
     fn presented(key: &SigningKey) -> (String, String) {
-        let (_, signature) = seal(key, &envelope_for(key, 1));
+        let (_, attestation) = seal(key, &envelope_for(key, 1));
         (
-            hex::encode(key.verifying_key().as_bytes()),
-            hex::encode(&signature.to_bytes()),
+            hex::encode(&attestation.key_bytes()),
+            hex::encode(&attestation.signature_bytes()),
         )
     }
 
     /// Decode with one header's value replaced, keeping the other well formed.
-    fn with(field: &str, value: Option<String>) -> Result<SubmissionHeaders, HeaderError> {
+    fn with(field: &str, value: Option<String>) -> Result<Attributed, AttributionError> {
         let (vkey, signature) = presented(&test_key());
         match field == HEADER_VKEY {
-            true => SubmissionHeaders::decode(value.as_deref(), Some(&signature)),
-            false => SubmissionHeaders::decode(Some(&vkey), value.as_deref()),
+            true => Attributed::decode(value.as_deref(), Some(&signature), None),
+            false => Attributed::decode(Some(&vkey), value.as_deref(), None),
         }
     }
 
@@ -418,21 +527,19 @@ mod headers {
         let (wire_bytes, _) = seal(&key, &envelope_for(&key, 1));
         let (vkey, signature) = presented(&key);
 
-        let decoded = SubmissionHeaders::decode(Some(&vkey), Some(&signature)).unwrap();
+        let decoded = Attributed::decode(Some(&vkey), Some(&signature), None).unwrap();
 
         assert_eq!(
             decoded.pool_id(),
             pool_of(&key),
             "the pool is derived from the key, not sent beside it"
         );
-        assert_eq!(decoded.vkey, key.verifying_key());
-        // Decoded well enough to verify with: the whole point of the layer.
-        assert!(
-            decoded
-                .vkey
-                .verify_strict(&wire_bytes, &decoded.signature)
-                .is_ok()
+        assert_eq!(
+            decoded.attestation.key_bytes(),
+            key.verifying_key().as_bytes()
         );
+        // Decoded well enough to verify with: the whole point of the layer.
+        assert!(decoded.attestation.verifies(&wire_bytes));
     }
 
     #[test]
@@ -446,12 +553,15 @@ mod headers {
         }
     }
 
+    // The length of the pair is what says which scheme signed (ADR 0011), so a
+    // wrong length is not one header being wrong: it is a pair that is neither
+    // scheme, and the refusal states both lengths and both schemes.
     #[test]
     fn a_key_of_the_wrong_length_is_refused() {
         let error = with(HEADER_VKEY, Some("ab".repeat(31))).unwrap_err();
         let text = error.to_string();
         assert!(
-            text.contains(HEADER_VKEY) && text.contains("31"),
+            text.contains("31") && text.contains("32/64") && text.contains("96/48"),
             "got: {text}"
         );
     }
@@ -461,9 +571,24 @@ mod headers {
         let error = with(HEADER_SIGNATURE, Some("ab".repeat(65))).unwrap_err();
         let text = error.to_string();
         assert!(
-            text.contains(HEADER_SIGNATURE) && text.contains("65"),
+            text.contains("65") && text.contains("32/64") && text.contains("96/48"),
             "got: {text}"
         );
+    }
+
+    // The pair of one scheme's key with the other's signature is the mistake
+    // the length rule exists to catch.
+    #[test]
+    fn a_leios_key_with_an_ed25519_signature_is_no_scheme() {
+        let error = Attributed::decode(
+            Some(&"ab".repeat(96)),
+            Some(&"cd".repeat(64)),
+            Some(&pool_of(&test_key()).to_bech32()),
+        )
+        .unwrap_err();
+
+        let text = error.to_string();
+        assert!(text.contains("96") && text.contains("64"), "got: {text}");
     }
 
     #[test]
@@ -484,7 +609,10 @@ mod headers {
 
         let decoded = with(HEADER_VKEY, Some(uppercase)).unwrap();
 
-        assert_eq!(decoded.vkey, key.verifying_key());
+        assert_eq!(
+            decoded.attestation.key_bytes(),
+            key.verifying_key().as_bytes()
+        );
     }
 
     /// Thirty-two bytes of hex whose y coordinate is on no curve point: the one

@@ -159,6 +159,14 @@ pub struct IngestConfig {
     /// pool outside it is rejected before any cryptography runs; the code is
     /// what says why the pool is here, and nothing at ingest reads it.
     pub allowlist: Codes,
+    /// Where the **Key Roster** is read from (ADR 0011): which Leios keys the
+    /// chain registers for each pool, written by something outside this
+    /// server. The one field here that may be absent, because a network with
+    /// no Leios keys has no roster to point at, and absent is what refuses a
+    /// Leios-key submission with a reason instead of accepting one against
+    /// nothing.
+    #[serde(default)]
+    pub leios_roster: Option<AbsolutePath>,
     /// Cap on the body as sent, header frame and data frame together.
     /// `intake` measures what it was handed; `http::read_body` is what refuses
     /// an oversized upload before reading it.
@@ -166,6 +174,11 @@ pub struct IngestConfig {
     /// Cap on the header frame a submission declares, checked against the
     /// declared length before any of it is read.
     pub max_header_bytes: NonZeroU64,
+    /// How far either way a submission's sealed timestamp may sit from this
+    /// server's clock. It bounds how long a captured submission stays
+    /// replayable, and it is what an agent whose host clock has drifted is
+    /// refused by, so it is a clock tolerance as much as a limit.
+    pub max_timestamp_skew_secs: NonZeroU32,
     /// Uploads one pool may make per `rate_limit_window_secs`.
     pub rate_limit_uploads: NonZeroU32,
     /// Uploads every pool together may make in the same window.

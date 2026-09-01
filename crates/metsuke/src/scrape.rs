@@ -12,7 +12,6 @@ use time::OffsetDateTime;
 use crate::endpoint::MetricsUrl;
 use metsuke_wire::envelope::{Failure, Metric, Reason, Scrape};
 use metsuke_wire::http;
-use metsuke_wire::journal::WARNING;
 
 pub struct ScrapeConfig {
     pub metrics_url: MetricsUrl,
@@ -23,33 +22,28 @@ pub struct ScrapeConfig {
 }
 
 /// Scrape once. `clock_offset_ms` stays null here. `scraper` fills it from
-/// the SNTP probe. A refused line and a failed fetch are both reported to the
-/// journal as well as shipped: the row reaches a consumer, the warning reaches
-/// the operator who can do something about it.
-pub fn scrape(config: &ScrapeConfig) -> Scrape {
+/// the SNTP probe. The lines no metric was read from come back beside the row
+/// rather than reaching the journal from here: a node that stays broken would
+/// write the same warning every interval, so the agent counts them and picks
+/// when to say it (`crate::report::ScrapeReport`).
+pub fn scrape(config: &ScrapeConfig) -> (Scrape, Vec<Refused>) {
     let scraped_at = OffsetDateTime::now_utc();
-    let (metrics, failure) = match fetch(config) {
+    let (metrics, refused, failure) = match fetch(config) {
         Ok(body) => {
             let ParsedBody { metrics, refused } = parse(&body);
-            if let Some(first) = refused.first() {
-                eprintln!(
-                    "{WARNING}{} of the node's metric lines did not ship, the first: {first}",
-                    refused.len()
-                );
-            }
-            (metrics, None)
+            (metrics, refused, None)
         }
-        Err(error) => {
-            eprintln!("{WARNING}the scrape failed and ships as one: {error}");
-            (Vec::new(), Some(Failure::from(&error)))
-        }
+        Err(error) => (Vec::new(), Vec::new(), Some(Failure::from(&error))),
     };
-    Scrape {
-        scraped_at,
-        clock_offset_ms: None,
-        failure,
-        metrics,
-    }
+    (
+        Scrape {
+            scraped_at,
+            clock_offset_ms: None,
+            failure,
+            metrics,
+        },
+        refused,
+    )
 }
 
 /// Why a body did not arrive. Kept apart because they call for different

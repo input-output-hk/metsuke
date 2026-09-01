@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 use metsuke::config::{Config, LogConfig};
 use metsuke::logselect::SelectConfig;
 use metsuke::logsource::{JournalConfig, JournalSource, Spawned, StartError};
-use metsuke_wire::envelope::{AgentId, Limits, PoolId, Provenance, Scrape, SigningKey, TraceLine};
+use metsuke_wire::envelope::{
+    AgentId, Attestation, Limits, PoolId, Provenance, Scrape, SigningKey, SubmissionKey, TraceLine,
+};
 use metsuke_wire::fixtures;
 use time::OffsetDateTime;
 
@@ -20,7 +22,22 @@ pub fn test_key() -> SigningKey {
     SigningKey::from_bytes(&[7u8; 32])
 }
 
-/// The machine name every batch in the suite is stamped with.
+/// The same seed as the submission key an Agent signs with.
+pub fn test_submission_key() -> SubmissionKey {
+    SubmissionKey::ColdKey(test_key())
+}
+
+/// The pair an upload presented, as its two headers carried them: what a test
+/// that reads them off a recorded request opens the body with.
+pub fn attestation_of(vkey: &[u8], signature: &[u8]) -> Attestation {
+    Attestation::decode(
+        Some(&metsuke_wire::hex::encode(vkey)),
+        Some(&metsuke_wire::hex::encode(signature)),
+    )
+    .expect("a recorded upload carries a pair of one scheme")
+}
+
+/// The machine name every submission in the suite is stamped with.
 pub fn test_agent_id() -> AgentId {
     AgentId::parse("test-relay").expect("a fixed name is a slug")
 }
@@ -30,7 +47,7 @@ pub fn test_pool_id() -> PoolId {
     PoolId::from_cold_key(&test_key().verifying_key())
 }
 
-/// What every row the suite spools is stamped with, and therefore what a batch
+/// What every row the suite spools is stamped with, and therefore what a submission
 /// drawn from that spool names in its header.
 pub fn test_provenance() -> Provenance {
     Provenance {
@@ -65,7 +82,7 @@ pub fn trace_line(line: &str) -> TraceLine {
     TraceLine::parse(line).unwrap_or_else(|error| panic!("{line:.60}: {error}"))
 }
 
-/// Wide enough for any test batch; the real limits are server config.
+/// Wide enough for any test submission; the real limits are server config.
 pub const TEST_LIMITS: Limits = Limits {
     max_header_bytes: 4096,
     max_decompressed_bytes: 64 * 1024 * 1024,
@@ -143,9 +160,10 @@ fn is_text_file_busy(error: &StartError) -> bool {
     }
 }
 
-/// The `[log]` section an operator gets without writing any of it: the shipped
-/// defaults, read out of the config that ships them rather than restated here.
-pub fn shipped_log_config() -> LogConfig {
+/// The config an operator gets writing only what has no default, so a test
+/// reads a shipped value out of the crate that ships it rather than restating
+/// it.
+pub fn shipped_config() -> Config {
     Config::from_toml(
         r#"
         pool_id = "pool1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq8a7a2d"
@@ -158,8 +176,11 @@ pub fn shipped_log_config() -> LogConfig {
         "#,
     )
     .unwrap()
-    .log
-    .unwrap()
+}
+
+/// The `[log]` section an operator gets without writing any of it.
+pub fn shipped_log_config() -> LogConfig {
+    shipped_config().log.unwrap()
 }
 
 /// The selection rules those defaults make. That the shipped namespaces pass

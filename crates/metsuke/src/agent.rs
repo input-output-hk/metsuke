@@ -6,17 +6,21 @@
 
 use time::OffsetDateTime;
 
-use crate::delivery::{Delivery, DeliveryError, SealedBatch};
+use crate::delivery::{Delivery, DeliveryError, SealedSubmission};
+use crate::scrape::Refused;
 use crate::scraper::{ScraperConfig, scrape_once};
 use crate::spool::UncarriableReport;
 use crate::uploader::{UploadConfig, UploadOutcome, upload};
-use metsuke_wire::envelope::VerifyingKey;
+use metsuke_wire::envelope::PoolId;
 
 pub struct Agent {
     scraper: ScraperConfig,
     delivery: Delivery,
     upload: UploadConfig,
-    vkey: VerifyingKey,
+    /// Which pool every submission names. A Leios key derives none, so this
+    /// is what the header carries and what the server looks the key up under
+    /// (ADR 0011).
+    pool_id: PoolId,
     /// Rows the spool's cap dropped since the last report. Accumulated rather
     /// than logged per row: under sustained overload the drop rate is the
     /// spool's write rate, and one line each would be the loudest thing in the
@@ -25,17 +29,46 @@ pub struct Agent {
 }
 
 /// Upload-tick failures, split so the log can say whether the server
-/// accepted the batch: an ack that fails locally after acceptance means the
-/// same rows will be resubmitted, not that the upload never happened.
+/// accepted the submission: an ack that fails locally after acceptance means
+/// the same rows will be resubmitted, not that the upload never happened.
 #[derive(Debug, thiserror::Error)]
 pub enum UploadError {
     #[error("upload not attempted: {0}")]
     NotAttempted(#[source] DeliveryError),
     #[error(
-        "batch accepted by the server but not acked locally \
+        "submission accepted by the server but not acked locally \
          (rows will be resubmitted): {0}"
     )]
     AckAfterAccept(#[source] DeliveryError),
+}
+
+/// What one scrape tick has for the journal. The row goes straight to the
+/// spool, so what an operator would want said about it comes back here rather
+/// than being read off the row afterwards.
+#[derive(Debug, Default)]
+pub struct ScrapeNews {
+    /// The detail of the failure the row shipped, when the scrape failed.
+    pub failed: Option<String>,
+    /// The body's lines that reached no metric.
+    pub refused: Vec<Refused>,
+}
+
+/// What one upload tick has for the journal: the server's answer, and which
+/// submission it answered. The tick consumes the sealed submission, so what a
+/// log line needs off it comes out here.
+#[derive(Debug)]
+pub struct Uploaded {
+    pub outcome: UploadOutcome,
+    /// The counter its header carries.
+    pub counter: u64,
+    /// How many lines it carried, and what to call them
+    /// (`delivery::SealedSubmission::carried`).
+    pub lines: usize,
+    pub carried: &'static str,
+    /// The sealed bytes, as sent.
+    pub bytes: usize,
+    /// `delivery::SealedSubmission::payload_digest`.
+    pub payload_digest: String,
 }
 
 impl Agent {
@@ -43,59 +76,84 @@ impl Agent {
         scraper: ScraperConfig,
         delivery: Delivery,
         upload: UploadConfig,
-        vkey: VerifyingKey,
+        pool_id: PoolId,
     ) -> Self {
         Agent {
             scraper,
             delivery,
             upload,
-            vkey,
+            pool_id,
             dropped_since_report: 0,
         }
     }
 
     /// One scrape tick: read, probe, spool.
-    pub fn scrape_once(&mut self) -> Result<(), DeliveryError> {
-        self.dropped_since_report += self.delivery.push(&scrape_once(&self.scraper))?;
-        Ok(())
+    pub fn scrape_once(&mut self) -> Result<ScrapeNews, DeliveryError> {
+        let (row, refused) = scrape_once(&self.scraper);
+        let failed = row.failure.as_ref().map(|failure| failure.detail.clone());
+        self.dropped_since_report += self.delivery.push(&row)?;
+        Ok(ScrapeNews { failed, refused })
     }
 
-    /// One upload tick: a batch of scrapes, then a batch of trace lines,
-    /// each sealed, POSTed and acked only on `Acked`. `None` when both
-    /// streams are empty. The last outcome is what the caller schedules on,
-    /// and a batch that was not accepted ends the tick. Backing off on the
-    /// scrapes and then pressing on with the lines would ignore the answer.
-    pub fn upload_once(&mut self) -> Result<Option<UploadOutcome>, UploadError> {
+    /// One upload tick: scrapes, then trace lines, each stream drained until it
+    /// is empty or the tick's allowance is spent. Every submission is sealed,
+    /// POSTed and acked only on `Acked`.
+    ///
+    /// Draining rather than sending one of each is what keeps a spool from
+    /// filling: a node emits more between ticks than one submission carries, so
+    /// a tick that sent one left the difference behind every hour until the cap
+    /// discarded it.
+    ///
+    /// Every attempt comes back, not just the last, because a tick that sent
+    /// several is several lines in the journal. The caller schedules on the
+    /// last, and a submission the server did not take ends the tick, because
+    /// pressing on would ignore the answer.
+    pub fn upload_once(&mut self) -> Result<Vec<Uploaded>, UploadError> {
+        type Take =
+            fn(&mut Delivery, OffsetDateTime) -> Result<Option<SealedSubmission>, DeliveryError>;
+        let streams: [Take; 2] = [Delivery::take_submission, Delivery::take_line_submission];
+
         let now = OffsetDateTime::now_utc();
-        let taken = self
-            .delivery
-            .take_batch(now)
-            .map_err(UploadError::NotAttempted)?;
-        let scrapes = self.send(taken)?;
-        if matches!(scrapes, None | Some(UploadOutcome::Acked(_))) {
-            let taken = self
-                .delivery
-                .take_line_batch(now)
-                .map_err(UploadError::NotAttempted)?;
-            if let Some(lines) = self.send(taken)? {
-                return Ok(Some(lines));
+        let allowance = self.upload.max_submissions.get();
+        let mut sent = Vec::new();
+        for take in streams {
+            while sent.len() < allowance {
+                let taken = take(&mut self.delivery, now).map_err(UploadError::NotAttempted)?;
+                let Some(one) = self.send(taken)? else {
+                    break;
+                };
+                let accepted = matches!(one.outcome, UploadOutcome::Acked(_));
+                sent.push(one);
+                if !accepted {
+                    return Ok(sent);
+                }
             }
         }
-        Ok(scrapes)
+        Ok(sent)
     }
 
-    /// POST one batch if there is one, acking its rows only on `Acked`.
-    fn send(&mut self, batch: Option<SealedBatch>) -> Result<Option<UploadOutcome>, UploadError> {
-        let Some(batch) = batch else {
+    /// POST one submission if there is one, acking its rows only on `Acked`.
+    fn send(
+        &mut self,
+        submission: Option<SealedSubmission>,
+    ) -> Result<Option<Uploaded>, UploadError> {
+        let Some(submission) = submission else {
             return Ok(None);
         };
-        let outcome = upload(&self.upload, &self.vkey, &batch);
-        if matches!(outcome, UploadOutcome::Acked(_)) {
+        let sent = Uploaded {
+            outcome: upload(&self.upload, self.pool_id, &submission),
+            counter: submission.counter,
+            lines: submission.lines(),
+            carried: submission.carried(),
+            bytes: submission.wire_bytes.len(),
+            payload_digest: submission.payload_digest.clone(),
+        };
+        if matches!(sent.outcome, UploadOutcome::Acked(_)) {
             self.delivery
-                .ack(batch)
+                .ack(submission)
                 .map_err(UploadError::AckAfterAccept)?;
         }
-        Ok(Some(outcome))
+        Ok(Some(sent))
     }
 
     /// How many rows the spool's cap dropped since this was last asked, and
@@ -104,7 +162,7 @@ impl Agent {
         std::mem::take(&mut self.dropped_since_report)
     }
 
-    /// What taking a batch dropped for being uncarriable
+    /// What taking a submission dropped for being uncarriable
     /// (`delivery::Delivery::take_uncarriable_report`). A separate report from
     /// `take_dropped_report`: neither remedy is a faster upload.
     pub fn take_uncarriable_report(&mut self) -> UncarriableReport {

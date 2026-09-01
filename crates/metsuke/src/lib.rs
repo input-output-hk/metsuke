@@ -14,6 +14,7 @@ pub mod keys;
 pub mod logselect;
 pub mod logsource;
 pub mod logtail;
+pub mod report;
 pub mod schedule;
 pub mod scrape;
 pub mod scraper;

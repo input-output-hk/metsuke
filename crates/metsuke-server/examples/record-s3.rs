@@ -198,11 +198,10 @@ fn main() {
     let now = OffsetDateTime::now_utc();
     let mut stored_keys = Vec::new();
     for counter in 1..=3u64 {
-        let (wire_bytes, signature) = seal(&key, &envelope_at(&key, counter, now));
+        let (wire_bytes, attestation) = seal(&key, &envelope_at(&key, counter, now));
         let submission = StoredSubmission {
             name: object_name(&key, now, Kind::Metrics),
-            vkey: key.verifying_key(),
-            signature,
+            attestation,
             wire_bytes: &wire_bytes,
         };
         archive
@@ -294,12 +293,11 @@ fn main() {
         ),
     )
     .expect("the proxy is an endpoint");
-    let (wire_bytes, signature) = seal(&key, &envelope_at(&key, 4, now));
+    let (wire_bytes, attestation) = seal(&key, &envelope_at(&key, 4, now));
     outsider
         .store(&StoredSubmission {
             name: object_name(&key, now, Kind::Metrics),
-            vkey: key.verifying_key(),
-            signature,
+            attestation,
             wire_bytes: &wire_bytes,
         })
         .expect_err("the outsider is refused");

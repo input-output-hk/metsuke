@@ -43,21 +43,54 @@
         inputs.git-hooks.flakeModule
       ];
 
-      # A hydraJob, not a check: runNixOSTest wants /dev/kvm, and `nix flake
-      # check` has to stay runnable wherever the crates build. The end-to-end
-      # job is devnet/flake.nix's, which is where the node it needs is pinned.
-      flake.hydraJobs.units = lib.genAttrs systems (
-        system:
-        import ./nix/unit-test.nix {
-          pkgs = inputs.nixpkgs.legacyPackages.${system};
-          agentModule = self.nixosModules.metsuke;
-          serverModule = self.nixosModules.metsuke-server;
-          metrics = ./crates/metsuke/tests/fixtures/recordings/leios-node.prom;
-          traces = ./crates/metsuke/tests/fixtures/recordings/leios-node-traces.log;
-          contribUnit = ./contrib/metsuke.service;
-          agent = self.packages.${system}.metsuke;
-        }
-      );
+      flake.hydraJobs =
+        let
+          jobs = {
+            # A hydraJob, not a check: runNixOSTest wants /dev/kvm, and `nix flake
+            # check` has to stay runnable wherever the crates build. The end-to-end
+            # job is devnet/flake.nix's, which is where the node it needs is pinned.
+            units = lib.genAttrs systems (
+              system:
+              import ./nix/unit-test.nix {
+                pkgs = inputs.nixpkgs.legacyPackages.${system};
+                agentModule = self.nixosModules.metsuke;
+                serverModule = self.nixosModules.metsuke-server;
+                metrics = ./crates/metsuke/tests/fixtures/recordings/leios-node.prom;
+                traces = ./crates/metsuke/tests/fixtures/recordings/leios-node-traces.log;
+                contribUnit = ./contrib/metsuke.service;
+                agent = self.packages.${system}.metsuke;
+              }
+            );
+
+            packages = lib.genAttrs systems (system: removeAttrs self.packages.${system} [ "default" ]);
+            checks = lib.genAttrs systems (system: self.checks.${system});
+            devShells = lib.genAttrs systems (system: self.devShells.${system});
+          };
+
+          # Every job above that this system has one of. Collected rather than
+          # listed, so a job added to `jobs` is a job the aggregate covers and a
+          # green tick keeps meaning the whole jobset.
+          builtFor =
+            system: lib.collect lib.isDerivation (lib.mapAttrs (_: bySystem: bySystem.${system}) jobs);
+
+          aggregate =
+            system: name: constituents:
+            inputs.nixpkgs.legacyPackages.${system}.releaseTools.aggregate {
+              inherit name constituents;
+            };
+
+          # One per system, so a failure says which arch without opening the
+          # jobset, and the arches can be required separately while one is new.
+          perSystem = lib.genAttrs systems (system: aggregate system "required-${system}" (builtFor system));
+        in
+        jobs
+        // lib.mapAttrs' (system: job: lib.nameValuePair "required-${system}" job) perSystem
+        // {
+          # What a branch protects on: one status check standing for every
+          # arch's aggregate, so a system added to `systems` cannot quietly
+          # stop being required.
+          required = aggregate (builtins.head systems) "required" (lib.attrValues perSystem);
+        };
 
       flake.nixosModules = {
         metsuke =
@@ -291,6 +324,7 @@
             metsuke = craneLib.buildPackage agentArgs;
             metsuke-unit = contribUnit;
             metsuke-allowlist = (import ./nix/allowlist.nix { inherit pkgs; }).package;
+            metsuke-roster = (import ./nix/roster.nix { inherit pkgs; }).package;
             # The developer's pull tool, which links the wire crate alone. The
             # server tree is here because cargo loads every workspace member's
             # manifest, and this crate dev-depends on the server: sources it
@@ -328,10 +362,19 @@
 
             allowlist = (import ./nix/allowlist.nix { inherit pkgs; }).tests;
 
+            roster = (import ./nix/roster.nix { inherit pkgs; }).tests;
+
             server-config = import ./nix/server-config-test.nix {
               inherit pkgs;
               serverModule = self.nixosModules.metsuke-server;
               server = config.packages.metsuke-server;
+            };
+
+            roster-unit = import ./nix/roster-unit-test.nix {
+              inherit pkgs;
+              serverModule = self.nixosModules.metsuke-server;
+              server = config.packages.metsuke-server;
+              roster = config.packages.metsuke-roster;
             };
 
             static-x86_64-linux = linksNothing config.packages.metsuke-static-x86_64-linux;
@@ -452,6 +495,50 @@
                 inherit (pkgs) cargo clippy;
               };
               settings.denyWarnings = true;
+              entry = lib.mkForce (
+                toString (
+                  pkgs.writeShellScript "clippy-hook" ''
+                    export PATH=${
+                      lib.makeBinPath [
+                        pkgs.cargo
+                        pkgs.clippy
+                        pkgs.rustc
+                      ]
+                    }:$PATH
+                    # Named rather than left to PATH: an interactive devShell
+                    # sources the user's own rc, so a rustup shim can sit ahead
+                    # of this and hand cargo a different rustc than the clippy
+                    # beside it.
+                    export RUSTC=${lib.getExe' pkgs.rustc "rustc"}
+                    if ! command -v cc >/dev/null; then
+                      echo "clippy builds this workspace's build scripts and there is no cc here. Commit from the devShell: nix develop"
+                      exit 1
+                    fi
+                    # Read off the run rather than predicted: what clippy needs
+                    # cached is what it resolves for this target, and probing
+                    # that with cargo fetch or cargo metadata over-resolves and
+                    # refuses a cargo home that would have linted fine.
+                    log=$(mktemp)
+                    trap 'rm -f "$log"' EXIT
+                    set -o pipefail
+                    cargo-clippy clippy --all-targets --offline -- --deny warnings 2>&1 | tee "$log"
+                    status=$?
+                    # Both of cargo's offline complaints: a crate the lock names
+                    # that is not cached, and one it wants to download.
+                    if [ "$status" -ne 0 ] && grep -qF \
+                      -e 'offline mode (via' \
+                      -e 'but --offline was specified' "$log"; then
+                      echo
+                      echo "A crate this workspace locks is not in this cargo home, so that is not a lint. Warm it once: nix develop -c cargo fetch"
+                    fi
+                    if [ "$status" -ne 0 ] && grep -qF 'incompatible version of rustc' "$log"; then
+                      echo
+                      echo "The target dir holds artifacts from another rustc, so that is not a lint. Clear it once: nix develop -c cargo clean"
+                    fi
+                    exit "$status"
+                  ''
+                )
+              );
             };
           };
 

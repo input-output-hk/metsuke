@@ -11,7 +11,7 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use metsuke_server::archive::{ArchiveError, Fetch, Kind, List, Store, StoredSubmission};
+use metsuke_server::archive::{ArchiveError, Bytes, Fetch, Kind, List, Store, StoredSubmission};
 use metsuke_server::config::S3Config;
 use metsuke_server::s3::{META_SIGNATURE, META_VKEY, S3Archive};
 use metsuke_server::verify::{audit, verify};
@@ -218,17 +218,19 @@ const COUNTER: u64 = 42;
 
 /// A submission and the bytes it was sealed from, so a test can compare what
 /// the endpoint received against what the client sent.
-fn submission(counter: u64) -> (Vec<u8>, metsuke_wire::envelope::Signature) {
+fn submission(counter: u64) -> (Vec<u8>, metsuke_wire::envelope::Attestation) {
     let key = test_key();
     seal(&key, &envelope_for(&key, counter))
 }
 
 /// The sealed submission as the archive is asked to store it.
-fn stored(signature: metsuke_wire::envelope::Signature, wire_bytes: &[u8]) -> StoredSubmission<'_> {
+fn stored(
+    attestation: metsuke_wire::envelope::Attestation,
+    wire_bytes: &[u8],
+) -> StoredSubmission<'_> {
     stored_submission(
-        &test_key(),
         object_name(&test_key(), test_now(), Kind::Metrics),
-        signature,
+        attestation,
         wire_bytes,
     )
 }
@@ -236,8 +238,8 @@ fn stored(signature: metsuke_wire::envelope::Signature, wire_bytes: &[u8]) -> St
 #[test]
 fn a_stored_object_is_put_at_its_key_with_the_body_verbatim() {
     let endpoint = FakeS3::start(vec![Reply::recorded("put-accepted")]);
-    let (wire_bytes, signature) = submission(COUNTER);
-    let submission = stored(signature, &wire_bytes);
+    let (wire_bytes, attestation) = submission(COUNTER);
+    let submission = stored(attestation.clone(), &wire_bytes);
     endpoint.archive(1).store(&submission).unwrap();
 
     let requests = endpoint.requests();
@@ -256,18 +258,18 @@ fn a_stored_object_is_put_at_its_key_with_the_body_verbatim() {
 #[test]
 fn the_metadata_headers_carry_what_re_verifying_the_object_needs() {
     let endpoint = FakeS3::start(vec![Reply::recorded("put-accepted")]);
-    let (wire_bytes, signature) = submission(COUNTER);
+    let (wire_bytes, attestation) = submission(COUNTER);
     let key = test_key();
     endpoint
         .archive(1)
-        .store(&stored(signature, &wire_bytes))
+        .store(&stored(attestation.clone(), &wire_bytes))
         .unwrap();
 
     let requests = endpoint.requests();
     let put = &requests[0];
     assert_eq!(
         put.header(META_SIGNATURE),
-        Some(hex::encode(&signature.to_bytes()).as_str())
+        Some(hex::encode(&attestation.signature_bytes()).as_str())
     );
     assert_eq!(
         put.header(META_VKEY),
@@ -280,10 +282,10 @@ fn the_metadata_headers_carry_what_re_verifying_the_object_needs() {
 #[test]
 fn the_metadata_headers_are_signed() {
     let endpoint = FakeS3::start(vec![Reply::recorded("put-accepted")]);
-    let (wire_bytes, signature) = submission(COUNTER);
+    let (wire_bytes, attestation) = submission(COUNTER);
     endpoint
         .archive(1)
-        .store(&stored(signature, &wire_bytes))
+        .store(&stored(attestation.clone(), &wire_bytes))
         .unwrap();
 
     let requests = endpoint.requests();
@@ -305,11 +307,11 @@ fn a_failed_put_is_retried_up_to_the_configured_count_after_the_backoff() {
         Reply::invented(500, "slow down"),
         Reply::recorded("put-accepted"),
     ]);
-    let (wire_bytes, signature) = submission(COUNTER);
+    let (wire_bytes, attestation) = submission(COUNTER);
     let started = std::time::Instant::now();
     endpoint
         .archive(1)
-        .store(&stored(signature, &wire_bytes))
+        .store(&stored(attestation.clone(), &wire_bytes))
         .unwrap();
     assert_eq!(endpoint.requests().len(), 2);
     assert!(
@@ -322,8 +324,8 @@ fn a_failed_put_is_retried_up_to_the_configured_count_after_the_backoff() {
 #[test]
 fn a_put_that_keeps_failing_is_an_error_naming_the_key_and_the_attempts() {
     let endpoint = FakeS3::start(vec![Reply::invented(500, "no"), Reply::invented(500, "no")]);
-    let (wire_bytes, signature) = submission(COUNTER);
-    let submission = stored(signature, &wire_bytes);
+    let (wire_bytes, attestation) = submission(COUNTER);
+    let submission = stored(attestation.clone(), &wire_bytes);
     let error = endpoint
         .archive(1)
         .store(&submission)
@@ -341,10 +343,10 @@ fn a_put_that_keeps_failing_is_an_error_naming_the_key_and_the_attempts() {
 #[test]
 fn a_refused_put_is_not_retried() {
     let endpoint = FakeS3::start(vec![Reply::recorded("put-refused")]);
-    let (wire_bytes, signature) = submission(COUNTER);
+    let (wire_bytes, attestation) = submission(COUNTER);
     let error = endpoint
         .archive(1)
-        .store(&stored(signature, &wire_bytes))
+        .store(&stored(attestation.clone(), &wire_bytes))
         .unwrap_err()
         .to_string();
     // The endpoint's own words for it, so an operator reading the log sees
@@ -361,8 +363,8 @@ fn a_refused_put_is_not_retried() {
 #[test]
 fn a_stored_object_fetches_back_and_verifies() {
     let endpoint = FakeS3::start(Vec::new());
-    let (wire_bytes, signature) = submission(COUNTER);
-    let submission = stored(signature, &wire_bytes);
+    let (wire_bytes, attestation) = submission(COUNTER);
+    let submission = stored(attestation.clone(), &wire_bytes);
     let archive = endpoint.archive(1);
     archive.store(&submission).unwrap();
 
@@ -386,16 +388,19 @@ fn the_object_a_bucket_handed_back_verifies() {
 
     let header = verify(&fetched, MAX_HEADER_BYTES).unwrap();
     assert_eq!(header.provenance.pool_id, pool_of(&test_key()));
-    assert_eq!(fetched.vkey, test_key().verifying_key());
+    assert_eq!(
+        fetched.attestation.key_bytes(),
+        test_key().verifying_key().as_bytes()
+    );
 }
 
 /// The download route reads the bucket through `Bytes`, which asks for the
-/// body and none of the metadata `Fetch` reconciles.
+/// body and for the two metadata headers a consumer checks it with.
 #[test]
 fn an_object_downloads_as_the_bytes_that_were_put() {
     let endpoint = FakeS3::start(Vec::new());
-    let (wire_bytes, signature) = submission(COUNTER);
-    let submission = stored(signature, &wire_bytes);
+    let (wire_bytes, attestation) = submission(COUNTER);
+    let submission = stored(attestation.clone(), &wire_bytes);
     let archive = endpoint.archive(1);
     archive.store(&submission).unwrap();
 
@@ -404,6 +409,25 @@ fn an_object_downloads_as_the_bytes_that_were_put() {
         wire_bytes,
         "a developer verifies the signature over exactly these bytes"
     );
+}
+
+/// And the two values that check is run with come back off the object's own
+/// metadata, so what a download hands a consumer is verifiable on its own.
+#[test]
+fn a_download_carries_the_metadata_the_put_wrote() {
+    let endpoint = FakeS3::start(Vec::new());
+    let (wire_bytes, attestation) = submission(COUNTER);
+    let submission = stored(attestation.clone(), &wire_bytes);
+    let archive = endpoint.archive(1);
+    archive.store(&submission).unwrap();
+
+    let stream = archive.reader(&submission.object_key()).unwrap();
+
+    let attestation = stream.attestation.expect("the object carries its metadata");
+    assert_eq!(attestation, submission.attestation);
+    // The pair is the whole verification input: what was stored under it
+    // opens, which is the check a consumer runs for itself.
+    assert!(attestation.verifies(&wire_bytes));
 }
 
 /// The guard `Bytes for S3Archive` states: nothing but a v1 object key is
@@ -440,11 +464,10 @@ fn an_audit_verifies_what_is_stored_and_names_what_is_missing() {
     let stored_keys: Vec<String> = [1u64, 2]
         .into_iter()
         .map(|counter| {
-            let (wire_bytes, signature) = seal(&key, &envelope_for(&key, counter));
+            let (wire_bytes, attestation) = seal(&key, &envelope_for(&key, counter));
             let submission = stored_submission(
-                &key,
                 object_name(&key, test_now(), Kind::Metrics),
-                signature,
+                attestation,
                 &wire_bytes,
             );
             archive.store(&submission).unwrap();
@@ -514,10 +537,10 @@ fn an_https_endpoint_is_reached_over_tls() {
         credentials(),
     )
     .unwrap();
-    let (wire_bytes, signature) = submission(COUNTER);
+    let (wire_bytes, attestation) = submission(COUNTER);
     // The peer drops the connection mid-handshake, so the PUT fails either
     // way; what it saw on the wire is the assertion.
-    let _ = archive.store(&stored(signature, &wire_bytes));
+    let _ = archive.store(&stored(attestation.clone(), &wire_bytes));
 
     let bytes = peer.join().unwrap();
     assert_eq!(
@@ -533,8 +556,8 @@ fn an_endpoint_that_is_not_listening_is_an_error() {
     // Nothing listens on discard/9, so this fails without waiting out the
     // timeout.
     let archive = S3Archive::new(&config_for("http://127.0.0.1:9", 0), credentials()).unwrap();
-    let (wire_bytes, signature) = submission(COUNTER);
-    let submission = stored(signature, &wire_bytes);
+    let (wire_bytes, attestation) = submission(COUNTER);
+    let submission = stored(attestation.clone(), &wire_bytes);
     let error = archive.store(&submission).unwrap_err().to_string();
     assert!(error.contains(&submission.object_key()), "got: {error}");
 }
@@ -758,9 +781,13 @@ fn a_put_gives_up_at_the_configured_timeout() {
         drop(held);
     });
     let archive = S3Archive::new(&config_for(&endpoint, 0), credentials()).unwrap();
-    let (wire_bytes, signature) = submission(COUNTER);
+    let (wire_bytes, attestation) = submission(COUNTER);
     let started = std::time::Instant::now();
-    assert!(archive.store(&stored(signature, &wire_bytes)).is_err());
+    assert!(
+        archive
+            .store(&stored(attestation.clone(), &wire_bytes))
+            .is_err()
+    );
     let elapsed = started.elapsed();
     assert!(
         elapsed >= TIMEOUT && elapsed < TIMEOUT * 10,
@@ -778,14 +805,13 @@ fn an_audit_reports_an_object_signed_by_another_pools_key() {
     let endpoint = FakeS3::start(Vec::new());
     let archive = endpoint.archive(1);
     let stranger = support::other_key();
-    let (wire_bytes, signature) = seal(&stranger, &envelope_for(&stranger, 1));
+    let (wire_bytes, attestation) = seal(&stranger, &envelope_for(&stranger, 1));
     let mut name = object_name(&stranger, test_now(), Kind::Metrics);
     name.pool_id = pool_of(&test_key());
     archive
         .store(&StoredSubmission {
             name,
-            vkey: stranger.verifying_key(),
-            signature,
+            attestation,
             wire_bytes: &wire_bytes,
         })
         .unwrap();

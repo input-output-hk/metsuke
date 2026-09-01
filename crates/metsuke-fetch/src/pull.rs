@@ -4,12 +4,41 @@
 //! loop it is.
 
 use std::io;
+use std::num::NonZeroU64;
 use std::time::Duration;
 
 use base64::Engine as _;
+use metsuke_wire::envelope::{Attestation, HEADER_SIGNATURE, HEADER_VKEY};
 use metsuke_wire::http::{
     self, AFTER_FIELD, KEY_FIELD, Listing, OBJECT_PATH, PREFIX_FIELD, SUBMISSIONS_PATH,
 };
+
+/// The most an object's declared length may reserve before its body arrives.
+/// Not a limit on the object, which is `--max-object-bytes`; this is how much
+/// of a stranger's arithmetic the process acts on in advance.
+///
+/// Allocation staging, not a bound anything can observe (CLAUDE.md
+/// `## Conventions`): `io::copy` grows past it, and what an object may weigh is
+/// `--max-object-bytes`.
+const PREALLOCATED_MAX: u64 = 1024 * 1024;
+
+/// One object as it came back: the bytes to write, and the pair that says
+/// whose they are where the archive held it. `None` is not a fault of the
+/// download. A filesystem archive discards the pair at ingest
+/// (`metsuke_server::archive::FilesystemArchive`), so an object stored through
+/// one can never be checked by anybody, and an object written by something
+/// other than metsuke-server carries none either.
+pub struct Object {
+    pub bytes: Vec<u8>,
+    pub attestation: Option<Attestation>,
+}
+
+/// The two headers off an answer's head. What an unverifiable object means is
+/// `sync`'s to say; `Attestation::from_headers` says when there is one.
+fn attestation(response: &ureq::http::Response<ureq::Body>) -> Option<Attestation> {
+    let text = |header: &str| -> Option<&str> { response.headers().get(header)?.to_str().ok() };
+    Attestation::from_headers(text(HEADER_VKEY), text(HEADER_SIGNATURE))
+}
 
 /// The archive behind one server and one account.
 pub struct Archive {
@@ -43,6 +72,11 @@ pub enum PullError {
     NoLength { key: String },
     #[error("the download of {key} ended after {read} of the {length} bytes it declared")]
     Short { key: String, read: u64, length: u64 },
+    /// Refused before a byte is read. Checking an object means holding it, so
+    /// this is the bound on what one download may cost, and raising
+    /// `--max-object-bytes` is what an operator does about it.
+    #[error("{key} declares {length} bytes, over the {max} byte limit this run will hold to check")]
+    Oversized { key: String, length: u64, max: u64 },
     #[error("the download of {key} did not read: {source}")]
     Unread {
         key: String,
@@ -86,10 +120,16 @@ impl Archive {
         })
     }
 
-    /// One object copied into `into`, verbatim, returning how many bytes that
-    /// was. The count is checked against the length the server declared: a
+    /// One object, verbatim, with whatever the answer carried to check it
+    /// with. The count is checked against the length the server declared: a
     /// download cut short must not be written down as the object.
-    pub fn object(&self, key: &str, into: &mut dyn io::Write) -> Result<u64, PullError> {
+    ///
+    /// Held whole rather than streamed to its file, because the signature is
+    /// over the whole body (ADR 0001) and `verify_strict` takes a slice, so
+    /// nothing can check an object it has only seen a chunk at a time. That is
+    /// what `max_object_bytes` bounds, and it is why the length is refused
+    /// before a byte is read rather than after.
+    pub fn object(&self, key: &str, max_object_bytes: NonZeroU64) -> Result<Object, PullError> {
         let url = format!("{}{OBJECT_PATH}?{KEY_FIELD}={}", self.server, escaped(key));
         let mut response = self.answered(&url)?;
         // ureq's own reading of the length, which answers `None` for a chunked
@@ -101,14 +141,29 @@ impl Archive {
             .ok_or_else(|| PullError::NoLength {
                 key: key.to_string(),
             })?;
-        let read = io::copy(&mut response.body_mut().as_reader(), into).map_err(|source| {
-            PullError::Unread {
+        if length > max_object_bytes.get() {
+            return Err(PullError::Oversized {
                 key: key.to_string(),
-                source,
-            }
-        })?;
+                length,
+                max: max_object_bytes.get(),
+            });
+        }
+        let attestation = attestation(&response);
+        // A hint only, so the cap costs a reallocation on an object past it and
+        // nothing else: `io::copy` grows this as the body arrives, and what
+        // bounds the object is the refusal above. Capped because the length
+        // here is the one the server declared, and reserving all of it would
+        // let an answer that sends no body at all spend the memory of one.
+        let mut bytes = Vec::with_capacity(length.min(PREALLOCATED_MAX) as usize);
+        let read =
+            io::copy(&mut response.body_mut().as_reader(), &mut bytes).map_err(|source| {
+                PullError::Unread {
+                    key: key.to_string(),
+                    source,
+                }
+            })?;
         match read == length {
-            true => Ok(read),
+            true => Ok(Object { bytes, attestation }),
             false => Err(PullError::Short {
                 key: key.to_string(),
                 read,

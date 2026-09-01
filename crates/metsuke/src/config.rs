@@ -37,6 +37,12 @@ pub struct Config {
     pub scrape_interval_secs: u64,
     #[serde(default = "default_upload_interval_secs")]
     pub upload_interval_secs: u64,
+    /// How many submissions one upload tick may send. One is not enough for a
+    /// trace stream: what a node emits between ticks can be more than a single
+    /// submission carries, and the difference accumulates until the spool's cap
+    /// drops it.
+    #[serde(default = "default_upload_max_submissions")]
+    pub upload_max_submissions: NonZeroUsize,
     /// SNTP servers as `host:port`, tried in order.
     #[serde(default = "default_sntp_servers")]
     pub sntp_servers: Vec<String>,
@@ -65,8 +71,9 @@ pub struct Config {
     pub scrape_max_body_bytes: u64,
     #[serde(default = "default_upload_timeout_secs")]
     pub upload_timeout_secs: u64,
-    /// Upper bound on the random spread added when retrying after a 5xx or
-    /// transport failure.
+    /// Upper bound on the spread that places this agent within the interval,
+    /// and on the spread a retry adds, so agents installed together do not
+    /// upload in step (`schedule::Schedule::after`).
     #[serde(default = "default_upload_jitter_max_secs")]
     pub upload_jitter_max_secs: u64,
     /// Clamp on the exponential backoff after 4xx rejections.
@@ -209,6 +216,13 @@ fn default_scrape_interval_secs() -> u64 {
 
 fn default_upload_interval_secs() -> u64 {
     3600
+}
+
+/// Room for several times what a Leios producer was measured to spool between
+/// ticks, so a backlog drains rather than only holding steady. What bounds it
+/// is the server's own upload rate limit, which this stays well inside.
+fn default_upload_max_submissions() -> NonZeroUsize {
+    NonZeroUsize::new(16).expect("16 is not zero")
 }
 
 fn default_sntp_servers() -> Vec<String> {

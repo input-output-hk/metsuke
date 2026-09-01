@@ -8,18 +8,17 @@ use metsuke_wire::envelope::{Envelope, Header, SigningKey};
 
 mod support;
 use support::{
-    MAX_HEADER_BYTES, envelope_for, object_name, other_key, pool_of, seal, test_agent_id, test_key,
-    test_now,
+    MAX_HEADER_BYTES, envelope_for, object_name, other_key, pool_of, seal, seal_with,
+    test_agent_id, test_key, test_leios_key, test_now,
 };
 
 /// The object the archive holds for `envelope`, signed by `signer` and filed
 /// under `signer`'s pool.
 fn object_of(signer: &SigningKey, envelope: &Envelope) -> FetchedObject {
-    let (wire_bytes, signature) = seal(signer, envelope);
+    let (wire_bytes, attestation) = seal(signer, envelope);
     FetchedObject {
         name: object_name(signer, test_now(), Kind::Metrics),
-        vkey: signer.verifying_key(),
-        signature,
+        attestation,
         wire_bytes,
     }
 }
@@ -82,9 +81,34 @@ fn bytes_that_were_never_signed_fail_before_the_header_is_read() {
     );
 }
 
+/// A Leios key derives no pool, so the pool component is checked against the
+/// signed header's own claim. That does not prove the claim (the roster that
+/// admitted the object is gone, ADR 0011), but it does catch an object whose
+/// bytes say one pool and whose key files it under another.
+#[test]
+fn a_leios_object_filed_under_a_pool_its_header_does_not_claim_does_not_verify() {
+    let key = test_key();
+    let envelope = envelope_for(&key, 7);
+    let (wire_bytes, attestation) = seal_with(&test_leios_key(1), &envelope);
+    let object = FetchedObject {
+        name: object_name(&key, test_now(), Kind::Metrics),
+        attestation,
+        wire_bytes,
+    };
+    verified(&object).expect("filed under the pool its header claims");
+
+    let mut misfiled = object;
+    misfiled.name.pool_id = pool_of(&other_key());
+    let error = verified(&misfiled).unwrap_err();
+    assert!(
+        matches!(error, VerifyError::Misfiled { .. }),
+        "got: {error}"
+    );
+}
+
 /// An object whose key says one agent and whose header says another is
 /// misfiled: the key is `store`'s output, so re-deriving it is what catches a
-/// batch that was filed under something other than what it carries.
+/// submission that was filed under something other than what it carries.
 #[test]
 fn an_object_filed_under_the_wrong_agent_does_not_verify() {
     let mut object = stored_object();
@@ -96,7 +120,7 @@ fn an_object_filed_under_the_wrong_agent_does_not_verify() {
     );
 }
 
-/// The same for the kind: a metrics batch filed as logs is not the object its
+/// The same for the kind: a metrics submission filed as logs is not the object its
 /// key names.
 #[test]
 fn an_object_filed_under_the_wrong_kind_does_not_verify() {
@@ -128,6 +152,7 @@ fn a_header_over_the_bound_does_not_verify() {
 fn an_audit_counts_unreadable_and_failed_objects_apart() {
     let found = Audit {
         verified: 1,
+        unattributed: 0,
         failures: vec![
             AuditFailure::Unreadable {
                 key: stored_object().name.to_key(),

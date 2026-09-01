@@ -65,6 +65,7 @@
               agentModule = inputs.metsuke.nixosModules.metsuke;
               serverModule = inputs.metsuke.nixosModules.metsuke-server;
               serverPackage = inputs.metsuke.packages.${system}.metsuke-server;
+              rosterPackage = inputs.metsuke.packages.${system}.metsuke-roster;
             }
           );
         in

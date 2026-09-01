@@ -1,24 +1,28 @@
-//! One batch upload: POST the sealed bytes with the ADR-0001 header
+//! One submission upload: POST the sealed bytes with the ADR-0001 header
 //! contract and classify the answer. Never touches the spool: the caller
 //! acks on `Acked` and leaves rows in place otherwise (ADR 0004).
 
+use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use crate::delivery::SealedBatch;
+use crate::delivery::SealedSubmission;
 use crate::endpoint::UploadUrl;
-use metsuke_wire::envelope::{Ack, HEADER_SIGNATURE, HEADER_VKEY, VerifyingKey};
-use metsuke_wire::{hex, http};
+use metsuke_wire::envelope::{Ack, HEADER_POOL, PoolId};
+use metsuke_wire::http;
 
 pub struct UploadConfig {
     pub upload_url: UploadUrl,
     /// Whole-request deadline, as bounded by `metsuke_wire::http::agent`.
     pub timeout: Duration,
+    /// What one tick may send (`agent::Agent::upload_once`). Read there rather
+    /// than here: one POST is one POST whatever the tick's allowance is.
+    pub max_submissions: NonZeroUsize,
 }
 
 /// What one upload attempt means for the spool and the schedule.
 #[derive(Debug)]
 pub enum UploadOutcome {
-    /// The server stored the batch: ack the rows.
+    /// The server stored the submission: ack the rows.
     Acked(Ack),
     /// Transport failure, or any status `metsuke_wire::http::classify` reads
     /// as retryable: the server may recover on its own; retry next interval.
@@ -27,16 +31,25 @@ pub enum UploadOutcome {
     Rejected { status: u16, reason: String },
 }
 
-/// POST one sealed batch. Infallible by design: every failure mode is a
+/// POST one sealed submission. Infallible by design: every failure mode is a
 /// scheduling decision, not an error path.
-pub fn upload(config: &UploadConfig, vkey: &VerifyingKey, batch: &SealedBatch) -> UploadOutcome {
+pub fn upload(
+    config: &UploadConfig,
+    pool_id: PoolId,
+    submission: &SealedSubmission,
+) -> UploadOutcome {
+    let [vkey, signature] = submission.attestation.headers();
     let response = http::agent(config.timeout)
         .post(config.upload_url.as_str())
-        .header(HEADER_VKEY, hex::encode(vkey.as_bytes()))
-        .header(HEADER_SIGNATURE, hex::encode(&batch.signature.to_bytes()))
+        .header(vkey.0, vkey.1)
+        .header(signature.0, signature.1)
+        // Sent whichever key signed: under a Leios key it is the only thing
+        // that says which pool this is, and under a cold key it is the
+        // derivation stated twice, which the server checks (ADR 0011).
+        .header(HEADER_POOL, pool_id.to_bech32())
         .header("content-encoding", "zstd")
         .content_type("application/json")
-        .send(&batch.wire_bytes[..]);
+        .send(&submission.wire_bytes[..]);
     let mut response = match response {
         Ok(response) => response,
         Err(error) => return UploadOutcome::Retryable(error.to_string()),

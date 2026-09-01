@@ -27,6 +27,10 @@ enum Fatal {
     EmptyPassword { path: String },
     #[error(transparent)]
     Sync(#[from] SyncError),
+    /// Not a failure to sync: the run did what it could and the objects it
+    /// refused are named above this. The code is what a script reads.
+    #[error("{count} object(s) did not verify and were not written")]
+    NotWritten { count: usize },
 }
 
 fn main() -> std::process::ExitCode {
@@ -61,6 +65,7 @@ fn fetch(args: Args) -> Result<(), Fatal> {
         access,
         prefix,
         selection,
+        verification,
     } = args;
     // Before anything that can fail, so a run that stops on its password file
     // or on the server has still named the build it stopped from.
@@ -86,21 +91,42 @@ fn fetch(args: Args) -> Result<(), Fatal> {
                 into: &into,
                 state: &state,
             };
-            let report = sync::run(&archive, &filters, &destination, |key| println!("{key}"))?;
+            let report = sync::run(&archive, &filters, &destination, verification, |key| {
+                println!("{key}")
+            })?;
             let what = format!("into {}, {} bytes", into.display(), report.bytes);
             (report, what, Some(recipe::read(&into, selection.kind)))
         }
     };
+    // Before the summary, because a key nobody may trust is the news and the
+    // counts are the context for it.
+    for rejected in &report.rejected {
+        eprintln!("not written: {} {}", rejected.key, rejected.reason);
+    }
     eprintln!(
-        "{} objects {what}; {} outside the filters, {} this build cannot name",
-        report.objects, report.passed, report.unnameable
+        "{} objects {what}; {} verified, {} unverifiable, {} not written; \
+         {} outside the filters, {} this build cannot name",
+        report.objects,
+        report.verified,
+        report.unverifiable,
+        report.rejected.len(),
+        report.passed,
+        report.unnameable
     );
     // Printed rather than left to the reader, because the read a consumer
     // reaches for first is lossy here. See docs/reading-the-archive.md.
     if let Some(read) = read {
         eprintln!("read them with: duckdb -c \"select * from {read}\"");
     }
-    Ok(())
+    // The objects that did land are on disk and the cursor is past every key
+    // this run saw, so the exit code is the only thing left to say that what a
+    // reader will find is short of what was listed.
+    match report.rejected.is_empty() {
+        true => Ok(()),
+        false => Err(Fatal::NotWritten {
+            count: report.rejected.len(),
+        }),
+    }
 }
 
 /// The account's password, with the trailing newline an editor leaves trimmed

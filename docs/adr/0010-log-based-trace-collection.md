@@ -86,10 +86,10 @@ upload loop seals, so the two streams share an agent's counter without
 coordinating.
 
 The stamp goes on before the row reaches the spool, so a stored row is the line
-it will be on the wire and taking a batch concatenates rows rather than reading
-any of them back (metsuke-jfb.11). Two things follow. A row costs exactly what
-the spool recorded for it, which is the one number the agent's batch budget and
-the server's decompress limit both count
+it will be on the wire and taking a submission concatenates rows rather than
+reading any of them back (metsuke-jfb.11). Two things follow. A row costs exactly
+what the spool recorded for it, which is the one number the agent's submission
+budget and the server's decompress limit both count
 (`envelope::PayloadLine::wire_bytes`). And no later change to a payload schema
 can refuse a line already written. What the spool holds is text this build
 produced, not a value some future build has to agree with.

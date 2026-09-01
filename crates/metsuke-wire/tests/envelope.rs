@@ -166,8 +166,8 @@ proptest! {
     #[test]
     fn seal_open_roundtrip(env in arb_envelope(), seed in any::<[u8; 32]>(), level in 0i32..=5) {
         let key = SigningKey::from_bytes(&seed);
-        let (bytes, sig) = envelope::seal(&key, &env, level).unwrap();
-        let opened = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap();
+        let (bytes, sig) = envelope::seal(&cold(&key), &env, level).unwrap();
+        let opened = envelope::open(&sig, &bytes, TEST_LIMITS).unwrap();
         prop_assert_eq!(env, opened);
     }
 
@@ -181,11 +181,11 @@ proptest! {
         mask in 1u8..=255,
     ) {
         let key = SigningKey::from_bytes(&seed);
-        let (mut bytes, sig) = envelope::seal(&key, &env, 0).unwrap();
+        let (mut bytes, sig) = envelope::seal(&cold(&key), &env, 0).unwrap();
         let i = index.index(bytes.len());
         bytes[i] ^= mask;
-        let err = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap_err();
-        prop_assert!(matches!(err, envelope::OpenError::Signature(_)));
+        let err = envelope::open(&sig, &bytes, TEST_LIMITS).unwrap_err();
+        prop_assert!(matches!(err, envelope::OpenError::Signature));
     }
 
     // The v2 payload rides the same seal/open pair: the lines come back in
@@ -197,8 +197,8 @@ proptest! {
         level in 0i32..=5,
     ) {
         let key = SigningKey::from_bytes(&seed);
-        let (bytes, sig) = envelope::seal(&key, &env, level).unwrap();
-        let opened = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap();
+        let (bytes, sig) = envelope::seal(&cold(&key), &env, level).unwrap();
+        let opened = envelope::open(&sig, &bytes, TEST_LIMITS).unwrap();
         prop_assert_eq!(env, opened);
     }
 }
@@ -223,7 +223,7 @@ proptest! {
         seed in any::<[u8; 32]>(),
     ) {
         let key = SigningKey::from_bytes(&seed);
-        let (bytes, _) = envelope::seal(&key, &env, 0).unwrap();
+        let (bytes, _) = envelope::seal(&cold(&key), &env, 0).unwrap();
         let header = envelope::header_json(&env).unwrap();
         prop_assert_eq!(&bytes[..4], CONTAINER_MAGIC.to_le_bytes());
         prop_assert_eq!(&bytes[4..HEADER_OFFSET], (header.len() as u32).to_le_bytes());
@@ -236,7 +236,7 @@ proptest! {
     }
 
     // metsuke-jfb.9: what a row is charged is what the payload spends on it.
-    // The agent budgets a batch by summing `wire_bytes` and the server bounds
+    // The agent budgets a submission by summing `wire_bytes` and the server bounds
     // the bytes `payload_lines` produced, so a framing change that moves one
     // without the other puts the two limits out of step.
     #[test]
@@ -268,7 +268,7 @@ proptest! {
 
     // Both payload shapes make the same line; ADR 0010 says why that matters.
     #[test]
-    fn every_payload_line_carries_the_batch_s_provenance(
+    fn every_payload_line_carries_the_submission_s_provenance(
         scrapes in arb_envelope(),
         lines in arb_lines_envelope(),
     ) {
@@ -284,7 +284,7 @@ proptest! {
 }
 
 // The stamp is what an agent knows before it spools a line, which is the pool
-// and the machine and nothing else: the batch's counter and timestamp are drawn
+// and the machine and nothing else: the submission's counter and timestamp are drawn
 // when it is sealed, so they stay in the header.
 #[test]
 fn a_stamped_line_names_the_pool_and_the_agent() {
@@ -340,7 +340,7 @@ fn a_number_json_cannot_write_back_is_refused_at_the_parse() {
 }
 
 #[test]
-fn open_refuses_a_line_stamped_with_another_batch() {
+fn open_refuses_a_line_stamped_with_another_submission() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let pool_id = PoolId::from_cold_key(&key.verifying_key());
     let elsewhere = Provenance {
@@ -360,7 +360,7 @@ fn open_refuses_a_line_stamped_with_another_batch() {
         }),
         format!("{line}\n").as_bytes(),
     );
-    let err = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap_err();
+    let err = envelope::open(&sig, &bytes, TEST_LIMITS).unwrap_err();
     assert!(
         matches!(err, envelope::OpenError::LineProvenance { index: 0 }),
         "expected the offending line to be named, got: {err}"
@@ -390,7 +390,7 @@ fn open_refuses_an_unstamped_line() {
         }),
         format!("{stamped}\n{{\"ns\":\"Consensus.LeiosKernel\"}}\n").as_bytes(),
     );
-    let err = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap_err();
+    let err = envelope::open(&sig, &bytes, TEST_LIMITS).unwrap_err();
     assert!(
         matches!(err, envelope::OpenError::LineStamp { index: 1, .. }),
         "expected the offending line to be named, got: {err}"
@@ -407,7 +407,7 @@ fn open_refuses_an_unstamped_line() {
 fn the_header_reads_back_without_a_decompressor() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let env = empty_scrapes_envelope(&key);
-    let (bytes, _) = envelope::seal(&key, &env, 0).unwrap();
+    let (bytes, _) = envelope::seal(&cold(&key), &env, 0).unwrap();
 
     let frames = envelope::split(&bytes, TEST_LIMITS.max_header_bytes).unwrap();
     let header: serde_json::Value = serde_json::from_slice(frames.header).unwrap();
@@ -420,10 +420,10 @@ fn the_header_reads_back_without_a_decompressor() {
 // The same read as the fields a caller acts on, which is what an ingest path
 // files an object by (`envelope::read_header`).
 #[test]
-fn read_header_answers_the_batch_s_own_account_of_itself() {
+fn read_header_answers_the_submission_s_own_account_of_itself() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let env = empty_scrapes_envelope(&key);
-    let (bytes, _) = envelope::seal(&key, &env, 0).unwrap();
+    let (bytes, _) = envelope::seal(&cold(&key), &env, 0).unwrap();
 
     let header = envelope::read_header(&bytes, TEST_LIMITS.max_header_bytes).unwrap();
 
@@ -513,9 +513,7 @@ fn a_header_longer_than_the_body_is_refused() {
 fn open_refuses_a_body_that_is_not_a_container() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let plain = zstd::encode_all(&b"{}\n"[..], 0).unwrap();
-    use ed25519_dalek::Signer;
-    let err =
-        envelope::open(&key.verifying_key(), &plain, &key.sign(&plain), TEST_LIMITS).unwrap_err();
+    let err = envelope::open(&cold(&key).attest(&plain), &plain, TEST_LIMITS).unwrap_err();
     assert!(matches!(
         err,
         envelope::OpenError::Container(envelope::ContainerError::NotAContainer)
@@ -539,7 +537,7 @@ fn open_rejects_malformed_pool_id() {
         }),
         b"",
     );
-    let err = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap_err();
+    let err = envelope::open(&sig, &bytes, TEST_LIMITS).unwrap_err();
     assert!(matches!(err, envelope::OpenError::Json(_)));
 }
 
@@ -560,7 +558,7 @@ fn open_names_an_unsupported_schema_version() {
         }),
         b"",
     );
-    let err = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap_err();
+    let err = envelope::open(&sig, &bytes, TEST_LIMITS).unwrap_err();
     assert!(
         matches!(err, envelope::OpenError::UnsupportedSchemaVersion { found } if found == SCHEMA_VERSION_LINES + 1),
         "expected the version to be named, got: {err}"
@@ -584,7 +582,7 @@ fn open_rejects_an_unterminated_last_line() {
         }),
         b"whole\ncut off",
     );
-    let err = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap_err();
+    let err = envelope::open(&sig, &bytes, TEST_LIMITS).unwrap_err();
     assert!(matches!(err, envelope::OpenError::UnterminatedLine));
 }
 
@@ -612,12 +610,12 @@ fn pool_id_rejects_wrong_length() {
 fn open_rejects_oversized_payload() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let env = one_scrape_envelope(&key);
-    let (bytes, sig) = envelope::seal(&key, &env, 0).unwrap();
+    let (bytes, sig) = envelope::seal(&cold(&key), &env, 0).unwrap();
     let limits = Limits {
         max_decompressed_bytes: 8,
         ..TEST_LIMITS
     };
-    let err = envelope::open(&key.verifying_key(), &bytes, &sig, limits).unwrap_err();
+    let err = envelope::open(&sig, &bytes, limits).unwrap_err();
     assert!(matches!(
         err,
         envelope::OpenError::TooLarge {
@@ -632,12 +630,12 @@ fn open_rejects_oversized_payload() {
 fn open_under_a_huge_limit_costs_only_the_payload() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let env = empty_scrapes_envelope(&key);
-    let (bytes, sig) = envelope::seal(&key, &env, 0).unwrap();
+    let (bytes, sig) = envelope::seal(&cold(&key), &env, 0).unwrap();
     let limits = Limits {
         max_decompressed_bytes: 64 * 1024 * 1024 * 1024,
         ..TEST_LIMITS
     };
-    let opened = envelope::open(&key.verifying_key(), &bytes, &sig, limits).unwrap();
+    let opened = envelope::open(&sig, &bytes, limits).unwrap();
     assert_eq!(opened, env);
 }
 
@@ -656,29 +654,29 @@ fn a_counter_past_an_f64_s_exact_range_keeps_its_digits_through_seal_and_open() 
         declared_type: Some("counter".to_string()),
     };
     let envelope = test_envelope(&key, |stamp| scrapes_payload(&[counter], stamp));
-    let (bytes, sig) = envelope::seal(&key, &envelope, 0).unwrap();
+    let (bytes, sig) = envelope::seal(&cold(&key), &envelope, 0).unwrap();
 
-    let opened = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap();
+    let opened = envelope::open(&sig, &bytes, TEST_LIMITS).unwrap();
     let value = &opened.scrapes().unwrap()[0].metrics[0].value;
     assert_eq!(value.as_u64(), Some(ALLOCATED));
     assert_eq!(value.to_string(), ALLOCATED.to_string());
 }
 
-// What a consumer gets back out of a batch: the fields, not the bytes. The
+// What a consumer gets back out of a submission: the fields, not the bytes. The
 // only place a payload struct reads a payload line.
 #[test]
-fn a_consumer_reads_a_batch_s_scrapes_back_as_scrapes() {
+fn a_consumer_reads_a_submission_s_scrapes_back_as_scrapes() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
-    let (bytes, sig) = envelope::seal(&key, &one_scrape_envelope(&key), 0).unwrap();
-    let opened = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap();
+    let (bytes, sig) = envelope::seal(&cold(&key), &one_scrape_envelope(&key), 0).unwrap();
+    let opened = envelope::open(&sig, &bytes, TEST_LIMITS).unwrap();
 
     assert_eq!(opened.scrapes().unwrap(), [scrape()]);
 }
 
-// Asking a batch for the shape it does not carry names both versions rather
+// Asking a submission for the shape it does not carry names both versions rather
 // than reporting the fields the other schema happens not to have.
 #[test]
-fn reading_a_scrape_batch_as_trace_lines_names_both_schemas() {
+fn reading_a_scrape_submission_as_trace_lines_names_both_schemas() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let err = one_scrape_envelope(&key).trace_lines().unwrap_err();
     assert!(
@@ -705,8 +703,8 @@ fn a_line_holding_a_newline_seals_as_one_line() {
             stamp,
         )
     });
-    let (bytes, sig) = envelope::seal(&key, &envelope, 0).unwrap();
-    let opened = envelope::open(&key.verifying_key(), &bytes, &sig, TEST_LIMITS).unwrap();
+    let (bytes, sig) = envelope::seal(&cold(&key), &envelope, 0).unwrap();
+    let opened = envelope::open(&sig, &bytes, TEST_LIMITS).unwrap();
     assert_eq!(opened, envelope);
 }
 
@@ -759,11 +757,9 @@ const RECORDINGS: [&str; 2] = [
 /// One recording, opened. The signature is not recorded. Ed25519 is
 /// deterministic, so re-signing the same bytes with the same key reproduces it.
 fn recorded(hex: &str) -> (Vec<u8>, Envelope) {
-    use ed25519_dalek::Signer;
     let key = SigningKey::from_bytes(&[7u8; 32]);
     let bytes = metsuke_wire::hex::decode_bytes(hex.trim()).unwrap();
-    let opened =
-        envelope::open(&key.verifying_key(), &bytes, &key.sign(&bytes), TEST_LIMITS).unwrap();
+    let opened = envelope::open(&cold(&key).attest(&bytes), &bytes, TEST_LIMITS).unwrap();
     (bytes, opened)
 }
 
@@ -781,12 +777,12 @@ fn this_build_seals_the_recorded_submissions() {
     let key = SigningKey::from_bytes(&[7u8; 32]);
     for hex in RECORDINGS {
         let (_, opened) = recorded(hex);
-        let (resealed, _) = envelope::seal(&key, &restamped(&opened), 0).unwrap();
+        let (resealed, _) = envelope::seal(&cold(&key), &restamped(&opened), 0).unwrap();
         assert_eq!(metsuke_wire::hex::encode(&resealed), hex.trim());
     }
 }
 
-/// The same batch with every line rendered again from its own fields.
+/// The same submission with every line rendered again from its own fields.
 fn restamped(envelope: &Envelope) -> Envelope {
     let stamp = &envelope.provenance;
     let payload = match envelope.schema_version() {
@@ -853,22 +849,27 @@ fn sealed_header(
     key: &SigningKey,
     header: serde_json::Value,
     payload: &[u8],
-) -> (Vec<u8>, envelope::Signature) {
-    use ed25519_dalek::Signer;
+) -> (Vec<u8>, envelope::Attestation) {
     let header = header.to_string();
     let bytes = container(
         header.as_bytes(),
         header.len() as u32,
         &zstd::encode_all(payload, 0).unwrap(),
     );
-    let signature = key.sign(&bytes);
-    (bytes, signature)
+    let attestation = cold(key).attest(&bytes);
+    (bytes, attestation)
+}
+
+/// A cold key as the submission key it signs with. Every test here signs with
+/// one; `leios.rs` is where the other scheme is exercised.
+fn cold(key: &SigningKey) -> envelope::SubmissionKey {
+    envelope::SubmissionKey::ColdKey(key.clone())
 }
 
 /// An envelope stamped with its own header, as the agent's spool stamps a row.
 /// `open` checks every line against the header, so lines stamped with anything
-/// else make a batch that can only fail to open, which is
-/// `open_refuses_a_line_stamped_with_another_batch`, not a builder's job.
+/// else make a submission that can only fail to open, which is
+/// `open_refuses_a_line_stamped_with_another_submission`, not a builder's job.
 fn envelope_of(
     provenance: Provenance,
     agent_version: String,

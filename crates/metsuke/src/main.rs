@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use metsuke::agent::Agent;
+use metsuke::agent::{Agent, Uploaded};
 use metsuke::cli::{Args, ArgsError, USAGE, VERSION};
 use metsuke::config::{Config, ConfigError, LogConfig, LogSource};
 use metsuke::delivery::Delivery;
@@ -13,6 +13,7 @@ use metsuke::keys::{self, KeyError};
 use metsuke::logselect::{OutsideRoots, SelectConfig};
 use metsuke::logsource::{JournalSource, PipeSource, StartError};
 use metsuke::logtail::{self, DrainEnd};
+use metsuke::report::ScrapeReport;
 use metsuke::schedule::{Schedule, ScheduleConfig};
 use metsuke::scrape::ScrapeConfig;
 use metsuke::scraper::ScraperConfig;
@@ -84,10 +85,11 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
     let config = Config::from_toml(&text)?;
     let key =
         keys::resolve_signing_key(args.signing_key.as_deref(), config.signing_key.as_deref())?;
-    identity::check_pool_id(config.pool_id, &key.verifying_key())?;
+    identity::check_pool_id(config.pool_id, &key)?;
     let agent_id = identity::agent_id(config.agent_id.as_deref())?;
     // Resolved once and handed to both spool writers: it is what stamps every
-    // line and what a batch's header names, so one value or they could disagree.
+    // line and what a submission's header names, so one value or they could
+    // disagree.
     let provenance = Provenance {
         pool_id: config.pool_id,
         agent_id: agent_id.clone(),
@@ -99,7 +101,6 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         busy_timeout,
         provenance: provenance.clone(),
     })?;
-    let vkey = key.verifying_key();
     eprintln!(
         "{INFO}metsuke on {agent_id} scraping {} for {}",
         config.metrics_url, config.pool_id,
@@ -125,8 +126,9 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         UploadConfig {
             upload_url: config.upload_url.clone(),
             timeout: Duration::from_secs(config.upload_timeout_secs),
+            max_submissions: config.upload_max_submissions,
         },
-        vkey,
+        config.pool_id,
     );
     if let Some(log) = &config.log {
         start_trace_collection(log, &config.spool_path, busy_timeout, provenance)?;
@@ -139,6 +141,7 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         backoff_max: Duration::from_secs(config.upload_backoff_max_secs),
     };
     let mut schedule = Schedule::new();
+    let mut scrapes = ScrapeReport::default();
     let mut next_scrape = Instant::now();
     // First upload immediately: rows left over from the previous run retry
     // at startup (ADR 0004).
@@ -146,13 +149,15 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
     loop {
         let now = Instant::now();
         if now >= next_scrape {
-            if let Err(error) = agent.scrape_once() {
-                eprintln!("{ERR}scrape not spooled: {error}");
+            match agent.scrape_once() {
+                Ok(news) => warn(scrapes.record(&news)),
+                Err(error) => eprintln!("{ERR}scrape not spooled: {error}"),
             }
             next_scrape = now + scrape_interval;
         }
         if now >= next_upload {
-            next_upload = now + upload_tick(&mut agent, &mut schedule, &schedule_config);
+            next_upload =
+                now + upload_tick(&mut agent, &mut scrapes, &mut schedule, &schedule_config);
         }
         let wake = next_scrape.min(next_upload);
         std::thread::sleep(wake.saturating_duration_since(Instant::now()));
@@ -228,11 +233,24 @@ fn start_trace_collection(
     Ok(())
 }
 
+/// The scrape report's lines, at the one severity all of them carry.
+fn warn(lines: Vec<String>) {
+    for line in lines {
+        eprintln!("{WARNING}{line}");
+    }
+}
+
 /// One upload tick: attempt, log the outcome, return the delay until the
 /// next attempt.
-fn upload_tick(agent: &mut Agent, schedule: &mut Schedule, config: &ScheduleConfig) -> Duration {
+fn upload_tick(
+    agent: &mut Agent,
+    scrapes: &mut ScrapeReport,
+    schedule: &mut Schedule,
+    config: &ScheduleConfig,
+) -> Duration {
     // Before the attempt, so every path out of this function has said it:
     // sustained overload is exactly the case where the attempt fails.
+    warn(scrapes.drain());
     let dropped = agent.take_dropped_report();
     if dropped > 0 {
         eprintln!(
@@ -241,45 +259,66 @@ fn upload_tick(agent: &mut Agent, schedule: &mut Schedule, config: &ScheduleConf
         );
     }
     let attempted = agent.upload_once();
-    // After the attempt, because taking the batch is what drops them.
+    // After the attempt, because taking the submission is what drops them.
     let uncarriable = agent.take_uncarriable_report();
     if uncarriable.oversized > 0 {
         eprintln!(
-            "{WARNING}dropped {} rows no batch could ever carry, the largest {} bytes: \
+            "{WARNING}dropped {} rows no submission could ever carry, the largest {} bytes: \
              raise upload_batch_max_bytes past it, plus the envelope's framing",
             uncarriable.oversized, uncarriable.largest_bytes,
         );
     }
-    let outcome = match attempted {
-        Ok(Some(outcome)) => outcome,
-        Ok(None) => return config.upload_interval,
+    let sent = match attempted {
+        Ok(sent) => sent,
         Err(error) => {
             eprintln!("{ERR}{error}");
             return config.upload_interval;
         }
     };
-    match &outcome {
-        UploadOutcome::Acked(ack) => {
-            eprintln!("{INFO}batch acked");
-            if newer_version_available(env!("CARGO_PKG_VERSION"), &ack.latest_version) {
+    let Some(last) = sent.last() else {
+        return config.upload_interval;
+    };
+    // Every submission of the tick, because which one a line is about is what
+    // ties it to an archived object and to what stays spooled.
+    for Uploaded {
+        outcome,
+        counter,
+        lines,
+        carried,
+        bytes,
+        payload_digest,
+    } in &sent
+    {
+        match outcome {
+            UploadOutcome::Acked(ack) => {
                 eprintln!(
-                    "{WARNING}client {} is available (this is {}); \
-                     see the instructions page for the update procedure",
-                    ack.latest_version,
-                    env!("CARGO_PKG_VERSION"),
+                    "{INFO}submission {counter} payload {payload_digest} accepted: \
+                     {lines} {carried}, {bytes} bytes"
+                );
+                if newer_version_available(env!("CARGO_PKG_VERSION"), &ack.latest_version) {
+                    eprintln!(
+                        "{WARNING}client {} is available (this is {}); \
+                         see the instructions page for the update procedure",
+                        ack.latest_version,
+                        env!("CARGO_PKG_VERSION"),
+                    );
+                }
+            }
+            UploadOutcome::Retryable(reason) => {
+                eprintln!(
+                    "{WARNING}submission {counter} payload {payload_digest} was not taken, \
+                     and the spool keeps its {lines} {carried}: {reason}"
+                );
+            }
+            UploadOutcome::Rejected { status, reason } => {
+                eprintln!(
+                    "{WARNING}the server refused submission {counter} payload \
+                     {payload_digest} with {status}, the spool keeps its {lines} {carried}, \
+                     backing off: {reason}"
                 );
             }
         }
-        UploadOutcome::Retryable(reason) => {
-            eprintln!("{WARNING}upload failed, scrapes stay spooled: {reason}");
-        }
-        UploadOutcome::Rejected { status, reason } => {
-            eprintln!(
-                "{WARNING}server rejected the upload ({status}), \
-                 scrapes stay spooled, backing off: {reason}"
-            );
-        }
     }
     let entropy = time::OffsetDateTime::now_utc().unix_timestamp_nanos() as u64;
-    schedule.after(&outcome, config, entropy)
+    schedule.after(&last.outcome, config, entropy)
 }

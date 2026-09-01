@@ -20,6 +20,20 @@ fn test_key_envelope() -> String {
     )
 }
 
+/// The same seed under the type cardano-cli writes for a `node key-gen-BLS`
+/// key. The prefix and the 32 bytes are the cold key file's, so `type` is the
+/// only difference between the two.
+fn leios_key_envelope() -> String {
+    let seed = metsuke_wire::hex::encode(&test_key().to_bytes());
+    format!(
+        r#"{{
+            "type": "BlsSigningKey_bls12-381-BLS-Signature-Mininimal-Signature-Size",
+            "description": "BLS12-381 signing key",
+            "cborHex": "5820{seed}"
+        }}"#
+    )
+}
+
 /// A TextEnvelope whose seed is `byte` repeated 32 times, written to `name`
 /// under `dir`.
 fn write_envelope(dir: &tempfile::TempDir, name: &str, byte: u8) -> std::path::PathBuf {
@@ -41,7 +55,10 @@ fn flag_path_beats_config_path() {
     let config = write_envelope(&dir, "config.skey", 2);
     let key = keys::resolve_signing_key(Some(&flag), Some(&config)).unwrap();
     let expected = metsuke_wire::envelope::SigningKey::from_bytes(&[1u8; 32]);
-    assert_eq!(key.verifying_key(), expected.verifying_key());
+    assert_eq!(
+        key.public_key_hex(),
+        metsuke_wire::hex::encode(expected.verifying_key().as_bytes())
+    );
 }
 
 #[test]
@@ -50,7 +67,10 @@ fn config_path_used_when_no_flag() {
     let config = write_envelope(&dir, "config.skey", 2);
     let key = keys::resolve_signing_key(None, Some(&config)).unwrap();
     let expected = metsuke_wire::envelope::SigningKey::from_bytes(&[2u8; 32]);
-    assert_eq!(key.verifying_key(), expected.verifying_key());
+    assert_eq!(
+        key.public_key_hex(),
+        metsuke_wire::hex::encode(expected.verifying_key().as_bytes())
+    );
 }
 
 // Acceptance: missing key at both flag and config → startup fails loudly,
@@ -114,5 +134,69 @@ fn text_envelope_file_loads_the_seed_it_carries() {
     let path = dir.path().join("pool.skey");
     std::fs::write(&path, test_key_envelope()).unwrap();
     let key = keys::load_signing_key(&path).unwrap();
-    assert_eq!(key.verifying_key(), test_key().verifying_key());
+    assert_eq!(
+        key.public_key_hex(),
+        metsuke_wire::hex::encode(test_key().verifying_key().as_bytes())
+    );
+}
+
+/// The two key files are the same shape: a `5820` CBOR prefix over 32 bytes.
+/// Only the envelope's `type` tells them apart, so it is what the loader reads
+/// and what the wrong file is refused by (ADR 0011).
+#[test]
+fn a_bls_envelope_loads_as_a_leios_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bls.skey");
+    std::fs::write(&path, leios_key_envelope()).unwrap();
+
+    let key = keys::load_signing_key(&path).unwrap();
+
+    assert!(
+        key.attributes().is_none(),
+        "a Leios key names no pool: {key:?}"
+    );
+    assert_eq!(key.public_key_hex().len(), 192, "96 bytes of hex");
+}
+
+#[test]
+fn a_key_whose_type_names_neither_scheme_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vrf.skey");
+    std::fs::write(
+        &path,
+        format!(
+            r#"{{"type": "VrfSigningKey_PraosVRF", "description": "", "cborHex": "5820{}"}}"#,
+            "07".repeat(32)
+        ),
+    )
+    .unwrap();
+
+    let message = keys::load_signing_key(&path).unwrap_err().to_string();
+
+    assert!(
+        message.contains("VrfSigningKey_PraosVRF") && message.contains("BlsSigningKey"),
+        "got: {message}"
+    );
+}
+
+/// A cold key's seed under a Leios key's type loads as a Leios key, and one
+/// that speaks for nobody. What stops it is the roster, not the file, so the
+/// two must not be confusable by their bytes alone.
+#[test]
+fn the_seed_alone_does_not_say_which_scheme_a_file_is() {
+    let dir = tempfile::tempdir().unwrap();
+    let as_cold = dir.path().join("cold.skey");
+    let as_leios = dir.path().join("bls.skey");
+    std::fs::write(&as_cold, test_key_envelope()).unwrap();
+    std::fs::write(&as_leios, leios_key_envelope()).unwrap();
+
+    let cold = keys::load_signing_key(&as_cold).unwrap();
+    let leios = keys::load_signing_key(&as_leios).unwrap();
+
+    assert_ne!(cold.public_key_hex(), leios.public_key_hex());
+    assert_ne!(
+        cold.attest(b"body").key_bytes(),
+        leios.attest(b"body").key_bytes(),
+        "the same seed, and two keys"
+    );
 }

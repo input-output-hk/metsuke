@@ -1,6 +1,7 @@
 //! Upload scheduling tests (ticket metsuke-4zo.5): outcome in, delay until
-//! the next attempt out. 5xx/transport retries next interval with jitter;
-//! 4xx backs off exponentially with a clamp; an ack resets the backoff.
+//! the next attempt out. 5xx/transport and 429 retry next interval with
+//! jitter; the other 4xx back off exponentially with a clamp; an ack resets
+//! the backoff.
 
 use std::time::Duration;
 
@@ -29,11 +30,53 @@ fn rejected() -> UploadOutcome {
     }
 }
 
+// The first accepted submission places this agent somewhere in the interval.
+// Without it, agents installed in one window upload in the same second of
+// every interval for as long as they run, and nothing in a fleet that is
+// working ever breaks the step.
 #[test]
-fn ack_schedules_the_plain_interval() {
+fn the_first_ack_places_the_agent_within_the_jitter_bound() {
+    let interval = Duration::from_secs(3600);
+    let jitter_max = Duration::from_secs(60);
+    for entropy in [0, 1, 59, 60, 61, u64::MAX] {
+        let mut schedule = Schedule::new();
+        let delay = schedule.after(&acked(), &config(), entropy);
+        assert!(
+            (interval..=interval + jitter_max).contains(&delay),
+            "entropy {entropy}: delay {delay:?} outside [interval, interval + jitter_max]"
+        );
+    }
+}
+
+// And that placement has to actually differ between agents, or it is
+// decorative.
+#[test]
+fn two_agents_starting_together_are_placed_apart() {
+    let placed: Vec<Duration> = (0..10)
+        .map(|entropy| Schedule::new().after(&acked(), &config(), entropy))
+        .collect();
+    assert!(
+        placed.windows(2).any(|pair| pair[0] != pair[1]),
+        "ten entropies, one delay: {placed:?}"
+    );
+}
+
+// Every upload after that one is the interval exactly. An operator watching a
+// working agent sees a submission on a cadence they can predict, rather than
+// one that walks around the clock; the spread is a placement, not a wobble.
+#[test]
+fn every_ack_after_the_first_schedules_the_exact_interval() {
     let mut schedule = Schedule::new();
-    let delay = schedule.after(&acked(), &config(), 7);
-    assert_eq!(delay, Duration::from_secs(3600));
+    schedule.after(&acked(), &config(), 41);
+    let later: Vec<Duration> = (0..5)
+        .map(|entropy| schedule.after(&acked(), &config(), entropy))
+        .collect();
+    assert!(
+        later
+            .iter()
+            .all(|delay| *delay == Duration::from_secs(3600)),
+        "the cadence must not drift once placed, got {later:?}"
+    );
 }
 
 // Acceptance: 5xx → retry scheduled with jitter, bounded by jitter_max.

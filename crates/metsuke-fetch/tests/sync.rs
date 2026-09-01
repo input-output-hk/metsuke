@@ -9,10 +9,11 @@ use metsuke_fetch::cursor::Cursor;
 
 use metsuke_fetch::recipe;
 use metsuke_fetch::select::{Filters, Selection};
-use metsuke_fetch::sync::{self, Destination, SyncError};
+use metsuke_fetch::sync::{self, Destination, SyncError, Verification};
 use metsuke_wire::envelope::{self, AgentId, Limits};
 use metsuke_wire::http::Listing;
 use metsuke_wire::key::{KEY_PREFIX, Kind, ObjectName};
+use std::num::NonZeroU64;
 
 mod support;
 use support::{Server, other_key, pool_of, test_key};
@@ -67,11 +68,30 @@ fn only(selection: Selection) -> Asked {
     }
 }
 
+/// What a test that is not about the checking asks for: an object bound no
+/// fixture reaches, and unverifiable objects counted rather than refused,
+/// which is what a filesystem archive hands back.
+fn permissive() -> Verification {
+    Verification {
+        max_object_bytes: NonZeroU64::new(1 << 20).unwrap(),
+        require_verified: false,
+    }
+}
+
 /// Sync `server` under `asked` into `dir`, which a resuming test reuses.
 fn sync_into(
     server: &Server,
     asked: &Asked,
     dir: tempfile::TempDir,
+) -> Result<Synced, (SyncError, tempfile::TempDir, Vec<String>)> {
+    sync_verifying(server, asked, dir, permissive())
+}
+
+fn sync_verifying(
+    server: &Server,
+    asked: &Asked,
+    dir: tempfile::TempDir,
+    verification: Verification,
 ) -> Result<Synced, (SyncError, tempfile::TempDir, Vec<String>)> {
     let into = dir.path().join("objects");
     let state = state_of(dir.path());
@@ -81,9 +101,13 @@ fn sync_into(
         into: &into,
         state: &state,
     };
-    match sync::run(&server.pulling(), &filters, &destination, |key| {
-        landed.push(key.to_string())
-    }) {
+    match sync::run(
+        &server.pulling(),
+        &filters,
+        &destination,
+        verification,
+        |key| landed.push(key.to_string()),
+    ) {
         Ok(report) => Ok(Synced {
             dir,
             landed,
@@ -118,9 +142,8 @@ fn a_downloaded_object_is_the_archived_bytes_and_still_verifies() {
     let downloaded = std::fs::read(synced.path(&object.key)).expect("the object landed");
     assert_eq!(downloaded, object.wire_bytes);
     envelope::open(
-        &test_key().verifying_key(),
+        &object.attestation,
         &downloaded,
-        &object.signature,
         Limits {
             max_header_bytes: 4096,
             max_decompressed_bytes: 1 << 20,
@@ -134,7 +157,146 @@ fn a_downloaded_object_is_the_archived_bytes_and_still_verifies() {
             bytes: object.wire_bytes.len() as u64,
             passed: 0,
             unnameable: 0,
+            // The suite's server stores to a filesystem archive, which
+            // discards the pair at ingest, so nothing it serves can be checked
+            // by anybody. `verified` is the attesting server's to answer.
+            verified: 0,
+            unverifiable: 1,
+            rejected: Vec::new(),
         }
+    );
+}
+
+/// The whole point of the two headers: an archive that answers them is one
+/// whose objects this tool checks for itself, rather than taking the server's
+/// word for what it handed over.
+#[test]
+fn an_object_that_carries_its_key_and_signature_is_checked() {
+    let server = Server::attesting(2, 100);
+
+    let synced = synced(&server, &everything());
+
+    assert_eq!(synced.report.verified, 2);
+    assert_eq!(synced.report.unverifiable, 0);
+    assert_eq!(synced.report.rejected, Vec::new());
+    for key in server.keys() {
+        assert!(synced.path(&key).is_file(), "{key} did not land");
+    }
+}
+
+/// Bytes that do not stand under the signature beside them are not written at
+/// all. A reader globbing the download directory cannot pick up an object
+/// nobody may trust, which is why the check happens before the file does.
+#[test]
+fn an_object_whose_bytes_do_not_verify_is_not_written() {
+    let server = Server::attesting(1, 100);
+    let key = server.keys()[0].clone();
+    server.tamper(&key);
+
+    let synced = synced(&server, &everything());
+
+    assert_eq!(synced.report.verified, 0);
+    assert_eq!(synced.report.objects, 0);
+    assert!(!synced.path(&key).exists(), "{key} must not be on disk");
+    assert_eq!(synced.report.rejected.len(), 1, "{:?}", synced.report);
+    assert_eq!(synced.report.rejected[0].key, key);
+    assert!(
+        synced.report.rejected[0].reason.contains("signature"),
+        "got: {}",
+        synced.report.rejected[0].reason
+    );
+    // Reported, and not handed to the caller as landed: that list is what a
+    // reader will find.
+    assert!(synced.landed.is_empty(), "got: {:?}", synced.landed);
+}
+
+/// The other half, and the one a signature check alone would pass: bytes a
+/// stranger sealed, filed under a pool that never sent them. The key hashing
+/// to the pool in the object's own name is what says whose it is.
+#[test]
+fn an_object_signed_by_another_pool_is_not_written() {
+    let server = Server::attesting(1, 100);
+    let key = server.keys()[0].clone();
+    server.reseal_as(&key, &other_key());
+
+    let synced = synced(&server, &everything());
+
+    assert_eq!(synced.report.rejected.len(), 1, "{:?}", synced.report);
+    assert!(
+        synced.report.rejected[0].reason.contains("filed under"),
+        "got: {}",
+        synced.report.rejected[0].reason
+    );
+    assert!(!synced.path(&key).exists(), "{key} must not be on disk");
+}
+
+/// An archive that stores no metadata leaves every object unverifiable, and a
+/// run against one still syncs: refusing by default would leave the tool
+/// unable to read the archive a single-host deployment writes.
+#[test]
+fn an_object_with_nothing_to_check_it_by_lands_and_is_counted() {
+    let server = Server::with_objects(1, 100);
+
+    let synced = synced(&server, &everything());
+
+    assert_eq!(synced.report.unverifiable, 1);
+    assert_eq!(synced.report.verified, 0);
+    assert_eq!(synced.report.rejected, Vec::new());
+    assert!(synced.path(&server.keys()[0]).is_file());
+}
+
+/// And what `--require-verified` is for: the consumer that needs the guarantee
+/// says so, and then unverifiable is a refusal like any other.
+#[test]
+fn require_verified_refuses_an_object_with_nothing_to_check_it_by() {
+    let server = Server::with_objects(1, 100);
+    let asked = everything();
+
+    let synced = sync_verifying(
+        &server,
+        &asked,
+        tempfile::tempdir().expect("a temp dir"),
+        Verification {
+            require_verified: true,
+            ..permissive()
+        },
+    )
+    .unwrap_or_else(|(error, _, _)| panic!("the sync failed: {error}"));
+
+    assert_eq!(synced.report.rejected.len(), 1, "{:?}", synced.report);
+    assert!(
+        synced.report.rejected[0]
+            .reason
+            .contains("no key and signature"),
+        "got: {}",
+        synced.report.rejected[0].reason
+    );
+    assert!(!synced.path(&server.keys()[0]).exists());
+}
+
+/// Checking an object means holding it, so the run states what it will hold.
+/// Over that, the object is reported and the rest of the archive still syncs.
+#[test]
+fn an_object_over_the_bound_is_reported_and_the_sync_goes_on() {
+    let server = Server::attesting(2, 100);
+    let asked = everything();
+
+    let synced = sync_verifying(
+        &server,
+        &asked,
+        tempfile::tempdir().expect("a temp dir"),
+        Verification {
+            max_object_bytes: NonZeroU64::new(1).unwrap(),
+            ..permissive()
+        },
+    )
+    .unwrap_or_else(|(error, _, _)| panic!("the sync failed: {error}"));
+
+    assert_eq!(synced.report.rejected.len(), 2, "{:?}", synced.report);
+    assert!(
+        synced.report.rejected[0].reason.contains("byte limit"),
+        "got: {}",
+        synced.report.rejected[0].reason
     );
 }
 
@@ -188,6 +350,7 @@ fn duckdb_reads_a_download_directory_whose_name_holds_a_quote() {
             into: &into,
             state: &state,
         },
+        permissive(),
         |_| {},
     )
     .expect("the sync runs");

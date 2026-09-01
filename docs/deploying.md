@@ -67,6 +67,47 @@ an empty table, because an empty allowlist stops every submission and otherwise
 looks exactly like a program nobody joined. It emits the `[ingest.allowlist]`
 table the server module's `settings.ingest.allowlist` expects.
 
+**The Leios key roster.** Only where agents sign with a Leios key rather than a
+cold key (ADR 0011). Generated the same way, from a node this time:
+
+```
+metsuke-roster query dijkstra \
+  --socket-path <node socket> --testnet-magic <magic> > pool-state.json
+
+metsuke-roster generate pool-state.json roster.json
+```
+
+`query` needs `cardano-cli` on `PATH`, and the era is a positional because
+`latest` is not the era a Leios network answers in. `generate` takes the
+destination rather than writing to stdout, because it puts the file in place by
+rename; do not redirect it over a roster the server is reading. ADR 0011 has why
+the swap has to be a rename.
+
+Those two commands are what `services.metsuke-server.roster` runs on a timer, so
+a deployment sets that rather than running them by hand. It needs the node
+socket and its group, the era, and the network, and it writes
+`/var/lib/metsuke-roster/roster.json`, which is the path
+`settings.ingest.leios_roster` has to name; the module refuses any other. On a
+cardano-parts host the socket pair is
+`config.services.cardano-node.socketPath 0` and
+`config.services.cardano-node.socketGroup`. Run the commands by hand only to
+look at what the chain says; the server re-reads the file when it changes, so a
+new roster needs no restart.
+
+Setting `leios_roster` without enabling the timer builds, with a warning: the
+file is then whatever last wrote it, and a roster nobody refreshes refuses every
+pool that rotated.
+
+Set `interval` to once an epoch; ADR 0011's stale-roster consequence is what a
+slower one costs, and it costs nothing to run more often. The roster carries
+the epoch and slot it was taken at, and the server logs them at startup and at
+every reload: that pair is what says whether a refusal is a stale roster or a
+key the chain really does not register.
+
+Leave the setting out entirely on a network with no Leios keys. Absent means
+Leios-signed submissions are refused with a reason, which is the right answer;
+an empty roster would be the same refusal with a worse one.
+
 ## The server host
 
 Import `nixosModules.metsuke-server`. The module defaults `package`, so the
@@ -116,7 +157,7 @@ Then import `nixosModules.metsuke`:
 ```nix
 services.metsuke = {
   enable = true;
-  signingKeyFile = <the pool's cold.skey>;
+  signingKeyFile = <the pool's cold.skey, or its bls.skey>;
   settings = {
     pool_id = "pool1...";
     agent_id = "relay-1";
@@ -137,6 +178,14 @@ the entire privilege difference and it is the reason ADR 0010 made the feature
 opt-in.
 
 The agent's spool has to be under `/var/lib/metsuke`, which the module asserts.
+
+Either key signs. The cold key needs no roster on the server and is what a
+submission is attributed by on its own, forever; the Leios key needs the pool
+on a roster the server has, and is what a host that must not hold the cold key
+signs with. Which one a file is comes from its TextEnvelope `type` and not from
+its bytes, for the reason `metsuke::keys` states. The agent refuses anything
+that is neither, at startup, naming what it found. ADR 0011 has what each
+costs.
 
 ### What the agent host has to be allowed to reach
 
@@ -194,10 +243,12 @@ key pair in the meantime.
 
 **Tracing.** cardano-parts sets `useLegacyTracing = mkDefault false`, so the
 node forwards its traces to `cardano-tracer` over a socket rather than writing
-them itself. ADR 0010 assumes the node's own journal carries the trace lines.
-Whether it still does there is unverified, and beads `metsuke-4zo.126` is the
-check. Until someone runs it, deploy with `[log]` left out and take metrics
-only. The metrics side already agrees: cardano-parts defaults
+them itself. ADR 0010 assumes the node's own journal carries the trace lines,
+and on playground it still does (`metsuke-4zo.126`): forwarding does not take
+the lines out of journald, which keeps them in machine format for the agent's
+namespace selection to read. So `source = "journald"` with `journal_unit` is
+the source that works on a cardano-parts host. The metrics side already agrees:
+cardano-parts defaults
 `cardanoNodePrometheusExporterPort` to 12798, which is the port the shipped
 example config scrapes.
 

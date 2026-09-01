@@ -1,6 +1,7 @@
 # 4. Client spool is the only durability layer; ACK means archived
 
-Status: accepted (2026-08-19)
+Status: accepted (2026-08-19).
+Amended by metsuke-n8t, which made a rate limit a retry rather than a rejection.
 
 ## Context
 
@@ -13,9 +14,10 @@ and an ambiguous ACK.
 The client spools scrapes in local SQLite and deletes rows only on server ACK,
 retrying all outstanding rows at startup and on every upload interval. The server
 holds no spool. It PUTs the object to S3 synchronously and ACKs only after the PUT
-succeeds. On PUT failure it returns 5xx and the client's retry takes over. On 4xx
-the client keeps the data spooled, logs the server's reason, and retries with
-clamped exponential backoff.
+succeeds. On PUT failure it returns 5xx and the client's retry takes over. On a
+refusal the client keeps the data spooled and logs the server's reason; one that
+retrying cannot change backs off with a clamped exponential, and one that clears
+on its own is retried at the next interval.
 
 ## Consequences
 

@@ -15,7 +15,7 @@ pub const KEY_PREFIX: &str = "v1/";
 /// container holds them.
 pub const KEY_SUFFIX: &str = ".jsonl.zst";
 
-/// Which payload a batch carries, as the object key spells it. Named from the
+/// Which payload a submission carries, as the object key spells it. Named from the
 /// schema version rather than read out of the payload: the server never
 /// decompresses one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,8 +25,8 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// `None` for a version this build has no name for. A batch it cannot name
-    /// is a batch it cannot file, which is the only reason ingest still reads
+    /// `None` for a version this build has no name for. A submission it cannot name
+    /// is a submission it cannot file, which is the only reason ingest still reads
     /// the version at all.
     pub fn of(schema_version: u32) -> Option<Kind> {
         match schema_version {

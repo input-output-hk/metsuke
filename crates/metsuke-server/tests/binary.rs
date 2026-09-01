@@ -87,6 +87,21 @@ impl Server {
             .clone()
     }
 
+    /// The same once `needle` is in it, or whatever was logged by the
+    /// deadline, so the assertion still names what it did find. A reader
+    /// thread drains the server's stderr, so a line written while an answer
+    /// goes out is not there the moment that answer arrives.
+    fn logged_until(&self, needle: &str) -> String {
+        let deadline = std::time::Instant::now() + PATIENCE;
+        loop {
+            let logged = self.logged();
+            if logged.contains(needle) || std::time::Instant::now() >= deadline {
+                return logged;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     fn archive_root(&self) -> std::path::PathBuf {
         self.dir.path().join("archive")
     }
@@ -152,14 +167,14 @@ impl Server {
             .unwrap()
     }
 
-    /// POST a sealed batch with the ADR-0001 headers. Returns the status and
+    /// POST a sealed submission with the ADR-0001 headers. Returns the status and
     /// the body, which is the Ack on success and the rejection text
     /// otherwise.
     fn post(&self, key: &SigningKey, envelope: &Envelope) -> (u16, String) {
-        let (wire_bytes, signature) = seal(key, envelope);
+        let (wire_bytes, attestation) = seal(key, envelope);
         self.post_raw(
-            &hex::encode(key.verifying_key().as_bytes()),
-            &hex::encode(&signature.to_bytes()),
+            &hex::encode(&attestation.key_bytes()),
+            &hex::encode(&attestation.signature_bytes()),
             wire_bytes,
         )
     }
@@ -169,9 +184,9 @@ impl Server {
     /// it claims does not hold it up.
     fn posting(&self, key: &SigningKey, envelope: &Envelope) -> Upload {
         let url = self.url.clone();
-        let (wire_bytes, signature) = seal(key, envelope);
-        let vkey = hex::encode(key.verifying_key().as_bytes());
-        let signature = hex::encode(&signature.to_bytes());
+        let (wire_bytes, attestation) = seal(key, envelope);
+        let vkey = hex::encode(&attestation.key_bytes());
+        let signature = hex::encode(&attestation.signature_bytes());
         let (done, answered) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let status = agent()
@@ -292,6 +307,13 @@ fn bound_url(stderr: ChildStderr, logged: Arc<std::sync::Mutex<String>>) -> Stri
             reader.read_line(&mut line).unwrap() > 0,
             "server exited before naming its address"
         );
+        // Kept as it is read, not only after the address line: what a server
+        // says while starting is said before it names its address, and a test
+        // about a startup line would otherwise be reading an empty string.
+        logged
+            .lock()
+            .expect("no panic holds this lock")
+            .push_str(&line);
         if let Some(start) = line.find("http://") {
             // Drained in the background rather than at the end: a full stderr
             // pipe would otherwise wedge the server mid-test.
@@ -351,7 +373,7 @@ fn an_unknown_argument_exits_nonzero_pointing_at_help() {
 }
 
 #[test]
-fn a_sealed_batch_is_acked_and_archived_byte_for_byte() {
+fn a_sealed_submission_is_acked_and_archived_byte_for_byte() {
     let key = test_key();
     let server = Server::start(&[pool_of(&key)]);
     let envelope = envelope_now(&key, 1);
@@ -369,10 +391,10 @@ fn a_sealed_batch_is_acked_and_archived_byte_for_byte() {
     );
 }
 
-/// A client that resent because it never saw the ack gets both batches stored:
+/// A client that resent because it never saw the ack gets both submissions stored:
 /// nothing here refuses a body for having been seen before, and the ids differ.
 #[test]
-fn a_resent_batch_is_stored_again_rather_than_refused() {
+fn a_resent_submission_is_stored_again_rather_than_refused() {
     let key = test_key();
     let server = Server::start(&[pool_of(&key)]);
     let envelope = envelope_now(&key, 7);
@@ -572,6 +594,50 @@ fn an_s3_archive_without_credentials_exits_nonzero_naming_them() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("AWS_ACCESS_KEY_ID"), "{stderr}");
+}
+
+/// A working server has to look like one. The archive is the record of what
+/// was accepted (ADR 0005), but reading it takes bucket credentials, so
+/// without a line per submission a journal shows only refusals and an operator
+/// watching one cannot tell a busy server from a silent one.
+#[test]
+fn an_accepted_submission_is_logged_against_its_pool_and_object() {
+    let key = test_key();
+    let server = Server::start(&[pool_of(&key)]);
+
+    assert_eq!(server.post(&key, &envelope_now(&key, 1)).0, 200);
+
+    let stored = only_object_key(&server);
+    let logged = server.logged_until(&stored);
+    assert!(
+        logged.contains(&format!("accepted {stored}")),
+        "the acceptance must name the object it became, got: {logged}"
+    );
+    assert!(
+        stored.contains(&pool_of(&key).to_string()),
+        "and that name is what says whose it was, so the line does not repeat \
+         the pool beside it: {stored}"
+    );
+}
+
+/// The one backend whose objects nobody can ever check says so at startup.
+/// The pair is dropped at the moment of storing, so this line is the only
+/// place an operator can learn it: no route, no audit and no consumer can
+/// recover what the archive did not keep.
+#[test]
+fn a_filesystem_archive_says_what_it_gives_up() {
+    let server = Server::start(&[pool_of(&test_key())]);
+
+    let logged = server.logged();
+
+    assert!(
+        logged.contains("drops the key and signature"),
+        "the startup log must say what this backend costs, got: {logged}"
+    );
+    assert!(
+        logged.contains(&server.archive_root().display().to_string()),
+        "and name the archive it is warning about, got: {logged}"
+    );
 }
 
 /// Restarting keeps nothing but the in-memory rate-limit windows, so the
@@ -848,7 +914,6 @@ fn an_object_the_archive_does_not_hold_is_not_found() {
     let key = test_key();
     let server = Server::start(&[pool_of(&key)]);
     let never_stored = stored_submission(
-        &key,
         object_name(
             &key,
             OffsetDateTime::from_unix_timestamp(1_755_000_000).unwrap(),
@@ -1112,7 +1177,7 @@ impl Raw {
 /// `framing` saying how the body that follows is delimited. What follows it is
 /// the test's to send, or not to.
 fn submission_head(key: &SigningKey, framing: &str) -> Vec<u8> {
-    let (_, signature) = seal(key, &envelope_now(key, 1));
+    let (_, attestation) = seal(key, &envelope_now(key, 1));
     format!(
         "POST {path} HTTP/1.1\r\n\
          Host: localhost\r\n\
@@ -1120,8 +1185,8 @@ fn submission_head(key: &SigningKey, framing: &str) -> Vec<u8> {
          {HEADER_SIGNATURE}: {signature}\r\n\
          {framing}\r\n\r\n",
         path = metsuke_server::http::SUBMIT_PATH,
-        vkey = hex::encode(key.verifying_key().as_bytes()),
-        signature = hex::encode(&signature.to_bytes()),
+        vkey = hex::encode(&attestation.key_bytes()),
+        signature = hex::encode(&attestation.signature_bytes()),
     )
     .into_bytes()
 }
@@ -1243,7 +1308,7 @@ fn big_object(server: &Server, key: &SigningKey) -> (String, usize) {
         metsuke_server::archive::Kind::Logs,
     )
     .to_key();
-    let bytes = 8 * 1024 * 1024;
+    let bytes = 64 * 1024 * 1024;
     let path = server.archive_root().join(&stored);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, vec![0u8; bytes]).unwrap();
@@ -1304,7 +1369,7 @@ fn a_download_of_an_object_that_shrank_is_logged_as_short() {
         delivered < size,
         "the body must be short of the declared {size}, got {delivered}"
     );
-    let logged = server.logged();
+    let logged = server.logged_until("short of");
     assert!(
         logged.contains(&stored) && logged.contains("short of"),
         "the short read must be logged against its key, got: {logged}"
@@ -1331,7 +1396,7 @@ fn a_download_of_an_object_that_grew_is_logged_as_over_length() {
     // The client cannot tell (`serve::streamed`), which is why the log line is
     // the only account of it.
     assert_eq!(body, size, "the answer fills its declared length");
-    let logged = server.logged();
+    let logged = server.logged_until("grew past");
     assert!(
         logged.contains(&stored) && logged.contains("grew past"),
         "the over-length read must be logged against its key, got: {logged}"
