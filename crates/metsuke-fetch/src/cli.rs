@@ -62,6 +62,8 @@ sync:
                           16777216 by default
   --require-verified      refuse an object with no key and signature to check
 
+  One state file per set of filters. They may share one --into.
+
 filters, which default to the whole archive:
   --prefix <key prefix>   only keys starting with this
   --pool <bech32>         only this pool, as the archive keys it

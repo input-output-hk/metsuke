@@ -65,8 +65,12 @@ directory it wrote holds nothing that failed. Its summary says how many of each
 it saw:
 
 ```
-3 objects into ~/archive, 3145728 bytes; 3 verified, 0 unverifiable, 0 not written; …
+3 keys under v1/; 3 selected, 0 outside the selection, 0 this build cannot name
+3 objects into ~/archive, 3145728 bytes; 3 verified, 0 unverifiable, 0 not written
 ```
+
+The first line is of the keys the prefix listed, not of the archive: what the
+prefix never returned is counted nowhere.
 
 An object that fails is named on stderr, is not written, and makes the run exit
 nonzero. The cursor still advances past it, because the archive is append-only
@@ -79,6 +83,30 @@ since the server holds no delete.
 Unverifiable is counted rather than refused, or a run against a filesystem
 archive would download nothing. `--require-verified` turns it into a refusal,
 which is what a consumer computing anything that matters should pass.
+
+## One state file per set of filters
+
+A run advances the cursor past every key it saw, including the ones its filters
+passed over. So a state file means nothing except against the filters it was
+made with, and `sync` refuses to read one under others rather than resume past
+objects it never downloaded:
+
+```
+metsuke-fetch stopped: the state file cursor.json is for other filters
+  holds: prefix "v1/2026-08-28" and kind metrics
+  asked: prefix "v1/2026-08-28" and kind logs
+  name a state file of its own for these filters
+```
+
+They may share one `--into`, since every object lands under its own key:
+
+```
+metsuke-fetch sync --kind metrics --state metrics.json --into ~/archive
+metsuke-fetch sync --kind logs    --state logs.json    --into ~/archive
+```
+
+Deleting a state file is the only rewind, and the run after it downloads
+everything again: nothing checks whether an object is already on disk.
 
 ## What a gap in an agent's sequence numbers is
 

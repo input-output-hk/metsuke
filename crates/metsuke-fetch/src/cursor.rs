@@ -41,7 +41,9 @@ pub enum CursorError {
     /// under one pool, read under wider filters, would skip everything before
     /// it and report a whole sync.
     #[error(
-        "the state file {path} holds a cursor for {held}, not {asked}; \
+        "the state file {path} is for other filters\n  \
+         holds: {held}\n  \
+         asked: {asked}\n  \
          name a state file of its own for these filters"
     )]
     OtherFilters {

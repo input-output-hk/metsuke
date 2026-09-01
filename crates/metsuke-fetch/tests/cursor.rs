@@ -104,6 +104,14 @@ fn a_cursor_from_other_filters_is_refused() {
                 if held == "prefix \"v1/2026-08-01/\" and kind metrics" && asked == wanted),
             "got: {error}"
         );
+        // The two sit on their own lines at one indent, so the reader finds
+        // the half that differs rather than diffing two long strings.
+        let text = error.to_string();
+        assert!(
+            text.contains("\n  holds: prefix \"v1/2026-08-01/\" and kind metrics\n")
+                && text.contains(&format!("\n  asked: {wanted}\n")),
+            "got: {text}"
+        );
     }
 }
 
