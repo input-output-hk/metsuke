@@ -336,6 +336,12 @@
         in
         {
           packages = {
+            # `suiteTools`, exposed. docs/reading-the-archive.md tells a
+            # developer to run both over a downloaded tree, and a sync's own
+            # summary prints a duckdb line, so a host that has neither can
+            # reach them by `nix run` rather than by cloning for a devShell.
+            inherit (pkgs) duckdb zstd;
+
             metsuke = craneLib.buildPackage agentArgs;
             metsuke-unit = contribUnit;
             metsuke-allowlist = (import ./nix/allowlist.nix { inherit pkgs; }).package;
