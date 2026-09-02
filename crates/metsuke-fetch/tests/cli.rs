@@ -270,6 +270,77 @@ fn a_variable_set_to_nothing_counts_as_unset() {
     );
 }
 
+/// A day bound means the whole day, so `--from` sorts below its first key and
+/// `--to` becomes the day after, exclusive. `v1/<day>` carrying no trailing
+/// slash is what puts it above every key of the day before.
+#[test]
+fn a_day_bound_covers_the_whole_day() {
+    let args = parsed_command("list", &["--from", "2026-09-01", "--to", "2026-09-03"])
+        .expect("two days parse");
+
+    assert_eq!(args.days.from.as_deref(), Some("v1/2026-09-01"));
+    assert_eq!(args.days.until.as_deref(), Some("v1/2026-09-04"));
+}
+
+/// An instant bound is exact to the millisecond, because that is a uuidv7's
+/// whole resolution and its first 13 characters are where it sits in the key
+/// order.
+#[test]
+fn an_instant_bound_is_the_millisecond_it_names() {
+    let args = parsed_command(
+        "list",
+        &[
+            "--from",
+            "2026-09-01T08:47:23.635Z",
+            "--to",
+            "2026-09-01T08:47:23.635Z",
+        ],
+    )
+    .expect("two instants parse");
+
+    // 2026-09-01T08:47:23.635Z is 1788252443635ms, which is 0x01a05c26d3f3.
+    assert_eq!(
+        args.days.from.as_deref(),
+        Some("v1/2026-09-01/01a05c26-d3f3")
+    );
+    // Inclusive, so the exclusive end is one millisecond on.
+    assert_eq!(
+        args.days.until.as_deref(),
+        Some("v1/2026-09-01/01a05c26-d3f4")
+    );
+}
+
+/// Refused rather than run: a range holding no day reports a clean sync of
+/// nothing, which reads as an archive that holds nothing.
+#[test]
+fn a_range_that_holds_no_day_is_refused() {
+    let error = parsed_command("list", &["--from", "2026-09-03", "--to", "2026-09-01"])
+        .expect_err("the range is empty");
+
+    assert!(
+        matches!(error, ArgsError::EmptyRange { .. }),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn a_bound_that_is_neither_a_day_nor_an_instant_is_refused() {
+    for value in [
+        "2026-9-1",
+        "2026-09-01T08:47",
+        "yesterday",
+        "",
+        "2026-13-01",
+    ] {
+        let error = parsed_command("list", &["--from", value]).expect_err("not a bound");
+
+        assert!(
+            matches!(&error, ArgsError::NotABound { flag: "--from", .. }),
+            "{value:?}: {error}"
+        );
+    }
+}
+
 /// The help states the naming as a rule rather than listing four names, so
 /// the rule is what has to hold.
 #[test]

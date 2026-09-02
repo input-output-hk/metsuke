@@ -65,6 +65,7 @@ fn fetch(args: Args) -> Result<(), Fatal> {
         access,
         prefix,
         selection,
+        days,
         verification,
     } = args;
     // Before anything that can fail, so a run that stops on its password file
@@ -79,6 +80,7 @@ fn fetch(args: Args) -> Result<(), Fatal> {
     let filters = Filters {
         prefix: &prefix,
         selection: &selection,
+        days: &days,
     };
     let (report, landed, read) = match command {
         Command::List => (

@@ -14,8 +14,11 @@ use std::path::PathBuf;
 
 use metsuke_wire::envelope::{AgentId, PoolId};
 use metsuke_wire::key::{KEY_PREFIX, Kind};
+use time::format_description::well_known::Rfc3339;
 
-use crate::select::Selection;
+use time::{Date, Duration, Month, OffsetDateTime};
+
+use crate::select::{Days, Selection};
 use crate::sync::{Insist, Verification};
 
 /// What one object may weigh before this run refuses to hold it to check it.
@@ -70,6 +73,12 @@ filters, which default to the whole archive:
   --pool <bech32>         only this pool, as the archive keys it
   --agent <id>            only this agent
   --kind metrics|logs     only this kind
+  --from <day|instant>    from this day or instant, inclusive
+  --to <day|instant>      to this day or instant, inclusive
+
+  A day is YYYY-MM-DD, an instant is YYYY-MM-DDThh:mm:ssZ. Both bound when
+  the server received a submission, not when its rows were taken, and an
+  agent that spooled can put those days apart. Slice rows in SQL, not here.
 
 No access flag has a default. Each also reads METSUKE_FETCH_<FLAG>, its own
 name upper-cased with dashes as underscores, and the flag wins where both are
@@ -110,6 +119,8 @@ pub struct Args {
     pub prefix: String,
     /// What the run keeps of the keys the prefix listed.
     pub selection: Selection,
+    /// The days the run is bounded to, as key boundaries.
+    pub days: Days,
     /// What the run will hold to check an object, and whether it insists on
     /// checking one at all (`sync::Verification`).
     pub verification: Verification,
@@ -185,6 +196,103 @@ pub enum ArgsError {
         value: String,
         reason: String,
     },
+    #[error(
+        "{flag} takes a day as YYYY-MM-DD or an instant as YYYY-MM-DDThh:mm:ssZ, not {value:?}"
+    )]
+    NotABound { flag: &'static str, value: String },
+    /// Refused rather than run: it selects nothing, and a run that reported a
+    /// clean sync of nothing is worse than one that would not start.
+    #[error("--from {from} is after --to {to}, so no day is in range")]
+    EmptyRange { from: String, to: String },
+}
+
+/// What `--from` and `--to` accept: a whole day, or one instant in the format
+/// the payload's own timestamps carry, so a value copied out of a query works
+/// here.
+enum Bound {
+    Day(Date),
+    At(OffsetDateTime),
+}
+
+fn bound(flag: &'static str, value: &str) -> Result<Bound, ArgsError> {
+    match value.contains('T') {
+        true => OffsetDateTime::parse(value, &Rfc3339)
+            .map(Bound::At)
+            .map_err(|_| ArgsError::NotABound {
+                flag,
+                value: value.to_string(),
+            }),
+        false => day(flag, value).map(Bound::Day),
+    }
+}
+
+/// One day, hand-parsed for the same reason the flags are, and strictly: only
+/// the spelling the key itself uses is accepted, so what a state file records
+/// compares by equality.
+fn day(flag: &'static str, value: &str) -> Result<Date, ArgsError> {
+    let refuse = || ArgsError::NotABound {
+        flag,
+        value: value.to_string(),
+    };
+    let mut parts = value.split('-');
+    let mut next = |width: usize| -> Result<u32, ArgsError> {
+        let part = parts.next().ok_or_else(refuse)?;
+        match part.len() == width && part.bytes().all(|byte| byte.is_ascii_digit()) {
+            true => part.parse().map_err(|_| refuse()),
+            false => Err(refuse()),
+        }
+    };
+    let (year, month, day) = (next(4)?, next(2)?, next(2)?);
+    if parts.next().is_some() {
+        return Err(refuse());
+    }
+    let month = u8::try_from(month)
+        .ok()
+        .and_then(|month| Month::try_from(month).ok())
+        .ok_or_else(refuse)?;
+    Date::from_calendar_date(
+        i32::try_from(year).map_err(|_| refuse())?,
+        month,
+        u8::try_from(day).map_err(|_| refuse())?,
+    )
+    .map_err(|_| refuse())
+}
+
+/// The shortest key prefix that sorts at `instant`. A uuidv7's first 48 bits
+/// are its millisecond, which is the first 13 characters of its text, so this
+/// sorts below every key of that millisecond and above every earlier one.
+fn at_key(instant: OffsetDateTime) -> String {
+    let ms = instant.unix_timestamp_nanos().div_euclid(1_000_000);
+    let hex = format!("{ms:012x}");
+    format!(
+        "{KEY_PREFIX}{}/{}-{}",
+        instant.date(),
+        &hex[..8],
+        &hex[8..12]
+    )
+}
+
+impl Bound {
+    /// Where the listing starts for an inclusive first bound. `start-after` is
+    /// exclusive, and both forms name the largest key below what they mean.
+    fn starts(&self) -> String {
+        match self {
+            // No trailing slash: `v1/<day>` sorts below that day's first key
+            // and above every key of the day before.
+            Bound::Day(day) => format!("{KEY_PREFIX}{day}"),
+            Bound::At(instant) => at_key(*instant),
+        }
+    }
+
+    /// Where the walk stops for an inclusive last bound, exclusive. `None`
+    /// only at the end of representable time, which is no bound at all.
+    fn ends(&self) -> Option<String> {
+        match self {
+            Bound::Day(day) => day.next_day().map(|next| format!("{KEY_PREFIX}{next}")),
+            // One millisecond on, which is a uuidv7's whole resolution.
+            Bound::At(instant) => Some(at_key(*instant + Duration::milliseconds(1))),
+        }
+    }
 }
 
 impl Invocation {
@@ -227,6 +335,8 @@ impl Invocation {
                 "--state" => ("--state", &mut given.state),
                 "--into" => ("--into", &mut given.into),
                 "--prefix" => ("--prefix", &mut given.prefix),
+                "--from" => ("--from", &mut given.from),
+                "--to" => ("--to", &mut given.to),
                 "--pool" => ("--pool", &mut given.pool),
                 "--agent" => ("--agent", &mut given.agent),
                 "--kind" => ("--kind", &mut given.kind),
@@ -258,6 +368,8 @@ struct Given {
     agent: Option<String>,
     kind: Option<String>,
     max_object_bytes: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
     insist: Insist,
 }
 
@@ -335,6 +447,7 @@ impl Given {
                 asked => asked.to_string(),
             },
             selection: self.selection()?,
+            days: self.days()?,
             verification: Verification {
                 max_object_bytes: match self.max_object_bytes.as_deref() {
                     None => DEFAULT_MAX_OBJECT_BYTES,
@@ -347,6 +460,36 @@ impl Given {
             },
             command,
         })
+    }
+
+    /// The two time bounds, as the key boundaries they mean. Both inclusive,
+    /// and both about when the server received a submission rather than when
+    /// its rows were taken: docs/reading-the-archive.md has why that gap is
+    /// unbounded.
+    fn days(&self) -> Result<Days, ArgsError> {
+        let from = self
+            .from
+            .as_deref()
+            .map(|value| bound("--from", value))
+            .transpose()?;
+        let to = self
+            .to
+            .as_deref()
+            .map(|value| bound("--to", value))
+            .transpose()?;
+        let days = Days {
+            from: from.as_ref().map(Bound::starts),
+            until: to.as_ref().and_then(Bound::ends),
+        };
+        // Refused rather than run: it selects nothing, and a clean report of
+        // nothing reads as an archive that holds nothing.
+        match (&days.from, &days.until) {
+            (Some(from), Some(until)) if from >= until => Err(ArgsError::EmptyRange {
+                from: self.from.clone().unwrap_or_default(),
+                to: self.to.clone().unwrap_or_default(),
+            }),
+            _ => Ok(days),
+        }
     }
 
     /// The three key-segment filters, each parsed by whatever owns its form, so

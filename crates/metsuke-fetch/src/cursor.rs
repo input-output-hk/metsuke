@@ -30,16 +30,27 @@ pub struct Cursor {
     /// `Nothing` and is refused for any run that asks for more.
     #[serde(default)]
     pub insist: Insist,
+    /// The first day the run was bounded to, as `select::Days` means it. Here
+    /// because it relocates where the listing starts: a cursor taken from one
+    /// day onward, read with no first day, would resume past everything
+    /// before it. The last day is not here, and must not be: it only stops
+    /// the walk, in the same direction the cursor moves, so nothing is ever
+    /// passed over by it.
+    #[serde(default)]
+    pub from: Option<String>,
     /// The last key seen. Empty is the archive's start, which is also what a
     /// state file that does not exist yet means.
     pub after: String,
 }
 
-/// What a state file is for, as one line: the prefix, the selection and the
-/// bar. Built in one place so `held` and `asked` cannot describe two different
-/// shapes.
-fn describe(prefix: &str, selection: &Selection, insist: Insist) -> String {
-    format!("prefix {prefix:?}, {selection}, {insist}")
+/// What a state file is for, as one line. Built in one place so `held` and
+/// `asked` cannot describe two different shapes.
+fn describe(prefix: &str, selection: &Selection, insist: Insist, from: Option<&str>) -> String {
+    let day = match from {
+        Some(from) => format!(", from {from:?}"),
+        None => String::new(),
+    };
+    format!("prefix {prefix:?}, {selection}, {insist}{day}")
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -85,6 +96,7 @@ impl Cursor {
                     prefix: filters.prefix.to_string(),
                     selection: filters.selection.clone(),
                     insist,
+                    from: filters.days.from.clone(),
                     after: String::new(),
                 });
             }
@@ -106,12 +118,23 @@ impl Cursor {
         match held.prefix == filters.prefix
             && held.selection == *filters.selection
             && held.insist == insist
+            && held.from == filters.days.from
         {
             true => Ok(held),
             false => Err(CursorError::OtherFilters {
                 path: path.to_path_buf(),
-                held: describe(&held.prefix, &held.selection, held.insist),
-                asked: describe(filters.prefix, filters.selection, insist),
+                held: describe(
+                    &held.prefix,
+                    &held.selection,
+                    held.insist,
+                    held.from.as_deref(),
+                ),
+                asked: describe(
+                    filters.prefix,
+                    filters.selection,
+                    insist,
+                    filters.days.from.as_deref(),
+                ),
             }),
         }
     }

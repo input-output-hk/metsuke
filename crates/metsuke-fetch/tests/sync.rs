@@ -8,7 +8,7 @@ use std::process::Command;
 use metsuke_fetch::cursor::Cursor;
 
 use metsuke_fetch::recipe;
-use metsuke_fetch::select::{Filters, Selection};
+use metsuke_fetch::select::{Days, Filters, Selection};
 use metsuke_fetch::sync::{self, Destination, Insist, SyncError, Verification};
 use metsuke_wire::envelope::{self, AgentId, Limits};
 use metsuke_wire::http::Listing;
@@ -38,6 +38,7 @@ fn state_of(dir: &Path) -> std::path::PathBuf {
 
 /// What a run was asked for, owned so a test can hold it across two runs.
 struct Asked {
+    days: Days,
     prefix: String,
     selection: Selection,
 }
@@ -47,6 +48,7 @@ impl Asked {
         Filters {
             prefix: &self.prefix,
             selection: &self.selection,
+            days: &self.days,
         }
     }
 }
@@ -56,6 +58,7 @@ impl Asked {
 fn everything() -> Asked {
     Asked {
         prefix: KEY_PREFIX.to_string(),
+        days: Days::default(),
         selection: Selection::default(),
     }
 }
@@ -64,6 +67,7 @@ fn everything() -> Asked {
 fn only(selection: Selection) -> Asked {
     Asked {
         prefix: KEY_PREFIX.to_string(),
+        days: Days::default(),
         selection,
     }
 }
@@ -273,6 +277,40 @@ fn require_attested_refuses_an_object_with_nothing_to_check_it_by() {
         synced.report.rejected[0].reason
     );
     assert!(!synced.path(&server.keys()[0]).exists());
+}
+
+/// The bounds walk the listing rather than filter it. The suite seeds one
+/// object per day, so bounding to the middle two leaves the first and last
+/// unlisted, and `passed` stays zero: a key outside the range was never
+/// listed, which is not the same as one the selection turned down.
+#[test]
+fn the_bounds_leave_a_key_outside_them_unlisted() {
+    let server = Server::with_objects(4, 100);
+    let days: Vec<String> = server
+        .keys()
+        .iter()
+        .map(|key| {
+            key.split('/')
+                .nth(1)
+                .expect("a key names its day")
+                .to_string()
+        })
+        .collect();
+
+    let (listed, report) = listed(
+        &server,
+        &Asked {
+            days: Days {
+                from: Some(format!("{KEY_PREFIX}{}", days[1])),
+                until: Some(format!("{KEY_PREFIX}{}", days[3])),
+            },
+            ..everything()
+        },
+    );
+
+    assert_eq!(listed, server.keys()[1..3], "{report:?}");
+    assert_eq!(report.listed(), 2, "{report:?}");
+    assert_eq!(report.passed, 0, "{report:?}");
 }
 
 /// A refused object increments none of the landing counts, so the listing
@@ -626,6 +664,7 @@ fn a_prefix_selects_a_day_without_downloading() {
         &server,
         &Asked {
             prefix: day,
+            days: Days::default(),
             selection: Selection::default(),
         },
     );

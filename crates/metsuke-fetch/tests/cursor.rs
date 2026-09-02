@@ -1,12 +1,13 @@
 //! The state file: what a resumed run reads, and what it refuses to read.
 
 use metsuke_fetch::cursor::{Cursor, CursorError};
-use metsuke_fetch::select::{Filters, Selection};
+use metsuke_fetch::select::{Days, Filters, Selection};
 use metsuke_fetch::sync::Insist;
 use metsuke_wire::key::{KEY_PREFIX, Kind};
 
 /// A run's filters, owned so a test can point two reads at them.
 struct Asked {
+    days: Days,
     prefix: String,
     selection: Selection,
 }
@@ -16,6 +17,7 @@ impl Asked {
         Filters {
             prefix: &self.prefix,
             selection: &self.selection,
+            days: &self.days,
         }
     }
 }
@@ -23,6 +25,7 @@ impl Asked {
 fn asked(prefix: &str, selection: Selection) -> Asked {
     Asked {
         prefix: prefix.to_string(),
+        days: Days::default(),
         selection,
     }
 }
@@ -160,6 +163,55 @@ fn a_cursor_from_another_run_is_refused() {
             "got: {text}"
         );
     }
+}
+
+/// The asymmetry between the two bounds. A first day relocates where the
+/// listing starts, so a cursor taken with one and read without would resume
+/// past everything before it. A last day only stops the walk, in the same
+/// direction the cursor moves, so nothing is ever passed over by it and a run
+/// that drops it is the natural way to carry on.
+#[test]
+fn the_first_day_binds_a_cursor_and_the_last_day_does_not() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let bounded = Asked {
+        prefix: KEY_PREFIX.to_string(),
+        selection: Selection::default(),
+        days: Days {
+            from: Some("v1/2026-09-01".to_string()),
+            until: Some("v1/2026-09-04".to_string()),
+        },
+    };
+
+    let path = dir.path().join("cursor.json");
+    Cursor::read(&path, &bounded.filters(), Insist::Nothing)
+        .expect("an absent file reads")
+        .advance(&path, "v1/2026-09-02/object.jsonl.zst")
+        .expect("the state file writes");
+
+    // Dropping the last day carries on from where the bounded run stopped.
+    let carried = Asked {
+        days: Days {
+            until: None,
+            ..bounded.days.clone()
+        },
+        ..everything()
+    };
+    let cursor = Cursor::read(&path, &carried.filters(), Insist::Nothing)
+        .expect("the last day is not part of what a cursor is for");
+    assert_eq!(cursor.after, "v1/2026-09-02/object.jsonl.zst");
+
+    // Dropping the first day is another run, and would resume past August.
+    let widened = Asked {
+        days: Days::default(),
+        ..everything()
+    };
+    let error = Cursor::read(&path, &widened.filters(), Insist::Nothing)
+        .expect_err("no first day is a wider window");
+    assert!(
+        matches!(&error, CursorError::OtherFilters { held, .. }
+            if held.contains("from \"v1/2026-09-01\"")),
+        "got: {error}"
+    );
 }
 
 #[test]

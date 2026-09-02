@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cursor::{Cursor, CursorError};
 use crate::pull::{Archive, Object, PullError};
-use crate::select::{Filters, Selected};
+use crate::select::{Days, Filters, Selected};
 use crate::staged;
 use metsuke_wire::key::ObjectName;
 
@@ -149,7 +149,8 @@ pub fn run(
 ) -> Result<Report, SyncError> {
     let mut cursor = Cursor::read(destination.state, filters, verification.insist)?;
     let mut report = Report::default();
-    for page in Pages::from(archive, filters.prefix, &cursor.after) {
+    let resuming = filters.days.after(&cursor.after);
+    for page in Pages::from(archive, filters.prefix, &resuming, filters.days) {
         for key in page? {
             match filters.selection.selects(&key) {
                 Selected::Yes => {
@@ -202,7 +203,12 @@ pub fn list(
     mut found: impl FnMut(&str),
 ) -> Result<Report, SyncError> {
     let mut report = Report::default();
-    for page in Pages::from(archive, filters.prefix, "") {
+    for page in Pages::from(
+        archive,
+        filters.prefix,
+        &filters.days.after(""),
+        filters.days,
+    ) {
         for key in page? {
             match filters.selection.selects(&key) {
                 Selected::Yes => {
@@ -224,6 +230,8 @@ struct Pages<'a> {
     archive: &'a Archive,
     prefix: &'a str,
     after: String,
+    /// Where the walk stops, if anywhere (`select::Days`).
+    days: &'a Days,
     /// The last page has been handed out. Set by `truncated`, so the walk
     /// stops on the server's answer rather than on a short page, and by a
     /// failure, so a caller that keeps iterating past one gets nothing.
@@ -231,11 +239,12 @@ struct Pages<'a> {
 }
 
 impl<'a> Pages<'a> {
-    fn from(archive: &'a Archive, prefix: &'a str, after: &str) -> Pages<'a> {
+    fn from(archive: &'a Archive, prefix: &'a str, after: &str, days: &'a Days) -> Pages<'a> {
         Pages {
             archive,
             prefix,
             after: after.to_string(),
+            days,
             done: false,
         }
     }
@@ -265,7 +274,23 @@ impl Iterator for Pages<'_> {
             Some(last) if last > self.after => {
                 self.after = last;
                 self.done = !page.truncated;
-                Some(Ok(page.keys))
+                // The last day stops the walk rather than filtering it: keys
+                // arrive in order, so the first one past the bound means every
+                // one after it is too. Cut here and not in the caller, or the
+                // caller advances its cursor to a key nobody asked for.
+                let whole = page.keys.len();
+                let keys: Vec<String> = page
+                    .keys
+                    .into_iter()
+                    .take_while(|key| !self.days.past(key))
+                    .collect();
+                if keys.len() < whole {
+                    self.done = true;
+                }
+                match keys.is_empty() {
+                    true => None,
+                    false => Some(Ok(keys)),
+                }
             }
             None if !page.truncated => None,
             _ => Some(Err(SyncError::Stuck {
