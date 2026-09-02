@@ -117,10 +117,10 @@
         }:
         let
           craneLib = inputs.crane.mkLib pkgs;
-          # Cargo sources, the fixtures and the server's icon: the scrape
-          # bodies, the trace recordings and the icon are compiled in with
-          # include_str!, the submission recordings and the S3 cassette are
-          # read at test time.
+          # Cargo sources, the fixtures and the server's page: the scrape
+          # bodies, the trace recordings, the instructions markup and the icon
+          # are compiled in with include_str!, the submission recordings and the
+          # S3 cassette are read at test time.
           #
           # Under crates/ alone, because this filter is not gitignore-aware: a
           # devnet run leaves .hex files in the working tree, and matching
@@ -131,6 +131,7 @@
             ".hex"
             ".http"
             ".svg"
+            ".html"
           ];
           cratesDir = "${toString ./crates}/";
           # The shipped config and unit, which both crates compile in whole:

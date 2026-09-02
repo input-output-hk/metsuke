@@ -1,0 +1,268 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>metsuke: telemetry for the MusashiNet rewards program</title>
+<link rel="icon" href="{{ICON_PATH}}" type="{{ICON_CONTENT_TYPE}}">
+<style>body { max-width: 46em; margin: 2em auto; font-family: sans-serif }
+pre { overflow-x: auto; background: #f4f4f4; padding: 1em }</style>
+
+<h1>metsuke</h1>
+
+<p>metsuke is a small agent you run beside cardano-node. It reads your node's
+Prometheus metrics endpoint over loopback and sends this server a signed
+submission. It never opens your node socket and never touches a key beyond the one
+signing key you point it at. It reads your node's journal only if you turn that
+on in step 5, and then only the trace lines your own configuration selects.</p>
+
+<p>Steps 1 to 3 are decisions and on-chain work. Steps 4 to 9 are what you run
+on the machine your node is on.</p>
+
+<h2>1. What leaves your machine</h2>
+
+<p>One submission is a plain JSON header, then your scrapes zstd compressed, one
+JSON object per line, with a detached Ed25519 signature over the whole byte
+sequence. The header rides in a zstd skippable frame, so <code>zstd -d</code>
+on a submission hands back the lines and nothing else. This is an example of the
+whole thing: two scrapes, the first cut down to two metrics where a real line
+carries every one your node exposes, the second a scrape that failed.</p>
+
+<pre>{{envelope}}</pre>
+
+<p>One line per scrape, and its <code>metrics</code> are every metric your node
+exposes on the endpoint you open in step 4 whose value JSON can hold. Those are
+the same metric lines that command prints. Each entry carries the metric's
+<code>name</code>, its <code>labels</code> and its <code>value</code> as your
+node stated them, plus the <code>declared_type</code> its <code># TYPE</code>
+line gave where it had one. The agent reads nothing else on your machine. It
+contributes two facts of its own, <code>scraped_at</code>, the time it scraped,
+and <code>clock_offset_ms</code>, the offset its own NTP query measured.</p>
+
+<p>A scrape that failed is itself a signal, so the submission is sent either way:
+no
+metrics, and <code>failure</code> naming what stopped it. Its
+<code>reason</code> is one of {{reasons}}, and its <code>detail</code> is the
+message the agent had: the port, the status, or the size limit it was
+configured with.</p>
+
+<p>Every line names the pool and the machine that wrote it under
+<code>metsuke</code>, as <code>pool_id</code> and <code>agent_id</code>, the
+name you configure. One line read out of the archive on its own still says where
+it came from. That is the only key metsuke claims on a line.</p>
+
+<p>The header carries those same two, and four more: <code>agent_version</code>,
+the build that scraped; <code>counter</code>, which submission of yours this is;
+<code>timestamp</code>, when the submission was sealed; and
+<code>schema_version</code>, which shape its lines are.</p>
+
+<p>If you do step 5, trace lines travel as their own submissions: the same header
+with <code>schema_version</code> 2, and then the lines you selected, one per
+line, each the object your node wrote plus that same <code>metsuke</code>
+key.</p>
+
+<p>The signature travels beside the body in two headers:
+<code>{{HEADER_VKEY}}</code> and <code>{{HEADER_SIGNATURE}}</code>. Anything between
+your agent and this server has to pass both through unchanged, or the signature
+will not verify. Your pool id is not among them. It is the hash of the key in
+the first header, so this server derives it rather than taking your word for
+it.</p>
+
+<h2>2. Register your pool</h2>
+
+<p>Your application to the rewards program carries an application code. Put the
+same code in your pool registration transaction's metadata, under label
+{{METADATA_LABEL}}:</p>
+
+<pre>{{metadata}}</pre>
+
+<p>Only your cold key can sign a pool registration, so the two halves matching
+is what shows the application came from you. Until they do, this server refuses
+your submissions whatever key you sign them with.</p>
+
+<h2>3. Choose a signing key</h2>
+
+<p>Either of your pool's keys may sign submissions, and the choice is about what
+has to sit on the machine running the agent.</p>
+
+<p>Your <strong>cold key</strong> settles it alone. A pool id is the hash of its
+verification key, so the key that signs is what says which pool a submission is
+for, and nothing has to be looked up or believed. The cost is that the cold key
+has to be on the reporting machine.</p>
+
+<p>Your <strong>Leios key</strong>, the one your node forges and votes with,
+signs just as well but names no pool, so this server looks it up in the key
+roster it is given. That keeps your cold key off the reporting machine, which is
+the reason to prefer it. The cost is that such a submission can only be checked
+against a roster that was current when it arrived.</p>
+
+<p>The agent reads either as a cardano-cli TextEnvelope file, the
+<code>pool.skey</code> or <code>bls.skey</code> you already have. A cold key has
+to hash to the <code>pool_id</code> you configured or the agent refuses to
+start, which is the same check this server makes on every submission. A Leios
+key hashes to nothing, so nothing is checked at startup and the first you would
+hear of the wrong one is a refusal here.</p>
+
+<h2>4. Enable the node's metrics endpoint</h2>
+
+<p>cardano-node exposes nothing to scrape until you add the backend. Add it to
+your node configuration's <code>TraceOptions</code>, bound to loopback so it is
+not reachable from anywhere else:</p>
+
+<pre>{{backend}}</pre>
+
+<p>If your node configuration has no <code>TraceOptions</code> at all, paste that
+as it stands. If it has one, merge into it rather than pasting over it. The
+<code>""</code> key is your node's root entry, so keep every other key it has
+and add to its backends list.</p>
+
+<p>Both backends have to end up in that list, and each replaces one of its own
+kind rather than joining it. If your root already names a
+<code>PrometheusSimple</code> or an <code>Stdout</code> backend, replace that one
+instead of keeping both. If you would rather keep your own
+<code>PrometheusSimple</code>, leave it and point step 7's
+<code>metrics_url</code> at its port. Get this wrong and metrics still work,
+step 5 looks applied, and not one trace line is ever collected.</p>
+
+<p>Restart the node, then check it answers:</p>
+
+<pre>curl -s {{metrics_url}}</pre>
+
+<h2>5. Optional: let the node's traces out</h2>
+
+<p>The metrics endpoint is a periodic snapshot. It carries no per-event
+timestamps, so it cannot answer when an announcement arrived, when a block body
+and its closure were received, or when a quorum was reached. Those live in the
+node's trace stream, and the agent ships every field of the lines you select
+from it. It reads one field to decide, and it computes nothing from any of
+them.</p>
+
+<p>Skip this step and the agent stays exactly as step 4 leaves it: metrics
+only, and no read of your journal. To turn it on, the node has to emit those
+traces in the first place. These are the namespaces it has to emit, again as
+keys to merge into your <code>TraceOptions</code>:</p>
+
+<pre>{{traces}}</pre>
+
+<p><strong>Check before you add them.</strong> Your configuration may already set
+some of these, and merging replaces a key's whole entry, so these take the
+place of whatever severity or rate limit you had on those namespaces. It may
+also set rate limits on namespaces this snippet does not name; pasting over the
+object rather than merging into it would drop those too.</p>
+
+<p>Each namespace carries its own <code>severity</code>, so your node's root
+threshold is left as you have it and nothing here depends on where you set it.
+There is no <code>""</code> key in this snippet, so it cannot disturb the root
+entry step 4 touched. <code>maxFrequency: 0</code> is not a typo, it means no
+rate limit, and leaving it out silently caps the stream.</p>
+
+<p>Restart the node. What it emits is the same either way; how the agent gets
+it is a choice, and <code>[log].source</code> in step 7 is where you make it.</p>
+
+<p><code>"journald"</code> reads the node's journal under its own unit. That
+costs the agent membership of the <code>systemd-journal</code> group, which
+reads every unit's journal on the host and is the one privilege it holds beyond
+scraping loopback.</p>
+
+<p><code>"pipe"</code> reads the node's stdout on the agent's own stdin, so it
+holds no group at all. The agent goes downstream of the node, whatever starts
+the node:</p>
+
+<pre>cardano-node run ... | {{binary}} --config {{config_path}}</pre>
+
+<p>It writes every line through to its own stdout unchanged, so whatever read
+the node's output before still reads it. That is the whole shape, and the only
+question is how the thing that starts your node expresses a pipeline. A shell
+or a terminal writes it as it stands. systemd has no pipelines, so step 8 wraps
+it in <code>/bin/sh -c</code>. In a container it goes inside, as the entrypoint,
+with the agent's binary and config in the image beside the node; written around
+the command that starts the container instead, it only works while that command
+stays attached, since a detached one prints an id rather than the node's
+output.</p>
+
+<p>The journal is the smaller change if your agent may hold that group. The
+pipe is the one that costs no privilege. If neither appeals, skip this step and
+leave <code>[log]</code> out: the agent then stays exactly as step 4 left
+it.</p>
+
+<h2>6. Install the agent</h2>
+
+<p>The current agent is {{CLIENT_VERSION}}. On NixOS, add
+<code>{{flake}}</code> as a flake input and import its
+<code>nixosModules.metsuke</code>, which writes the config and the unit for
+you; the rest of this page is then a description of what that module does.</p>
+
+<p>Anywhere else, take the static build for your architecture and put it where
+the unit expects it:</p>
+
+<pre>nix build {{flake}}#metsuke-static-x86_64-linux
+sudo install -m 0755 result/bin/metsuke {{binary}}</pre>
+
+<p>Substitute <code>metsuke-static-aarch64-linux</code> on ARM. There is no
+install script and no self-update: updating is always something you do
+deliberately.</p>
+
+<h2>7. Configure the agent</h2>
+
+<p>Write this to <code>{{config_path}}</code>; its own comments say which values
+you must set.</p>
+
+<pre>{{config}}</pre>
+
+<p>The upload URL is this server. Replace the example host with the host you
+are reading this page on. The metrics URL has to match the endpoint you opened
+in step 4, and has to be a loopback address. The agent refuses to scrape
+anything else.</p>
+
+<h2>8. Run it under systemd</h2>
+
+<p>This unit runs the agent with no privileges beyond reading its own config
+and writing its spool; its own header says where to install it and how to hand
+it the signing key. Under <code>source = "journald"</code> two directives
+change: add <code>SupplementaryGroups=systemd-journal</code>, and turn
+<code>ProcSubset=pid</code> into <code>ProcSubset=all</code>. journalctl needs
+both, and they are the whole difference; the NixOS module makes them for you
+when <code>[log]</code> is set.</p>
+
+<pre>{{unit}}</pre>
+
+<pre>sudo systemctl daemon-reload
+sudo systemctl enable --now metsuke</pre>
+
+<p>Do not install this unit if you chose <code>source = "pipe"</code>. The
+agent runs downstream of the node then, so it needs no unit of its own and this
+whole step is one you can skip. Step 5's pipeline goes wherever your node's
+command is already written, and if that is nowhere in particular, a shell is a
+perfectly good answer.</p>
+
+<p>Where that command is a systemd unit, it is the <em>node's</em> unit that
+gains the pipeline, wrapped in a shell because systemd has no pipelines:</p>
+
+<pre>ExecStart=/bin/sh -c 'cardano-node run ... | {{binary}} --config {{config_path}}'</pre>
+
+<p>What the pipe buys is an agent holding no group. What it costs is that the
+node and the agent now start and stop together, which is also why the NixOS
+module does not render this shape: an agent it started on its own would get
+<code>/dev/null</code> for stdin and respawn forever on the EOF.</p>
+
+<h2>9. Verify</h2>
+
+<p>The agent logs one line at startup naming the endpoint it scrapes and the
+pool it reports for, and one line per submission saying whether the server took
+it:</p>
+
+<pre>systemctl status metsuke
+journalctl -u metsuke -f</pre>
+
+<p>The first submission is sent as soon as the agent starts, so you do not have
+to wait out a cadence to find out that something is wrong. A refused submission
+logs the server's reason and the scrapes stay spooled. Nothing is lost
+while you fix it, and they upload once it is fixed.</p>
+
+<h2>10. Staying up to date</h2>
+
+<p>This server was built against agent {{CLIENT_VERSION}}, and tells every agent
+that uploads to it which version that is. Yours logs a warning when it is
+older. To update, repeat step 6 and restart the service:</p>
+
+<pre>sudo systemctl restart metsuke</pre>
+
+<p>The spool is on disk, so queued scrapes survive the restart; nothing is
+scraped while the agent is down.</p>
