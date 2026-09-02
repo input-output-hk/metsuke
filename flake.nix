@@ -58,6 +58,8 @@
                 metrics = ./crates/metsuke/tests/fixtures/recordings/leios-node.prom;
                 traces = ./crates/metsuke/tests/fixtures/recordings/leios-node-traces.log;
                 contribUnit = ./contrib/metsuke.service;
+                pipeDropIn = ./contrib/node-pipe.conf;
+                nodeCommand = (import ./nix/unit.nix).nodeCommandPlaceholder;
                 agent = self.packages.${system}.metsuke;
               }
             );
@@ -266,54 +268,131 @@
           # nothing.
           directives = pkgs.lib.generators.toKeyValue { listsAsDuplicateKeys = true; };
 
-          contribUnit = pkgs.writeText "metsuke.service" ''
-            # Example hardened unit for a host that is not NixOS. Generated:
-            # edit nix/unit.nix, then `nix build .#metsuke-unit` and commit
-            # what it wrote here.
+          # The three files an operator brings, named once so a unit's prose and
+          # its ExecStart cannot point at different paths. instructions.rs reads
+          # the binary and the config back out of ExecStart.
+          agentBinary = "/usr/local/bin/metsuke";
+          agentConfig = "/etc/metsuke/config.toml";
+          agentKey = "/etc/metsuke/pool.skey";
+
+          # systemd reads the key as root and hands the service a copy only it
+          # can read. Naming the key in config.toml instead needs it readable by
+          # the unit's DynamicUser, which for a cold key means readable by
+          # everyone, so the credential is what ships rather than an option the
+          # header offers.
+          credential = "LoadCredential=signing-key:${agentKey}";
+          execStart = "${agentBinary} --config ${agentConfig} --signing-key \${CREDENTIALS_DIRECTORY}/signing-key";
+
+          # One unit per log source, so an operator picks a file rather than a
+          # set of directives to change. Everything below the header is shared,
+          # and `readsTheJournal` is the only difference between the two.
+          agentUnit =
+            {
+              name,
+              header,
+              readsTheJournal ? false,
+            }:
+            pkgs.writeText name ''
+              ${header}
+
+              [Unit]
+              Description=metsuke telemetry agent
+              After=network-online.target
+              Wants=network-online.target
+
+              [Service]
+              ${credential}
+              ExecStart=${execStart}
+              Restart=always
+              RestartSec=${toString unit.restartSecs}
+              ${directives (
+                unit.hardening {
+                  stateDirectory = "metsuke";
+                  inherit (unit) addressFamilies;
+                  inherit readsTheJournal;
+                }
+              )}
+              [Install]
+              WantedBy=multi-user.target
+            '';
+
+          # What an operator brings, which is the same list whichever unit they
+          # take. A list rather than a sentence: these are paths the unit will
+          # look for, and one of them carries a mode that matters.
+          bringTheseFiles = ''
+            #   the binary at ${agentBinary}
+            #   the configuration at ${agentConfig}
+            #   the signing key at ${agentKey}, owned by root, mode 0400'';
+
+          contribUnit = agentUnit {
+            name = "metsuke.service";
+            header = ''
+              # Example hardened unit for a host that is not NixOS. Generated:
+              # edit nix/unit.nix, then `nix build .#metsuke-unit` and commit
+              # what it wrote here.
+              #
+              # Copy to /etc/systemd/system/metsuke.service, and bring:
+              ${bringTheseFiles}
+              #
+              # Take contrib/config.minimal.toml as the configuration. This unit
+              # collects metrics and reads no trace lines. For those,
+              # contrib/metsuke-journald.service reads the node's journal and
+              # contrib/node-pipe.conf reads its stdout; ADR 0010 has what each
+              # one costs.'';
+          };
+
+          contribJournaldUnit = agentUnit {
+            name = "metsuke-journald.service";
+            readsTheJournal = true;
+            header = ''
+              # Example hardened unit for a host that is not NixOS, collecting
+              # the node's trace lines from its journal. Generated: edit
+              # nix/unit.nix, then `nix build .#metsuke-journald-unit` and commit
+              # what it wrote here.
+              #
+              # contrib/metsuke.service plus the two directives journalctl
+              # needs: the systemd-journal group, which reads every unit's
+              # journal on the host, and ProcSubset=all, without which
+              # journalctl exits before its first line.
+              #
+              # Copy to /etc/systemd/system/metsuke.service, and bring:
+              ${bringTheseFiles}
+              #
+              # Take contrib/config.journald.toml as the configuration.
+              # contrib/node-pipe.conf is the source that costs no group.'';
+          };
+
+          # Pipe mode is a change to the node's unit and not the agent's, since
+          # the agent runs downstream of the node and has no unit of its own. A
+          # drop-in rather than an edited unit, so the node's own packaging
+          # still owns its file.
+          contribPipeDropIn = pkgs.writeText "node-pipe.conf" ''
+            # Example drop-in for the node's unit, which is where pipe mode
+            # lives. Generated: edit nix/unit.nix, then
+            # `nix build .#metsuke-pipe-dropin` and commit what it wrote here.
             #
-            # Copy to /etc/systemd/system/metsuke.service, with the binary at
-            # /usr/local/bin/metsuke and the configuration at
-            # /etc/metsuke/config.toml.
+            # Copy to /etc/systemd/system/<your-node>.service.d/metsuke.conf,
+            # and bring:
+            ${bringTheseFiles}
             #
-            # Optional, and what the NixOS module does: keep the signing key
-            # unreadable to the service user by loading it as a credential. Add
-            #   LoadCredential=signing-key:/etc/metsuke/pool.skey
-            # append
-            #   --signing-key ''${CREDENTIALS_DIRECTORY}/signing-key
-            # to ExecStart, and leave signing_key out of config.toml.
+            # Take contrib/config.pipe.toml as the configuration.
             #
-            # With [log].source = "journald", add
-            #   SupplementaryGroups=systemd-journal
-            # and change ProcSubset=pid to ProcSubset=all. journalctl needs
-            # both.
+            # Replace ${unit.nodeCommandPlaceholder} below with the command your node's unit
+            # already runs, which `systemctl cat <your-node>.service` prints.
+            # The empty ExecStart= is what clears that command before this one
+            # replaces it, and the shell is because systemd has no pipelines.
             #
-            # Do not install this unit with [log].source = "pipe". The agent
-            # then runs downstream of the node and needs no unit of its own:
-            # the pipeline goes wherever the node's command is written, which
-            # may be a shell or a container entrypoint rather than systemd at
-            # all. Where it is a systemd unit, it is the node's that gains
-            #   ExecStart=/bin/sh -c 'cardano-node run ... | /usr/local/bin/metsuke \
-            #     --config /etc/metsuke/config.toml'
-            # with a shell because systemd has no pipelines. ADR 0010 has what
+            # The agent then runs as whatever user the node runs as, holds no
+            # group and reads no journal, and writes its spool under the state
+            # directory below. It passes every line through to its own stdout,
+            # so the node's output still reaches the journal. ADR 0010 has what
             # each source costs.
 
-            [Unit]
-            Description=metsuke telemetry agent
-            After=network-online.target
-            Wants=network-online.target
-
             [Service]
-            ExecStart=/usr/local/bin/metsuke --config /etc/metsuke/config.toml
-            Restart=always
-            RestartSec=${toString unit.restartSecs}
-            ${directives (
-              unit.hardening {
-                stateDirectory = "metsuke";
-                inherit (unit) addressFamilies;
-              }
-            )}
-            [Install]
-            WantedBy=multi-user.target
+            ${credential}
+            StateDirectory=metsuke
+            ExecStart=
+            ExecStart=/bin/sh -c '${unit.nodeCommandPlaceholder} | ${execStart}'
           '';
 
           # What "static" has to mean for the operator dropping this on a host
@@ -345,6 +424,8 @@
 
             metsuke = craneLib.buildPackage agentArgs;
             metsuke-unit = contribUnit;
+            metsuke-journald-unit = contribJournaldUnit;
+            metsuke-pipe-dropin = contribPipeDropIn;
             metsuke-allowlist = (import ./nix/allowlist.nix { inherit pkgs; }).package;
             metsuke-roster = (import ./nix/roster.nix { inherit pkgs; }).package;
             # The developer's pull tool, which links the wire crate alone. The
@@ -419,9 +500,17 @@
                 touch $out
               '';
 
-            contrib-unit = pkgs.runCommand "contrib-unit-is-current" { } ''
+            contrib-unit = pkgs.runCommand "contrib-units-are-current" { } ''
+              stale() {
+                echo "contrib/$1 is stale; its header says how"
+                exit 1
+              }
               diff -u ${./contrib/metsuke.service} ${contribUnit} \
-                || { echo "contrib/metsuke.service is stale; its header says how"; exit 1; }
+                || stale metsuke.service
+              diff -u ${./contrib/metsuke-journald.service} ${contribJournaldUnit} \
+                || stale metsuke-journald.service
+              diff -u ${./contrib/node-pipe.conf} ${contribPipeDropIn} \
+                || stale node-pipe.conf
               touch $out
             '';
 

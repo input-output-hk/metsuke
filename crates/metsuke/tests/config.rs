@@ -228,6 +228,61 @@ fn the_example_log_section_documents_the_real_defaults() {
     assert_eq!(documented, shipped);
 }
 
+/// The configs an operator copies, one per log source. `config.example.toml` is
+/// the annotated reference and documents every default; these hold only what
+/// has to be set, so what is asserted here is that "only" is true.
+const MINIMAL: &str = include_str!("../../../contrib/config.minimal.toml");
+const PIPE: &str = include_str!("../../../contrib/config.pipe.toml");
+const JOURNALD: &str = include_str!("../../../contrib/config.journald.toml");
+
+/// A shipped config with the one value it cannot ship a usable form of.
+fn as_shipped(config: &str) -> String {
+    assert!(
+        config.contains("pool1CHANGEME"),
+        "a shipped config marks the pool id for an operator to replace"
+    );
+    config.replace("pool1CHANGEME", &test_pool_id().to_bech32())
+}
+
+// Each shipped config is the minimal one plus its source and nothing else: a
+// value that drifted from the code's default would show up here as a config
+// that no longer matches the three keys it claims to be.
+#[test]
+fn every_shipped_config_is_the_minimal_one_plus_its_source() {
+    let minimal = Config::from_toml(&minimal_toml()).unwrap();
+    assert_eq!(Config::from_toml(&as_shipped(MINIMAL)).unwrap(), minimal);
+    for shipped in [PIPE, JOURNALD] {
+        let config = Config::from_toml(&as_shipped(shipped)).unwrap();
+        assert!(config.log.is_some(), "a source config configures one");
+        assert_eq!(
+            Config {
+                log: None,
+                ..config
+            },
+            minimal
+        );
+    }
+}
+
+#[test]
+fn the_shipped_pipe_config_takes_lines_on_stdin() {
+    let log = Config::from_toml(&as_shipped(PIPE)).unwrap().log.unwrap();
+    assert!(matches!(log.source, LogSource::Pipe(_)), "{:?}", log.source);
+}
+
+#[test]
+fn the_shipped_journald_config_names_this_host_s_paths() {
+    let log = Config::from_toml(&as_shipped(JOURNALD))
+        .unwrap()
+        .log
+        .unwrap();
+    assert_eq!(journal(&log).journal_unit, "cardano-node");
+    assert_eq!(
+        journal(&log).journalctl_path,
+        std::path::PathBuf::from("/usr/bin/journalctl")
+    );
+}
+
 // Every value is required or an explicit default: a config without a
 // required field must fail at startup, not run degraded.
 #[test]

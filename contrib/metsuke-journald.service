@@ -1,17 +1,20 @@
-# Example hardened unit for a host that is not NixOS. Generated:
-# edit nix/unit.nix, then `nix build .#metsuke-unit` and commit
+# Example hardened unit for a host that is not NixOS, collecting
+# the node's trace lines from its journal. Generated: edit
+# nix/unit.nix, then `nix build .#metsuke-journald-unit` and commit
 # what it wrote here.
+#
+# contrib/metsuke.service plus the two directives journalctl
+# needs: the systemd-journal group, which reads every unit's
+# journal on the host, and ProcSubset=all, without which
+# journalctl exits before its first line.
 #
 # Copy to /etc/systemd/system/metsuke.service, and bring:
 #   the binary at /usr/local/bin/metsuke
 #   the configuration at /etc/metsuke/config.toml
 #   the signing key at /etc/metsuke/pool.skey, owned by root, mode 0400
 #
-# Take contrib/config.minimal.toml as the configuration. This unit
-# collects metrics and reads no trace lines. For those,
-# contrib/metsuke-journald.service reads the node's journal and
-# contrib/node-pipe.conf reads its stdout; ADR 0010 has what each
-# one costs.
+# Take contrib/config.journald.toml as the configuration.
+# contrib/node-pipe.conf is the source that costs no group.
 
 [Unit]
 Description=metsuke telemetry agent
@@ -31,7 +34,7 @@ MemoryDenyWriteExecute=true
 NoNewPrivileges=true
 PrivateDevices=true
 PrivateTmp=true
-ProcSubset=pid
+ProcSubset=all
 ProtectClock=true
 ProtectControlGroups=true
 ProtectHome=true
@@ -48,7 +51,7 @@ RestrictNamespaces=true
 RestrictRealtime=true
 RestrictSUIDSGID=true
 StateDirectory=metsuke
-SupplementaryGroups=
+SupplementaryGroups=systemd-journal
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged

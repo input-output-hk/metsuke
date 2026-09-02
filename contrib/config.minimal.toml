@@ -1,0 +1,17 @@
+# metsuke agent, metrics only. Copy to /etc/metsuke/config.toml, set the three
+# values below, and run it with contrib/metsuke.service.
+#
+# Everything else takes its shipped default. contrib/config.example.toml
+# documents all of them, and is the file to read only if you want to change one.
+#
+# Your signing key is not named here: the unit hands it over as a credential,
+# so it stays unreadable to the service.
+
+# Your pool id, bech32.
+pool_id = "pool1CHANGEME"
+
+# Your node's PrometheusSimple endpoint, which has to be a loopback address.
+metrics_url = "http://127.0.0.1:12798/metrics"
+
+# The server you report to.
+upload_url = "https://metsuke.example.org/v1/submit"

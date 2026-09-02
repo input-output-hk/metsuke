@@ -1,0 +1,21 @@
+# metsuke agent, metrics and trace lines off the node's stdout. Copy to
+# /etc/metsuke/config.toml, set the three values below, and start the pair with
+# contrib/node-pipe.conf.
+#
+# This source reads no journal and needs no group. Your node has to emit the
+# trace namespaces first; the server's onboarding page has that snippet.
+#
+# Everything else takes its shipped default, including which namespaces are
+# selected. contrib/config.example.toml documents all of them.
+
+# Your pool id, bech32.
+pool_id = "pool1CHANGEME"
+
+# Your node's PrometheusSimple endpoint, which has to be a loopback address.
+metrics_url = "http://127.0.0.1:12798/metrics"
+
+# The server you report to.
+upload_url = "https://metsuke.example.org/v1/submit"
+
+[log]
+source = "pipe"
