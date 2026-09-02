@@ -27,6 +27,7 @@ use crate::authority::Attributed;
 use crate::config::HttpConfig;
 use crate::developer::Developer;
 use crate::http::{self, Answer, AnswerBody, Method, Request};
+use crate::instructions;
 use crate::intake::Intake;
 
 /// How much of an object is moved per read: copy granularity, not a bound
@@ -38,7 +39,7 @@ const DOWNLOAD_CHUNK_BYTES: usize = 64 * 1024;
 struct Serving<A: Store> {
     intake: Intake<A>,
     developer: Developer,
-    page: bytes::Bytes,
+    pages: http::Pages,
 }
 
 /// A bound listener that has not been served yet. Two steps because the
@@ -80,12 +81,12 @@ impl Listener {
         limits: HttpConfig,
         intake: Intake<A>,
         developer: Developer,
-        page: String,
+        pages: instructions::Pages,
     ) -> Result<std::convert::Infallible, io::Error> {
         let serving = Arc::new(Serving {
             intake,
             developer,
-            page: bytes::Bytes::from(page),
+            pages: http::Pages::from(pages),
         });
         self.runtime
             .block_on(accept(self.listener, limits, serving))
@@ -268,7 +269,7 @@ async fn blocking<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
     request: Request,
 ) -> Answer {
     tokio::task::spawn_blocking(move || {
-        http::answer(&serving.intake, &serving.developer, &serving.page, request)
+        http::answer(&serving.intake, &serving.developer, &serving.pages, request)
     })
     .await
     .unwrap_or_else(|error| {

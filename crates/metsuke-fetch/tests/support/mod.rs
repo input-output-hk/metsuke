@@ -186,7 +186,7 @@ impl Server {
             None,
         );
         std::thread::spawn(move || {
-            match listener.serve(http_config(), intake, developer, instructions::page()) {
+            match listener.serve(http_config(), intake, developer, instructions::pages()) {
                 Ok(never) => match never {},
                 Err(error) => panic!("the test server stopped accepting: {error}"),
             }

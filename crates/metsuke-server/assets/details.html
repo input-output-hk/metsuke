@@ -1,0 +1,191 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>metsuke: details</title>
+<link rel="icon" href="{{ICON_PATH}}" type="{{ICON_CONTENT_TYPE}}">
+<style>body { max-width: 46em; margin: 2em auto; font-family: sans-serif }
+pre { overflow-x: auto; background: #f4f4f4; padding: 1em }</style>
+
+<h1>metsuke: details</h1>
+
+<p>What the agent sends, which key signs it, and every setting it takes.
+<a href="{{PATH}}">The five steps to get running</a> are the other page, and
+nothing here is needed to follow them.</p>
+
+<h2>What leaves your machine</h2>
+
+<p>One submission is a plain JSON header, then your scrapes zstd compressed, one
+JSON object per line, with a detached Ed25519 signature over the whole byte
+sequence. The header rides in a zstd skippable frame, so <code>zstd -d</code>
+on a submission hands back the lines and nothing else. This is an example of the
+whole thing: two scrapes, the first cut down to two metrics where a real line
+carries every one your node exposes, the second a scrape that failed.</p>
+
+<pre>{{envelope}}</pre>
+
+<p>One line per scrape, and its <code>metrics</code> are every metric your node
+exposes whose value JSON can hold. Those are the same metric lines
+<code>curl</code> prints. Each entry carries the metric's <code>name</code>, its
+<code>labels</code> and its <code>value</code> as your node stated them, plus
+the <code>declared_type</code> its <code># TYPE</code> line gave where it had
+one. The agent reads nothing else on your machine. It contributes two facts of
+its own, <code>scraped_at</code>, the time it scraped, and
+<code>clock_offset_ms</code>, the offset its own NTP query measured.</p>
+
+<p>A scrape that failed is itself a signal, so the submission is sent either
+way: no metrics, and <code>failure</code> naming what stopped it. Its
+<code>reason</code> is one of {{reasons}}, and its <code>detail</code> is the
+message the agent had: the port, the status, or the size limit it was configured
+with.</p>
+
+<p>Every line names the pool and the machine that wrote it under
+<code>metsuke</code>, as <code>pool_id</code> and <code>agent_id</code>, the
+name you configure. One line read out of the archive on its own still says where
+it came from. That is the only key metsuke claims on a line.</p>
+
+<p>The header carries those same two, and four more: <code>agent_version</code>,
+the build that scraped; <code>counter</code>, which submission of yours this is;
+<code>timestamp</code>, when the submission was sealed; and
+<code>schema_version</code>, which shape its lines are.</p>
+
+<p>Trace lines travel as their own submissions: the same header with
+<code>schema_version</code> 2, and then the lines you selected, one per line,
+each the object your node wrote plus that same <code>metsuke</code> key.</p>
+
+<p>The signature travels beside the body in two headers:
+<code>{{HEADER_VKEY}}</code> and <code>{{HEADER_SIGNATURE}}</code>. Anything
+between your agent and this server has to pass both through unchanged, or the
+signature will not verify. Your pool id is not among them. It is the hash of the
+key in the first header, so this server derives it rather than taking your word
+for it.</p>
+
+<h2>Which key signs</h2>
+
+<p>Either of your pool's keys may sign submissions, and the choice is about what
+has to sit on the machine running the agent.</p>
+
+<p>Your <strong>cold key</strong> settles it alone. A pool id is the hash of its
+verification key, so the key that signs is what says which pool a submission is
+for, and nothing has to be looked up or believed. The cost is that the cold key
+has to be on the reporting machine.</p>
+
+<p>Your <strong>Leios key</strong>, the one your node forges and votes with,
+signs just as well but names no pool, so this server looks it up in the key
+roster it is given. That keeps your cold key off the reporting machine, which is
+the reason to prefer it. The cost is that such a submission can only be checked
+against a roster that was current when it arrived.</p>
+
+<p>The agent reads either as a cardano-cli TextEnvelope file, the
+<code>pool.skey</code> or <code>bls.skey</code> you already have. A cold key has
+to hash to the <code>pool_id</code> you configured or the agent refuses to
+start, which is the same check this server makes on every submission. A Leios
+key hashes to nothing, so nothing is checked at startup and the first you would
+hear of the wrong one is a refusal here.</p>
+
+<h2>The node's metrics endpoint</h2>
+
+<p>Most nodes serve Prometheus already, and the quickstart's step 3 is to point
+<code>metrics_url</code> at the port yours is on. If nothing answers, this is
+the backend to add, in your node configuration's <code>TraceOptions</code>,
+bound to loopback so it is not reachable from anywhere else:</p>
+
+<pre>{{backend}}</pre>
+
+<p>If your node configuration has no <code>TraceOptions</code> at all, paste
+that as it stands. If it has one, merge into it rather than pasting over it. The
+<code>""</code> key is your node's root entry, so keep every other key it has
+and add to its backends list.</p>
+
+<p>Each backend replaces one of its own kind rather than joining it. If your
+root already names a <code>PrometheusSimple</code> or an <code>Stdout</code>
+backend, replace that one instead of keeping both. Get this wrong and metrics
+still work, the trace configuration below looks applied, and not one trace line
+is ever collected.</p>
+
+<p><code>Stdout MachineFormat</code> is what both trace sources read, so it has
+to be in that list for either of them. Metrics alone do not need it.</p>
+
+<p>Restart the node, then check it answers:</p>
+
+<pre>curl -s {{metrics_url}}</pre>
+
+<h2>What the node has to emit for trace lines</h2>
+
+<p>The metrics endpoint carries no per-event timestamps, so it cannot answer
+when an announcement arrived, when a block body and its closure were received,
+or when a quorum was reached. Those live in the node's trace stream, and the
+agent ships every field of the lines you select from it. It reads one field to
+decide, and it computes nothing from any of them.</p>
+
+<p>These are the namespaces the node has to emit, again as keys to merge into
+your <code>TraceOptions</code>:</p>
+
+<pre>{{traces}}</pre>
+
+<p><strong>Check before you add them.</strong> Your configuration may already
+set some of these, and merging replaces a key's whole entry, so these take the
+place of whatever severity or rate limit you had on those namespaces. It may
+also set rate limits on namespaces this snippet does not name; pasting over the
+object rather than merging into it would drop those too.</p>
+
+<p>Each namespace carries its own <code>severity</code>, so your node's root
+threshold is left as you have it and nothing here depends on where you set it.
+There is no <code>""</code> key in this snippet, so it cannot disturb the root
+entry the backend above touched. <code>maxFrequency: 0</code> is not a typo, it
+means no rate limit, and leaving it out silently caps the stream.</p>
+
+<p>Restart the node. What it emits is the same either way; how the agent gets it
+is the choice below.</p>
+
+<h2>The pipe</h2>
+
+<p>The node runs as <code>cardano-node run ... | {{binary}} --config
+{{config_path}}</code>. The agent reads the node's stdout on its own stdin,
+holds no group at all, and writes every line through to its own stdout
+unchanged, so whatever read the node's output before still reads it.</p>
+
+<p>It runs downstream of the node, so it needs no unit of its own. That makes
+this a change to the node's unit, and systemd has no pipelines, so the command
+is wrapped in a shell. This drop-in is the shape, and the empty
+<code>ExecStart=</code> is what clears the command the node's unit already
+had:</p>
+
+<pre>{{pipe_dropin}}</pre>
+
+<p>The configuration beside it:</p>
+
+<pre>{{pipe_config}}</pre>
+
+<p>Wherever your node's command lives rather than in a unit, the pipeline goes
+there instead. A shell or a terminal writes it as it stands. In a container it
+goes inside, as the entrypoint, with the agent's binary and configuration in the
+image beside the node; written around the command that starts the container it
+only works while that command stays attached, since a detached one prints an id
+rather than the node's output.</p>
+
+<p>The NixOS module does not render this shape. An agent it started on its own
+would get <code>/dev/null</code> for stdin and respawn forever on the EOF.</p>
+
+<h2>The journal</h2>
+
+<p>The agent reads the node's journal under its own unit. That costs it
+membership of the <code>systemd-journal</code> group, which reads every unit's
+journal on the host and is the one privilege it holds beyond scraping loopback.
+Two directives are the whole difference from the quickstart's unit, and
+journalctl needs both:</p>
+
+<pre>{{journald_unit}}</pre>
+
+<p>The configuration beside it, which is the one place the agent cannot guess
+anything: neither your node's unit name nor where journalctl lives on your
+distribution.</p>
+
+<pre>{{journald_config}}</pre>
+
+<h2>Every setting</h2>
+
+<p>The quickstart ships the values that have to be set and leaves the rest at
+their defaults. This is the annotated form of the same file, with every default
+written out. Its comments are pinned to the code, so a value here is a value the
+agent ships.</p>
+
+<pre>{{config_example}}</pre>

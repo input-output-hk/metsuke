@@ -23,11 +23,11 @@ use support::{
 };
 
 /// The server one request is answered by: an archive under a temporary
-/// directory, the suite's developer account, and the shipped page.
+/// directory, the suite's developer account, and the shipped pages.
 struct Server<A: metsuke_server::archive::Store> {
     intake: Intake<A>,
     developer: Developer,
-    page: bytes::Bytes,
+    pages: http::Pages,
     _dir: tempfile::TempDir,
 }
 
@@ -38,7 +38,7 @@ where
         + metsuke_server::archive::List,
 {
     fn answer(&self, request: Request) -> Answer {
-        http::answer(&self.intake, &self.developer, &self.page, request)
+        http::answer(&self.intake, &self.developer, &self.pages, request)
     }
 }
 
@@ -69,7 +69,7 @@ fn over<A: metsuke_server::archive::Store>(archive: A, dir: tempfile::TempDir) -
     Server {
         intake: Intake::new(permissive_config(&[pool_of(&test_key())]), archive, None),
         developer,
-        page: bytes::Bytes::from(instructions::page()),
+        pages: http::Pages::from(instructions::pages()),
         _dir: dir,
     }
 }
@@ -139,8 +139,29 @@ fn the_instructions_page_is_answered_without_credentials() {
     let answer = server.answer(get(instructions::PATH));
 
     assert_eq!(answer.status, 200);
-    assert_eq!(body(&answer), instructions::page());
+    assert_eq!(body(&answer), instructions::pages().quickstart);
     assert!(answer.content_type.starts_with("text/html"));
+}
+
+#[test]
+fn the_details_page_is_answered_without_credentials() {
+    let server = server();
+
+    let answer = server.answer(get(instructions::DETAILS_PATH));
+
+    assert_eq!(answer.status, 200);
+    assert_eq!(body(&answer), instructions::pages().details);
+    assert!(answer.content_type.starts_with("text/html"));
+}
+
+#[test]
+fn the_details_page_takes_only_get() {
+    let answer = server().answer(Request {
+        method: Method::Post,
+        ..get(instructions::DETAILS_PATH)
+    });
+
+    assert_eq!(answer.status, 405);
 }
 
 #[test]

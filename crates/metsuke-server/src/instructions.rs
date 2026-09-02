@@ -1,9 +1,13 @@
-//! The onboarding page an operator is pointed at: nothing to accepted
-//! submissions. Its values are filled rather than written down, so that every
-//! one it quotes comes out of the file that owns it. That is the shipped example
-//! config and unit whole, the agent version `build.rs` read, and the field list
-//! from the wire types. No edit here can document a default the agent does not
-//! ship.
+//! The onboarding an operator is pointed at: nothing to accepted submissions.
+//! Two documents, because one had to be true for every operator at once and so
+//! carried every branch inline. The quickstart is the path a pool takes and
+//! stops there; the details page holds what the quickstart leaves out, and is
+//! the only one that has to be complete.
+//!
+//! Values in both are filled rather than written down, so that every one they
+//! quote comes out of the file that owns it. That is the shipped configs and
+//! units whole, the agent version `build.rs` read, and the field list from the
+//! wire types. No edit here can document a default the agent does not ship.
 
 use std::collections::BTreeMap;
 
@@ -16,9 +20,13 @@ use time::OffsetDateTime;
 use crate::CLIENT_VERSION;
 use crate::applications::{METADATA_KEY, METADATA_LABEL};
 
-/// Where the page is served. The root, because it is the only thing a person
-/// rather than a program comes here for.
+/// Where the quickstart is served. The root, because it is the only thing a
+/// person rather than a program comes here for.
 pub const PATH: &str = "/";
+
+/// Where the rest of it is served, linked from the quickstart and from nowhere
+/// else.
+pub const DETAILS_PATH: &str = "/details";
 
 pub const ICON: &str = include_str!("../assets/favicon.svg");
 pub const ICON_PATH: &str = "/favicon.svg";
@@ -28,18 +36,25 @@ pub const ICON_PATH: &str = "/favicon.svg";
 pub const ICON_LEGACY_PATH: &str = "/favicon.ico";
 pub const ICON_CONTENT_TYPE: &str = "image/svg+xml";
 
-/// The page's markup, with the placeholders `render` fills. A file rather than
-/// a string literal, so editing the most-read document in the project is not
-/// editing Rust, and a literal brace is a literal brace.
-const TEMPLATE: &str = include_str!("../assets/instructions.html");
+/// Each page's markup, with the placeholders its render fills. Files rather
+/// than string literals, so editing the most-read documents in the project is
+/// not editing Rust, and a literal brace is a literal brace.
+const QUICKSTART: &str = include_str!("../assets/quickstart.html");
+const DETAILS: &str = include_str!("../assets/details.html");
 
-/// The shipped agent configuration, whose commented values are pinned to the
-/// code's defaults by `crates/metsuke/tests/config.rs`.
+/// The shipped agent configurations, one per log source. Their required values
+/// are tied to the code's defaults by `crates/metsuke/tests/config.rs`, which
+/// is also what pins the example's commented ones.
+pub const CONFIG_MINIMAL: &str = include_str!("../../../contrib/config.minimal.toml");
+pub const CONFIG_PIPE: &str = include_str!("../../../contrib/config.pipe.toml");
+pub const CONFIG_JOURNALD: &str = include_str!("../../../contrib/config.journald.toml");
 pub const CONFIG_EXAMPLE: &str = include_str!("../../../contrib/config.example.toml");
 
-/// The shipped unit, generated from nix/unit.nix and kept current by the
-/// flake's `contrib-unit` check.
+/// The shipped units, generated from nix/unit.nix and kept current by the
+/// flake's `contrib-unit` check. `UNIT` is the one the quickstart installs.
 pub const UNIT: &str = include_str!("../../../contrib/metsuke.service");
+pub const UNIT_JOURNALD: &str = include_str!("../../../contrib/metsuke-journald.service");
+pub const PIPE_DROPIN: &str = include_str!("../../../contrib/node-pipe.conf");
 
 /// The node namespaces the trace step gives an explicit severity. These are the
 /// node's own namespaces, not the agent's selection prefixes: what a node emits
@@ -52,35 +67,76 @@ pub const NAMED_NAMESPACES: [&str; 4] = [
     "ChainDB.AddBlockEvent.AddedToCurrentChain",
 ];
 
-/// The page, ready to serve.
-pub fn page() -> String {
-    render(CONFIG_EXAMPLE, UNIT)
+/// Both pages, ready to serve.
+pub fn pages() -> Pages {
+    Pages {
+        quickstart: quickstart(CONFIG_MINIMAL, UNIT),
+        details: details(CONFIG_EXAMPLE),
+    }
 }
 
-pub fn render(config_example: &str, unit: &str) -> String {
-    let metrics = MetricsEndpoint::from_config(config_example);
-    let binary = exec_start(unit, ExecStartField::Binary);
-    let config_path = exec_start(unit, ExecStartField::Config);
+/// What this module renders, held together so a caller cannot serve one and
+/// forget the other.
+pub struct Pages {
+    pub quickstart: String,
+    pub details: String,
+}
+
+/// The five steps and nothing else. Takes the config it shows and the unit it
+/// installs, because the paths it quotes are read back out of them.
+pub fn quickstart(config: &str, unit: &str) -> String {
+    let metrics = MetricsEndpoint::from_config(config);
     fill(
-        TEMPLATE,
+        QUICKSTART,
         &[
             ("ICON_PATH", ICON_PATH.to_string()),
             ("ICON_CONTENT_TYPE", ICON_CONTENT_TYPE.to_string()),
-            ("HEADER_VKEY", HEADER_VKEY.to_string()),
-            ("HEADER_SIGNATURE", HEADER_SIGNATURE.to_string()),
+            ("DETAILS_PATH", DETAILS_PATH.to_string()),
             ("METADATA_LABEL", METADATA_LABEL.to_string()),
             ("CLIENT_VERSION", CLIENT_VERSION.to_string()),
+            ("submit_path", crate::http::SUBMIT_PATH.to_string()),
+            ("metadata", escape(&metadata_json())),
+            ("metrics_url", escape(metrics.url())),
+            ("config", escape(config.trim_end())),
+            ("unit", escape(unit.trim_end())),
+            ("binary", escape(&exec_start(unit, ExecStartField::Binary))),
+            (
+                "config_path",
+                escape(&exec_start(unit, ExecStartField::Config)),
+            ),
+            ("key_path", escape(&credential_source(unit))),
+            ("flake", escape(&flake_ref())),
+        ],
+    )
+}
+
+/// Everything the quickstart leaves out. Takes the annotated example, which is
+/// the one config it shows whole and the one the metrics endpoint is read from.
+pub fn details(config_example: &str) -> String {
+    let metrics = MetricsEndpoint::from_config(config_example);
+    fill(
+        DETAILS,
+        &[
+            ("ICON_PATH", ICON_PATH.to_string()),
+            ("ICON_CONTENT_TYPE", ICON_CONTENT_TYPE.to_string()),
+            ("PATH", PATH.to_string()),
+            ("HEADER_VKEY", HEADER_VKEY.to_string()),
+            ("HEADER_SIGNATURE", HEADER_SIGNATURE.to_string()),
             ("envelope", escape(&example_envelope())),
             ("reasons", failure_reasons()),
-            ("metadata", escape(&metadata_json())),
             ("backend", escape(&metrics.backend_config())),
             ("traces", escape(&trace_config())),
             ("metrics_url", escape(metrics.url())),
-            ("config", escape(config_example.trim_end())),
-            ("unit", escape(unit.trim_end())),
-            ("binary", escape(&binary)),
-            ("config_path", escape(&config_path)),
-            ("flake", escape(&flake_ref())),
+            ("config_example", escape(config_example.trim_end())),
+            ("pipe_config", escape(CONFIG_PIPE.trim_end())),
+            ("pipe_dropin", escape(PIPE_DROPIN.trim_end())),
+            ("journald_config", escape(CONFIG_JOURNALD.trim_end())),
+            ("journald_unit", escape(UNIT_JOURNALD.trim_end())),
+            ("binary", escape(&exec_start(UNIT, ExecStartField::Binary))),
+            (
+                "config_path",
+                escape(&exec_start(UNIT, ExecStartField::Config)),
+            ),
         ],
     )
 }
@@ -232,6 +288,19 @@ fn exec_start(unit: &str, field: ExecStartField) -> String {
     };
     found
         .expect("the shipped unit's ExecStart names the binary and its config")
+        .to_string()
+}
+
+/// Where the unit expects the signing key. Read out of `LoadCredential=` for
+/// the same reason the two paths above are read out of `ExecStart=`: the
+/// quickstart tells an operator to put a file somewhere, and the somewhere has
+/// to be where the unit will look.
+fn credential_source(unit: &str) -> String {
+    unit.lines()
+        .find_map(|line| line.strip_prefix("LoadCredential="))
+        .and_then(|value| value.split_once(':'))
+        .expect("the shipped unit loads the signing key as a credential")
+        .1
         .to_string()
 }
 

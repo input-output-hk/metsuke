@@ -1,6 +1,10 @@
-//! The onboarding page (ticket metsuke-4zo.11), checked for provenance rather
+//! The onboarding pages (ticket metsuke-4zo.11), checked for provenance rather
 //! than wording: each test moves a value in the file that owns it and asserts
 //! the page moved with it (`instructions` says why that is the point).
+//!
+//! Which page a test reads is part of what it asserts. The quickstart carries
+//! what an operator does; everything about what the agent sends and what the
+//! node has to be told is the details page's.
 
 use std::collections::BTreeMap;
 
@@ -10,30 +14,53 @@ use metsuke_wire::envelope::{
 };
 use time::OffsetDateTime;
 
-/// The steps the ticket's outline fixes, in order.
-const SECTIONS: [&str; 10] = [
-    "1. What leaves your machine",
-    "2. Register your pool",
-    "3. Choose a signing key",
-    "4. Enable the node's metrics endpoint",
-    "5. Optional: let the node's traces out",
-    "6. Install the agent",
-    "7. Configure the agent",
-    "8. Run it under systemd",
-    "9. Verify",
-    "10. Staying up to date",
+/// The five steps, in the order an operator takes them.
+const QUICKSTART_SECTIONS: [&str; 5] = [
+    "1. Put your application code on chain",
+    "2. Install the agent",
+    "3. Write the configuration",
+    "4. Install the key and the unit",
+    "5. Check it",
+];
+
+/// What the quickstart leaves out. Each one is a question the steps raise and
+/// do not answer, in the order they raise it.
+const DETAILS_SECTIONS: [&str; 6] = [
+    "What leaves your machine",
+    "Which key signs",
+    "The node's metrics endpoint",
+    "What the node has to emit for trace lines",
+    "The pipe",
+    "The journal",
 ];
 
 #[test]
 fn every_outline_section_is_present_and_in_order() {
-    let page = instructions::page();
-    let mut cursor = 0;
-    for section in SECTIONS {
-        let found = page[cursor..]
-            .find(section)
-            .unwrap_or_else(|| panic!("section {section:?} is missing or out of order"));
-        cursor += found + section.len();
+    let pages = instructions::pages();
+    for (page, sections) in [
+        (&pages.quickstart, &QUICKSTART_SECTIONS[..]),
+        (&pages.details, &DETAILS_SECTIONS[..]),
+    ] {
+        let mut cursor = 0;
+        for section in sections {
+            let found = page[cursor..]
+                .find(section)
+                .unwrap_or_else(|| panic!("section {section:?} is missing or out of order"));
+            cursor += found + section.len();
+        }
     }
+}
+
+/// The quickstart is the one an operator is pointed at, so the other page has
+/// to be reachable from it and nothing else has to be.
+#[test]
+fn the_quickstart_links_the_details_page() {
+    assert!(
+        instructions::pages()
+            .quickstart
+            .contains(&format!(r#"href="{}""#, instructions::DETAILS_PATH)),
+        "the quickstart never links the details page"
+    );
 }
 
 /// The acceptance criterion: what leaves the box is named field for field.
@@ -46,7 +73,7 @@ fn every_outline_section_is_present_and_in_order() {
 fn every_v1_field_appears_on_the_page() {
     // The prose, not the page: the embedded example is rendered from these same
     // types, so a field would appear in it with nothing written about it.
-    let prose = prose(&instructions::page());
+    let prose = prose(&instructions::pages().details);
     let row = serde_json::to_value(Scrape {
         scraped_at: OffsetDateTime::UNIX_EPOCH,
         clock_offset_ms: Some(0),
@@ -90,7 +117,7 @@ fn every_v1_field_appears_on_the_page() {
 /// one UNNEST reaches a metric and nothing is packed inside a string.
 #[test]
 fn the_page_renders_rows_whose_metrics_are_a_nested_list() {
-    let rows = rendered_rows(&instructions::page());
+    let rows = rendered_rows(&instructions::pages().details);
     for row in &rows {
         let mut keys: Vec<&str> = row
             .as_object()
@@ -156,55 +183,84 @@ fn prose(page: &str) -> String {
 /// agent sends.
 #[test]
 fn the_page_names_the_submission_headers() {
-    let page = instructions::page();
+    let page = instructions::pages().details;
     for header in [HEADER_VKEY, HEADER_SIGNATURE] {
         assert!(page.contains(header), "the page never names {header}");
     }
 }
 
 /// Linked, so a browser never falls back to the path it would have guessed
-/// (metsuke-n1th).
+/// (metsuke-n1th). Both pages, because either one can be the first a browser
+/// opens.
 #[test]
 fn the_page_links_the_icon_route() {
-    assert!(
-        instructions::page().contains(&format!(
-            r#"<link rel="icon" href="{}" type="{}">"#,
-            instructions::ICON_PATH,
-            instructions::ICON_CONTENT_TYPE
-        )),
-        "no icon link in the page"
+    let pages = instructions::pages();
+    let link = format!(
+        r#"<link rel="icon" href="{}" type="{}">"#,
+        instructions::ICON_PATH,
+        instructions::ICON_CONTENT_TYPE
     );
+    for page in [&pages.quickstart, &pages.details] {
+        assert!(page.contains(&link), "no icon link in a page");
+    }
 }
 
 /// Verbatim, not summarised: the copy-paste block is the shipped file, so
 /// there is nothing to keep in step with it.
 #[test]
 fn the_shipped_config_and_unit_are_carried_whole() {
-    let page = instructions::page();
+    let pages = instructions::pages();
+    // Against the snippets, not the markup: node-pipe.conf names <your-node>,
+    // which reaches the page as entities. This is also the stronger claim, that
+    // the file is a block to copy rather than text somewhere on the page.
+    let carried = |page: &str, shipped: &str| {
+        snippets(page)
+            .iter()
+            .any(|snippet| snippet.contains(shipped.trim_end()))
+    };
+    // What an operator copies to get running, and nothing they do not need.
     for shipped in [
-        include_str!("../../../contrib/config.example.toml"),
+        include_str!("../../../contrib/config.minimal.toml"),
         include_str!("../../../contrib/metsuke.service"),
     ] {
         assert!(
-            page.contains(shipped.trim_end()),
-            "the page does not carry a shipped file whole"
+            carried(&pages.quickstart, shipped),
+            "the quickstart does not carry a shipped file whole"
+        );
+    }
+    // Every other file an operator can end up needing. A pair named on the
+    // details page and not carried there is one they have to go and find.
+    for shipped in [
+        include_str!("../../../contrib/config.example.toml"),
+        include_str!("../../../contrib/config.pipe.toml"),
+        include_str!("../../../contrib/node-pipe.conf"),
+        include_str!("../../../contrib/config.journald.toml"),
+        include_str!("../../../contrib/metsuke-journald.service"),
+    ] {
+        assert!(
+            carried(&pages.details, shipped),
+            "the details page does not carry a shipped file whole"
         );
     }
 }
 
 #[test]
 fn the_page_nudges_towards_the_agent_version_this_server_was_built_with() {
-    assert!(instructions::page().contains(metsuke_server::CLIENT_VERSION));
+    assert!(
+        instructions::pages()
+            .quickstart
+            .contains(metsuke_server::CLIENT_VERSION)
+    );
 }
 
-/// The node-config step tells an operator to open exactly the endpoint the
-/// example config then tells the agent to scrape.
+/// The node-config section tells an operator to open exactly the endpoint the
+/// config it is rendered from tells the agent to scrape.
 #[test]
 fn the_metrics_endpoint_comes_from_the_shipped_config() {
     // The needle is the example's own metrics_url authority; a stale one makes
     // the replace a no-op and fails the asserts below rather than passing.
     let config = instructions::CONFIG_EXAMPLE.replace("127.0.0.1:12798", "127.0.0.1:19999");
-    let page = instructions::render(&config, instructions::UNIT);
+    let page = instructions::details(&config);
     assert!(
         page.contains("PrometheusSimple 127.0.0.1 19999"),
         "the backend line does not follow the config's metrics_url"
@@ -213,6 +269,41 @@ fn the_metrics_endpoint_comes_from_the_shipped_config() {
         page.contains("http://127.0.0.1:19999/metrics"),
         "the check command does not follow the config's metrics_url"
     );
+}
+
+/// The same for the quickstart, which is rendered from the minimal config
+/// rather than the annotated one.
+#[test]
+fn the_quickstart_check_command_comes_from_the_config_it_shows() {
+    let config = instructions::CONFIG_MINIMAL.replace("127.0.0.1:12798", "127.0.0.1:19999");
+    assert!(
+        instructions::quickstart(&config, instructions::UNIT)
+            .contains("http://127.0.0.1:19999/metrics"),
+        "the check command does not follow the config's metrics_url"
+    );
+}
+
+/// And the two configs agree, so the port the quickstart tells an operator to
+/// check is the port the details page tells them to open. Nothing renders both
+/// together, so nothing else would catch them drifting.
+#[test]
+fn every_shipped_config_names_the_same_metrics_endpoint() {
+    let needle = "metrics_url = ";
+    let of = |config: &str| {
+        config
+            .lines()
+            .find_map(|line| line.trim_start_matches("# ").strip_prefix(needle))
+            .expect("a shipped config sets metrics_url")
+            .to_string()
+    };
+    let minimal = of(instructions::CONFIG_MINIMAL);
+    for config in [
+        instructions::CONFIG_EXAMPLE,
+        instructions::CONFIG_PIPE,
+        instructions::CONFIG_JOURNALD,
+    ] {
+        assert_eq!(of(config), minimal, "a shipped config names another port");
+    }
 }
 
 /// Every `<pre>` block on the page, in order, with the entities `escape` wrote
@@ -244,7 +335,7 @@ fn trace_options(page: &str) -> Vec<serde_json::Value> {
 /// floor an operator has to stay under: ADR 0010.
 #[test]
 fn no_node_config_snippet_sets_a_root_severity() {
-    let page = instructions::render(instructions::CONFIG_EXAMPLE, instructions::UNIT);
+    let page = instructions::details(instructions::CONFIG_EXAMPLE);
     let snippets = trace_options(&page);
     assert_eq!(snippets.len(), 2, "the page lost a TraceOptions snippet");
     // Step 4's is the one with a root entry, and `backends` is what says it is
@@ -270,7 +361,7 @@ fn no_node_config_snippet_sets_a_root_severity() {
 /// Why each namespace is named rather than inheriting: ADR 0010.
 #[test]
 fn every_named_namespace_carries_its_own_severity() {
-    let page = instructions::render(instructions::CONFIG_EXAMPLE, instructions::UNIT);
+    let page = instructions::details(instructions::CONFIG_EXAMPLE);
     let snippets = trace_options(&page);
     assert_eq!(snippets.len(), 2, "the page lost a TraceOptions snippet");
     // The second: step 5's, the namespace keys.
@@ -294,7 +385,7 @@ fn every_named_namespace_carries_its_own_severity() {
 /// on `instructions::MetricsEndpoint::backend_config` (metsuke-jfb.24).
 #[test]
 fn the_backend_step_names_the_machine_format_backend() {
-    let page = instructions::render(instructions::CONFIG_EXAMPLE, instructions::UNIT);
+    let page = instructions::details(instructions::CONFIG_EXAMPLE);
     let backends = trace_options(&page)[0]["TraceOptions"][""]["backends"]
         .as_array()
         .expect("the root entry lists backends")
@@ -355,7 +446,7 @@ fn the_node_config_step_covers_every_namespace_the_agent_selects() {
 /// step 4 added. Why merging is the instruction: ADR 0010.
 #[test]
 fn the_trace_step_cannot_disturb_the_root_entry() {
-    let page = instructions::render(instructions::CONFIG_EXAMPLE, instructions::UNIT);
+    let page = instructions::details(instructions::CONFIG_EXAMPLE);
     let snippets = trace_options(&page);
     assert_eq!(snippets.len(), 2, "the page lost a TraceOptions snippet");
     let traces = snippets[1]["TraceOptions"]
@@ -375,16 +466,20 @@ fn the_trace_step_cannot_disturb_the_root_entry() {
     );
 }
 
-/// Where the binary and its config go is what the shipped unit's ExecStart
-/// says, so the install and configure steps cannot send them elsewhere.
+/// Where the binary, its config and the signing key go is what the shipped
+/// unit says, so the steps that tell an operator to put a file somewhere cannot
+/// send it anywhere else. The key is read out of `LoadCredential=` and the
+/// other two out of `ExecStart=`.
 #[test]
 fn the_installed_paths_come_from_the_shipped_unit() {
-    // Both needles are the shipped unit's own ExecStart words, and a stale one
+    // Every needle is one of the shipped unit's own words, and a stale one
     // fails the asserts below rather than passing.
     let unit = instructions::UNIT
         .replace("/usr/local/bin/metsuke", "/opt/bin/metsuke")
-        .replace("/etc/metsuke/config.toml", "/opt/metsuke.toml");
-    let page = instructions::render(instructions::CONFIG_EXAMPLE, &unit);
+        .replace("/etc/metsuke/config.toml", "/opt/metsuke.toml")
+        .replace("/etc/metsuke/pool.skey", "/opt/pool.skey");
+    let page = instructions::quickstart(instructions::CONFIG_MINIMAL, &unit);
+    assert!(page.contains("/opt/pool.skey"), "key path not followed");
     assert!(
         page.contains("/opt/metsuke.toml"),
         "config path not followed"
@@ -403,10 +498,16 @@ fn the_installed_paths_come_from_the_shipped_unit() {
 /// swallow the rest of a step.
 #[test]
 fn shipped_text_is_escaped_into_the_page() {
-    let page = instructions::render(
-        &instructions::CONFIG_EXAMPLE.replace("pool1CHANGEME", "<b>a & b</b>"),
-        instructions::UNIT,
-    );
-    assert!(page.contains("&lt;b&gt;a &amp; b&lt;/b&gt;"));
-    assert!(!page.contains("<b>"));
+    for page in [
+        instructions::quickstart(
+            &instructions::CONFIG_MINIMAL.replace("pool1CHANGEME", "<b>a & b</b>"),
+            instructions::UNIT,
+        ),
+        instructions::details(
+            &instructions::CONFIG_EXAMPLE.replace("pool1CHANGEME", "<b>a & b</b>"),
+        ),
+    ] {
+        assert!(page.contains("&lt;b&gt;a &amp; b&lt;/b&gt;"));
+        assert!(!page.contains("<b>"));
+    }
 }

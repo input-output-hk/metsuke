@@ -101,26 +101,56 @@ pub enum AnswerBody {
     Stream(Box<ObjectStream>),
 }
 
+/// One rendered document, answered.
+fn html(body: bytes::Bytes) -> Answer {
+    Answer {
+        status: 200,
+        content_type: "text/html; charset=utf-8",
+        body: AnswerBody::Bytes(body),
+        headers: Vec::new(),
+    }
+}
+
+/// The rendered documents as they are sent. `Bytes` rather than the `String`
+/// they came from, so a GET clones a refcount and not the document
+/// (metsuke-jfb.27).
+pub struct Pages {
+    quickstart: bytes::Bytes,
+    details: bytes::Bytes,
+}
+
+impl From<instructions::Pages> for Pages {
+    fn from(pages: instructions::Pages) -> Pages {
+        Pages {
+            quickstart: bytes::Bytes::from(pages.quickstart),
+            details: bytes::Bytes::from(pages.details),
+        }
+    }
+}
+
 /// One request answered. Blocking, because it stores to and reads from the
 /// archive (`serve::bind`).
 pub fn answer<A: Store + Bytes + List>(
     intake: &Intake<A>,
     developer: &Developer,
-    page: &bytes::Bytes,
+    pages: &Pages,
     request: Request,
 ) -> Answer {
     let path = request.path().to_string();
     match path.as_str() {
-        // Unauthenticated: it is what an operator reads before they have
-        // anything to authenticate with.
+        // Unauthenticated, both of them: they are what an operator reads
+        // before they have anything to authenticate with.
         instructions::PATH => match request.method {
-            Method::Get => Answer {
-                status: 200,
-                content_type: "text/html; charset=utf-8",
-                body: AnswerBody::Bytes(page.clone()),
-                headers: Vec::new(),
-            },
+            Method::Get => html(pages.quickstart.clone()),
             _ => refuse(None, 405, format!("{} takes GET", instructions::PATH)),
+        },
+        instructions::DETAILS_PATH => match request.method {
+            Method::Get => html(pages.details.clone()),
+            _ => refuse(
+                None,
+                405,
+                format!("{} takes GET", instructions::DETAILS_PATH),
+            ),
         },
         instructions::ICON_PATH | instructions::ICON_LEGACY_PATH => match request.method {
             Method::Get => Answer {

@@ -729,7 +729,7 @@ fn the_instructions_page_is_served_without_credentials() {
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
     assert_eq!(
         String::from_utf8_lossy(&body),
-        metsuke_server::instructions::page()
+        metsuke_server::instructions::pages().quickstart
     );
     let content_type = headers
         .iter()

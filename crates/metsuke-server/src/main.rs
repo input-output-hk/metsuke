@@ -221,7 +221,7 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
         .transpose()?;
     // Built from files compiled in, so a broken one is a build that must not
     // reach an operator asking for it.
-    let page = instructions::page();
+    let pages = instructions::pages();
     let listener = serve::bind(&listen).map_err(|source| Fatal::Listen {
         listen: listen.clone(),
         reason: source.to_string(),
@@ -242,7 +242,7 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
         None => eprintln!("{INFO}cold-key submissions only: no Leios key roster is configured"),
     }
     let intake = Intake::new(ingest, archive, roster);
-    match listener.serve(limits, intake, developer, page)? {}
+    match listener.serve(limits, intake, developer, pages)? {}
 }
 
 /// The developer account, with the password read off the file the config
