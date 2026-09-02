@@ -6,8 +6,9 @@
 //! operator did not name. A variable is not a guess: it is the operator naming
 //! the same deployment once instead of per run.
 //!
-//! The environment is passed in rather than read here, so a run's answer never
-//! depends on what the machine happens to export.
+//! Nothing here reads the process environment: the caller hands one in. So what
+//! a run parses to is its arguments and the environment it was given, and a
+//! test states both rather than inheriting one.
 
 use std::num::NonZeroU64;
 use std::path::PathBuf;
