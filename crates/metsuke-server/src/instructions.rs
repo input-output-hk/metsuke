@@ -73,19 +73,66 @@ pub const NAMED_NAMESPACES: [&str; 4] = [
     "ChainDB.AddBlockEvent.AddedToCurrentChain",
 ];
 
-/// Both pages, ready to serve.
-pub fn pages() -> Pages {
+/// Where the downloadable files are served. The page links these rather than
+/// printing them, so an operator runs `curl -O` instead of selecting sixty
+/// lines out of a browser.
+pub const FILES_PREFIX: &str = "/files/";
+
+/// Every file the page offers, by the name it is served and linked under. The
+/// configs are pointed at this deployment on the way out; the units are the
+/// shipped bytes.
+pub const FILES: [(&str, &str); 7] = [
+    ("config.pipe.toml", CONFIG_PIPE),
+    ("config.journald.toml", CONFIG_JOURNALD),
+    ("config.minimal.toml", CONFIG_MINIMAL),
+    ("config.example.toml", CONFIG_EXAMPLE),
+    ("metsuke.service", UNIT),
+    ("metsuke-journald.service", UNIT_JOURNALD),
+    ("node-pipe.conf", PIPE_DROPIN),
+];
+
+/// Both pages and every file they link, ready to serve.
+pub fn pages(public_url: &url::Url) -> Pages {
+    let pointed = |config: &str| pointed_at(config, public_url);
     Pages {
-        quickstart: quickstart(CONFIG_MINIMAL, UNIT),
-        details: details(CONFIG_EXAMPLE),
+        quickstart: quickstart(&pointed(CONFIG_MINIMAL), UNIT),
+        details: details(&pointed(CONFIG_EXAMPLE)),
+        files: FILES
+            .iter()
+            .map(|(name, contents)| {
+                let contents = match name.ends_with(".toml") {
+                    true => pointed(contents),
+                    false => contents.to_string(),
+                };
+                (*name, contents)
+            })
+            .collect(),
     }
 }
 
 /// What this module renders, held together so a caller cannot serve one and
-/// forget the other.
+/// forget the others.
 pub struct Pages {
     pub quickstart: String,
     pub details: String,
+    /// Name to contents, served under `FILES_PREFIX`.
+    pub files: Vec<(&'static str, String)>,
+}
+
+/// A shipped config with its upload URL pointed at this deployment, so the only
+/// line an operator edits is their pool id. The URL to replace is read out of
+/// the file's own `upload_url` rather than matched against a constant here,
+/// which would be a second place for the example host to live.
+fn pointed_at(config: &str, public_url: &url::Url) -> String {
+    let table: toml::Table = config.parse().expect("a shipped config parses as TOML");
+    let example = table
+        .get("upload_url")
+        .and_then(|value| value.as_str())
+        .expect("a shipped config sets upload_url");
+    let ours = public_url
+        .join(crate::http::SUBMIT_PATH)
+        .expect("the submission path joins onto an absolute URL");
+    config.replace(example, ours.as_str())
 }
 
 /// The five steps and nothing else. Takes the config it shows and the unit it

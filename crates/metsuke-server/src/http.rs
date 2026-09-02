@@ -111,12 +111,24 @@ fn html(body: bytes::Bytes) -> Answer {
     }
 }
 
+/// One file an operator downloads. Plain text so a browser shows it rather
+/// than saving it, since reading before installing is the point.
+fn plain(body: bytes::Bytes) -> Answer {
+    Answer {
+        status: 200,
+        content_type: "text/plain; charset=utf-8",
+        body: AnswerBody::Bytes(body),
+        headers: Vec::new(),
+    }
+}
+
 /// The rendered documents as they are sent. `Bytes` rather than the `String`
 /// they came from, so a GET clones a refcount and not the document
 /// (metsuke-jfb.27).
 pub struct Pages {
     quickstart: bytes::Bytes,
     details: bytes::Bytes,
+    files: Vec<(&'static str, bytes::Bytes)>,
 }
 
 impl From<instructions::Pages> for Pages {
@@ -124,7 +136,20 @@ impl From<instructions::Pages> for Pages {
         Pages {
             quickstart: bytes::Bytes::from(pages.quickstart),
             details: bytes::Bytes::from(pages.details),
+            files: pages
+                .files
+                .into_iter()
+                .map(|(name, contents)| (name, bytes::Bytes::from(contents)))
+                .collect(),
         }
+    }
+}
+
+impl Pages {
+    fn file(&self, name: &str) -> Option<&bytes::Bytes> {
+        self.files
+            .iter()
+            .find_map(|(served, contents)| (*served == name).then_some(contents))
     }
 }
 
@@ -150,6 +175,20 @@ pub fn answer<A: Store + Bytes + List>(
                 None,
                 405,
                 format!("{} takes GET", instructions::DETAILS_PATH),
+            ),
+        },
+        // The files the page links, under the names it links them by. A name
+        // outside the shipped set is a 404 naming none of them: what is served
+        // here is a fixed table, not a path an operator's request selects.
+        served if served.starts_with(instructions::FILES_PREFIX) => match request.method {
+            Method::Get => match pages.file(&served[instructions::FILES_PREFIX.len()..]) {
+                Some(contents) => plain(contents.clone()),
+                None => refuse(None, 404, "no such file".to_string()),
+            },
+            _ => refuse(
+                None,
+                405,
+                format!("{} takes GET", instructions::FILES_PREFIX),
             ),
         },
         instructions::ICON_PATH | instructions::ICON_LEGACY_PATH => match request.method {

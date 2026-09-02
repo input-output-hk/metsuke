@@ -69,7 +69,7 @@ fn over<A: metsuke_server::archive::Store>(archive: A, dir: tempfile::TempDir) -
     Server {
         intake: Intake::new(permissive_config(&[pool_of(&test_key())]), archive, None),
         developer,
-        pages: http::Pages::from(instructions::pages()),
+        pages: http::Pages::from(instructions::pages(&support::public_url())),
         _dir: dir,
     }
 }
@@ -139,8 +139,49 @@ fn the_instructions_page_is_answered_without_credentials() {
     let answer = server.answer(get(instructions::PATH));
 
     assert_eq!(answer.status, 200);
-    assert_eq!(body(&answer), instructions::pages().quickstart);
+    assert_eq!(
+        body(&answer),
+        instructions::pages(&support::public_url()).quickstart
+    );
     assert!(answer.content_type.starts_with("text/html"));
+}
+
+/// Unauthenticated like the pages, because an operator downloads these before
+/// they have anything to authenticate with.
+#[test]
+fn every_linked_file_is_served_without_credentials() {
+    let server = server();
+    for (name, _) in instructions::FILES {
+        let target = format!("{}{name}", instructions::FILES_PREFIX);
+
+        let answer = server.answer(get(&target));
+
+        assert_eq!(answer.status, 200, "{name}");
+        assert!(answer.content_type.starts_with("text/plain"), "{name}");
+        assert!(!body(&answer).is_empty(), "{name}");
+    }
+}
+
+/// A fixed table, not a path the request selects: nothing outside it is
+/// reachable, however the name is spelled.
+#[test]
+fn a_file_outside_the_shipped_set_is_not_served() {
+    let server = server();
+    for name in ["passwd", "../../etc/passwd", "config.example.tom", ""] {
+        let answer = server.answer(get(&format!("{}{name}", instructions::FILES_PREFIX)));
+
+        assert_eq!(answer.status, 404, "{name:?} was answered");
+    }
+}
+
+#[test]
+fn a_linked_file_takes_only_get() {
+    let answer = server().answer(Request {
+        method: Method::Post,
+        ..get(&format!("{}config.pipe.toml", instructions::FILES_PREFIX))
+    });
+
+    assert_eq!(answer.status, 405);
 }
 
 #[test]
@@ -150,7 +191,10 @@ fn the_details_page_is_answered_without_credentials() {
     let answer = server.answer(get(instructions::DETAILS_PATH));
 
     assert_eq!(answer.status, 200);
-    assert_eq!(body(&answer), instructions::pages().details);
+    assert_eq!(
+        body(&answer),
+        instructions::pages(&support::public_url()).details
+    );
     assert!(answer.content_type.starts_with("text/html"));
 }
 

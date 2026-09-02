@@ -247,6 +247,7 @@ in
       type = types.submodule {
         options = {
           listen = required types.str;
+          public_url = required types.str;
 
           http = mkOption {
             type = types.submodule {

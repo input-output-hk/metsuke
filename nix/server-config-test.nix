@@ -21,6 +21,7 @@ let
   settingsFor = archive: {
     inherit archive;
     listen = "127.0.0.1:0";
+    public_url = "https://metsuke.example.org";
     http = {
       idle_timeout_ms = 30000;
       read_timeout_ms = 60000;

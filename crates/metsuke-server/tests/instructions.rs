@@ -14,6 +14,9 @@ use metsuke_wire::envelope::{
 };
 use time::OffsetDateTime;
 
+mod support;
+use support::public_url;
+
 /// The five steps, in the order an operator takes them.
 const QUICKSTART_SECTIONS: [&str; 5] = [
     "1. Put your application code on chain",
@@ -36,7 +39,7 @@ const DETAILS_SECTIONS: [&str; 6] = [
 
 #[test]
 fn every_outline_section_is_present_and_in_order() {
-    let pages = instructions::pages();
+    let pages = instructions::pages(&public_url());
     for (page, sections) in [
         (&pages.quickstart, &QUICKSTART_SECTIONS[..]),
         (&pages.details, &DETAILS_SECTIONS[..]),
@@ -56,7 +59,7 @@ fn every_outline_section_is_present_and_in_order() {
 #[test]
 fn the_quickstart_links_the_details_page() {
     assert!(
-        instructions::pages()
+        instructions::pages(&public_url())
             .quickstart
             .contains(&format!(r#"href="{}""#, instructions::DETAILS_PATH)),
         "the quickstart never links the details page"
@@ -73,7 +76,7 @@ fn the_quickstart_links_the_details_page() {
 fn every_v1_field_appears_on_the_page() {
     // The prose, not the page: the embedded example is rendered from these same
     // types, so a field would appear in it with nothing written about it.
-    let prose = prose(&instructions::pages().details);
+    let prose = prose(&instructions::pages(&public_url()).details);
     let row = serde_json::to_value(Scrape {
         scraped_at: OffsetDateTime::UNIX_EPOCH,
         clock_offset_ms: Some(0),
@@ -117,7 +120,7 @@ fn every_v1_field_appears_on_the_page() {
 /// one UNNEST reaches a metric and nothing is packed inside a string.
 #[test]
 fn the_page_renders_rows_whose_metrics_are_a_nested_list() {
-    let rows = rendered_rows(&instructions::pages().details);
+    let rows = rendered_rows(&instructions::pages(&public_url()).details);
     for row in &rows {
         let mut keys: Vec<&str> = row
             .as_object()
@@ -179,11 +182,54 @@ fn prose(page: &str) -> String {
     prose
 }
 
+/// The point of serving them: an operator downloads a config already pointing
+/// at this server, so the only line they edit is their pool id.
+#[test]
+fn every_shipped_config_is_served_pointing_at_this_server() {
+    let ours = public_url()
+        .join(metsuke_server::http::SUBMIT_PATH)
+        .expect("the submission path joins");
+    let files = instructions::pages(&public_url()).files;
+    let configs: Vec<&(&str, String)> = files
+        .iter()
+        .filter(|(name, _)| name.ends_with(".toml"))
+        .collect();
+    assert!(!configs.is_empty(), "no config is served at all");
+    for (name, contents) in configs {
+        let table: toml::Table = contents
+            .parse()
+            .unwrap_or_else(|error| panic!("{name} is not TOML after substitution: {error}"));
+        assert_eq!(
+            table["upload_url"].as_str(),
+            Some(ours.as_str()),
+            "{name} still points somewhere else"
+        );
+    }
+}
+
+/// Every file the table names has contents, and a unit is left alone: only the
+/// configs carry an upload URL to point.
+#[test]
+fn every_served_file_is_the_shipped_one() {
+    let files = instructions::pages(&public_url()).files;
+    assert_eq!(files.len(), instructions::FILES.len());
+    for (name, shipped) in instructions::FILES {
+        let (_, served) = files
+            .iter()
+            .find(|(served, _)| *served == name)
+            .unwrap_or_else(|| panic!("{name} is named but not served"));
+        assert!(!served.is_empty(), "{name} is served empty");
+        if !name.ends_with(".toml") {
+            assert_eq!(served, shipped, "{name} was altered on the way out");
+        }
+    }
+}
+
 /// The headers an operator's proxy has to pass through are the same two the
 /// agent sends.
 #[test]
 fn the_page_names_the_submission_headers() {
-    let page = instructions::pages().details;
+    let page = instructions::pages(&public_url()).details;
     for header in [HEADER_VKEY, HEADER_SIGNATURE] {
         assert!(page.contains(header), "the page never names {header}");
     }
@@ -194,7 +240,7 @@ fn the_page_names_the_submission_headers() {
 /// opens.
 #[test]
 fn the_page_links_the_icon_route() {
-    let pages = instructions::pages();
+    let pages = instructions::pages(&public_url());
     let link = format!(
         r#"<link rel="icon" href="{}" type="{}">"#,
         instructions::ICON_PATH,
@@ -209,7 +255,7 @@ fn the_page_links_the_icon_route() {
 /// there is nothing to keep in step with it.
 #[test]
 fn the_shipped_config_and_unit_are_carried_whole() {
-    let pages = instructions::pages();
+    let pages = instructions::pages(&public_url());
     // Against the snippets, not the markup: node-pipe.conf names <your-node>,
     // which reaches the page as entities. This is also the stronger claim, that
     // the file is a block to copy rather than text somewhere on the page.
@@ -249,7 +295,7 @@ fn the_shipped_config_and_unit_are_carried_whole() {
 #[test]
 fn the_page_nudges_towards_the_agent_version_this_server_was_built_with() {
     assert!(
-        instructions::pages()
+        instructions::pages(&public_url())
             .quickstart
             .contains(metsuke_server::CLIENT_VERSION)
     );

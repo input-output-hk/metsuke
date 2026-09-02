@@ -186,7 +186,17 @@ impl Server {
             None,
         );
         std::thread::spawn(move || {
-            match listener.serve(http_config(), intake, developer, instructions::pages()) {
+            // Its own copy of the server suite's value, which metsuke-jfb.33 is
+            // about: nothing ties this test support to that one.
+            let public_url = "https://metsuke.example.org"
+                .parse()
+                .expect("a fixed URL parses");
+            match listener.serve(
+                http_config(),
+                intake,
+                developer,
+                instructions::pages(&public_url),
+            ) {
                 Ok(never) => match never {},
                 Err(error) => panic!("the test server stopped accepting: {error}"),
             }

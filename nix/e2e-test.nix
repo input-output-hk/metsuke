@@ -461,6 +461,7 @@ let
 
           settings = {
             listen = "127.0.0.1:${toString listenPort}";
+            public_url = "https://metsuke.example.org";
             http = {
               idle_timeout_ms = 30000;
               read_timeout_ms = 60000;

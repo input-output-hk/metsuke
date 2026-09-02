@@ -94,6 +94,7 @@ fn run() -> Result<(), Fatal> {
     })?;
     let ServerConfig {
         listen,
+        public_url,
         http,
         archive,
         ingest,
@@ -101,6 +102,7 @@ fn run() -> Result<(), Fatal> {
     } = ServerConfig::from_toml(&text)?;
     let serving = Serving {
         listen,
+        public_url,
         http,
         ingest,
         developer,
@@ -144,6 +146,7 @@ fn run() -> Result<(), Fatal> {
 /// it.
 struct Serving {
     listen: String,
+    public_url: url::Url,
     http: HttpConfig,
     ingest: IngestConfig,
     developer: DeveloperConfig,
@@ -203,6 +206,7 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
 ) -> Result<(), Fatal> {
     let Serving {
         listen,
+        public_url,
         http: limits,
         ingest,
         developer: credentials,
@@ -221,7 +225,7 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
         .transpose()?;
     // Built from files compiled in, so a broken one is a build that must not
     // reach an operator asking for it.
-    let pages = instructions::pages();
+    let pages = instructions::pages(&public_url);
     let listener = serve::bind(&listen).map_err(|source| Fatal::Listen {
         listen: listen.clone(),
         reason: source.to_string(),

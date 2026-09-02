@@ -5,6 +5,11 @@
 
 listen = "127.0.0.1:8080"
 
+# Where operators reach this server. The onboarding page hands out agent
+# configs pointing at it, so getting this wrong sends every pool's submissions
+# somewhere else.
+public_url = "https://metsuke.example.org"
+
 # Generous, because a pool on a bad link still has to get its submission in.
 [http]
 idle_timeout_ms = 30000

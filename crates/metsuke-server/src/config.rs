@@ -18,6 +18,11 @@ use crate::applications::Codes;
 pub struct ServerConfig {
     /// `host:port` to bind, plain HTTP (what fronts it: `http`).
     pub listen: String,
+    /// Where operators reach this server, which `listen` does not say: behind a
+    /// proxy the bound address is not the one anyone types. The onboarding page
+    /// hands out configs pointing at it, so an operator edits their pool id and
+    /// nothing else.
+    pub public_url: Url,
     pub http: HttpConfig,
     pub archive: ArchiveConfig,
     pub ingest: IngestConfig,

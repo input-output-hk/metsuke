@@ -209,10 +209,19 @@ pub fn allowlist_toml(allowed: &BTreeMap<PoolId, ApplicationCode>) -> String {
 /// load rather than passing on a value nobody set.
 pub struct ServerToml {
     pub listen: String,
+    pub public_url: String,
     pub http: String,
     pub archive: String,
     pub ingest: String,
     pub developer: String,
+}
+
+/// What the suite's configs advertise as this server's address. One value, so a
+/// test about a rendered page and a test about a config agree on it.
+pub const PUBLIC_URL: &str = "https://metsuke.example.org";
+
+pub fn public_url() -> url::Url {
+    PUBLIC_URL.parse().expect("the suite's public URL parses")
 }
 
 /// A whole config over an archive under `dir`, on a kernel-chosen port, with
@@ -220,6 +229,7 @@ pub struct ServerToml {
 pub fn server_toml(dir: &Path, allowed: &[PoolId]) -> ServerToml {
     ServerToml {
         listen: "127.0.0.1:0".to_string(),
+        public_url: PUBLIC_URL.to_string(),
         http: http_toml(&permissive_http()),
         archive: filesystem_archive(&dir.join("archive")),
         ingest: ingest_toml(&permissive_config(allowed)),
@@ -263,6 +273,7 @@ impl ServerToml {
     pub fn render(&self) -> String {
         [
             format!("listen = \"{}\"", self.listen),
+            format!("public_url = \"{}\"", self.public_url),
             self.http.clone(),
             self.archive.clone(),
             self.ingest.clone(),
