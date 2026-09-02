@@ -54,27 +54,51 @@ export def normalise [
   let pool_columns = demand $pool_columns "--pool-columns"
   # Bound rather than piped on: an error raised inside a streaming `each` is
   # carried as a value through `sort-by` instead of stopping the run.
-  let pools = $in
+  #
+  # A missing column still stops here, on the first row: it is the same answer
+  # for every row after it, so naming them all would say nothing more.
+  let read = $in
   | enumerate
   | each {|entry|
       let at = $entry.index + 2
-      let code = field $entry.item $code_column $at
-      if not ($code =~ $CODE) {
-        error make {msg: $"row ($at): ($code) is not an application code"}
-      }
-      let pools = $pool_columns
-        | each {|name| field $entry.item $name $at }
-        | where {|found| $found != "" }
-      if ($pools | is-empty) {
-        error make {msg: $"row ($at): none of ($pool_columns | str join ', ') names a pool"}
-      }
-      $pools | each {|pool_id|
-        if not ($pool_id =~ $POOL_ID) {
-          error make {msg: $"row ($at): ($pool_id) is not a pool id"}
-        }
-        {pool_id: $pool_id, application_code: $code}
+      {
+        at: $at
+        code: (field $entry.item $code_column $at)
+        pools: ($pool_columns
+          | each {|name| field $entry.item $name $at }
+          | where {|found| $found != "" })
       }
     }
+  # Every unreadable row at once. One export holds many, and a run that named
+  # only the first is one edit and one re-run per bad row.
+  let problems = $read
+  | each {|row|
+      [
+        (if not ($row.code =~ $CODE) {
+          $"row ($row.at): ($row.code) is not an application code"
+        })
+        (if ($row.pools | is-empty) {
+          $"row ($row.at): none of ($pool_columns | str join ', ') names a pool"
+        })
+      ]
+      | append ($row.pools
+        | where {|pool_id| not ($pool_id =~ $POOL_ID) }
+        | each {|pool_id| $"row ($row.at): ($pool_id) is not a pool id" })
+      | compact
+      | each {|told| {at: $row.at, told: $told} }
+    }
+  | flatten
+  if ($problems | is-not-empty) {
+    # Rows and not problems: one row can hold several, and what an operator
+    # has to go and edit is rows.
+    let rows = $problems | get at | uniq | length
+    let told = $problems | get told | str join "\n  "
+    error make {
+      msg: $"($rows) of ($read | length) application rows do not read:\n  ($told)"
+    }
+  }
+  let pools = $read
+  | each {|row| $row.pools | each {|pool_id| {pool_id: $pool_id, application_code: $row.code}} }
   | flatten
   | group-by --to-table pool_id
   | insert codes {|group| $group.items | get application_code | uniq }
