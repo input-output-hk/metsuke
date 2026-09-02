@@ -180,10 +180,11 @@ def "main query" [
     "--variable" "ON_ERROR_STOP=1"
     "--variable" $"code_key=(demand $metadata_key '--metadata-key')"
     "--variable" $"label=(demand $metadata_label '--metadata-label')"
-    "--command" $"SET statement_timeout = ($timeout_ms)"
-    "--command" $REGISTERED_CODES
+    "--file" "-"
   ]
-  let answer = ^psql ...$arguments | complete
+  let answer = with-env {PGOPTIONS: $"-c statement_timeout=($timeout_ms)"} {
+    $REGISTERED_CODES | ^psql ...$arguments | complete
+  }
   if $answer.exit_code != 0 {
     error make {msg: $"psql failed: ($answer.stderr)"}
   }
