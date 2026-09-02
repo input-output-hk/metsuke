@@ -5,7 +5,7 @@
 # This source costs the agent the systemd-journal group, which reads every
 # unit's journal on the host. contrib/config.pipe.toml is the source that costs
 # no group. Your node has to emit the trace namespaces first; the server's
-# onboarding page has that snippet.
+# details page has that snippet.
 #
 # Everything else takes its shipped default, including which namespaces are
 # selected. contrib/config.example.toml documents all of them.

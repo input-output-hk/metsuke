@@ -6,6 +6,10 @@ loopback and sends a signed submission. A server verifies the signature, checks
 the pool against an allowlist, and writes the raw signed bytes to S3. Nothing
 else is stored, and no state lives on the server.
 
+**Running a pool?** You want the quickstart the ingest server renders at its root
+URL, which is five steps and the files to copy. This file is for people working
+on metsuke.
+
 Which pool a submission is from follows from the key that signed it. A cold key
 hashes to the pool id, so the server derives it rather than believing a field. A
 Leios key hashes to nothing, so a submission it signed claims its pool in a
@@ -42,10 +46,13 @@ body. The pool id does not travel at all.
 
 ## Running it
 
-**Operators** do not read this file. Point them at the server's root URL, which
-renders a ten step onboarding page built from the shipped config, the shipped
-unit, and the wire types themselves, so it cannot document a default the agent
-does not ship. That page lives in `crates/metsuke-server/src/instructions.rs`.
+**Operators** do not read this file. Point them at the server's root URL. It
+renders a five step quickstart, with `/details` behind it holding everything the
+five leave out: what a submission carries, which key signs it, and what the node
+has to be told. Both are filled from the shipped configs, the shipped units, a
+recording of the agent's own output and the wire types themselves, so neither
+can document a default the agent does not ship. The markup is
+`crates/metsuke-server/assets/`, and `instructions.rs` fills it.
 
 **Deploying a server and an agent** is `docs/deploying.md`.
 

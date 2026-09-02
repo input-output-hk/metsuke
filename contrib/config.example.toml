@@ -76,7 +76,7 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # node's journal, which the unit has to be allowed to do. The instructions
 # page says which two directives change, and the NixOS module makes both when
 # this section is set (docs/adr/0010). The node also has to be configured to
-# write these traces at all: that step is on the instructions page too.
+# write these traces at all: that is on the server's details page too.
 #
 # source picks the stream and is never guessed. With "journald", journal_unit
 # and journalctl_path have no default: name your node's unit, and give

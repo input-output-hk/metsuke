@@ -3,7 +3,7 @@
 # contrib/node-pipe.conf.
 #
 # This source reads no journal and needs no group. Your node has to emit the
-# trace namespaces first; the server's onboarding page has that snippet.
+# trace namespaces first; the server's details page has that snippet.
 #
 # Everything else takes its shipped default, including which namespaces are
 # selected. contrib/config.example.toml documents all of them.

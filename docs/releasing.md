@@ -66,11 +66,11 @@ so the order matters.
    at compile time, so until the server is rebuilt it keeps telling every agent
    the old version is current. This step is the release, and the tag is only a
    name for it.
-6. Confirm the server is serving the new number. It is on the onboarding page in
-   step 6 and step 10, and in every ACK:
+6. Confirm the server is serving the new number. It is in the quickstart's at a
+   glance table, in its update step, and in every ACK:
 
    ```
-   curl -s https://<server>/ | grep 'The current agent is'
+   curl -s https://<server>/ | grep 'Agent version'
    ```
 
 7. Tell operators. There is no self-update and no install script, by decision,

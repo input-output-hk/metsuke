@@ -1,7 +1,8 @@
 # Deploying a server and an agent
 
 What we run, as opposed to what an operator runs. The operator's side is the
-onboarding page the server renders at `/`, and this file does not repeat it.
+quickstart the server renders at `/`, with `/details` behind it, and this file
+does not repeat them.
 
 `nix/e2e-test.nix` stands the whole thing up in one VM and is the reference
 every value here was read against. When this file and that test disagree, the
@@ -54,7 +55,7 @@ metsuke-allowlist generate applications.csv registrations.csv \
 ```
 
 The label and key are `METADATA_LABEL` and `METADATA_KEY` in
-`crates/metsuke-server/src/applications.rs`, and the onboarding page's step 2
+`crates/metsuke-server/src/applications.rs`, and the quickstart's first step
 shows an operator the same pair. `--statement-timeout` is a duration, not
 milliseconds.
 
@@ -147,10 +148,10 @@ cadence is settled. Until then they are guesses.
 ## The node host
 
 cardano-node exposes nothing to scrape until its `TraceOptions` root entry names
-a `PrometheusSimple` backend on loopback. The onboarding page's step 4 has the
-snippet and the rule for merging it in, and `instructions.rs` has the reason
-behind that rule. Follow the page here rather than improvising, the failure it
-warns about is silent.
+a `PrometheusSimple` backend on loopback. The details page has the snippet and
+the rule for merging it in, under the node's metrics endpoint, and
+`instructions.rs` has the reason behind that rule. Follow the page here rather
+than improvising, the failure it warns about is silent.
 
 Then import `nixosModules.metsuke`:
 
@@ -207,11 +208,10 @@ leaving the default to time out on every tick.
 
 ## Confirming it works
 
-On the node host, what to run and what the lines mean is the onboarding page's
-step 9:
+On the node host, the quickstart's check step has this and the lines a working
+agent prints:
 
 ```
-systemctl status metsuke
 journalctl -u metsuke -f
 ```
 
