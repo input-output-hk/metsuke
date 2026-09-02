@@ -50,6 +50,12 @@ pub const CONFIG_PIPE: &str = include_str!("../../../contrib/config.pipe.toml");
 pub const CONFIG_JOURNALD: &str = include_str!("../../../contrib/config.journald.toml");
 pub const CONFIG_EXAMPLE: &str = include_str!("../../../contrib/config.example.toml");
 
+/// What a working agent prints, recorded off a real run of the built binary by
+/// `the_journal_lines_the_page_shows_are_the_ones_the_agent_prints`, which also
+/// fails when the agent stops printing it. From the agent's own fixtures,
+/// because that run is the only place these lines exist.
+pub const JOURNAL: &str = include_str!("../../metsuke/tests/fixtures/recordings/agent-journal.log");
+
 /// The shipped units, generated from nix/unit.nix and kept current by the
 /// flake's `contrib-unit` check. `UNIT` is the one the quickstart installs.
 pub const UNIT: &str = include_str!("../../../contrib/metsuke.service");
@@ -99,6 +105,7 @@ pub fn quickstart(config: &str, unit: &str) -> String {
             ("metrics_url", escape(metrics.url())),
             ("config", escape(config.trim_end())),
             ("unit", escape(unit.trim_end())),
+            ("journal", escape(JOURNAL.trim_end())),
             ("binary", escape(&exec_start(unit, ExecStartField::Binary))),
             (
                 "config_path",

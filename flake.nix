@@ -264,6 +264,8 @@
             ./contrib/metsuke-journald.service
             ./contrib/node-pipe.conf
             ./crates/metsuke-server/assets
+            # What the check step shows, recorded by the agent's own test.
+            ./crates/metsuke/tests/fixtures/recordings/agent-journal.log
           ];
 
           unit = import ./nix/unit.nix;

@@ -34,6 +34,7 @@ fn write_config(
         server_uri,
         signing_key_line,
         PoolId::from_cold_key(&test_key().verifying_key()),
+        AGENT_NAME,
     )
 }
 
@@ -42,6 +43,7 @@ fn write_config_for(
     server_uri: &str,
     signing_key_line: &str,
     pool_id: PoolId,
+    agent_name: &str,
 ) -> std::path::PathBuf {
     let path = dir.path().join("config.toml");
     std::fs::write(
@@ -49,7 +51,7 @@ fn write_config_for(
         format!(
             r#"
             pool_id = "{}"
-            agent_id = "{AGENT_NAME}"
+            agent_id = "{agent_name}"
             metrics_url = "{server_uri}/metrics"
             upload_url = "{server_uri}/v1/submit"
             scrape_interval_secs = 1
@@ -105,7 +107,7 @@ fn binary_refuses_a_pool_id_the_signing_key_does_not_hash_to() {
     let other = PoolId::from_cold_key(
         &metsuke_wire::envelope::SigningKey::from_bytes(&[9u8; 32]).verifying_key(),
     );
-    let config = write_config_for(&dir, "http://127.0.0.1:9", "", other);
+    let config = write_config_for(&dir, "http://127.0.0.1:9", "", other, AGENT_NAME);
 
     let output = Command::new(env!("CARGO_BIN_EXE_metsuke"))
         .args(["--config", config.to_str().unwrap()])
@@ -155,6 +157,131 @@ fn binary_refuses_a_journalctl_that_cannot_read_the_journal() {
     assert!(
         said.contains("journal") && said.contains("13"),
         "startup failure must name the journal and journalctl's status, got: {said}"
+    );
+}
+
+/// What the onboarding page's check step shows, recorded off a real run rather
+/// than written by hand. `METSUKE_RERECORD=1 cargo test --test binary` rewrites
+/// it, and `metsuke-server` carries it whole.
+const JOURNAL_RECORDING: &str = "tests/fixtures/recordings/agent-journal.log";
+
+/// The endpoint the shipped config names. The recorder binds an ephemeral port,
+/// so the one it scraped is rewritten to this before the recording is kept: the
+/// port is the only thing about that line an operator cannot reproduce, and the
+/// shipped one is what their own config will make it say.
+const SHIPPED_METRICS_URL: &str = "http://127.0.0.1:12798/metrics";
+
+/// A line as journalctl shows it. systemd reads the priority prefix off the
+/// front and does not pass it on, so an operator never sees one.
+fn without_priority(line: &str) -> &str {
+    [
+        metsuke_wire::journal::INFO,
+        metsuke_wire::journal::WARNING,
+        metsuke_wire::journal::ERR,
+    ]
+    .iter()
+    .find_map(|prefix| line.strip_prefix(prefix))
+    .unwrap_or(line)
+}
+
+/// The recorded line with the two fields a second run cannot repeat blanked:
+/// the payload digest and the byte count both follow the instant each scrape
+/// was taken. They are compared as blanks and shown as recorded.
+fn without_the_unrepeatable(line: &str) -> String {
+    let mut line = line.to_string();
+    let digest = line
+        .split_whitespace()
+        .find(|word| word.len() >= 16 && word.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .map(str::to_string);
+    if let Some(digest) = digest {
+        line = line.replace(&digest, "<digest>");
+    }
+    match line.rsplit_once(" bytes").and_then(|(head, _)| {
+        head.rsplit_once(", ")
+            .map(|(keep, _count)| format!("{keep}, <count> bytes"))
+    }) {
+        Some(blanked) => blanked,
+        None => line,
+    }
+}
+
+/// The check step's promise: an agent that is working says so, in lines an
+/// operator can match against their own journal. Recorded from the built
+/// binary, so the page cannot show a line the agent does not print.
+#[tokio::test]
+async fn the_journal_lines_the_page_shows_are_the_ones_the_agent_prints() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(RECORDED_CHAIN, "text/plain;version=0.0.4;charset=utf-8"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "latest_version": env!("CARGO_PKG_VERSION")
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = write_test_envelope(&dir);
+    let config = write_config_for(
+        &dir,
+        &server.uri(),
+        "",
+        PoolId::from_cold_key(&test_key().verifying_key()),
+        // Not the slugification fixture the other tests use: this name reaches
+        // an operator's screen, and `relay-1` is what one of theirs looks like.
+        "relay-1",
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_metsuke"))
+        .args(["--config", config.to_str().unwrap()])
+        .args(["--signing-key", key_path.to_str().unwrap()])
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = child.stderr.take().expect("stderr was piped");
+
+    // Up to the first accepted submission, which is the last line the step
+    // promises. Reading is what bounds this: the agent uploads on its first
+    // tick, and a run that never got there blocks and fails the suite's clock
+    // rather than passing on two lines.
+    let mut reader = std::io::BufReader::new(&mut stderr);
+    let mut recorded = String::new();
+    loop {
+        let mut line = String::new();
+        assert!(
+            reader.read_line(&mut line).unwrap() > 0,
+            "the agent stopped before it accepted a submission, said: {recorded}"
+        );
+        let line = without_priority(&line);
+        recorded.push_str(line);
+        if line.contains("accepted") {
+            break;
+        }
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let recorded = recorded.replace(&format!("{}/metrics", server.uri()), SHIPPED_METRICS_URL);
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(JOURNAL_RECORDING);
+    if std::env::var_os("METSUKE_RERECORD").is_some() {
+        std::fs::write(&path, &recorded).unwrap();
+        return;
+    }
+    let shipped = std::fs::read_to_string(&path).expect("the recording is committed");
+    let blank = |text: &str| {
+        text.lines()
+            .map(without_the_unrepeatable)
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert_eq!(
+        blank(&recorded),
+        blank(&shipped),
+        "the agent no longer prints what the page shows; re-record with METSUKE_RERECORD=1"
     );
 }
 

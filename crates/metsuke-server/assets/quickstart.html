@@ -87,11 +87,15 @@ sudo systemctl enable --now metsuke</pre>
 
 <pre>journalctl -u metsuke -f</pre>
 
-<p>The agent logs the endpoint it scrapes and the pool it reports for at
-startup, then one line per submission saying whether this server took it. The
-first submission is sent as soon as the agent starts, so you do not wait out a
-cadence to find out something is wrong. A refused submission logs this server's
-reason and the scrapes stay spooled, so nothing is lost while you fix it.</p>
+<p>A working agent looks like this, recorded from a real run. Your pool id and
+endpoint will be your own, and the digest and byte count differ every time:</p>
+
+<pre>{{journal}}</pre>
+
+<p>The first submission is sent as soon as the agent starts, so you do not wait
+out a cadence to find out something is wrong. A refused submission logs this
+server's reason in place of that last line, and the scrapes stay spooled, so
+nothing is lost while you fix it.</p>
 
 <h2>Trace lines, if you want them</h2>
 

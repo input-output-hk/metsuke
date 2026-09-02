@@ -219,9 +219,11 @@ fn the_shipped_config_and_unit_are_carried_whole() {
             .any(|snippet| snippet.contains(shipped.trim_end()))
     };
     // What an operator copies to get running, and nothing they do not need.
+    // The recording is not copied but matched, against their own journal.
     for shipped in [
         include_str!("../../../contrib/config.minimal.toml"),
         include_str!("../../../contrib/metsuke.service"),
+        include_str!("../../metsuke/tests/fixtures/recordings/agent-journal.log"),
     ] {
         assert!(
             carried(&pages.quickstart, shipped),
