@@ -134,9 +134,9 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         start_trace_collection(log, &config.spool_path, busy_timeout, provenance)?;
     }
 
-    let scrape_interval = Duration::from_secs(config.scrape_interval_secs);
+    let scrape_interval = Duration::from_secs(config.scrape_interval_secs.get());
     let schedule_config = ScheduleConfig {
-        upload_interval: Duration::from_secs(config.upload_interval_secs),
+        upload_interval: Duration::from_secs(config.upload_interval_secs.get()),
         jitter_max: Duration::from_secs(config.upload_jitter_max_secs),
         backoff_max: Duration::from_secs(config.upload_backoff_max_secs),
     };

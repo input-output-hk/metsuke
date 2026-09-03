@@ -88,8 +88,8 @@ in
           upload_url = required types.str;
 
           agent_id = shipped types.str;
-          scrape_interval_secs = shipped types.ints.unsigned;
-          upload_interval_secs = shipped types.ints.unsigned;
+          scrape_interval_secs = shipped types.ints.positive;
+          upload_interval_secs = shipped types.ints.positive;
           sntp_servers = shipped (types.listOf types.str);
           sntp_timeout_secs = shipped types.ints.unsigned;
           spool_path = shipped types.str;

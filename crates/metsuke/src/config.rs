@@ -33,10 +33,13 @@ pub struct Config {
     /// Path to the signing key; `--signing-key` overrides it.
     #[serde(default)]
     pub signing_key: Option<PathBuf>,
+    /// Zero would leave no interval to wait out, and a 429 is retryable rather
+    /// than a backoff, so a zero cadence hammers the node or this server
+    /// without ever slowing down. The type refuses it.
     #[serde(default = "default_scrape_interval_secs")]
-    pub scrape_interval_secs: u64,
+    pub scrape_interval_secs: NonZeroU64,
     #[serde(default = "default_upload_interval_secs")]
-    pub upload_interval_secs: u64,
+    pub upload_interval_secs: NonZeroU64,
     /// How many submissions one upload tick may send. One is not enough for a
     /// trace stream: what a node emits between ticks can be more than a single
     /// submission carries, and the difference accumulates until the spool's cap
@@ -210,12 +213,12 @@ impl TryFrom<LogToml> for LogConfig {
     }
 }
 
-fn default_scrape_interval_secs() -> u64 {
-    300
+fn default_scrape_interval_secs() -> NonZeroU64 {
+    NonZeroU64::new(300).expect("300 is not zero")
 }
 
-fn default_upload_interval_secs() -> u64 {
-    3600
+fn default_upload_interval_secs() -> NonZeroU64 {
+    NonZeroU64::new(3600).expect("3600 is not zero")
 }
 
 /// Room for several times what a Leios producer was measured to spool between
