@@ -6,14 +6,17 @@
 
 <h1>Metsuke</h1>
 
-<p>Metsuke is a small agent you run beside cardano-node. It reads your node's
+<p>Metsuke is a small agent you run beside cardano-node on the
+<a href="https://www.musashi.network/">Musashi network</a>. It reads your node's
 Prometheus endpoint over loopback, collects the trace lines it has been
 configured for, and sends this server a signed submission. It never opens your
 node socket, and it reads only the signing key you point it at.</p>
 
-<p>This assumes your pool is already in the rewards program, with
-your application code in your pool registration's metadata. Submissions are
-refused until it is. <a href="{{DETAILS_PATH}}#code">What that means</a>.</p>
+<p>This assumes a node already running on the testnet, which the
+<a href="https://leios.cardano-scaling.org/docs/testnet/getting-started/">getting
+started guide</a> is for, and a pool already in the rewards program, with your
+application code in your pool registration's metadata. Submissions are refused
+until it is. <a href="{{DETAILS_PATH}}#code">What that means</a>.</p>
 
 <h2>Try it</h2>
 
