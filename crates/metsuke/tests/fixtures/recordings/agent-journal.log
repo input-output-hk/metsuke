@@ -1,3 +1,5 @@
 metsuke 0.1.0 starting
 metsuke on relay-1 scraping http://127.0.0.1:12798/metrics for pool13vscgf9dwn0jt56u965wp99ychz6avktk3pyrye326f3xctz4nm
-submission 1 payload 693e5212085ba01d accepted: 1 scrape, 1902 bytes
+collecting trace lines from the node's stdout: namespaces Consensus.LeiosKernel, Consensus.LeiosPeer, ChainDB.AddBlockEvent.AddedToCurrentChain, Forge.Loop.AdoptedBlock
+submission 1 payload c80b86baa49578f2 accepted: 1 scrape, 1902 bytes
+submission 2 payload f3f3a7d9af6af569 accepted: 43 trace lines, 2482 bytes

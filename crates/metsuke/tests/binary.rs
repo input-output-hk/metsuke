@@ -19,6 +19,9 @@ use support::{TEST_LIMITS, attestation_of, sh_stand_in, test_key};
 
 const RECORDED_CHAIN: &str = include_str!("fixtures/recordings/leios-node.prom");
 
+/// A real node's trace stream, fed to the recorder on stdin as the node would.
+const RECORDED_TRACES: &str = include_str!("fixtures/recordings/leios-node-traces.log");
+
 /// The name the config gives this machine, and the id it folds down to
 /// (`AgentId::slugify`): what the startup line and every header must carry.
 const AGENT_NAME: &str = "Test_Relay 1";
@@ -184,25 +187,26 @@ fn without_priority(line: &str) -> &str {
     .unwrap_or(line)
 }
 
-/// The recorded line with the two fields a second run cannot repeat blanked:
-/// the payload digest and the byte count both follow the instant each scrape
-/// was taken. They are compared as blanks and shown as recorded.
-fn without_the_unrepeatable(line: &str) -> String {
-    let mut line = line.to_string();
-    let digest = line
-        .split_whitespace()
-        .find(|word| word.len() >= 16 && word.bytes().all(|byte| byte.is_ascii_hexdigit()))
-        .map(str::to_string);
-    if let Some(digest) = digest {
-        line = line.replace(&digest, "<digest>");
-    }
-    match line.rsplit_once(" bytes").and_then(|(head, _)| {
-        head.rsplit_once(", ")
-            .map(|(keep, _count)| format!("{keep}, <count> bytes"))
-    }) {
-        Some(blanked) => blanked,
-        None => line,
-    }
+/// The line with every number and digest blanked. What a second run repeats is
+/// the words and their order; the build, the counter, the digest, how much each
+/// submission carried and its size all follow the run. Word by word rather than
+/// field by field, because the two accepted lines carry different fields.
+///
+/// A word is blanked only if it is nothing but hex digits and dots, so a pool
+/// id, a URL and every ordinary word survive.
+fn shape(line: &str) -> String {
+    line.split_whitespace()
+        .map(|word| {
+            match word
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() || byte == b'.')
+            {
+                true => "#",
+                false => word,
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The check step's promise: an agent that is working says so, in lines an
@@ -230,7 +234,11 @@ async fn the_journal_lines_the_page_shows_are_the_ones_the_agent_prints() {
     let config = write_config_for(
         &dir,
         &server.uri(),
-        "",
+        // The source the page's own try-it uses, so what is recorded is what an
+        // operator following it sees. It also gives the second accepted line:
+        // scrapes and trace lines are separate streams and a tick sends one
+        // submission for each.
+        "[log]\nsource = \"pipe\"",
         PoolId::from_cold_key(&test_key().verifying_key()),
         // Not the slugification fixture the other tests use: this name reaches
         // an operator's screen, and `relay-1` is what one of theirs looks like.
@@ -239,29 +247,41 @@ async fn the_journal_lines_the_page_shows_are_the_ones_the_agent_prints() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_metsuke"))
         .args(["--config", config.to_str().unwrap()])
         .args(["--signing-key", key_path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        // Written through unchanged, which is the node's output and not
+        // something this test reads.
+        .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
     let mut stderr = child.stderr.take().expect("stderr was piped");
 
-    // Up to the first accepted submission, which is the last line the step
+    // The node's share of the pipeline: the recorded stream, then a handle held
+    // open. Closing it is EOF, which the agent stops on, and it has to still be
+    // running when the upload tick fires.
+    let mut stdin = child.stdin.take().expect("stdin was piped");
+    std::io::Write::write_all(&mut stdin, RECORDED_TRACES.as_bytes()).unwrap();
+    std::io::Write::flush(&mut stdin).unwrap();
+
+    // Up to the accepted trace-line submission, which is the last line the step
     // promises. Reading is what bounds this: the agent uploads on its first
     // tick, and a run that never got there blocks and fails the suite's clock
-    // rather than passing on two lines.
+    // rather than passing on the lines it had.
     let mut reader = std::io::BufReader::new(&mut stderr);
     let mut recorded = String::new();
     loop {
         let mut line = String::new();
         assert!(
             reader.read_line(&mut line).unwrap() > 0,
-            "the agent stopped before it accepted a submission, said: {recorded}"
+            "the agent stopped before it accepted both submissions, said: {recorded}"
         );
         let line = without_priority(&line);
         recorded.push_str(line);
-        if line.contains("accepted") {
+        if line.contains("trace lines,") {
             break;
         }
     }
+    drop(stdin);
     child.kill().unwrap();
     child.wait().unwrap();
     let recorded = recorded.replace(&format!("{}/metrics", server.uri()), SHIPPED_METRICS_URL);
@@ -272,12 +292,7 @@ async fn the_journal_lines_the_page_shows_are_the_ones_the_agent_prints() {
         return;
     }
     let shipped = std::fs::read_to_string(&path).expect("the recording is committed");
-    let blank = |text: &str| {
-        text.lines()
-            .map(without_the_unrepeatable)
-            .collect::<Vec<_>>()
-            .join("\n")
-    };
+    let blank = |text: &str| text.lines().map(shape).collect::<Vec<_>>().join("\n");
     assert_eq!(
         blank(&recorded),
         blank(&shipped),
