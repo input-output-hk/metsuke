@@ -12,8 +12,8 @@
 use std::collections::BTreeMap;
 
 use metsuke_wire::envelope::{
-    self, AgentId, Envelope, Failure, HEADER_SIGNATURE, HEADER_VKEY, Metric, Payload, PayloadLine,
-    PoolId, Provenance, Reason, Scrape, SigningKey,
+    self, AgentId, Envelope, Failure, HEADER_POOL, HEADER_SIGNATURE, HEADER_VKEY, Metric, Payload,
+    PayloadLine, PoolId, Provenance, Reason, Scrape, SigningKey,
 };
 use time::OffsetDateTime;
 
@@ -277,6 +277,7 @@ pub fn details(config_example: &str) -> String {
             ("PATH", PATH.to_string()),
             ("HEADER_VKEY", HEADER_VKEY.to_string()),
             ("HEADER_SIGNATURE", HEADER_SIGNATURE.to_string()),
+            ("HEADER_POOL", HEADER_POOL.to_string()),
             ("METADATA_LABEL", METADATA_LABEL.to_string()),
             ("metadata", escape(&metadata_json())),
             ("flake", escape(&flake_ref())),

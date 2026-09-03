@@ -1,19 +1,20 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Metsuke: details</title>
+<title>Metsuke Details</title>
 <link rel="icon" href="{{ICON_PATH}}" type="{{ICON_CONTENT_TYPE}}">
 <style>{{style}}</style>
 
-<h1>Metsuke: details</h1>
+<h1>Metsuke Details</h1>
 
 <p>What the agent sends, which key signs, and every config setting available is
 described on this page. <a href="{{PATH}}">The four steps to get running</a> are
-the other page, and nothing here is needed to follow them.</p>
+the quickstart page, and nothing here is needed to follow them.</p>
 
 <h2 id="code">Your application code on chain</h2>
 
-<p>Your application to the rewards program carries a code. The same code has to
-be in your pool registration transaction's metadata, under label
+<p>The <a href="https://leios.cardano-scaling.org/docs/testnet/rewards-program">rewards
+program</a> emails you an application code when you apply. That code has to be
+in your pool registration transaction's metadata, under label
 {{METADATA_LABEL}}:</p>
 
 <pre>{{metadata}}</pre>
@@ -37,21 +38,22 @@ JSON object per line, with a detached Ed25519 signature over the whole byte
 sequence. The header rides in a zstd skippable frame, so <code>zstd -d</code>
 on a submission hands back the lines and nothing else. This is an example of the
 whole thing: two scrapes, the first cut down to two metrics where a real line
-carries every one your node exposes, the second a scrape that failed.</p>
+carries every metric your node exposes, the second a scrape that failed.</p>
 
 <pre>{{envelope}}</pre>
 
 <p>One line per scrape, and its <code>metrics</code> are every metric your node
 exposes whose value JSON can hold. Those are the same metric lines
-<code>curl</code> prints. Each entry carries the metric's <code>name</code>, its
-<code>labels</code> and its <code>value</code> as your node stated them, plus
-the <code>declared_type</code> its <code># TYPE</code> line gave where it had
-one. The agent reads nothing else on your machine. It contributes two facts of
-its own, <code>scraped_at</code>, the time it scraped, and
-<code>clock_offset_ms</code>, the offset its own NTP query measured.</p>
+<code>curl</code> prints when curling the metrics endpoint. Each entry carries
+the metric's <code>name</code>, its <code>labels</code> and its
+<code>value</code> as your node stated them, plus the <code>declared_type</code>
+its <code># TYPE</code> line gave if it had one. The agent reads nothing else on
+your machine. It contributes two facts of its own: <code>scraped_at</code>, the
+time it scraped, and <code>clock_offset_ms</code>, the offset its own NTP query
+measured.</p>
 
 <p>A scrape that failed is itself a signal, so the submission is sent either
-way: no metrics, and <code>failure</code> naming what stopped it. Its
+way: no metrics, and <code>failure</code> names what stopped it. Its
 <code>reason</code> is one of {{reasons}}, and its <code>detail</code> is the
 message the agent had: the port, the status, or the size limit it was configured
 with.</p>
@@ -59,7 +61,7 @@ with.</p>
 <p>Every line names the pool and the machine that wrote it under
 <code>metsuke</code>, as <code>pool_id</code> and <code>agent_id</code>, the
 name you configure. One line read out of the archive on its own still says where
-it came from. That is the only key metsuke claims on a line.</p>
+it came from.</p>
 
 <p>The header carries those same two, and four more: <code>agent_version</code>,
 the build that scraped; <code>counter</code>, which submission of yours this is;
@@ -67,15 +69,21 @@ the build that scraped; <code>counter</code>, which submission of yours this is;
 <code>schema_version</code>, which shape its lines are.</p>
 
 <p>Trace lines travel as their own submissions: the same header with
-<code>schema_version</code> 2, and then the lines you selected, one per line,
-each the object your node wrote plus that same <code>metsuke</code> key.</p>
+<code>schema_version</code> 2, and then the lines selected by metsuke agent
+configuration, one per line, each containing the object your node wrote plus
+that same <code>metsuke</code> JSON key.</p>
 
 <p>The signature travels beside the body in two headers:
 <code>{{HEADER_VKEY}}</code> and <code>{{HEADER_SIGNATURE}}</code>. Anything
 between your agent and this server has to pass both through unchanged, or the
-signature will not verify. Your pool id is not among them. It is the hash of the
-key in the first header, so this server derives it rather than taking your word
-for it.</p>
+signature will not verify.</p>
+
+<p>Which pool a submission is from is settled from those rather than taken on
+trust. A cold key hashes to your pool id, so this server derives it from the
+verification key in the first header. A Leios key hashes to nothing, so the
+submission names its pool in a third header, <code>{{HEADER_POOL}}</code>, and
+this server believes it only where its key roster lists that key for that
+pool.</p>
 
 <h2 id="keys">Which key signs</h2>
 
@@ -84,19 +92,31 @@ it, so it is already on the machine the agent runs on and nothing new has to be
 put there. Signing telemetry is a poor reason to move a cold key onto a
 reporting host, which is what the other choice comes to.</p>
 
-<p>A cold key does work and this server accepts it, so it is there if you have a
-reason to prefer it. If you use one it has to hash to the <code>pool_id</code>
-in your config, or the agent refuses to start.</p>
+<p>The same goes if you report from your relays as well as your block producer.
+Every host that reports needs one of your keys on it, and a relay is the machine
+taking connections from strangers, so a cold key there is the worse version of
+the same mistake. Which host a submission came from is in it either way, under
+<code>agent_id</code>.</p>
+
+<p>A cold key does work and this server accepts it, so it is an option if you
+have a reason to prefer it. If you use one it has to hash to the
+<code>pool_id</code> in your config, or the agent refuses to start.</p>
 
 <p>The agent reads the <code>bls.skey</code> or <code>pool.skey</code> you
 already have.</p>
 
 <h2>The node's metrics endpoint</h2>
 
-<p>Most nodes serve Prometheus already, and the quickstart's configure step points
-<code>metrics_url</code> at the port yours is on. If nothing answers, this is
-the backend to add, in your node configuration's <code>TraceOptions</code>,
-bound to loopback so it is not reachable from anywhere else:</p>
+<p>The published MusashiNet configuration already serves this on loopback, and
+the config the quickstart hands you already points there, so this section is a
+check and a repair kit rather than a step. The check:</p>
+
+<pre>curl -s {{metrics_url}}</pre>
+
+<p>If you receive metric lines back, there is nothing to do here. If nothing
+answers, your node's tracing has diverged from the published configuration, and
+this is the backend to add to its <code>TraceOptions</code>, bound to loopback
+so it is not reachable from anywhere else:</p>
 
 <pre>{{backend}}</pre>
 
@@ -114,9 +134,7 @@ is ever collected.</p>
 <p><code>Stdout MachineFormat</code> is what both trace sources read, so it has
 to be in that list for either of them. Metrics alone do not need it.</p>
 
-<p>Restart the node, then check it answers:</p>
-
-<pre>curl -s {{metrics_url}}</pre>
+<p>Restart the node and run the check again.</p>
 
 <h2 id="traces">What the node has to emit for trace lines</h2>
 
@@ -126,8 +144,9 @@ or when a quorum was reached. Those live in the node's trace stream, and the
 agent ships every field of the lines you select from it. It reads one field to
 decide, and it computes nothing from any of them.</p>
 
-<p>These are the namespaces the node has to emit, again as keys to merge into
-your <code>TraceOptions</code>:</p>
+<p>The published MusashiNet configuration already emits all four, so again there
+is nothing to do unless your node's tracing has diverged from it. These are the
+namespaces, as keys to merge into your <code>TraceOptions</code>:</p>
 
 <pre>{{traces}}</pre>
 
@@ -143,8 +162,8 @@ There is no <code>""</code> key in this snippet, so it cannot disturb the root
 entry the backend above touched. <code>maxFrequency: 0</code> is not a typo, it
 means no rate limit, and leaving it out silently caps the stream.</p>
 
-<p>Restart the node. What it emits is the same either way; how the agent gets it
-is the choice below.</p>
+<p>Restart the node if you changed anything. What it emits is the same either
+way; how the agent gets it is the choice below.</p>
 
 <h2 id="pipe">The pipe</h2>
 

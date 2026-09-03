@@ -25,12 +25,19 @@ curl -O {{files_url}}config.pipe.toml
 # Update your pool id
 $EDITOR config.pipe.toml
 
-cardano-node run ... | {{try_agent}} --config config.pipe.toml --signing-key bls.skey</pre>
+cardano-node run ... | {{try_agent}} --config config.pipe.toml --signing-key bls.skey &gt; /dev/null</pre>
 
-<p>That is the whole agent. Your node's output passes through it unchanged. You
-should see:</p>
+<p>That is the whole agent. It writes your node's output straight back out, and
+the redirect drops that copy: without it a node's trace stream buries what the
+agent has to say. What is left on your terminal is the agent's own. The first
+four lines arrive within seconds; the trace-line submission waits for the next
+upload, one hour by default:</p>
 
 <pre>{{journal}}</pre>
+
+<p>Drop the <code>&gt; /dev/null</code> and your node's output comes back,
+interleaved with these lines. That pass-through is what the shapes below depend
+on: whatever read your node's output before still reads it.</p>
 
 <p>The config already points at this server, and its metrics URL is the port
 most nodes already serve Prometheus on. If your node is configured differently,
@@ -115,6 +122,11 @@ sudo $EDITOR {{config_path}}
 # Install your signing key, readable by root alone
 sudo install -m 0400 -o root -g root bls.skey {{key_path}}</pre>
 
+<p><code>agent_id</code> is what a submission calls the machine it came from,
+and it needs no setting: unset, it is that host's hostname, which the startup
+line prints. Set it where the hostname is not the name you want, and in a
+container, where the hostname is the runtime's rather than yours.</p>
+
 <p>Those permissions are for the systemd shapes, where the unit hands the key
 over as a credential and the service never reads the file itself. From a shell
 or a container you point <code>--signing-key</code> at your own copy instead.</p>
@@ -146,10 +158,15 @@ pipeline goes in your container's entrypoint.</p>
 
 <pre>journalctl -u metsuke -f</pre>
 
-<p>The same lines the try-it printed. The first submission is sent as soon
-as the agent starts, so you do not wait out a cadence to find out something is
-wrong. A refused submission logs this server's reason in place of the last line,
-and the scrapes stay spooled, so nothing is lost while you fix it.</p>
+<p>The same lines the try-it printed, though not all at once. The first
+submission is sent as soon as the agent starts, so the startup lines and the
+scrape one appear within seconds and you do not wait out a cadence to find out
+something is wrong. Trace lines have not accumulated by then, so theirs goes out
+on the next upload, one hour by default.</p>
+
+<p>A refused submission logs this server's reason in place of one of those
+accepted lines, and the scrapes stay spooled, so nothing is lost while you fix
+it.</p>
 
 <h2>Staying up to date</h2>
 
