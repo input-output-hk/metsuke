@@ -60,9 +60,9 @@ Source: https://cips.cardano.org/cip/CIP-0151
   Revocation without replacement: register with `calidusPublicKey =
   h'0000...0000'` (all-zero, 32 bytes).
 
-Concrete CBOR payload observed in `gitmachtl/scripts/cardano/mainnet/15_calidusPoolKey.sh`
-(local clone at `/home/manveru/ghq/github.com/gitmachtl/scripts`), lines
-332-347:
+Concrete CBOR payload observed in
+[cardano/mainnet/15_calidusPoolKey.sh](https://github.com/gitmachtl/scripts/blob/HEAD/cardano/mainnet/15_calidusPoolKey.sh),
+lines 332-347:
 ```
 map(5)
   1 -> [1, poolIdHex]        # scope: pool registration
@@ -195,6 +195,6 @@ specific doc).
 - https://cips.cardano.org/cip/CIP-0088
 - https://cips.cardano.org/cip/CIP-0151
 - https://github.com/gitmachtl/cardano-signer (README)
-- `/home/manveru/ghq/github.com/gitmachtl/scripts/cardano/mainnet/15_calidusPoolKey.sh` (local clone)
+- [cardano/mainnet/15_calidusPoolKey.sh](https://github.com/gitmachtl/scripts/blob/HEAD/cardano/mainnet/15_calidusPoolKey.sh)
 - https://cardano-community.github.io/guild-operators/Build/grest-changelog/
 - https://api.koios.rest/api/v1/pool_calidus_keys (live endpoint, schema observed)
