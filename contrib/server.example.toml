@@ -27,7 +27,7 @@ max_concurrent_requests = 64
 # The S3 archive reads its credentials from AWS_ACCESS_KEY_ID and
 # AWS_SECRET_ACCESS_KEY in the process environment.
 [archive.s3]
-bucket = "cardano-playground-metsuke"
+bucket = "metsuke-archive-example"
 region = "eu-central-1"
 # Whatever stands in for S3 here has to answer a GET with a Content-Length,
 # not chunked.

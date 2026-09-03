@@ -67,7 +67,7 @@ let
 
   s3 = execStartFor {
     s3 = {
-      bucket = "cardano-playground-metsuke";
+      bucket = "metsuke-archive-example";
       region = "eu-central-1";
       # Nothing is reached: startup constructs the archive and touches no
       # bucket, which is what makes this a config check and not a live one.
