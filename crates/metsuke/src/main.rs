@@ -14,7 +14,7 @@ use metsuke::logselect::{OutsideRoots, SelectConfig};
 use metsuke::logsource::{JournalSource, PipeSource, StartError};
 use metsuke::logtail::{self, DrainEnd};
 use metsuke::report::{Line, ScrapeReport};
-use metsuke::schedule::{Schedule, ScheduleConfig};
+use metsuke::schedule::{self, Schedule, ScheduleConfig};
 use metsuke::scrape::ScrapeConfig;
 use metsuke::scraper::ScraperConfig;
 use metsuke::sntp::SntpConfig;
@@ -347,6 +347,10 @@ fn upload_tick(
             }
         }
     }
-    let entropy = time::OffsetDateTime::now_utc().unix_timestamp_nanos() as u64;
-    schedule.after(&last.outcome, config, entropy)
+    let now = time::OffsetDateTime::now_utc();
+    let wait = schedule.after(&last.outcome, config, now.unix_timestamp_nanos() as u64);
+    // Only where the tick had something to send: a line saying when the next
+    // one is, after a round that said nothing, is a line about nothing.
+    eprintln!("{INFO}{}", schedule::next_upload_line(now, wait));
+    wait
 }

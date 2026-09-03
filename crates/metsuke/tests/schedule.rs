@@ -5,9 +5,34 @@
 
 use std::time::Duration;
 
-use metsuke::schedule::{Schedule, ScheduleConfig};
+use metsuke::schedule::{Schedule, ScheduleConfig, next_upload_line};
 use metsuke::uploader::UploadOutcome;
 use metsuke_wire::envelope::Ack;
+use time::OffsetDateTime;
+
+// What a tick says once it has sent what it had: when the next one is,
+// which an operator reading a journal cannot work out, because jitter placed
+// this agent inside the interval and a refusal replaces it with a backoff.
+#[test]
+fn the_line_a_tick_ends_on_names_when_the_next_one_is() {
+    let now = OffsetDateTime::from_unix_timestamp(1_780_000_000).unwrap();
+
+    assert_eq!(
+        next_upload_line(now, Duration::from_secs(3540)),
+        "the next submission is scheduled at 2026-05-28T21:25:40Z"
+    );
+}
+
+// Subsecond digits are the clock's, not an interval an operator set, so the
+// instant is named to the second.
+#[test]
+fn the_instant_is_named_to_the_second() {
+    let now = OffsetDateTime::from_unix_timestamp_nanos(1_780_000_000_123_456_789).unwrap();
+
+    let line = next_upload_line(now, Duration::from_secs(60));
+
+    assert!(line.contains("T20:27:40Z"), "got: {line}");
+}
 
 fn config() -> ScheduleConfig {
     ScheduleConfig {

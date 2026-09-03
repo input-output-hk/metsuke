@@ -5,7 +5,24 @@
 
 use std::time::Duration;
 
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
+
 use crate::uploader::UploadOutcome;
+
+/// When the next submission is, for the operator reading the tick that just
+/// finished. Neither the configured interval nor guessable from it, because
+/// jitter has placed this agent inside it and a refusal replaces it with a
+/// backoff.
+pub fn next_upload_line(now: OffsetDateTime, wait: Duration) -> String {
+    let at = now + wait;
+    let at = at
+        .replace_nanosecond(0)
+        .unwrap_or(at)
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "a time this clock cannot render".to_string());
+    format!("the next submission is scheduled at {at}")
+}
 
 pub struct ScheduleConfig {
     pub upload_interval: Duration,
