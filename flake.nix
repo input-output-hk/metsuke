@@ -560,6 +560,35 @@
               touch $out
             '';
 
+            # The same reason as the check above, for the documents the details
+            # page links: the Rust source is filtered to the crates and
+            # contrib, so a test there cannot see a document, and a renamed one
+            # would leave a 404 on the page. Read off the template rather than
+            # a render, because the prefix is what a render supplies.
+            instructions-documents = pkgs.runCommand "instructions-link-real-documents" { } ''
+              documents=${pkgs.lib.sourceFilesBySuffices ./. [ ".md" ]}
+              page=${./crates/metsuke-server/assets/details.html}
+              # `|| true` for the same reason the check above gives.
+              files=$(grep -oh '{{DOCS_PREFIX}}[^"]*' $page |
+                sed 's|^{{DOCS_PREFIX}}||' | sort -u || true)
+              trees=$(grep -oh '{{REPOSITORY}}/tree/main/[^"]*' $page |
+                sed 's|^{{REPOSITORY}}/tree/main/||' | sort -u || true)
+              [ -n "$files" ] || { echo "the details page links no documents"; exit 1; }
+              for path in $files; do
+                [ -f "$documents/$path" ] || {
+                  echo "the details page links $path, which is not a file in this repository"
+                  exit 1
+                }
+              done
+              for path in $trees; do
+                [ -d "$documents/$path" ] || {
+                  echo "the details page links $path as a directory, which it is not"
+                  exit 1
+                }
+              done
+              touch $out
+            '';
+
             clippy = craneLib.cargoClippy (
               commonArgs
               // {
