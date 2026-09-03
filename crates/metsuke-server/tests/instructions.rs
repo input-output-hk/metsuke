@@ -44,7 +44,7 @@ const DETAILS_SECTIONS: [&str; 8] = [
 
 #[test]
 fn every_outline_section_is_present_and_in_order() {
-    let pages = instructions::pages(&public_url());
+    let pages = instructions::pages(&public_url(), support::test_binaries());
     for (page, sections) in [
         (&pages.quickstart, &QUICKSTART_SECTIONS[..]),
         (&pages.details, &DETAILS_SECTIONS[..]),
@@ -65,7 +65,7 @@ fn every_outline_section_is_present_and_in_order() {
 #[test]
 fn the_quickstart_links_the_details_page() {
     assert!(
-        instructions::pages(&public_url())
+        instructions::pages(&public_url(), support::test_binaries())
             .quickstart
             .contains(&format!(r#"href="{}"#, instructions::DETAILS_PATH)),
         "the quickstart never links the details page"
@@ -76,7 +76,7 @@ fn the_quickstart_links_the_details_page() {
 /// landing at the top of a long document instead of the paragraph it promised.
 #[test]
 fn every_section_the_quickstart_links_exists() {
-    let pages = instructions::pages(&public_url());
+    let pages = instructions::pages(&public_url(), support::test_binaries());
     let needle = format!(r#"href="{}#"#, instructions::DETAILS_PATH);
     let mut linked = 0;
     for after in pages.quickstart.split(&needle).skip(1) {
@@ -103,7 +103,7 @@ fn every_section_the_quickstart_links_exists() {
 fn every_v1_field_appears_on_the_page() {
     // The prose, not the page: the embedded example is rendered from these same
     // types, so a field would appear in it with nothing written about it.
-    let prose = prose(&instructions::pages(&public_url()).details);
+    let prose = prose(&instructions::pages(&public_url(), support::test_binaries()).details);
     let row = serde_json::to_value(Scrape {
         scraped_at: OffsetDateTime::UNIX_EPOCH,
         clock_offset_ms: Some(0),
@@ -147,7 +147,7 @@ fn every_v1_field_appears_on_the_page() {
 /// one UNNEST reaches a metric and nothing is packed inside a string.
 #[test]
 fn the_page_renders_rows_whose_metrics_are_a_nested_list() {
-    let rows = rendered_rows(&instructions::pages(&public_url()).details);
+    let rows = rendered_rows(&instructions::pages(&public_url(), support::test_binaries()).details);
     for row in &rows {
         let mut keys: Vec<&str> = row
             .as_object()
@@ -218,14 +218,15 @@ fn every_shipped_config_is_served_pointing_at_this_server() {
     let ours = public_url()
         .join(metsuke_server::http::SUBMIT_PATH)
         .expect("the submission path joins");
-    let files = instructions::pages(&public_url()).files;
-    let configs: Vec<&(&str, String)> = files
+    let files = instructions::pages(&public_url(), support::test_binaries()).files;
+    let configs: Vec<&instructions::File> = files
         .iter()
-        .filter(|(name, _)| name.ends_with(".toml"))
+        .filter(|file| file.name.ends_with(".toml"))
         .collect();
     assert!(!configs.is_empty(), "no config is served at all");
-    for (name, contents) in configs {
-        let table: toml::Table = contents
+    for file in configs {
+        let name = file.name;
+        let table: toml::Table = String::from_utf8_lossy(&file.bytes)
             .parse()
             .unwrap_or_else(|error| panic!("{name} is not TOML after substitution: {error}"));
         assert_eq!(
@@ -237,28 +238,60 @@ fn every_shipped_config_is_served_pointing_at_this_server() {
 }
 
 /// Every file the table names has contents, and a unit is left alone: only the
-/// configs carry an upload URL to point.
+/// configs carry an upload URL to point. The agent builds are served beside
+/// them, byte for byte, and are what an operator's `curl` gets.
 #[test]
 fn every_served_file_is_the_shipped_one() {
-    let files = instructions::pages(&public_url()).files;
-    assert_eq!(files.len(), instructions::FILES.len());
-    for (name, shipped) in instructions::FILES {
-        let (_, served) = files
+    let binaries = support::test_binaries();
+    let expected: Vec<(&str, Vec<u8>)> = instructions::FILES
+        .iter()
+        .map(|(name, shipped)| (*name, shipped.as_bytes().to_vec()))
+        .chain(
+            binaries
+                .iter()
+                .map(|binary| (binary.name, binary.bytes.clone())),
+        )
+        .collect();
+    let files = instructions::pages(&public_url(), support::test_binaries()).files;
+    assert_eq!(files.len(), expected.len());
+    for (name, shipped) in expected {
+        let served = files
             .iter()
-            .find(|(served, _)| *served == name)
+            .find(|file| file.name == name)
             .unwrap_or_else(|| panic!("{name} is named but not served"));
-        assert!(!served.is_empty(), "{name} is served empty");
+        assert!(!served.bytes.is_empty(), "{name} is served empty");
+        // Only a config is rewritten on the way out, and only its upload URL.
         if !name.ends_with(".toml") {
-            assert_eq!(served, shipped, "{name} was altered on the way out");
+            assert_eq!(served.bytes, shipped, "{name} was altered on the way out");
         }
     }
+}
+
+/// A deployment that ships no agent build serves none, and its page cannot then
+/// offer one: the install step tells an operator to build instead.
+#[test]
+fn a_deployment_with_no_agent_build_offers_none() {
+    let pages = instructions::pages(&public_url(), Vec::new());
+    assert_eq!(pages.files.len(), instructions::FILES.len());
+    for name in instructions::BINARIES {
+        assert!(
+            !pages
+                .quickstart
+                .contains(&format!("curl -O {}", instructions::FILES_PREFIX)),
+            "the page offers a download of {name} that nothing serves"
+        );
+    }
+    assert!(
+        pages.quickstart.contains("nix build"),
+        "the page offers no way to get the agent at all"
+    );
 }
 
 /// The headers an operator's proxy has to pass through are the same two the
 /// agent sends.
 #[test]
 fn the_page_names_the_submission_headers() {
-    let page = instructions::pages(&public_url()).details;
+    let page = instructions::pages(&public_url(), support::test_binaries()).details;
     for header in [HEADER_VKEY, HEADER_SIGNATURE] {
         assert!(page.contains(header), "the page never names {header}");
     }
@@ -269,7 +302,7 @@ fn the_page_names_the_submission_headers() {
 /// opens.
 #[test]
 fn the_page_links_the_icon_route() {
-    let pages = instructions::pages(&public_url());
+    let pages = instructions::pages(&public_url(), support::test_binaries());
     let link = format!(
         r#"<link rel="icon" href="{}" type="{}">"#,
         instructions::ICON_PATH,
@@ -284,7 +317,7 @@ fn the_page_links_the_icon_route() {
 /// there is nothing to keep in step with it.
 #[test]
 fn the_shipped_config_and_unit_are_carried_whole() {
-    let pages = instructions::pages(&public_url());
+    let pages = instructions::pages(&public_url(), support::test_binaries());
     // Against the snippets, not the markup: node-pipe.conf names <your-node>,
     // which reaches the page as entities. This is also the stronger claim, that
     // the file is a block to copy rather than text somewhere on the page.
@@ -332,7 +365,7 @@ fn the_shipped_config_and_unit_are_carried_whole() {
 #[test]
 fn the_page_nudges_towards_the_agent_version_this_server_was_built_with() {
     assert!(
-        instructions::pages(&public_url())
+        instructions::pages(&public_url(), support::test_binaries())
             .quickstart
             .contains(metsuke_server::CLIENT_VERSION)
     );
@@ -361,7 +394,7 @@ fn the_metrics_endpoint_comes_from_the_shipped_config() {
 /// and the page is the only place those names are written down.
 #[test]
 fn every_file_the_pages_link_is_one_the_server_serves() {
-    let pages = instructions::pages(&public_url());
+    let pages = instructions::pages(&public_url(), support::test_binaries());
     let mut linked = 0;
     for page in [&pages.quickstart, &pages.details] {
         for after in page.split(instructions::FILES_PREFIX).skip(1) {
@@ -371,10 +404,10 @@ fn every_file_the_pages_link_is_one_the_server_serves() {
                 .split(['"', '\'', ' ', '<', '\n'])
                 .next()
                 .expect("a split yields a first piece");
+            // Against what this deployment serves, not the compiled-in table:
+            // the agent builds are links only where they are offered.
             assert!(
-                instructions::FILES
-                    .iter()
-                    .any(|(served, _)| *served == name),
+                pages.files.iter().any(|file| file.name == name),
                 "a page links {name:?}, which the server does not serve"
             );
             linked += 1;
@@ -578,7 +611,7 @@ fn the_installed_paths_come_from_the_shipped_unit() {
         .replace("/usr/local/bin/metsuke", "/opt/bin/metsuke")
         .replace("/etc/metsuke/config.toml", "/opt/metsuke.toml")
         .replace("/etc/metsuke/pool.skey", "/opt/pool.skey");
-    let page = instructions::quickstart(&unit, &public_url());
+    let page = instructions::quickstart(&unit, &public_url(), &[]);
     assert!(page.contains("/opt/pool.skey"), "key path not followed");
     assert!(
         page.contains("/opt/metsuke.toml"),
@@ -604,6 +637,7 @@ fn shipped_text_is_escaped_into_the_page() {
         instructions::quickstart(
             &instructions::UNIT.replace("/usr/local/bin/metsuke", "<b>a&b</b>"),
             &public_url(),
+            &[],
         ),
         // The same needle in both, so one assertion covers each page's own
         // shipped text. No spaces in it: `exec_start` reads the binary out of

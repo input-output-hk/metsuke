@@ -727,9 +727,11 @@ fn the_instructions_page_is_served_without_credentials() {
     let server = Server::start(&[pool_of(&key)]);
     let (status, body, headers) = server.pull_as(metsuke_server::instructions::PATH, None);
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    // No binaries: this server is spawned from a config with no `[downloads]`,
+    // and its page offers a build rather than a download because of it.
     assert_eq!(
         String::from_utf8_lossy(&body),
-        metsuke_server::instructions::pages(&support::public_url()).quickstart
+        metsuke_server::instructions::pages(&support::public_url(), Vec::new()).quickstart
     );
     let content_type = headers
         .iter()

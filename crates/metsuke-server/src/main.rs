@@ -7,7 +7,8 @@
 use metsuke_server::archive::{Bytes, FilesystemArchive, List, Store};
 use metsuke_server::cli::{Args, ArgsError, Command, USAGE, VERSION};
 use metsuke_server::config::{
-    ArchiveConfig, ConfigError, DeveloperConfig, HttpConfig, IngestConfig, S3Config, ServerConfig,
+    ArchiveConfig, ConfigError, DeveloperConfig, DownloadsConfig, HttpConfig, IngestConfig,
+    S3Config, ServerConfig,
 };
 use metsuke_server::developer::Developer;
 use metsuke_server::http;
@@ -26,6 +27,12 @@ enum Fatal {
     Args(#[from] ArgsError),
     #[error("cannot read config {path}: {source}")]
     ReadConfig {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("cannot read the agent build at {path}: {source}")]
+    ReadDownload {
         path: String,
         #[source]
         source: std::io::Error,
@@ -99,6 +106,7 @@ fn run() -> Result<(), Fatal> {
         archive,
         ingest,
         developer,
+        downloads,
     } = ServerConfig::from_toml(&text)?;
     let serving = Serving {
         listen,
@@ -106,6 +114,7 @@ fn run() -> Result<(), Fatal> {
         http,
         ingest,
         developer,
+        downloads,
     };
     // The archive kind is matched once: pairing it with the subcommand would
     // multiply the arms by every kind this grows.
@@ -150,6 +159,30 @@ struct Serving {
     http: HttpConfig,
     ingest: IngestConfig,
     developer: DeveloperConfig,
+    downloads: Option<DownloadsConfig>,
+}
+
+/// The static agent builds the page offers, read off disk. Empty where the
+/// deployment configures none, which the page then says.
+fn agent_builds(config: Option<&DownloadsConfig>) -> Result<Vec<instructions::Binary>, Fatal> {
+    let Some(config) = config else {
+        return Ok(Vec::new());
+    };
+    [
+        (instructions::BINARIES[0], &config.x86_64_linux),
+        (instructions::BINARIES[1], &config.aarch64_linux),
+    ]
+    .into_iter()
+    .map(|(name, path)| {
+        Ok(instructions::Binary {
+            name,
+            bytes: std::fs::read(path.as_path()).map_err(|source| Fatal::ReadDownload {
+                path: path.as_path().display().to_string(),
+                source,
+            })?,
+        })
+    })
+    .collect()
 }
 
 /// Run the named subcommand against one archive. `verify_archive` is the only
@@ -210,6 +243,7 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
         http: limits,
         ingest,
         developer: credentials,
+        downloads,
     } = serving;
     // Read here rather than at load: `verify-archive` answers no developer
     // request, so a credential file only this path needs must not decide
@@ -224,8 +258,10 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
         .map(|path| Roster::load(path.as_path()))
         .transpose()?;
     // Built from files compiled in, so a broken one is a build that must not
-    // reach an operator asking for it.
-    let pages = instructions::pages(&public_url);
+    // reach an operator asking for it. The agent builds are the exception:
+    // read here, because a path that cannot be read is the deployment's
+    // mistake and this is where it should stop.
+    let pages = instructions::pages(&public_url, agent_builds(downloads.as_ref())?);
     let listener = serve::bind(&listen).map_err(|source| Fatal::Listen {
         listen: listen.clone(),
         reason: source.to_string(),

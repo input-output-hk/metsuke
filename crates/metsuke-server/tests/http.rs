@@ -69,7 +69,10 @@ fn over<A: metsuke_server::archive::Store>(archive: A, dir: tempfile::TempDir) -
     Server {
         intake: Intake::new(permissive_config(&[pool_of(&test_key())]), archive, None),
         developer,
-        pages: http::Pages::from(instructions::pages(&support::public_url())),
+        pages: http::Pages::from(instructions::pages(
+            &support::public_url(),
+            support::test_binaries(),
+        )),
         _dir: dir,
     }
 }
@@ -141,7 +144,7 @@ fn the_instructions_page_is_answered_without_credentials() {
     assert_eq!(answer.status, 200);
     assert_eq!(
         body(&answer),
-        instructions::pages(&support::public_url()).quickstart
+        instructions::pages(&support::public_url(), support::test_binaries()).quickstart
     );
     assert!(answer.content_type.starts_with("text/html"));
 }
@@ -193,7 +196,7 @@ fn the_details_page_is_answered_without_credentials() {
     assert_eq!(answer.status, 200);
     assert_eq!(
         body(&answer),
-        instructions::pages(&support::public_url()).details
+        instructions::pages(&support::public_url(), support::test_binaries()).details
     );
     assert!(answer.content_type.starts_with("text/html"));
 }

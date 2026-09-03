@@ -94,22 +94,47 @@ pub const FILES: [(&str, &str); 7] = [
     ("node-pipe.conf", PIPE_DROPIN),
 ];
 
-/// Both pages and every file they link, ready to serve.
-pub fn pages(public_url: &url::Url) -> Pages {
+/// The names the static agent builds are served and linked under. The flake's
+/// own package names, so the page and `nix build` agree and
+/// `checks.instructions-outputs` can hold them to it.
+pub const BINARIES: [&str; 2] = [
+    "metsuke-static-x86_64-linux",
+    "metsuke-static-aarch64-linux",
+];
+
+/// One static agent build this deployment offers, read at startup by the
+/// caller: a path that cannot be read is a deployment mistake, and finding it
+/// at boot beats finding it when an operator follows the page.
+pub struct Binary {
+    pub name: &'static str,
+    pub bytes: Vec<u8>,
+}
+
+/// Both pages and every file they link, ready to serve. `binaries` is empty
+/// where the deployment ships none, and the install step then says to build
+/// one instead of offering it.
+pub fn pages(public_url: &url::Url, binaries: Vec<Binary>) -> Pages {
     let pointed = |config: &str| pointed_at(config, public_url);
+    let files = FILES
+        .iter()
+        .map(|(name, contents)| File {
+            name,
+            content_type: "text/plain; charset=utf-8",
+            bytes: match name.ends_with(".toml") {
+                true => pointed(contents).into_bytes(),
+                false => contents.as_bytes().to_vec(),
+            },
+        })
+        .chain(binaries.into_iter().map(|binary| File {
+            name: binary.name,
+            content_type: "application/octet-stream",
+            bytes: binary.bytes,
+        }))
+        .collect::<Vec<File>>();
     Pages {
-        quickstart: quickstart(UNIT_JOURNALD, public_url),
+        quickstart: quickstart(UNIT_JOURNALD, public_url, &files),
         details: details(&pointed(CONFIG_EXAMPLE)),
-        files: FILES
-            .iter()
-            .map(|(name, contents)| {
-                let contents = match name.ends_with(".toml") {
-                    true => pointed(contents),
-                    false => contents.to_string(),
-                };
-                (*name, contents)
-            })
-            .collect(),
+        files,
     }
 }
 
@@ -118,8 +143,44 @@ pub fn pages(public_url: &url::Url) -> Pages {
 pub struct Pages {
     pub quickstart: String,
     pub details: String,
-    /// Name to contents, served under `FILES_PREFIX`.
-    pub files: Vec<(&'static str, String)>,
+    /// Everything served under `FILES_PREFIX`.
+    pub files: Vec<File>,
+}
+
+/// One file the pages link and the server answers for.
+pub struct File {
+    pub name: &'static str,
+    pub bytes: Vec<u8>,
+    pub content_type: &'static str,
+}
+
+/// The install step's commands: downloading the build this deployment offers
+/// where it offers one, and building it otherwise. Composed here rather than
+/// branched in the template, which has no conditionals and is better for it.
+///
+/// The nix line is kept either way, because a build from source is the answer
+/// for an architecture this server has no binary for.
+fn install(offered: &[File], files_url: &str, binary: &str) -> String {
+    // One architecture, not both: an operator has one. The other is named in
+    // the prose beside this block, which reads the same either way.
+    let name = BINARIES[0];
+    let lines = match offered.iter().any(|file| file.name == name) {
+        true => vec![
+            "# Download the build for your architecture".to_string(),
+            format!("curl -O {files_url}{name}"),
+            String::new(),
+            "# Install it where the unit will look for it".to_string(),
+            format!("sudo install -m 0755 {name} {binary}"),
+        ],
+        false => vec![
+            "# Build the static agent".to_string(),
+            format!("nix build {}#{name}", flake_ref()),
+            String::new(),
+            "# Install it where the unit will look for it".to_string(),
+            format!("sudo install -m 0755 result/bin/metsuke {binary}"),
+        ],
+    };
+    escape(&lines.join("\n"))
 }
 
 /// A shipped config with its upload URL pointed at this deployment, so the only
@@ -141,10 +202,11 @@ fn pointed_at(config: &str, public_url: &url::Url) -> String {
 /// The four steps and nothing else. It links the files rather than printing
 /// them, so what it takes is the unit whose paths it tells an operator to put
 /// things at, and the URL those links are absolute against.
-pub fn quickstart(unit: &str, public_url: &url::Url) -> String {
+pub fn quickstart(unit: &str, public_url: &url::Url, offered: &[File]) -> String {
     let files = public_url
         .join(FILES_PREFIX)
         .expect("the files prefix joins onto an absolute URL");
+    let binary = exec_start(unit, ExecStartField::Binary);
     fill(
         QUICKSTART,
         &[
@@ -158,7 +220,9 @@ pub fn quickstart(unit: &str, public_url: &url::Url) -> String {
             // somewhere other than the browser that rendered the link.
             ("files_url", escape(files.as_str())),
             ("journal", escape(JOURNAL.trim_end())),
-            ("binary", escape(&exec_start(unit, ExecStartField::Binary))),
+            // The binary path reaches the page inside this block and nowhere
+            // else on the quickstart, so it is not a value of its own here.
+            ("install", install(offered, files.as_str(), &binary)),
             (
                 "config_path",
                 escape(&exec_start(unit, ExecStartField::Config)),

@@ -10,6 +10,13 @@ listen = "127.0.0.1:8080"
 # somewhere else.
 public_url = "https://metsuke.example.org"
 
+# Optional. The static agent builds this server offers for download, so an
+# operator needs no nix to get one. Leave the section out and the onboarding
+# page tells them to build it instead.
+# [downloads]
+# x86_64_linux = "/usr/local/lib/metsuke/metsuke-static-x86_64-linux"
+# aarch64_linux = "/usr/local/lib/metsuke/metsuke-static-aarch64-linux"
+
 # Generous, because a pool on a bad link still has to get its submission in.
 [http]
 idle_timeout_ms = 30000

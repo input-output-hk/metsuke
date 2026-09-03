@@ -195,7 +195,7 @@ impl Server {
                 http_config(),
                 intake,
                 developer,
-                instructions::pages(&public_url),
+                instructions::pages(&public_url, Vec::new()),
             ) {
                 Ok(never) => match never {},
                 Err(error) => panic!("the test server stopped accepting: {error}"),

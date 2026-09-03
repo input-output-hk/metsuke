@@ -224,6 +224,20 @@ pub fn public_url() -> url::Url {
     PUBLIC_URL.parse().expect("the suite's public URL parses")
 }
 
+/// The agent builds a test server offers. Stand-ins rather than real ones: what
+/// a test asserts is that the page links what the server serves and that the
+/// bytes come back unaltered, neither of which needs a cross build.
+pub fn test_binaries() -> Vec<metsuke_server::instructions::Binary> {
+    metsuke_server::instructions::BINARIES
+        .iter()
+        .enumerate()
+        .map(|(at, name)| metsuke_server::instructions::Binary {
+            name,
+            bytes: vec![at as u8; 8],
+        })
+        .collect()
+}
+
 /// A whole config over an archive under `dir`, on a kernel-chosen port, with
 /// every limit wide enough that only the check under test can fire.
 pub fn server_toml(dir: &Path, allowed: &[PoolId]) -> ServerToml {

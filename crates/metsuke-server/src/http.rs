@@ -111,24 +111,22 @@ fn html(body: bytes::Bytes) -> Answer {
     }
 }
 
-/// One file an operator downloads. Plain text so a browser shows it rather
-/// than saving it, since reading before installing is the point.
-fn plain(body: bytes::Bytes) -> Answer {
-    Answer {
-        status: 200,
-        content_type: "text/plain; charset=utf-8",
-        body: AnswerBody::Bytes(body),
-        headers: Vec::new(),
-    }
-}
-
 /// The rendered documents as they are sent. `Bytes` rather than the `String`
 /// they came from, so a GET clones a refcount and not the document
 /// (metsuke-jfb.27).
 pub struct Pages {
     quickstart: bytes::Bytes,
     details: bytes::Bytes,
-    files: Vec<(&'static str, bytes::Bytes)>,
+    files: Vec<Served>,
+}
+
+/// One downloadable, as sent. The content type travels with it: the configs and
+/// units are text an operator may read in a browser, and the agent builds are
+/// not.
+struct Served {
+    name: &'static str,
+    bytes: bytes::Bytes,
+    content_type: &'static str,
 }
 
 impl From<instructions::Pages> for Pages {
@@ -139,17 +137,19 @@ impl From<instructions::Pages> for Pages {
             files: pages
                 .files
                 .into_iter()
-                .map(|(name, contents)| (name, bytes::Bytes::from(contents)))
+                .map(|file| Served {
+                    name: file.name,
+                    bytes: bytes::Bytes::from(file.bytes),
+                    content_type: file.content_type,
+                })
                 .collect(),
         }
     }
 }
 
 impl Pages {
-    fn file(&self, name: &str) -> Option<&bytes::Bytes> {
-        self.files
-            .iter()
-            .find_map(|(served, contents)| (*served == name).then_some(contents))
+    fn file(&self, name: &str) -> Option<&Served> {
+        self.files.iter().find(|served| served.name == name)
     }
 }
 
@@ -182,7 +182,12 @@ pub fn answer<A: Store + Bytes + List>(
         // here is a fixed table, not a path an operator's request selects.
         served if served.starts_with(instructions::FILES_PREFIX) => match request.method {
             Method::Get => match pages.file(&served[instructions::FILES_PREFIX.len()..]) {
-                Some(contents) => plain(contents.clone()),
+                Some(file) => Answer {
+                    status: 200,
+                    content_type: file.content_type,
+                    body: AnswerBody::Bytes(file.bytes.clone()),
+                    headers: Vec::new(),
+                },
                 None => refuse(None, 404, "no such file".to_string()),
             },
             _ => refuse(

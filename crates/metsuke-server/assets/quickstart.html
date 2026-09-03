@@ -82,13 +82,11 @@ collection is giving you trouble; the program wants them.</p>
 
 <h2>1. Install the agent</h2>
 
-<p>One static binary, no dependencies:</p>
+<pre>{{install}}</pre>
 
-<pre>nix build {{flake}}#metsuke-static-x86_64-linux
-sudo install -m 0755 result/bin/metsuke {{binary}}</pre>
-
-<p>Use <code>metsuke-static-aarch64-linux</code> on ARM. There is no install
-script and no self-update. On NixOS,
+<p>One static binary, nothing to link against. On ARM it is
+<code>metsuke-static-aarch64-linux</code>. There is no install script and no
+self-update. On NixOS,
 <a href="{{DETAILS_PATH}}#nixos">import the module instead</a> and skip the rest
 of this page.</p>
 

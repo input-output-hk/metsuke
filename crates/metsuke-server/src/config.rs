@@ -27,6 +27,22 @@ pub struct ServerConfig {
     pub archive: ArchiveConfig,
     pub ingest: IngestConfig,
     pub developer: DeveloperConfig,
+    /// The static agent builds this deployment offers, so an operator needs no
+    /// nix to get one. Optional as a whole rather than defaulted, because a
+    /// deployment that ships none is a deployment whose page must say so, and
+    /// because requiring it would make every VM test build two cross-compiled
+    /// agents to stand up a server.
+    #[serde(default)]
+    pub downloads: Option<DownloadsConfig>,
+}
+
+/// Where each architecture's static agent is on this host. Both, because the
+/// page names both and an operator on either should not have to build.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DownloadsConfig {
+    pub x86_64_linux: AbsolutePath,
+    pub aarch64_linux: AbsolutePath,
 }
 
 /// What the transport refuses, as against what the intake refuses. Every field
