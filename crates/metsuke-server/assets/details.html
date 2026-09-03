@@ -2,14 +2,63 @@
 <meta charset="utf-8">
 <title>metsuke: details</title>
 <link rel="icon" href="{{ICON_PATH}}" type="{{ICON_CONTENT_TYPE}}">
-<style>body { max-width: 46em; margin: 2em auto; font-family: sans-serif }
-pre { overflow-x: auto; background: #f4f4f4; padding: 1em }</style>
+<style>
+:root {
+  --bg: #ffffff;
+  --fg: #1c1c22;
+  --muted: #5a5a66;
+  --rule: #dcdce4;
+  --panel: #f4f4f8;
+  --accent: #5b3fa8;
+}
+body {
+  max-width: 48em;
+  margin: 2em auto;
+  padding: 0 1em;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  line-height: 1.55;
+}
+h1, h2 { line-height: 1.2 }
+h2 { margin-top: 2em; border-bottom: 1px solid var(--rule); padding-bottom: 0.2em }
+a { color: var(--accent) }
+pre {
+  overflow-x: auto;
+  background: var(--panel);
+  border-left: 3px solid var(--accent);
+  padding: 1em;
+}
+code { background: var(--panel); padding: 0.1em 0.3em }
+pre code { background: none; padding: 0 }
+</style>
 
 <h1>metsuke: details</h1>
 
 <p>What the agent sends, which key signs it, and every setting it takes.
-<a href="{{PATH}}">The five steps to get running</a> are the other page, and
+<a href="{{PATH}}">The four steps to get running</a> are the other page, and
 nothing here is needed to follow them.</p>
+
+<h2 id="code">Your application code on chain</h2>
+
+<p>Your application to the rewards program carries a code. The same code has to
+be in your pool registration transaction's metadata, under label
+{{METADATA_LABEL}}:</p>
+
+<pre>{{metadata}}</pre>
+
+<p>Only your cold key can sign a pool registration, so the two matching is what
+shows the application came from you. Until they match, this server refuses your
+submissions whatever key signs them. This is program registration rather than
+agent setup, so it is normally done before you reach the quickstart.</p>
+
+<h2 id="nixos">On NixOS</h2>
+
+<p>Add <code>{{flake}}</code> as a flake input and import its
+<code>nixosModules.metsuke</code>. That writes the configuration and the unit
+for you, including the two directives the journal source needs, so the
+quickstart's steps are a description of what the module does rather than
+something to follow.</p>
 
 <h2>What leaves your machine</h2>
 
@@ -58,7 +107,7 @@ signature will not verify. Your pool id is not among them. It is the hash of the
 key in the first header, so this server derives it rather than taking your word
 for it.</p>
 
-<h2>Which key signs</h2>
+<h2 id="keys">Which key signs</h2>
 
 <p>Either of your pool's keys may sign submissions, and the choice is about what
 has to sit on the machine running the agent.</p>
@@ -83,7 +132,7 @@ hear of the wrong one is a refusal here.</p>
 
 <h2>The node's metrics endpoint</h2>
 
-<p>Most nodes serve Prometheus already, and the quickstart's step 3 is to point
+<p>Most nodes serve Prometheus already, and the quickstart's configure step points
 <code>metrics_url</code> at the port yours is on. If nothing answers, this is
 the backend to add, in your node configuration's <code>TraceOptions</code>,
 bound to loopback so it is not reachable from anywhere else:</p>
@@ -108,7 +157,7 @@ to be in that list for either of them. Metrics alone do not need it.</p>
 
 <pre>curl -s {{metrics_url}}</pre>
 
-<h2>What the node has to emit for trace lines</h2>
+<h2 id="traces">What the node has to emit for trace lines</h2>
 
 <p>The metrics endpoint carries no per-event timestamps, so it cannot answer
 when an announcement arrived, when a block body and its closure were received,
@@ -136,7 +185,7 @@ means no rate limit, and leaving it out silently caps the stream.</p>
 <p>Restart the node. What it emits is the same either way; how the agent gets it
 is the choice below.</p>
 
-<h2>The pipe</h2>
+<h2 id="pipe">The pipe</h2>
 
 <p>The node runs as <code>cardano-node run ... | {{binary}} --config
 {{config_path}}</code>. The agent reads the node's stdout on its own stdin,
@@ -165,7 +214,7 @@ rather than the node's output.</p>
 <p>The NixOS module does not render this shape. An agent it started on its own
 would get <code>/dev/null</code> for stdin and respawn forever on the EOF.</p>
 
-<h2>The journal</h2>
+<h2 id="journal">The journal</h2>
 
 <p>The agent reads the node's journal under its own unit. That costs it
 membership of the <code>systemd-journal</code> group, which reads every unit's

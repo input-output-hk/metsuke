@@ -17,18 +17,23 @@ use time::OffsetDateTime;
 mod support;
 use support::public_url;
 
-/// The five steps, in the order an operator takes them.
-const QUICKSTART_SECTIONS: [&str; 5] = [
-    "1. Put your application code on chain",
-    "2. Install the agent",
-    "3. Write the configuration",
-    "4. Install the key and the unit",
-    "5. Check it",
+/// Something running before any decision, then the decision, then the four
+/// steps. The order is the point: an operator who is funnelled into a shape
+/// before seeing the others finds out too late.
+const QUICKSTART_SECTIONS: [&str; 6] = [
+    "Try it",
+    "How you'll run it for real",
+    "1. Install the agent",
+    "2. Configure it",
+    "3. Run it",
+    "4. Check it",
 ];
 
 /// What the quickstart leaves out. Each one is a question the steps raise and
 /// do not answer, in the order they raise it.
-const DETAILS_SECTIONS: [&str; 6] = [
+const DETAILS_SECTIONS: [&str; 8] = [
+    "Your application code on chain",
+    "On NixOS",
     "What leaves your machine",
     "Which key signs",
     "The node's metrics endpoint",
@@ -55,15 +60,37 @@ fn every_outline_section_is_present_and_in_order() {
 }
 
 /// The quickstart is the one an operator is pointed at, so the other page has
-/// to be reachable from it and nothing else has to be.
+/// to be reachable from it and nothing else has to be. No closing quote in the
+/// needle: every link is to a section of it rather than to the top.
 #[test]
 fn the_quickstart_links_the_details_page() {
     assert!(
         instructions::pages(&public_url())
             .quickstart
-            .contains(&format!(r#"href="{}""#, instructions::DETAILS_PATH)),
+            .contains(&format!(r#"href="{}"#, instructions::DETAILS_PATH)),
         "the quickstart never links the details page"
     );
+}
+
+/// And every section it links is one that page has, so a rename leaves no link
+/// landing at the top of a long document instead of the paragraph it promised.
+#[test]
+fn every_section_the_quickstart_links_exists() {
+    let pages = instructions::pages(&public_url());
+    let needle = format!(r#"href="{}#"#, instructions::DETAILS_PATH);
+    let mut linked = 0;
+    for after in pages.quickstart.split(&needle).skip(1) {
+        let anchor = after
+            .split('"')
+            .next()
+            .expect("a split yields a first piece");
+        assert!(
+            pages.details.contains(&format!(r#"id="{anchor}""#)),
+            "the quickstart links #{anchor}, which the details page does not have"
+        );
+        linked += 1;
+    }
+    assert!(linked > 0, "the quickstart links no section at all");
 }
 
 /// The acceptance criterion: what leaves the box is named field for field.
@@ -154,9 +181,11 @@ fn the_page_renders_rows_whose_metrics_are_a_nested_list() {
 /// The payload lines the page prints, read back out of the page: the example
 /// block is the header, a blank line, then one row per line.
 fn rendered_rows(page: &str) -> Vec<serde_json::Value> {
+    // The block with a blank line in it, not the first block: the page opens
+    // on other snippets, and every one of those is a single run of lines.
     let example = snippets(page)
         .into_iter()
-        .next()
+        .find(|snippet| snippet.contains("\n\n"))
         .expect("the page carries the example submission");
     let (_header, rows) = example
         .split_once("\n\n")
@@ -264,16 +293,24 @@ fn the_shipped_config_and_unit_are_carried_whole() {
             .iter()
             .any(|snippet| snippet.contains(shipped.trim_end()))
     };
-    // What an operator copies to get running, and nothing they do not need.
-    // The recording is not copied but matched, against their own journal.
-    for shipped in [
-        include_str!("../../../contrib/config.minimal.toml"),
-        include_str!("../../../contrib/metsuke.service"),
-        include_str!("../../metsuke/tests/fixtures/recordings/agent-journal.log"),
+    // The quickstart carries no config or unit at all now: it links them, so
+    // an operator downloads the file rather than selecting it out of a browser.
+    // The recording is the exception, because it is matched against their own
+    // journal rather than copied anywhere.
+    assert!(
+        carried(
+            &pages.quickstart,
+            include_str!("../../metsuke/tests/fixtures/recordings/agent-journal.log")
+        ),
+        "the quickstart does not carry the recorded journal lines whole"
+    );
+    for linked in [
+        include_str!("../../../contrib/config.journald.toml"),
+        include_str!("../../../contrib/metsuke-journald.service"),
     ] {
         assert!(
-            carried(&pages.quickstart, shipped),
-            "the quickstart does not carry a shipped file whole"
+            !carried(&pages.quickstart, linked),
+            "the quickstart prints a file it should be linking"
         );
     }
     // Every other file an operator can end up needing. A pair named on the
@@ -319,16 +356,31 @@ fn the_metrics_endpoint_comes_from_the_shipped_config() {
     );
 }
 
-/// The same for the quickstart, which is rendered from the minimal config
-/// rather than the annotated one.
+/// Every file either page links is one this server answers for. A link to a
+/// name nothing serves is a 404 an operator meets while following the steps,
+/// and the page is the only place those names are written down.
 #[test]
-fn the_quickstart_check_command_comes_from_the_config_it_shows() {
-    let config = instructions::CONFIG_MINIMAL.replace("127.0.0.1:12798", "127.0.0.1:19999");
-    assert!(
-        instructions::quickstart(&config, instructions::UNIT)
-            .contains("http://127.0.0.1:19999/metrics"),
-        "the check command does not follow the config's metrics_url"
-    );
+fn every_file_the_pages_link_is_one_the_server_serves() {
+    let pages = instructions::pages(&public_url());
+    let mut linked = 0;
+    for page in [&pages.quickstart, &pages.details] {
+        for after in page.split(instructions::FILES_PREFIX).skip(1) {
+            // Both the relative hrefs and the absolute curl targets end at the
+            // next quote or whitespace.
+            let name = after
+                .split(['"', '\'', ' ', '<', '\n'])
+                .next()
+                .expect("a split yields a first piece");
+            assert!(
+                instructions::FILES
+                    .iter()
+                    .any(|(served, _)| *served == name),
+                "a page links {name:?}, which the server does not serve"
+            );
+            linked += 1;
+        }
+    }
+    assert!(linked > 0, "the pages link no files at all");
 }
 
 /// And the two configs agree, so the port the quickstart tells an operator to
@@ -526,7 +578,7 @@ fn the_installed_paths_come_from_the_shipped_unit() {
         .replace("/usr/local/bin/metsuke", "/opt/bin/metsuke")
         .replace("/etc/metsuke/config.toml", "/opt/metsuke.toml")
         .replace("/etc/metsuke/pool.skey", "/opt/pool.skey");
-    let page = instructions::quickstart(instructions::CONFIG_MINIMAL, &unit);
+    let page = instructions::quickstart(&unit, &public_url());
     assert!(page.contains("/opt/pool.skey"), "key path not followed");
     assert!(
         page.contains("/opt/metsuke.toml"),
@@ -547,15 +599,18 @@ fn the_installed_paths_come_from_the_shipped_unit() {
 #[test]
 fn shipped_text_is_escaped_into_the_page() {
     for page in [
+        // The quickstart carries no config, so its shipped text is the unit's
+        // paths and the recorded journal lines.
         instructions::quickstart(
-            &instructions::CONFIG_MINIMAL.replace("pool1CHANGEME", "<b>a & b</b>"),
-            instructions::UNIT,
+            &instructions::UNIT.replace("/usr/local/bin/metsuke", "<b>a&b</b>"),
+            &public_url(),
         ),
-        instructions::details(
-            &instructions::CONFIG_EXAMPLE.replace("pool1CHANGEME", "<b>a & b</b>"),
-        ),
+        // The same needle in both, so one assertion covers each page's own
+        // shipped text. No spaces in it: `exec_start` reads the binary out of
+        // ExecStart by word, so a spaced one would only reach the page in part.
+        instructions::details(&instructions::CONFIG_EXAMPLE.replace("pool1CHANGEME", "<b>a&b</b>")),
     ] {
-        assert!(page.contains("&lt;b&gt;a &amp; b&lt;/b&gt;"));
+        assert!(page.contains("&lt;b&gt;a&amp;b&lt;/b&gt;"));
         assert!(!page.contains("<b>"));
     }
 }

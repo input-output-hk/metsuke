@@ -95,7 +95,7 @@ pub const FILES: [(&str, &str); 7] = [
 pub fn pages(public_url: &url::Url) -> Pages {
     let pointed = |config: &str| pointed_at(config, public_url);
     Pages {
-        quickstart: quickstart(&pointed(CONFIG_MINIMAL), UNIT),
+        quickstart: quickstart(UNIT_JOURNALD, public_url),
         details: details(&pointed(CONFIG_EXAMPLE)),
         files: FILES
             .iter()
@@ -135,23 +135,24 @@ fn pointed_at(config: &str, public_url: &url::Url) -> String {
     config.replace(example, ours.as_str())
 }
 
-/// The five steps and nothing else. Takes the config it shows and the unit it
-/// installs, because the paths it quotes are read back out of them.
-pub fn quickstart(config: &str, unit: &str) -> String {
-    let metrics = MetricsEndpoint::from_config(config);
+/// The four steps and nothing else. It links the files rather than printing
+/// them, so what it takes is the unit whose paths it tells an operator to put
+/// things at, and the URL those links are absolute against.
+pub fn quickstart(unit: &str, public_url: &url::Url) -> String {
+    let files = public_url
+        .join(FILES_PREFIX)
+        .expect("the files prefix joins onto an absolute URL");
     fill(
         QUICKSTART,
         &[
             ("ICON_PATH", ICON_PATH.to_string()),
             ("ICON_CONTENT_TYPE", ICON_CONTENT_TYPE.to_string()),
             ("DETAILS_PATH", DETAILS_PATH.to_string()),
-            ("METADATA_LABEL", METADATA_LABEL.to_string()),
+            ("FILES_PREFIX", FILES_PREFIX.to_string()),
             ("CLIENT_VERSION", CLIENT_VERSION.to_string()),
-            ("submit_path", crate::http::SUBMIT_PATH.to_string()),
-            ("metadata", escape(&metadata_json())),
-            ("metrics_url", escape(metrics.url())),
-            ("config", escape(config.trim_end())),
-            ("unit", escape(unit.trim_end())),
+            // Absolute, because these end up in a `curl` an operator runs
+            // somewhere other than the browser that rendered the link.
+            ("files_url", escape(files.as_str())),
             ("journal", escape(JOURNAL.trim_end())),
             ("binary", escape(&exec_start(unit, ExecStartField::Binary))),
             (
@@ -176,6 +177,9 @@ pub fn details(config_example: &str) -> String {
             ("PATH", PATH.to_string()),
             ("HEADER_VKEY", HEADER_VKEY.to_string()),
             ("HEADER_SIGNATURE", HEADER_SIGNATURE.to_string()),
+            ("METADATA_LABEL", METADATA_LABEL.to_string()),
+            ("metadata", escape(&metadata_json())),
+            ("flake", escape(&flake_ref())),
             ("envelope", escape(&example_envelope())),
             ("reasons", failure_reasons()),
             ("backend", escape(&metrics.backend_config())),

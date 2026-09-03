@@ -2,126 +2,175 @@
 <meta charset="utf-8">
 <title>metsuke: telemetry for the MusashiNet rewards program</title>
 <link rel="icon" href="{{ICON_PATH}}" type="{{ICON_CONTENT_TYPE}}">
-<style>body { max-width: 46em; margin: 2em auto; font-family: sans-serif }
-pre { overflow-x: auto; background: #f4f4f4; padding: 1em }
-table { border-collapse: collapse; margin: 1em 0 }
-th, td { text-align: left; padding: 0.2em 1.5em 0.2em 0; vertical-align: top }
-th { font-weight: normal; color: #555 }</style>
+<style>
+:root {
+  --bg: #ffffff;
+  --fg: #1c1c22;
+  --muted: #5a5a66;
+  --rule: #dcdce4;
+  --panel: #f4f4f8;
+  --accent: #5b3fa8;
+}
+body {
+  max-width: 48em;
+  margin: 2em auto;
+  padding: 0 1em;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, sans-serif;
+  line-height: 1.55;
+}
+h1, h2 { line-height: 1.2 }
+h2 { margin-top: 2em; border-bottom: 1px solid var(--rule); padding-bottom: 0.2em }
+a { color: var(--accent) }
+pre {
+  overflow-x: auto;
+  background: var(--panel);
+  border-left: 3px solid var(--accent);
+  padding: 1em;
+}
+code { background: var(--panel); padding: 0.1em 0.3em }
+pre code { background: none; padding: 0 }
+table { border-collapse: collapse; width: 100%; margin: 1em 0 }
+th, td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.5em 0.8em 0.5em 0;
+  border-bottom: 1px solid var(--rule);
+}
+th { color: var(--muted); font-weight: 600 }
+.note { color: var(--muted) }
+</style>
 
 <h1>metsuke</h1>
 
 <p>metsuke is a small agent you run beside cardano-node. It reads your node's
-Prometheus endpoint over loopback and sends this server a signed submission. It
-never opens your node socket, and it reads one key, the signing key you point it
-at.</p>
+Prometheus endpoint over loopback, collects the trace lines you select, and
+sends this server a signed submission. It never opens your node socket, and it
+reads one key, the signing key you point it at.</p>
 
-<p>Five steps below. What each file holds, and why, is on the
-<a href="{{DETAILS_PATH}}">details page</a>.</p>
+<p class="note">This assumes your pool is already in the rewards program, with
+your application code in your pool registration's metadata. Submissions are
+refused until it is, whatever key signs them.
+<a href="{{DETAILS_PATH}}#code">What that means</a>.</p>
 
-<h2>At a glance</h2>
+<h2>Try it</h2>
+
+<p>Four commands, one of them yours. Nothing is installed, and it all stops when
+you press Ctrl-C.</p>
+
+<pre>nix build {{flake}}#metsuke-static-x86_64-linux
+curl -O {{files_url}}config.pipe.toml
+$EDITOR config.pipe.toml                     # one line: your pool id
+
+cardano-node run ... | ./result/bin/metsuke --config config.pipe.toml --signing-key pool.skey</pre>
+
+<p>That is the whole agent. Your node's output passes through it unchanged, so
+whatever read that output before still does. You should see:</p>
+
+<pre>{{journal}}</pre>
+
+<p>The config already points at this server, and its metrics URL is the port
+most nodes already serve Prometheus on. If yours is elsewhere, that is the
+second line to change.</p>
+
+<h2>How you'll run it for real</h2>
+
+<p>Three shapes, and what each costs. Everything below is the same four steps
+whichever row you take; only the two filenames change.</p>
 
 <table>
-<tr><th>Submit to<td><code>{{submit_path}}</code> on this host
-<tr><th>Agent version<td><code>{{CLIENT_VERSION}}</code>
-<tr><th>Metadata label<td><code>{{METADATA_LABEL}}</code>
-<tr><th>Binary<td><code>{{binary}}</code>
-<tr><th>Configuration<td><code>{{config_path}}</code>
-<tr><th>Signing key<td><code>{{key_path}}</code>, owned by root, mode 0400
+<tr>
+  <th>Shape<th>Trace lines from<th>Group it needs<th>Restarts<th>Files
+<tr>
+  <td><strong>Its own unit</strong><br><span class="note">the usual one</span>
+  <td>the node's journal
+  <td><code>systemd-journal</code>, which reads every unit's journal on the host
+  <td>on its own
+  <td><a href="{{FILES_PREFIX}}config.journald.toml">config.journald.toml</a><br>
+      <a href="{{FILES_PREFIX}}metsuke-journald.service">metsuke-journald.service</a>
+<tr>
+  <td><strong>Your node's unit</strong><br><span class="note">a drop-in</span>
+  <td>the node's stdout
+  <td>none
+  <td>with the node
+  <td><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a><br>
+      <a href="{{FILES_PREFIX}}node-pipe.conf">node-pipe.conf</a>
+<tr>
+  <td><strong>A container</strong><br><span class="note">no systemd</span>
+  <td>the node's stdout
+  <td>none
+  <td>with the node
+  <td><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a><br>
+      <span class="note">your own entrypoint</span>
+<tr>
+  <td><strong>Metrics only</strong><br><span class="note">fallback</span>
+  <td>nothing
+  <td>none
+  <td>on its own
+  <td><a href="{{FILES_PREFIX}}config.minimal.toml">config.minimal.toml</a><br>
+      <a href="{{FILES_PREFIX}}metsuke.service">metsuke.service</a>
 </table>
 
-<h2>1. Put your application code on chain</h2>
+<p>The first row is what most pools want: the agent restarts without touching
+your node, and the group is the cost. The second gives up nothing in privilege
+but ties the agent's lifecycle to your node's, so restarting the agent restarts
+your node. The last row collects no trace lines and is where to fall back if
+collection is giving you trouble; the program wants them.</p>
 
-<p>Your application to the rewards program carries a code. Put that same code in
-your pool registration transaction's metadata, under label
-{{METADATA_LABEL}}:</p>
+<h2>1. Install the agent</h2>
 
-<pre>{{metadata}}</pre>
-
-<p>Only your cold key can sign a pool registration, so the two matching is what
-shows the application came from you. Until they match, this server refuses your
-submissions whatever key signs them.</p>
-
-<h2>2. Install the agent</h2>
-
-<p>On NixOS, add <code>{{flake}}</code> as a flake input and import its
-<code>nixosModules.metsuke</code>. That writes the configuration and the unit
-for you, and the rest of this page is a description of what it does.</p>
-
-<p>Anywhere else, take the static build for your architecture:</p>
+<p>One static binary, no dependencies:</p>
 
 <pre>nix build {{flake}}#metsuke-static-x86_64-linux
 sudo install -m 0755 result/bin/metsuke {{binary}}</pre>
 
 <p>Use <code>metsuke-static-aarch64-linux</code> on ARM. There is no install
-script and no self-update.</p>
+script and no self-update. On NixOS,
+<a href="{{DETAILS_PATH}}#nixos">import the module instead</a> and skip the rest
+of this page.</p>
 
-<h2>3. Write the configuration</h2>
+<h2>2. Configure it</h2>
 
-<p>Save this as <code>{{config_path}}</code>, with your pool id, your node's
-Prometheus port, and this host in the upload URL.</p>
+<p>Take the config your row names, set your pool id, and put your signing key
+where the unit will look for it:</p>
 
-<pre>{{config}}</pre>
+<pre>sudo curl -o {{config_path}} {{files_url}}config.journald.toml
+sudo $EDITOR {{config_path}}                 # one line: your pool id
+sudo install -m 0400 -o root -g root pool.skey {{key_path}}</pre>
 
-<p>Your node most likely serves Prometheus already, so use the port it is on.
-Check with:</p>
+<p>The unit hands that key over as a credential, so the service never reads the
+file itself and it stays unreadable to everything else. Either your cold key or
+your Leios key works;
+<a href="{{DETAILS_PATH}}#keys">which one to use</a> is worth two minutes.</p>
 
-<pre>curl -s {{metrics_url}}</pre>
+<p>Your node also has to emit the trace lines in the first place, which is
+<a href="{{DETAILS_PATH}}#traces">one merge into its configuration</a>. Skip that
+and metrics still arrive, but no trace lines ever will.</p>
 
-<p>If nothing answers there, the <a href="{{DETAILS_PATH}}">details page</a> has
-the node configuration that opens it.</p>
+<h2>3. Run it</h2>
 
-<h2>4. Install the key and the unit</h2>
-
-<p>Put your cold or Leios signing key at <code>{{key_path}}</code>, owned by
-root and moded 0400. The unit hands it over as a credential, so the service
-never reads that file itself and it stays unreadable to everything else. Which
-of the two keys to use is on the <a href="{{DETAILS_PATH}}">details page</a>;
-either one works here.</p>
-
-<pre>{{unit}}</pre>
-
-<pre>sudo systemctl daemon-reload
+<pre>sudo curl -o /etc/systemd/system/metsuke.service {{files_url}}metsuke-journald.service
+sudo systemctl daemon-reload
 sudo systemctl enable --now metsuke</pre>
 
-<h2>5. Check it</h2>
+<p>If you took the pipe row instead, there is no unit of its own:
+<a href="{{DETAILS_PATH}}#pipe">the drop-in goes on your node's unit</a>.</p>
+
+<h2>4. Check it</h2>
 
 <pre>journalctl -u metsuke -f</pre>
 
-<p>A working agent looks like this, recorded from a real run. Your pool id and
-endpoint will be your own, and the digest and byte count differ every time:</p>
-
-<pre>{{journal}}</pre>
-
-<p>The first submission is sent as soon as the agent starts, so you do not wait
-out a cadence to find out something is wrong. A refused submission logs this
-server's reason in place of that last line, and the scrapes stay spooled, so
-nothing is lost while you fix it.</p>
-
-<h2>Trace lines, if you want them</h2>
-
-<p>Optional, and off unless you configure it. The metrics endpoint is a periodic
-snapshot, so it cannot say when an announcement arrived or when a quorum was
-reached. Those live in the node's trace stream. Turning it on takes one node
-configuration change, on the details page, and one of two sources:</p>
-
-<ul>
-<li><strong>the pipe</strong>, <code>cardano-node run | metsuke</code>. The
-agent reads the node's stdout and holds no group at all. It runs downstream of
-the node, so it needs no unit of its own.
-<li><strong>the journal</strong>. The agent reads the node's journal under its
-own unit, which costs it the <code>systemd-journal</code> group, and that group
-reads every unit's journal on the host.
-</ul>
-
-<p>The pipe is the one that costs no privilege. The
-<a href="{{DETAILS_PATH}}">details page</a> has the configuration and the unit
-for both.</p>
+<p>The same three lines the try-it printed. The first submission is sent as soon
+as the agent starts, so you do not wait out a cadence to find out something is
+wrong. A refused submission logs this server's reason in place of the last line,
+and the scrapes stay spooled, so nothing is lost while you fix it.</p>
 
 <h2>Staying up to date</h2>
 
 <p>This server was built against agent {{CLIENT_VERSION}} and tells every agent
 that uploads to it which version that is. Yours logs a warning when it is older.
-To update, repeat step 2 and restart:</p>
+To update, repeat step 1 and restart:</p>
 
 <pre>sudo systemctl restart metsuke</pre>
 

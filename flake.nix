@@ -521,24 +521,24 @@
               touch $out
             '';
 
-            # The quickstart tells an operator to build these by name,
+            # The pages tell an operator to build these by name,
             # and nothing in the Rust tree can see whether they still exist.
             instructions-outputs = pkgs.runCommand "instructions-name-real-outputs" { } ''
-              page=${./crates/metsuke-server/assets/quickstart.html}
+              pages="${./crates/metsuke-server/assets/quickstart.html} ${./crates/metsuke-server/assets/details.html}"
               # Each grep is asserted non-empty first: a rename that also
               # reflowed the literal would otherwise leave a loop over nothing.
               # `|| true`: a grep that matches nothing exits 1, and under
               # `set -o pipefail` that would abort with an empty log instead of
               # the message below.
-              packages=$(grep -o 'metsuke-static-[a-z0-9_-]*' $page | sort -u || true)
-              modules=$(grep -o 'nixosModules\.[a-z-]*' $page | cut -d. -f2 | sort -u || true)
-              [ -n "$packages" ] || { echo "the quickstart offers no build to run"; exit 1; }
-              [ -n "$modules" ] || { echo "the quickstart points at no module"; exit 1; }
+              packages=$(grep -oh 'metsuke-static-[a-z0-9_-]*' $pages | sort -u || true)
+              modules=$(grep -oh 'nixosModules\.[a-z-]*' $pages | cut -d. -f2 | sort -u || true)
+              [ -n "$packages" ] || { echo "no page offers a build to run"; exit 1; }
+              [ -n "$modules" ] || { echo "no page points at a module"; exit 1; }
               for name in $packages; do
                 case " ${toString (builtins.attrNames config.packages)} " in
                   *" $name "*) ;;
                   *)
-                    echo "the quickstart offers $name, which this flake does not build"
+                    echo "a page offers $name, which this flake does not build"
                     exit 1
                     ;;
                 esac
@@ -547,7 +547,7 @@
                 case " ${toString (builtins.attrNames self.nixosModules)} " in
                   *" $name "*) ;;
                   *)
-                    echo "the quickstart points at nixosModules.$name, which does not exist"
+                    echo "a page points at nixosModules.$name, which does not exist"
                     exit 1
                     ;;
                 esac
