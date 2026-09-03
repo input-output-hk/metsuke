@@ -281,7 +281,7 @@
           # the binary and the config back out of ExecStart.
           agentBinary = "/usr/local/bin/metsuke";
           agentConfig = "/etc/metsuke/config.toml";
-          agentKey = "/etc/metsuke/pool.skey";
+          agentKey = "/etc/metsuke/bls.skey";
 
           # systemd reads the key as root and hands the service a copy only it
           # can read. Naming the key in config.toml instead needs it readable by
@@ -522,16 +522,20 @@
               touch $out
             '';
 
-            # The pages tell an operator to build these by name,
-            # and nothing in the Rust tree can see whether they still exist.
+            # The pages tell an operator to build these by name, and
+            # instructions.rs composes the rest of those commands, so both are
+            # read. Nothing in the Rust tree can see whether an output still
+            # exists, and the page's own `$ARCH` placeholder is why the suffix
+            # must match at least one character: `metsuke-static-` alone is not
+            # a package anyone can build.
             instructions-outputs = pkgs.runCommand "instructions-name-real-outputs" { } ''
-              pages="${./crates/metsuke-server/assets/quickstart.html} ${./crates/metsuke-server/assets/details.html}"
+              pages="${./crates/metsuke-server/assets/quickstart.html} ${./crates/metsuke-server/assets/details.html} ${./crates/metsuke-server/src/instructions.rs}"
               # Each grep is asserted non-empty first: a rename that also
               # reflowed the literal would otherwise leave a loop over nothing.
               # `|| true`: a grep that matches nothing exits 1, and under
               # `set -o pipefail` that would abort with an empty log instead of
               # the message below.
-              packages=$(grep -oh 'metsuke-static-[a-z0-9_-]*' $pages | sort -u || true)
+              packages=$(grep -oh 'metsuke-static-[a-z0-9_-][a-z0-9_-]*' $pages | sort -u || true)
               modules=$(grep -oh 'nixosModules\.[a-z-]*' $pages | cut -d. -f2 | sort -u || true)
               [ -n "$packages" ] || { echo "no page offers a build to run"; exit 1; }
               [ -n "$modules" ] || { echo "no page points at a module"; exit 1; }

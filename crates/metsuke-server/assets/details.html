@@ -1,14 +1,14 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>metsuke: details</title>
+<title>Metsuke: details</title>
 <link rel="icon" href="{{ICON_PATH}}" type="{{ICON_CONTENT_TYPE}}">
 <style>{{style}}</style>
 
-<h1>metsuke: details</h1>
+<h1>Metsuke: details</h1>
 
-<p>What the agent sends, which key signs it, and every setting it takes.
-<a href="{{PATH}}">The four steps to get running</a> are the other page, and
-nothing here is needed to follow them.</p>
+<p>What the agent sends, which key signs, and every config setting available is
+described on this page. <a href="{{PATH}}">The four steps to get running</a> are
+the other page, and nothing here is needed to follow them.</p>
 
 <h2 id="code">Your application code on chain</h2>
 
@@ -180,13 +180,15 @@ supply marked:</p>
   -v metsuke-spool:/var/lib/metsuke \
   --entrypoint /bin/sh \
   ghcr.io/input-output-hk/ouroboros-leios/cardano-node-testnet:THE-TAG-THE-TESTNET-DOCS-PIN \
-  -c 'THE-COMMAND-THIS-IMAGE-ALREADY-RUNS | /usr/local/bin/metsuke \
+  -c '/app/run-node.sh | /usr/local/bin/metsuke \
         --config /etc/metsuke/config.toml \
         --signing-key /etc/metsuke/bls.skey'</pre>
 
-<p><code>docker inspect</code> prints the entrypoint and command the image ships,
-which is what the second placeholder stands for. The first three mounts and the
-port are the testnet documentation's own; the rest are the agent's.</p>
+<p><code>/app/run-node.sh</code> is that image's own launcher, which is what it
+runs when you do not override the entrypoint. On any other image,
+<code>docker inspect</code> prints the command to put there instead. The first
+three mounts and the port are the testnet documentation's own; the rest are the
+agent's, and only the tag is left to fill in.</p>
 
 <p><strong>Keep <code>--init</code>.</strong> A shell running a pipeline as PID 1
 does not pass SIGTERM on to what it started, so without an init the runtime waits
@@ -196,7 +198,30 @@ the expensive kind of mistake.</p>
 
 <p>The spool volume is what makes a restart cheap rather than lossy, and
 <code>metrics_url</code> needs no change: the agent is in the node's network
-namespace, so the node's loopback is its own.</p>
+namespace, so the node's loopback is its own. That holds however the node binds
+its endpoint, since a wildcard bind includes loopback.</p>
+
+<p>Name that endpoint by IP literal either way. <code>localhost</code> is
+refused, because what it resolves to is a file the agent does not read, and only
+an address parsing as a loopback IP is accepted.</p>
+
+<p>The pipeline can also run on the host instead of inside the container, as
+<code>docker logs -f --tail 0 &lt;container&gt; | {{binary}} --config
+{{config_path}}</code>. That decouples the agent from the node's lifecycle and
+leaves the image alone, but it costs more than it looks. Reading the docker
+socket is root-equivalent on that host, where the entrypoint above needs no
+privilege at all. It also needs the node's metrics endpoint bound to a wildcard,
+and the MusashiNet image bakes in
+<code>PrometheusSimple suffix 127.0.0.1 12798</code>, so you would be overriding
+its configuration to get one. The <code>EXPOSE 12798</code> in that image does
+not help: a published port forwards to the container's interface, and nothing is
+listening there. And without <code>--tail 0</code> a restart re-reads the whole
+log and sends it again.</p>
+
+<p>None of that applies to the entrypoint above, which shares the node's network
+namespace and so reaches the loopback the image already binds. The image ships
+<code>Stdout MachineFormat</code> in its backends either way, so the trace lines
+themselves need nothing.</p>
 
 <p>The NixOS module does not render this shape. An agent it started on its own
 would get <code>/dev/null</code> for stdin and respawn forever on the EOF.</p>

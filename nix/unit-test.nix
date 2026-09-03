@@ -34,7 +34,7 @@ let
   poolId = "pool13vscgf9dwn0jt56u965wp99ychz6avktk3pyrye326f3xctz4nm";
   # Throwaway: what is exercised is that systemd hands the file over and the
   # agent parses it, not what it signs.
-  signingKey = pkgs.writeText "pool.skey" (
+  signingKey = pkgs.writeText "bls.skey" (
     builtins.toJSON {
       type = "StakePoolSigningKey_ed25519";
       description = "";
@@ -132,7 +132,7 @@ pkgs.testers.runNixOSTest {
 
     # Root-only, so the agent reaching it proves systemd passed it as a
     # credential rather than the service user reading the path.
-    environment.etc."metsuke/pool.skey" = {
+    environment.etc."metsuke/bls.skey" = {
       source = signingKey;
       mode = "0400";
     };
@@ -141,7 +141,7 @@ pkgs.testers.runNixOSTest {
 
     services.metsuke = {
       enable = true;
-      signingKeyFile = "/etc/metsuke/pool.skey";
+      signingKeyFile = "/etc/metsuke/bls.skey";
       settings = {
         pool_id = poolId;
         metrics_url = metricsUrl;
@@ -180,14 +180,14 @@ pkgs.testers.runNixOSTest {
 
     environment.systemPackages = [ pkgs.sqlite ];
 
-    environment.etc."metsuke/pool.skey" = {
+    environment.etc."metsuke/bls.skey" = {
       source = signingKey;
       mode = "0400";
     };
 
     services.metsuke = {
       enable = true;
-      signingKeyFile = "/etc/metsuke/pool.skey";
+      signingKeyFile = "/etc/metsuke/bls.skey";
       settings = {
         pool_id = poolId;
         metrics_url = metricsUrl;
@@ -210,7 +210,7 @@ pkgs.testers.runNixOSTest {
 
     environment.etc = {
       "metsuke/metsuke.service".source = contribUnit;
-      "metsuke/pool.skey" = {
+      "metsuke/bls.skey" = {
         source = signingKey;
         mode = "0400";
       };
@@ -247,7 +247,7 @@ pkgs.testers.runNixOSTest {
       "metsuke/node-pipe.conf".text = builtins.replaceStrings [ nodeCommand ] [ "${nodeStandIn}" ] (
         builtins.readFile pipeDropIn
       );
-      "metsuke/pool.skey" = {
+      "metsuke/bls.skey" = {
         source = signingKey;
         mode = "0400";
       };
@@ -337,7 +337,7 @@ pkgs.testers.runNixOSTest {
         # It scraped and spooled, which is the only thing it may write.
         spooled(pool)
         # The signing key stayed root-only, so it arrived as a credential.
-        pool.succeed("test 400 -eq \"$(stat -c %a /etc/metsuke/pool.skey)\"")
+        pool.succeed("test 400 -eq \"$(stat -c %a /etc/metsuke/bls.skey)\"")
 
     with subtest("the agent holds nothing ADR 0007 refuses"):
         confined(pool, "metsuke.service", "/var/lib/metsuke")
@@ -402,7 +402,7 @@ pkgs.testers.runNixOSTest {
         spooled(bare)
         confined(bare, "metsuke.service", "/var/lib/metsuke")
         # systemd handed the key over, so the file itself stayed root-only.
-        bare.succeed("test 400 -eq \"$(stat -c %a /etc/metsuke/pool.skey)\"")
+        bare.succeed("test 400 -eq \"$(stat -c %a /etc/metsuke/bls.skey)\"")
 
     with subtest("the pipe drop-in runs the agent downstream of the node"):
         piping.wait_for_unit("metrics-endpoint.service")
@@ -435,7 +435,7 @@ pkgs.testers.runNixOSTest {
 
         # The key arrived as a credential here too, which is what lets the
         # agent run as the node's user without the key being readable by it.
-        piping.succeed("test 400 -eq \"$(stat -c %a /etc/metsuke/pool.skey)\"")
+        piping.succeed("test 400 -eq \"$(stat -c %a /etc/metsuke/bls.skey)\"")
         # And the drop-in grants no group, which is what the pipe buys over
         # the journal. ADR 0010 weighs the two.
         piping.fail("grep -q SupplementaryGroups /etc/metsuke/node-pipe.conf")

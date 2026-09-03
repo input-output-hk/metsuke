@@ -1,17 +1,17 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>metsuke: telemetry for the MusashiNet rewards program</title>
+<title>Metsuke: telemetry for the MusashiNet rewards program</title>
 <link rel="icon" href="{{ICON_PATH}}" type="{{ICON_CONTENT_TYPE}}">
 <style>{{style}}</style>
 
-<h1>metsuke</h1>
+<h1>Metsuke</h1>
 
-<p>metsuke is a small agent you run beside cardano-node. It reads your node's
+<p>Metsuke is a small agent you run beside cardano-node. It reads your node's
 Prometheus endpoint over loopback, collects the trace lines it has been
 configured for, and sends this server a signed submission. It never opens your
 node socket, and it reads only the signing key you point it at.</p>
 
-<p class="note">This assumes your pool is already in the rewards program, with
+<p>This assumes your pool is already in the rewards program, with
 your application code in your pool registration's metadata. Submissions are
 refused until it is. <a href="{{DETAILS_PATH}}#code">What that means</a>.</p>
 
@@ -33,8 +33,8 @@ should see:</p>
 <pre>{{journal}}</pre>
 
 <p>The config already points at this server, and its metrics URL is the port
-most nodes already serve Prometheus on. If yours is elsewhere, that is the
-second line to change in the config file.</p>
+most nodes already serve Prometheus on. If your node is configured differently,
+that is the second line to change in the config file.</p>
 
 <h2>How you'll run it for real</h2>
 
@@ -96,15 +96,15 @@ at boot and nothing restarts it, so it is primarily for quick debugging.</p>
 
 <p>One static binary, nothing to link against. On ARM it is
 <code>metsuke-static-aarch64-linux</code>. Either can be built rather than
-downloaded, with <code>nix build {{flake}}#metsuke-static-x86_64-linux</code>.
+downloaded, with <code>nix build {{flake}}#metsuke-static-$ARCH</code>.
 There is no install script and no self-update. On NixOS,
 <a href="{{DETAILS_PATH}}#nixos">import the module instead</a> and skip the rest
 of this page.</p>
 
 <h2>2. Configure it</h2>
 
-<p>Take the config your row names, set your pool id, and put your signing key
-where the unit will look for it:</p>
+<p>Take the config your selected row names from the shape table above, set your
+pool id, and put your signing key where the unit will look for it:</p>
 
 <pre># Download the config your row names, the journald shape here
 sudo curl -o {{config_path}} {{files_url}}config.journald.toml
@@ -123,9 +123,11 @@ or a container you point <code>--signing-key</code> at your own copy instead.</p
 <strong>Leios key</strong>.
 <a href="{{DETAILS_PATH}}#keys">Why</a>.</p>
 
-<p>Your node also has to emit the trace lines in the first place, which is
-<a href="{{DETAILS_PATH}}#traces">one merge into its configuration</a>. Skip that
-and metrics still arrive, but no trace lines ever will.</p>
+<p>There is nothing to configure for the trace lines themselves. The config you
+just took already selects the traces the program asks for, and the published
+MusashiNet node configuration already emits them. If you have changed your
+node's tracing, <a href="{{DETAILS_PATH}}#traces">the details page</a> offers
+further guidance.</p>
 
 <h2>3. Run it</h2>
 
