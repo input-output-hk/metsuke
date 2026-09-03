@@ -131,8 +131,9 @@ backend, replace that one instead of keeping both. Get this wrong and metrics
 still work, the trace configuration below looks applied, and not one trace line
 is ever collected.</p>
 
-<p><code>Stdout MachineFormat</code> is what both trace sources read, so it has
-to be in that list for either of them. Metrics alone do not need it.</p>
+<p><code>Stdout MachineFormat</code> is what both trace sources of journald and
+pipe read, so it has to be in that list for either of them. Metrics alone do not
+need it.</p>
 
 <p>Restart the node and run the check again.</p>
 
@@ -162,14 +163,14 @@ There is no <code>""</code> key in this snippet, so it cannot disturb the root
 entry the backend above touched. <code>maxFrequency: 0</code> is not a typo, it
 means no rate limit, and leaving it out silently caps the stream.</p>
 
-<p>Restart the node if you changed anything. What it emits is the same either
-way; how the agent gets it is the choice below.</p>
+<p>Restart the node if you changed anything. What it emits is the same
+regardless of trace source; how the agent gets it is the choice below.</p>
 
 <h2 id="pipe">The pipe</h2>
 
-<p>The node runs as <code>cardano-node run ... | {{binary}} --config
-{{config_path}}</code>. The agent reads the node's stdout on its own stdin,
-holds no group at all, and writes every line through to its own stdout
+<p>In pipe mode the node runs as <code>cardano-node run ... | {{binary}}
+--config {{config_path}}</code>. The agent reads the node's stdout on its own
+stdin, holds no group at all, and writes every line through to its own stdout
 unchanged, so whatever read the node's output before still reads it.</p>
 
 <p>It runs downstream of the node, so it needs no unit of its own. That makes
@@ -216,42 +217,42 @@ databases. That is a slow replay on the next start, and on a block producer it i
 the expensive kind of mistake.</p>
 
 <p>The spool volume is what makes a restart cheap rather than lossy, and
-<code>metrics_url</code> needs no change: the agent is in the node's network
-namespace, so the node's loopback is its own. That holds however the node binds
-its endpoint, since a wildcard bind includes loopback.</p>
+<code>metrics_url</code> needs no change: the agent is in the node's container
+network namespace, so the node's loopback is its own. That holds however the
+node binds its endpoint, since a wildcard bind includes loopback.</p>
 
-<p>Name that endpoint by IP literal either way. <code>localhost</code> is
-refused, because what it resolves to is a file the agent does not read, and only
-an address parsing as a loopback IP is accepted.</p>
+<p>Write that <code>metrics_url</code> endpoint as an IP literal regardless of
+how the node binds it. Nothing resolves that host, so <code>localhost</code> is
+refused and it has to parse as a loopback address, meaning
+<code>127.0.0.1</code> or <code>[::1]</code>.</p>
 
 <p>The pipeline can also run on the host instead of inside the container, as
 <code>docker logs -f --tail 0 &lt;container&gt; | {{binary}} --config
 {{config_path}}</code>. That decouples the agent from the node's lifecycle and
 leaves the image alone, but it costs more than it looks. Reading the docker
-socket is root-equivalent on that host, where the entrypoint above needs no
-privilege at all. It also needs the node's metrics endpoint bound to a wildcard,
-and the MusashiNet image bakes in
-<code>PrometheusSimple suffix 127.0.0.1 12798</code>, so you would be overriding
-its configuration to get one. The <code>EXPOSE 12798</code> in that image does
-not help: a published port forwards to the container's interface, and nothing is
-listening there. And without <code>--tail 0</code> a restart re-reads the whole
-log and sends it again.</p>
+socket is root-equivalent on that host, whereas the entrypoint approach above
+needs no privilege at all. It also needs the node's metrics endpoint bound to a
+wildcard, and the MusashiNet image bakes in
+<code>PrometheusSimple suffix 127.0.0.1 12798</code>, so you would need to
+override its configuration to get one. The <code>EXPOSE 12798</code> in that
+image does not help: a published port forwards to the container's interface,
+and nothing is listening there. And without <code>--tail 0</code> a restart
+re-reads the whole log and sends it again.</p>
 
-<p>None of that applies to the entrypoint above, which shares the node's network
-namespace and so reaches the loopback the image already binds. The image ships
-<code>Stdout MachineFormat</code> in its backends either way, so the trace lines
-themselves need nothing.</p>
+<p>None of that applies to the entrypoint above, which shares the node's
+container network namespace and so reaches the loopback the image already binds.
+The image ships <code>Stdout MachineFormat</code> in its backends either way, so
+the trace lines themselves need nothing.</p>
 
-<p>The NixOS module does not render this shape. An agent it started on its own
-would get <code>/dev/null</code> for stdin and respawn forever on the EOF.</p>
+<p>The NixOS module only renders journald mode, not pipe mode.</p>
 
 <h2 id="journal">The journal</h2>
 
-<p>The agent reads the node's journal under its own unit. That costs it
-membership of the <code>systemd-journal</code> group, which reads every unit's
-journal on the host and is the one privilege it holds beyond scraping loopback.
-Two directives are the whole difference from the quickstart's unit, and
-journalctl needs both:
+<p>In journald mode the agent reads the node's journal under its own unit. That
+costs it membership of the <code>systemd-journal</code> group, which reads every
+unit's journal on the host and is the one privilege it holds beyond scraping
+loopback. Two directives are the whole difference from the quickstart's unit,
+and journalctl needs both:
 <a href="{{FILES_PREFIX}}metsuke-journald.service">metsuke-journald.service</a>,
 with <a href="{{FILES_PREFIX}}config.journald.toml">config.journald.toml</a>
 beside it.</p>
