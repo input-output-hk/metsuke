@@ -451,11 +451,28 @@ pub const DEVELOPER_PASSWORD: &str = "hunter2";
 pub const OTHER_DEVELOPER_USER: &str = "other-dev";
 pub const OTHER_DEVELOPER_PASSWORD: &str = "correct-horse";
 
+/// What no account's password is, for the tests about a refusal.
+pub const WRONG_PASSWORD: &str = "not the password";
+
+/// A password holding the separator RFC 7617 makes the first colon, for the
+/// test that the rest of a credential is the password.
+pub const COLON_PASSWORD: &str = "pass:with:colons";
+
+/// A person's name as an operator writes it, for the tests about case.
+pub const MIXED_CASE_USER: &str = "JaneDoe";
+
+/// One account, as a line of the secret file. Here rather than written at each
+/// use, so a test naming its own account adds no credential of its own.
+pub fn secret_line(user: &str, password: &str) -> String {
+    format!("{user} = \"{password}\"\n")
+}
+
 /// The secret as the file holds it, which is what `Accounts::parse` reads.
 pub fn developer_secret() -> String {
     format!(
-        "{DEVELOPER_USER} = \"{DEVELOPER_PASSWORD}\"\n\
-         {OTHER_DEVELOPER_USER} = \"{OTHER_DEVELOPER_PASSWORD}\"\n"
+        "{}{}",
+        secret_line(DEVELOPER_USER, DEVELOPER_PASSWORD),
+        secret_line(OTHER_DEVELOPER_USER, OTHER_DEVELOPER_PASSWORD)
     )
 }
 

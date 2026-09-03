@@ -10,8 +10,9 @@ use metsuke_server::developer::{
 
 mod support;
 use support::{
-    DEVELOPER_PASSWORD, DEVELOPER_USER, OTHER_DEVELOPER_PASSWORD, OTHER_DEVELOPER_USER,
-    developer_accounts, developer_config, developer_secret, nonzero_u32,
+    COLON_PASSWORD, DEVELOPER_PASSWORD, DEVELOPER_USER, MIXED_CASE_USER, OTHER_DEVELOPER_PASSWORD,
+    OTHER_DEVELOPER_USER, WRONG_PASSWORD, developer_accounts, developer_config, developer_secret,
+    nonzero_u32, secret_line,
 };
 
 fn developer() -> Developer {
@@ -52,14 +53,14 @@ fn an_accounts_password_is_only_its_own() {
 /// a parse accepts, and nothing else about the credential.
 #[test]
 fn a_refusal_names_the_presented_account() {
-    let header = basic(DEVELOPER_USER, "not the password");
+    let header = basic(DEVELOPER_USER, WRONG_PASSWORD);
     let refusal = developer()
         .authorize(Some(&header))
         .unwrap_err()
         .to_string();
     assert!(refusal.contains(DEVELOPER_USER), "got: {refusal}");
     assert!(
-        !refusal.contains("not the password"),
+        !refusal.contains(WRONG_PASSWORD),
         "a refusal must not carry the password: {refusal}"
     );
 }
@@ -86,7 +87,7 @@ fn a_request_without_an_authorization_header_is_refused() {
 
 #[test]
 fn a_wrong_password_is_refused() {
-    let header = basic(DEVELOPER_USER, "not the password");
+    let header = basic(DEVELOPER_USER, WRONG_PASSWORD);
     assert!(developer().authorize(Some(&header)).is_err());
 }
 
@@ -132,10 +133,10 @@ fn the_scheme_is_matched_case_insensitively() {
 #[test]
 fn a_password_holding_a_colon_authorizes() {
     let dir = tempfile::tempdir().unwrap();
-    let accounts = Accounts::parse("dev = \"pass:with:colons\"").unwrap();
+    let accounts = Accounts::parse(&secret_line("dev", COLON_PASSWORD)).unwrap();
     let developer = Developer::new(&developer_config(dir.path()), accounts);
 
-    let header = basic("dev", "pass:with:colons");
+    let header = basic("dev", COLON_PASSWORD);
 
     assert!(developer.authorize(Some(&header)).is_ok());
 }
@@ -179,17 +180,21 @@ fn a_secret_that_names_no_usable_account_is_refused() {
 #[test]
 fn a_username_is_a_persons_name_as_written() {
     let dir = tempfile::tempdir().unwrap();
-    let accounts = Accounts::parse("JaneDoe = \"s3cret\"").expect("a bare key needs no quotes");
+    let accounts = Accounts::parse(&secret_line(MIXED_CASE_USER, DEVELOPER_PASSWORD))
+        .expect("a bare key needs no quotes");
     let developer = Developer::new(&developer_config(dir.path()), accounts);
 
     assert!(
         developer
-            .authorize(Some(&basic("JaneDoe", "s3cret")))
+            .authorize(Some(&basic(MIXED_CASE_USER, DEVELOPER_PASSWORD)))
             .is_ok()
     );
     assert!(
         developer
-            .authorize(Some(&basic("janedoe", "s3cret")))
+            .authorize(Some(&basic(
+                &MIXED_CASE_USER.to_lowercase(),
+                DEVELOPER_PASSWORD
+            )))
             .is_err(),
         "the digest is over the bytes, so the case is part of the credential"
     );
