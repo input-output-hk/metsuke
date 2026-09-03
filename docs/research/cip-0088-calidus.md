@@ -44,10 +44,10 @@ Source: https://cips.cardano.org/cip/CIP-0151
 - **Signing payload (v2 change)**: v2 signs a `blake2b-256` of the payload
   object rather than the payload itself, chosen for hardware-wallet
   compatibility. Fields must be in numeric index order for deterministic
-  hashing. The CIP text says the hash is over the payload's hex; cardano-signer
-  hashes the CBOR bytes, which is what the recordings under
-  crates/metsuke-server/tests/fixtures/calidus carry and what the server
-  follows.
+  hashing. The CIP text says the hash is over the payload's hex, and
+  cardano-signer hashes the CBOR bytes. Which of the two a verifier has to
+  follow is unsettled here, and nothing in this repository implements either:
+  whatever does will need recordings off a real registration to settle it.
 - **Witness formats (v2)**:
   - Simple witness: `[witnessType, pubKeyBytes, sigBytes]`.
   - COSE witness (hardware wallets): CIP-0008/CIP-30 `COSE_Key` +
