@@ -7,9 +7,9 @@
 <h1>metsuke</h1>
 
 <p>metsuke is a small agent you run beside cardano-node. It reads your node's
-Prometheus endpoint over loopback, collects the trace lines you select, and
-sends this server a signed submission. It never opens your node socket, and it
-reads one key, the signing key you point it at.</p>
+Prometheus endpoint over loopback, collects the trace lines it has been
+configured for, and sends this server a signed submission. It never opens your
+node socket, and it reads only the signing key you point it at.</p>
 
 <p class="note">This assumes your pool is already in the rewards program, with
 your application code in your pool registration's metadata. Submissions are
@@ -17,16 +17,15 @@ refused until it is. <a href="{{DETAILS_PATH}}#code">What that means</a>.</p>
 
 <h2>Try it</h2>
 
-<p>Four commands. Nothing is installed, and it all stops when you press
-Ctrl-C.</p>
+<p>Nothing is installed, and it all stops when you press Ctrl-C.</p>
 
-<pre>nix build {{flake}}#metsuke-static-x86_64-linux
+<pre>{{try_fetch}}
 curl -O {{files_url}}config.pipe.toml
 
 # Update your pool id
 $EDITOR config.pipe.toml
 
-cardano-node run ... | ./result/bin/metsuke --config config.pipe.toml --signing-key bls.skey</pre>
+cardano-node run ... | {{try_agent}} --config config.pipe.toml --signing-key bls.skey</pre>
 
 <p>That is the whole agent. Your node's output passes through it unchanged. You
 should see:</p>
@@ -96,8 +95,9 @@ at boot and nothing restarts it, so it is primarily for quick debugging.</p>
 <pre>{{install}}</pre>
 
 <p>One static binary, nothing to link against. On ARM it is
-<code>metsuke-static-aarch64-linux</code>. There is no install script and no
-self-update. On NixOS,
+<code>metsuke-static-aarch64-linux</code>. Either can be built rather than
+downloaded, with <code>nix build {{flake}}#metsuke-static-x86_64-linux</code>.
+There is no install script and no self-update. On NixOS,
 <a href="{{DETAILS_PATH}}#nixos">import the module instead</a> and skip the rest
 of this page.</p>
 

@@ -164,7 +164,7 @@ fn install(offered: &[File], files_url: &str, binary: &str) -> String {
     // One architecture, not both: an operator has one. The other is named in
     // the prose beside this block, which reads the same either way.
     let name = BINARIES[0];
-    let lines = match offered.iter().any(|file| file.name == name) {
+    let lines = match offers_a_build(offered) {
         true => vec![
             "# Download the build for your architecture".to_string(),
             format!("curl -O {files_url}{name}"),
@@ -181,6 +181,32 @@ fn install(offered: &[File], files_url: &str, binary: &str) -> String {
         ],
     };
     escape(&lines.join("\n"))
+}
+
+/// Whether this deployment hands out an agent, which decides how both the
+/// try-it and the install step tell an operator to get one.
+fn offers_a_build(offered: &[File]) -> bool {
+    offered.iter().any(|file| file.name == BINARIES[0])
+}
+
+/// How the try-it gets an agent, and what it then runs. Two values rather than
+/// one block, because the rest of that snippet is the same either way and reads
+/// better in the template than in a string here.
+///
+/// A downloaded file arrives without its execute bit, so the download path
+/// carries the `chmod` and the nix one does not.
+fn try_it(offered: &[File], files_url: &str) -> (String, String) {
+    let name = BINARIES[0];
+    match offers_a_build(offered) {
+        true => (
+            escape(&format!("curl -O {files_url}{name}\nchmod +x {name}")),
+            escape(&format!("./{name}")),
+        ),
+        false => (
+            escape(&format!("nix build {}#{name}", flake_ref())),
+            "./result/bin/metsuke".to_string(),
+        ),
+    }
 }
 
 /// A shipped config with its upload URL pointed at this deployment, so the only
@@ -207,6 +233,7 @@ pub fn quickstart(unit: &str, public_url: &url::Url, offered: &[File]) -> String
         .join(FILES_PREFIX)
         .expect("the files prefix joins onto an absolute URL");
     let binary = exec_start(unit, ExecStartField::Binary);
+    let (try_fetch, try_agent) = try_it(offered, files.as_str());
     fill(
         QUICKSTART,
         &[
@@ -220,6 +247,8 @@ pub fn quickstart(unit: &str, public_url: &url::Url, offered: &[File]) -> String
             // somewhere other than the browser that rendered the link.
             ("files_url", escape(files.as_str())),
             ("journal", escape(JOURNAL.trim_end())),
+            ("try_fetch", try_fetch),
+            ("try_agent", try_agent),
             // The binary path reaches the page inside this block and nowhere
             // else on the quickstart, so it is not a value of its own here.
             ("install", install(offered, files.as_str(), &binary)),
@@ -228,6 +257,8 @@ pub fn quickstart(unit: &str, public_url: &url::Url, offered: &[File]) -> String
                 escape(&exec_start(unit, ExecStartField::Config)),
             ),
             ("key_path", escape(&credential_source(unit))),
+            // Named in the prose beside the install step, as the alternative to
+            // downloading one, and nowhere else on this page.
             ("flake", escape(&flake_ref())),
         ],
     )
@@ -254,11 +285,7 @@ pub fn details(config_example: &str) -> String {
             ("backend", escape(&metrics.backend_config())),
             ("traces", escape(&trace_config())),
             ("metrics_url", escape(metrics.url())),
-            ("config_example", escape(config_example.trim_end())),
-            ("pipe_config", escape(CONFIG_PIPE.trim_end())),
-            ("pipe_dropin", escape(PIPE_DROPIN.trim_end())),
-            ("journald_config", escape(CONFIG_JOURNALD.trim_end())),
-            ("journald_unit", escape(UNIT_JOURNALD.trim_end())),
+            ("FILES_PREFIX", FILES_PREFIX.to_string()),
             ("binary", escape(&exec_start(UNIT, ExecStartField::Binary))),
             (
                 "config_path",

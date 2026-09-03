@@ -88,8 +88,8 @@ reporting host, which is what the other choice comes to.</p>
 reason to prefer it. If you use one it has to hash to the <code>pool_id</code>
 in your config, or the agent refuses to start.</p>
 
-<p>The agent reads either as a cardano-cli TextEnvelope file, the
-<code>bls.skey</code> or <code>pool.skey</code> you already have.</p>
+<p>The agent reads the <code>bls.skey</code> or <code>pool.skey</code> you
+already have.</p>
 
 <h2>The node's metrics endpoint</h2>
 
@@ -157,13 +157,8 @@ unchanged, so whatever read the node's output before still reads it.</p>
 this a change to the node's unit, and systemd has no pipelines, so the command
 is wrapped in a shell. This drop-in is the shape, and the empty
 <code>ExecStart=</code> is what clears the command the node's unit already
-had:</p>
-
-<pre>{{pipe_dropin}}</pre>
-
-<p>The configuration beside it:</p>
-
-<pre>{{pipe_config}}</pre>
+had: <a href="{{FILES_PREFIX}}node-pipe.conf">node-pipe.conf</a>, with
+<a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a> beside it.</p>
 
 <p>Wherever your node's command lives rather than in a unit, the pipeline goes
 there instead. A shell or a terminal writes it as it stands. Written around the
@@ -212,21 +207,18 @@ would get <code>/dev/null</code> for stdin and respawn forever on the EOF.</p>
 membership of the <code>systemd-journal</code> group, which reads every unit's
 journal on the host and is the one privilege it holds beyond scraping loopback.
 Two directives are the whole difference from the quickstart's unit, and
-journalctl needs both:</p>
+journalctl needs both:
+<a href="{{FILES_PREFIX}}metsuke-journald.service">metsuke-journald.service</a>,
+with <a href="{{FILES_PREFIX}}config.journald.toml">config.journald.toml</a>
+beside it.</p>
 
-<pre>{{journald_unit}}</pre>
-
-<p>The configuration beside it, which is the one place the agent cannot guess
-anything: neither your node's unit name nor where journalctl lives on your
-distribution.</p>
-
-<pre>{{journald_config}}</pre>
+<p>That config is the one place the agent cannot guess anything: neither your
+node's unit name nor where journalctl lives on your distribution.</p>
 
 <h2>Every setting</h2>
 
 <p>The quickstart ships the values that have to be set and leaves the rest at
-their defaults. This is the annotated form of the same file, with every default
-written out. Its comments are pinned to the code, so a value here is a value the
-agent ships.</p>
-
-<pre>{{config_example}}</pre>
+their defaults.
+<a href="{{FILES_PREFIX}}config.example.toml">config.example.toml</a> is the
+annotated form of the same file, with every default written out. Its comments
+are pinned to the code, so a value there is a value the agent ships.</p>

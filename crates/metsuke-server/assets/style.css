@@ -15,6 +15,9 @@
   --code-bg: #f6f8fa;
   --code-fg: #393a34;
   --inline-bg: #f6f7f8;
+  /* The site's own light-weight shadow, which is what lifts a code block off a
+     background it is only a shade away from. */
+  --shadow: 0 1px 2px 0 #0000001a;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -31,6 +34,7 @@
     --code-bg: #ffffff1a;
     --code-fg: inherit;
     --inline-bg: #ffffff1a;
+    --shadow: 0 1px 1px #0003;
   }
 }
 
@@ -73,6 +77,8 @@ a {
 pre {
   overflow-x: auto;
   background: var(--code-bg);
+  border: 1px solid var(--rule);
+  box-shadow: var(--shadow);
   color: var(--code-fg);
   border-radius: 0.4rem;
   padding: 1rem;
@@ -84,6 +90,7 @@ pre {
 
 code {
   background: var(--inline-bg);
+  border: 1px solid var(--rule);
   border-radius: 0.4rem;
   padding: 0.1rem;
   font-size: 90%;
@@ -93,6 +100,7 @@ code {
 
 pre code {
   background: none;
+  border: none;
   padding: 0;
   font-size: inherit;
 }

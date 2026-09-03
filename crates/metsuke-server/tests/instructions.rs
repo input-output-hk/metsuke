@@ -267,6 +267,33 @@ fn every_served_file_is_the_shipped_one() {
     }
 }
 
+/// Where a deployment ships builds, every place the page hands an operator an
+/// agent offers one. The try-it is the first of those and was for a while the
+/// last to know, which is the shape of mistake this catches.
+#[test]
+fn a_deployment_that_ships_agent_builds_offers_them_everywhere() {
+    let quickstart = instructions::pages(&public_url(), support::test_binaries()).quickstart;
+    let downloads = quickstart
+        .matches(&format!(
+            "{}{}",
+            instructions::FILES_PREFIX,
+            instructions::BINARIES[0]
+        ))
+        .count();
+    assert!(
+        downloads >= 2,
+        "a page offering builds names one {downloads} times: the try-it and the \
+         install step are both places an operator gets the agent"
+    );
+    // Building is still named, as the alternative and as the answer on an
+    // architecture this deployment has no binary for. What must not survive is
+    // a command block that hands an operator no download at all.
+    assert!(
+        quickstart.contains("nix build"),
+        "the page never mentions building one instead"
+    );
+}
+
 /// A deployment that ships no agent build serves none, and its page cannot then
 /// offer one: the install step tells an operator to build instead.
 #[test]
@@ -337,28 +364,24 @@ fn the_shipped_config_and_unit_are_carried_whole() {
         ),
         "the quickstart does not carry the recorded journal lines whole"
     );
-    for linked in [
-        include_str!("../../../contrib/config.journald.toml"),
-        include_str!("../../../contrib/metsuke-journald.service"),
-    ] {
-        assert!(
-            !carried(&pages.quickstart, linked),
-            "the quickstart prints a file it should be linking"
-        );
-    }
-    // Every other file an operator can end up needing. A pair named on the
-    // details page and not carried there is one they have to go and find.
+    // Neither page prints a file it could link. Printing one costs an operator
+    // a browser selection instead of a download, and costs every other reader
+    // the length of it.
     for shipped in [
         include_str!("../../../contrib/config.example.toml"),
+        include_str!("../../../contrib/config.minimal.toml"),
         include_str!("../../../contrib/config.pipe.toml"),
         include_str!("../../../contrib/node-pipe.conf"),
         include_str!("../../../contrib/config.journald.toml"),
+        include_str!("../../../contrib/metsuke.service"),
         include_str!("../../../contrib/metsuke-journald.service"),
     ] {
-        assert!(
-            carried(&pages.details, shipped),
-            "the details page does not carry a shipped file whole"
-        );
+        for page in [&pages.quickstart, &pages.details] {
+            assert!(
+                !carried(page, shipped),
+                "a page prints a file it should be linking"
+            );
+        }
     }
 }
 
@@ -631,20 +654,19 @@ fn the_installed_paths_come_from_the_shipped_unit() {
 /// swallow the rest of a step.
 #[test]
 fn shipped_text_is_escaped_into_the_page() {
-    for page in [
-        // The quickstart carries no config, so its shipped text is the unit's
-        // paths and the recorded journal lines.
-        instructions::quickstart(
-            &instructions::UNIT.replace("/usr/local/bin/metsuke", "<b>a&b</b>"),
-            &public_url(),
-            &[],
-        ),
-        // The same needle in both, so one assertion covers each page's own
-        // shipped text. No spaces in it: `exec_start` reads the binary out of
-        // ExecStart by word, so a spaced one would only reach the page in part.
-        instructions::details(&instructions::CONFIG_EXAMPLE.replace("pool1CHANGEME", "<b>a&b</b>")),
-    ] {
-        assert!(page.contains("&lt;b&gt;a&amp;b&lt;/b&gt;"));
-        assert!(!page.contains("<b>"));
-    }
+    // The quickstart, because it is the page that still takes a shipped file
+    // and puts its text on screen: the unit's own paths. The details page links
+    // every file it names now, so what it renders is generated rather than
+    // read, and there is no shipped text left there to smuggle a tag in.
+    //
+    // No spaces in the needle: `exec_start` reads the binary out of ExecStart by
+    // word, so a spaced one would only ever reach the page in part.
+    let page = instructions::quickstart(
+        &instructions::UNIT.replace("/usr/local/bin/metsuke", "<b>a&b</b>"),
+        &public_url(),
+        &[],
+    );
+
+    assert!(page.contains("&lt;b&gt;a&amp;b&lt;/b&gt;"));
+    assert!(!page.contains("<b>"));
 }
