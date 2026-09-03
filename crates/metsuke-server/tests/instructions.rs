@@ -31,7 +31,7 @@ const QUICKSTART_SECTIONS: [&str; 6] = [
 
 /// What the quickstart leaves out. Each one is a question the steps raise and
 /// do not answer, in the order they raise it.
-const DETAILS_SECTIONS: [&str; 8] = [
+const DETAILS_SECTIONS: [&str; 9] = [
     "Your application code on chain",
     "On NixOS",
     "What leaves your machine",
@@ -40,7 +40,43 @@ const DETAILS_SECTIONS: [&str; 8] = [
     "What the node has to emit for trace lines",
     "The pipe",
     "The journal",
+    "Reading further",
 ];
+
+/// Every document the details page links, as the path under the repository
+/// root that its URL ends in. A link to a file that has been renamed is a 404
+/// an operator meets, and nothing else here would catch it: the page is
+/// rendered from a template and the files live outside this crate.
+#[test]
+fn every_document_the_details_page_links_is_in_the_repository() {
+    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..");
+    let mut linked = 0;
+    // A file link and a listing link are different URLs on GitHub, and both
+    // have to resolve to what they claim to be.
+    for (prefix, is_a_file) in [("/blob/main/", true), ("/tree/main/", false)] {
+        for after in pages.details.split(prefix).skip(1) {
+            let path = after
+                .split('"')
+                .next()
+                .expect("a split yields a first piece");
+            let linked_to = root.join(path);
+            assert_eq!(
+                linked_to.is_file(),
+                is_a_file,
+                "the details page links {path:?} under {prefix}, which is not what it is"
+            );
+            assert!(
+                linked_to.exists(),
+                "the details page links {path:?}, which is not in this repository"
+            );
+            linked += 1;
+        }
+    }
+    assert!(linked > 0, "the details page links no documents at all");
+}
 
 #[test]
 fn every_outline_section_is_present_and_in_order() {

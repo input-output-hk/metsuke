@@ -281,6 +281,8 @@ pub fn details(config_example: &str) -> String {
             ("METADATA_LABEL", METADATA_LABEL.to_string()),
             ("metadata", escape(&metadata_json())),
             ("flake", escape(&flake_ref())),
+            ("DOCS_PREFIX", docs_prefix()),
+            ("REPOSITORY", env!("CARGO_PKG_REPOSITORY").to_string()),
             ("envelope", escape(&example_envelope())),
             ("reasons", failure_reasons()),
             ("backend", escape(&metrics.backend_config())),
@@ -457,6 +459,15 @@ fn credential_source(unit: &str) -> String {
         .expect("the shipped unit loads the signing key as a credential")
         .1
         .to_string()
+}
+
+/// Where a document the details page links is read: the manifest's URL and
+/// the default branch, so a link stays right as the file changes.
+fn docs_prefix() -> String {
+    format!(
+        "{}/blob/main/",
+        env!("CARGO_PKG_REPOSITORY").trim_end_matches('/')
+    )
 }
 
 /// How the repository is named to `nix build`. The manifest holds the browser

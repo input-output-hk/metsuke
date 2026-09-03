@@ -267,3 +267,36 @@ their defaults.
 <a href="{{FILES_PREFIX}}config.example.toml">config.example.toml</a> is the
 annotated form of the same file, with every default written out. Its comments
 are pinned to the code, so a value there is a value the agent ships.</p>
+
+<h2 id="reading">Reading further</h2>
+
+<p>The agent and this server are
+<a href="{{REPOSITORY}}">one repository</a>, and its
+<a href="{{DOCS_PREFIX}}README.md">README</a> is what metsuke is and which
+crate does what. Everything a decision here rests on is written down as an
+accepted decision rather than left in the code:</p>
+
+<ul>
+<li><a href="{{DOCS_PREFIX}}docs/adr/0007-agent-reads-only-loopback-prometheus.md">ADR
+0007</a>, why the agent scrapes loopback and nothing else, which is what puts it
+on your node host.</li>
+<li><a href="{{DOCS_PREFIX}}docs/adr/0010-log-based-trace-collection.md">ADR
+0010</a>, the two trace sources and what each costs in privilege. The journal
+row's group is decided here.</li>
+<li><a href="{{DOCS_PREFIX}}docs/adr/0011-leios-key-submissions.md">ADR
+0011</a>, how a Leios key speaks for your pool, and what the key roster is.</li>
+<li><a href="{{DOCS_PREFIX}}docs/adr/0004-client-spool-is-the-durability-layer.md">ADR
+0004</a>, why the spool is the only place a scrape is kept, and what an
+unreachable server costs you.</li>
+<li><a href="{{DOCS_PREFIX}}docs/adr/0001-raw-ed25519-detached-signature.md">ADR
+0001</a>, the signature over a submission, in the shape shown above.</li>
+<li><a href="{{DOCS_PREFIX}}docs/adr/0005-archive-raw-signed-bytes.md">ADR
+0005</a>, what the archive keeps of what you send, which is the bytes you
+signed and nothing derived from them.</li>
+<li><a href="{{DOCS_PREFIX}}docs/reading-the-archive.md">Reading the
+archive</a>, how your submissions are read back on the other side. Written for
+the developers processing this data rather than for you, which is what makes it
+the account of what your lines are used for.</li>
+<li><a href="{{REPOSITORY}}/tree/main/docs/adr">The other decisions</a>, as
+the directory they sit in.</li>
+</ul>
