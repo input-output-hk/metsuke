@@ -13,33 +13,34 @@ reads one key, the signing key you point it at.</p>
 
 <p class="note">This assumes your pool is already in the rewards program, with
 your application code in your pool registration's metadata. Submissions are
-refused until it is, whatever key signs them.
-<a href="{{DETAILS_PATH}}#code">What that means</a>.</p>
+refused until it is. <a href="{{DETAILS_PATH}}#code">What that means</a>.</p>
 
 <h2>Try it</h2>
 
-<p>Four commands, one of them yours. Nothing is installed, and it all stops when
-you press Ctrl-C.</p>
+<p>Four commands. Nothing is installed, and it all stops when you press
+Ctrl-C.</p>
 
 <pre>nix build {{flake}}#metsuke-static-x86_64-linux
 curl -O {{files_url}}config.pipe.toml
-$EDITOR config.pipe.toml                     # one line: your pool id
 
-cardano-node run ... | ./result/bin/metsuke --config config.pipe.toml --signing-key pool.skey</pre>
+# Update your pool id
+$EDITOR config.pipe.toml
 
-<p>That is the whole agent. Your node's output passes through it unchanged, so
-whatever read that output before still does. You should see:</p>
+cardano-node run ... | ./result/bin/metsuke --config config.pipe.toml --signing-key bls.skey</pre>
+
+<p>That is the whole agent. Your node's output passes through it unchanged. You
+should see:</p>
 
 <pre>{{journal}}</pre>
 
 <p>The config already points at this server, and its metrics URL is the port
 most nodes already serve Prometheus on. If yours is elsewhere, that is the
-second line to change.</p>
+second line to change in the config file.</p>
 
 <h2>How you'll run it for real</h2>
 
-<p>Three shapes, and what each costs. Everything below is the same four steps
-whichever row you take; only the two filenames change.</p>
+<p>The shapes, and what each costs. Everything below is the same four steps
+whichever row you take; only the filenames change.</p>
 
 <table>
 <tr>
@@ -49,36 +50,46 @@ whichever row you take; only the two filenames change.</p>
   <td>the node's journal
   <td><code>systemd-journal</code>, which reads every unit's journal on the host
   <td>on its own
-  <td><a href="{{FILES_PREFIX}}config.journald.toml">config.journald.toml</a><br>
-      <a href="{{FILES_PREFIX}}metsuke-journald.service">metsuke-journald.service</a>
+  <td><div class="file"><a href="{{FILES_PREFIX}}config.journald.toml">config.journald.toml</a></div>
+      <div class="file"><a href="{{FILES_PREFIX}}metsuke-journald.service">metsuke-journald.service</a></div>
 <tr>
   <td><strong>Your node's unit</strong><br><span class="note">a drop-in</span>
   <td>the node's stdout
   <td>none
   <td>with the node
-  <td><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a><br>
-      <a href="{{FILES_PREFIX}}node-pipe.conf">node-pipe.conf</a>
+  <td><div class="file"><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a></div>
+      <div class="file"><a href="{{FILES_PREFIX}}node-pipe.conf">node-pipe.conf</a></div>
 <tr>
   <td><strong>A container</strong><br><span class="note">no systemd</span>
   <td>the node's stdout
   <td>none
   <td>with the node
-  <td><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a><br>
-      <span class="note">your own entrypoint</span>
+  <td><div class="file"><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a></div>
+      <div class="file note">your own entrypoint</div>
 <tr>
   <td><strong>Metrics only</strong><br><span class="note">fallback</span>
   <td>nothing
   <td>none
   <td>on its own
-  <td><a href="{{FILES_PREFIX}}config.minimal.toml">config.minimal.toml</a><br>
-      <a href="{{FILES_PREFIX}}metsuke.service">metsuke.service</a>
+  <td><div class="file"><a href="{{FILES_PREFIX}}config.minimal.toml">config.minimal.toml</a></div>
+      <div class="file"><a href="{{FILES_PREFIX}}metsuke.service">metsuke.service</a></div>
+<tr>
+  <td><strong>A shell</strong><br><span class="note">debugging</span>
+  <td>the node's stdout
+  <td>none
+  <td>not at all
+  <td><div class="file"><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a></div>
 </table>
 
 <p>The first row is what most pools want: the agent restarts without touching
 your node, and the group is the cost. The second gives up nothing in privilege
 but ties the agent's lifecycle to your node's, so restarting the agent restarts
-your node. The last row collects no trace lines and is where to fall back if
-collection is giving you trouble; the program wants them.</p>
+your node.</p>
+
+<p>The last two are fallbacks rather than places to stay. Metrics only collects
+no trace lines, which the program wants, and is where to drop back to if
+collection is giving you trouble. A shell is the try-it above: nothing starts it
+at boot and nothing restarts it, so it is primarily for quick debugging.</p>
 
 <h2>1. Install the agent</h2>
 
@@ -95,14 +106,22 @@ of this page.</p>
 <p>Take the config your row names, set your pool id, and put your signing key
 where the unit will look for it:</p>
 
-<pre>sudo curl -o {{config_path}} {{files_url}}config.journald.toml
-sudo $EDITOR {{config_path}}                 # one line: your pool id
-sudo install -m 0400 -o root -g root pool.skey {{key_path}}</pre>
+<pre># Download the config your row names, the journald shape here
+sudo curl -o {{config_path}} {{files_url}}config.journald.toml
 
-<p>The unit hands that key over as a credential, so the service never reads the
-file itself and it stays unreadable to everything else. Either your cold key or
-your Leios key works;
-<a href="{{DETAILS_PATH}}#keys">which one to use</a> is worth two minutes.</p>
+# Update your pool id
+sudo $EDITOR {{config_path}}
+
+# Install your signing key, readable by root alone
+sudo install -m 0400 -o root -g root bls.skey {{key_path}}</pre>
+
+<p>Those permissions are for the systemd shapes, where the unit hands the key
+over as a credential and the service never reads the file itself. From a shell
+or a container you point <code>--signing-key</code> at your own copy instead.</p>
+
+<p>Both your Leios key and your cold key work; use your
+<strong>Leios key</strong>.
+<a href="{{DETAILS_PATH}}#keys">Why</a>.</p>
 
 <p>Your node also has to emit the trace lines in the first place, which is
 <a href="{{DETAILS_PATH}}#traces">one merge into its configuration</a>. Skip that
@@ -110,12 +129,16 @@ and metrics still arrive, but no trace lines ever will.</p>
 
 <h2>3. Run it</h2>
 
-<pre>sudo curl -o /etc/systemd/system/metsuke.service {{files_url}}metsuke-journald.service
+<pre># Download the unit your row names, the journald shape here
+sudo curl -o /etc/systemd/system/metsuke.service {{files_url}}metsuke-journald.service
+
+# Start it now, and on every boot
 sudo systemctl daemon-reload
 sudo systemctl enable --now metsuke</pre>
 
 <p>If you took the pipe row instead, there is no unit of its own:
-<a href="{{DETAILS_PATH}}#pipe">the drop-in goes on your node's unit</a>.</p>
+<a href="{{DETAILS_PATH}}#pipe">the drop-in goes on your node's unit</a>, or the
+pipeline goes in your container's entrypoint.</p>
 
 <h2>4. Check it</h2>
 
@@ -129,8 +152,8 @@ and the scrapes stay spooled, so nothing is lost while you fix it.</p>
 <h2>Staying up to date</h2>
 
 <p>This server was built against agent {{CLIENT_VERSION}} and tells every agent
-that uploads to it which version that is. Yours logs a warning when it is older.
-To update, repeat step 1 and restart:</p>
+that uploads to it which version that is. The agent logs a warning when it is
+older. To update, repeat step 1 and restart:</p>
 
 <pre>sudo systemctl restart metsuke</pre>
 

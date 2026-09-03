@@ -20,16 +20,15 @@ be in your pool registration transaction's metadata, under label
 
 <p>Only your cold key can sign a pool registration, so the two matching is what
 shows the application came from you. Until they match, this server refuses your
-submissions whatever key signs them. This is program registration rather than
-agent setup, so it is normally done before you reach the quickstart.</p>
+submissions regardless of what key signs them. This is program registration
+rather than agent setup, so it is normally done before you reach the
+quickstart.</p>
 
 <h2 id="nixos">On NixOS</h2>
 
 <p>Add <code>{{flake}}</code> as a flake input and import its
 <code>nixosModules.metsuke</code>. That writes the configuration and the unit
-for you, including the two directives the journal source needs, so the
-quickstart's steps are a description of what the module does rather than
-something to follow.</p>
+for you, including the two directives the journal source needs.</p>
 
 <h2>What leaves your machine</h2>
 
@@ -80,26 +79,17 @@ for it.</p>
 
 <h2 id="keys">Which key signs</h2>
 
-<p>Either of your pool's keys may sign submissions, and the choice is about what
-has to sit on the machine running the agent.</p>
+<p><strong>Use your Leios key.</strong> Your node already forges and votes with
+it, so it is already on the machine the agent runs on and nothing new has to be
+put there. Signing telemetry is a poor reason to move a cold key onto a
+reporting host, which is what the other choice comes to.</p>
 
-<p>Your <strong>cold key</strong> settles it alone. A pool id is the hash of its
-verification key, so the key that signs is what says which pool a submission is
-for, and nothing has to be looked up or believed. The cost is that the cold key
-has to be on the reporting machine.</p>
-
-<p>Your <strong>Leios key</strong>, the one your node forges and votes with,
-signs just as well but names no pool, so this server looks it up in the key
-roster it is given. That keeps your cold key off the reporting machine, which is
-the reason to prefer it. The cost is that such a submission can only be checked
-against a roster that was current when it arrived.</p>
+<p>A cold key does work and this server accepts it, so it is there if you have a
+reason to prefer it. If you use one it has to hash to the <code>pool_id</code>
+in your config, or the agent refuses to start.</p>
 
 <p>The agent reads either as a cardano-cli TextEnvelope file, the
-<code>pool.skey</code> or <code>bls.skey</code> you already have. A cold key has
-to hash to the <code>pool_id</code> you configured or the agent refuses to
-start, which is the same check this server makes on every submission. A Leios
-key hashes to nothing, so nothing is checked at startup and the first you would
-hear of the wrong one is a refusal here.</p>
+<code>bls.skey</code> or <code>pool.skey</code> you already have.</p>
 
 <h2>The node's metrics endpoint</h2>
 
@@ -176,11 +166,42 @@ had:</p>
 <pre>{{pipe_config}}</pre>
 
 <p>Wherever your node's command lives rather than in a unit, the pipeline goes
-there instead. A shell or a terminal writes it as it stands. In a container it
-goes inside, as the entrypoint, with the agent's binary and configuration in the
-image beside the node; written around the command that starts the container it
-only works while that command stays attached, since a detached one prints an id
-rather than the node's output.</p>
+there instead. A shell or a terminal writes it as it stands. Written around the
+command that starts a container it only works while that command stays attached,
+since a detached one prints an id rather than the node's output, so in a
+container the pipeline has to go inside, as the entrypoint.</p>
+
+<p>The agent is a static binary, which is what makes that cheap: it needs no
+image of its own and nothing in the node's image has to match it. Mount it in
+beside the node. Against the MusashiNet node image, with the two pieces you
+supply marked:</p>
+
+<pre>docker run -d --name leios-relay --init \
+  -p 3010:3010 \
+  -v "$WORKING_DIR:/data" \
+  -v "$WORKING_DIR/config:/app/config:ro" \
+  -v /usr/local/bin/metsuke:/usr/local/bin/metsuke:ro \
+  -v /etc/metsuke:/etc/metsuke:ro \
+  -v metsuke-spool:/var/lib/metsuke \
+  --entrypoint /bin/sh \
+  ghcr.io/input-output-hk/ouroboros-leios/cardano-node-testnet:THE-TAG-THE-TESTNET-DOCS-PIN \
+  -c 'THE-COMMAND-THIS-IMAGE-ALREADY-RUNS | /usr/local/bin/metsuke \
+        --config /etc/metsuke/config.toml \
+        --signing-key /etc/metsuke/bls.skey'</pre>
+
+<p><code>docker inspect</code> prints the entrypoint and command the image ships,
+which is what the second placeholder stands for. The first three mounts and the
+port are the testnet documentation's own; the rest are the agent's.</p>
+
+<p><strong>Keep <code>--init</code>.</strong> A shell running a pipeline as PID 1
+does not pass SIGTERM on to what it started, so without an init the runtime waits
+out the stop timeout and kills the node instead of letting it close its
+databases. That is a slow replay on the next start, and on a block producer it is
+the expensive kind of mistake.</p>
+
+<p>The spool volume is what makes a restart cheap rather than lossy, and
+<code>metrics_url</code> needs no change: the agent is in the node's network
+namespace, so the node's loopback is its own.</p>
 
 <p>The NixOS module does not render this shape. An agent it started on its own
 would get <code>/dev/null</code> for stdin and respawn forever on the EOF.</p>
