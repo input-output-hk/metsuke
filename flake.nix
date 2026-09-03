@@ -134,6 +134,7 @@
             ".http"
             ".svg"
             ".html"
+            ".css"
           ];
           cratesDir = "${toString ./crates}/";
           # The shipped config and unit, which both crates compile in whole:

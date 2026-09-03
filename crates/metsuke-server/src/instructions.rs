@@ -42,6 +42,9 @@ pub const ICON_CONTENT_TYPE: &str = "image/svg+xml";
 const QUICKSTART: &str = include_str!("../assets/quickstart.html");
 const DETAILS: &str = include_str!("../assets/details.html");
 
+/// Shared by both, so the two documents cannot drift apart visually.
+const STYLE: &str = include_str!("../assets/style.css");
+
 /// The shipped agent configurations, one per log source. Their required values
 /// are tied to the code's defaults by `crates/metsuke/tests/config.rs`, which
 /// is also what pins the example's commented ones.
@@ -147,6 +150,7 @@ pub fn quickstart(unit: &str, public_url: &url::Url) -> String {
         &[
             ("ICON_PATH", ICON_PATH.to_string()),
             ("ICON_CONTENT_TYPE", ICON_CONTENT_TYPE.to_string()),
+            ("style", STYLE.trim_end().to_string()),
             ("DETAILS_PATH", DETAILS_PATH.to_string()),
             ("FILES_PREFIX", FILES_PREFIX.to_string()),
             ("CLIENT_VERSION", CLIENT_VERSION.to_string()),
@@ -174,6 +178,7 @@ pub fn details(config_example: &str) -> String {
         &[
             ("ICON_PATH", ICON_PATH.to_string()),
             ("ICON_CONTENT_TYPE", ICON_CONTENT_TYPE.to_string()),
+            ("style", STYLE.trim_end().to_string()),
             ("PATH", PATH.to_string()),
             ("HEADER_VKEY", HEADER_VKEY.to_string()),
             ("HEADER_SIGNATURE", HEADER_SIGNATURE.to_string()),

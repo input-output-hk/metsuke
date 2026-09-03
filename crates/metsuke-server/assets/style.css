@@ -1,0 +1,127 @@
+/* Both pages, filled into each as {{style}}. The palette is the MusashiNet
+   documentation site's, so an operator sent here from it does not arrive
+   somewhere that looks unrelated. Light and dark both, because the page is as
+   likely to be read at a terminal as in a browser someone has themed. */
+:root {
+  --bg: #f8f6fa;
+  --panel: #f1edf5;
+  --fg: #1f2937;
+  --muted: #4b5563;
+  --rule: #e5e7eb;
+  --accent: #c219ff;
+  --link: #0d9488;
+  /* The site's own code colours: a Prism light theme on the page background,
+     and inline code on a flat tint of it. */
+  --code-bg: #f6f8fa;
+  --code-fg: #393a34;
+  --inline-bg: #f6f7f8;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #150420;
+    --panel: #200830;
+    --fg: #ffffffe6;
+    --muted: #8b8190;
+    --rule: #3d1259;
+    --accent: #c219ff;
+    --link: #6effd1;
+    /* Dark has no Prism theme of its own there: code sits on a tenth of white
+       over the purple, and takes the body colour. */
+    --code-bg: #ffffff1a;
+    --code-fg: inherit;
+    --inline-bg: #ffffff1a;
+  }
+}
+
+body {
+  /* The documentation site's own container is 1140px. Held a little under it
+     here because this page has no sidebar eating the difference, and a prose
+     line the full width of that container is a hard one to track back. */
+  max-width: 60em;
+  margin: 2em auto;
+  padding: 0 1em;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Ubuntu, Cantarell,
+    "Noto Sans", sans-serif;
+  font-size: 100%;
+  line-height: 1.65;
+}
+
+h1,
+h2 {
+  line-height: 1.25;
+  font-weight: 700;
+}
+
+h1 {
+  border-bottom: 2px solid var(--accent);
+  padding-bottom: 0.2em;
+}
+
+h2 {
+  margin-top: 2em;
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 0.2em;
+}
+
+a {
+  color: var(--link);
+}
+
+pre {
+  overflow-x: auto;
+  background: var(--code-bg);
+  color: var(--code-fg);
+  border-radius: 0.4rem;
+  padding: 1rem;
+  line-height: 1.45;
+  font-size: 90%;
+  font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+}
+
+code {
+  background: var(--inline-bg);
+  border-radius: 0.4rem;
+  padding: 0.1rem;
+  font-size: 90%;
+  font-family: SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+    "Courier New", monospace;
+}
+
+pre code {
+  background: none;
+  padding: 0;
+  font-size: inherit;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1em 0;
+}
+
+th,
+td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.5em 0.8em 0.5em 0;
+  border-bottom: 1px solid var(--rule);
+}
+
+th {
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.note {
+  color: var(--muted);
+}
+
+/* One file per line with air between them: run together they read as a single
+   wrapped name rather than as two things to download. */
+.file + .file {
+  margin-top: 0.6em;
+}
