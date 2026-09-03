@@ -297,7 +297,10 @@ fn one_line_per_submission(line: &str) -> u64 {
     lines_per_submission(line, 1)
 }
 
-/// A submission cap that holds exactly `lines` of them.
+/// A submission cap that holds `lines` of them and no more. Half a row of
+/// slack, because the header carries a timestamp whose subsecond digits vary
+/// per run: a cap measured to the byte sometimes holds one line fewer, which
+/// makes what a tick does a coin flip rather than a count.
 fn lines_per_submission(line: &str, lines: u64) -> u64 {
     // The framing is spent before any row is, as tests/delivery.rs measures it.
     // The timestamp carries subsecond digits because `upload_once` stamps with
@@ -313,7 +316,7 @@ fn lines_per_submission(line: &str, lines: u64) -> u64 {
     let row = envelope::PayloadLine::trace_line(&trace_line(line), &test_provenance())
         .unwrap()
         .wire_bytes();
-    framing + lines * row
+    framing + lines * row + row / 2
 }
 
 // The wedge this fixes: a node emits more between ticks than one submission
@@ -367,52 +370,57 @@ async fn one_tick_drains_a_stream_that_outgrew_a_single_submission() {
     );
 }
 
-// And what a tick drains is the backlog, not the stream: a node emitting
-// faster than a submission's round trip would otherwise be chased to the
-// allowance, a request and an object per handful of lines. What is left over
-// is under a submission's worth, so the next tick carries it.
+// And what a tick drains is the backlog it found, not the stream: a node
+// emitting faster than a submission's round trip was chased to the allowance,
+// a request, a counter and an object per handful of lines that arrived while
+// the last one was in flight. The server here appends one as it answers each,
+// which is that node in miniature.
 #[tokio::test]
-async fn a_tick_leaves_what_would_not_fill_a_submission() {
+async fn a_tick_does_not_chase_lines_that_arrive_while_it_runs() {
     let metrics = metrics_server().await;
     let uploads = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/submit"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "latest_version": "0.1.0"
-        })))
-        .mount(&uploads)
-        .await;
     let dir = tempfile::tempdir().unwrap();
     let line = r#"{"ns":"Consensus.LeiosPeer.Msg"}"#;
+    let writing = std::sync::Arc::new(std::sync::Mutex::new(test_log_spool(&dir)));
+    let arriving = std::sync::Arc::clone(&writing);
+    Mock::given(method("POST"))
+        .and(path("/v1/submit"))
+        .respond_with(move |_: &wiremock::Request| {
+            arriving
+                .lock()
+                .expect("no panic holds this lock")
+                .push(&trace_line(line))
+                .expect("the line spools");
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "latest_version": "0.1.0"
+            }))
+        })
+        .mount(&uploads)
+        .await;
     let mut agent = agent_with(
         &dir,
         &metrics,
         &uploads,
-        lines_per_submission(line, 2),
+        lines_per_submission(line, 3),
         shipped_submissions(),
     );
-    let mut spool = test_log_spool(&dir);
     for _ in 0..5 {
-        spool.push(&trace_line(line)).unwrap();
+        writing
+            .lock()
+            .expect("no panic holds this lock")
+            .push(&trace_line(line))
+            .unwrap();
     }
 
-    let (first, second) = tokio::task::spawn_blocking(move || {
-        let first = agent.upload_once().unwrap();
-        let second = agent.upload_once().unwrap();
-        (first, second)
-    })
-    .await
-    .unwrap();
+    let sent = tokio::task::spawn_blocking(move || agent.upload_once().unwrap())
+        .await
+        .unwrap();
 
     assert_eq!(
-        first.iter().map(|one| one.lines).collect::<Vec<_>>(),
-        [2, 2],
-        "a tick sends the full submissions and stops, got {first:?}"
-    );
-    assert_eq!(
-        second.iter().map(|one| one.lines).collect::<Vec<_>>(),
-        [1],
-        "the line left over is the next tick's, got {second:?}"
+        sent.iter().map(|one| one.lines).collect::<Vec<_>>(),
+        [3, 3],
+        "the five spooled leave in two, and what arrived meanwhile waits for \
+         the next tick, got {sent:?}"
     );
 }
 

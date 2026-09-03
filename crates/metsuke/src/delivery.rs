@@ -43,6 +43,10 @@ pub struct SealedSubmission {
     /// (`envelope::payload_digest`).
     pub payload_digest: String,
     rows: SubmissionRows,
+    /// Whether the budget cut this batch off with rows still spooled. What
+    /// the upload loop drains on: a batch that took everything means the
+    /// backlog is gone, and what arrives next is the next tick's.
+    more: bool,
 }
 
 impl SealedSubmission {
@@ -63,6 +67,12 @@ impl SealedSubmission {
             (SubmissionRows::Lines(_), 1) => "trace line",
             (SubmissionRows::Lines(_), _) => "trace lines",
         }
+    }
+
+    /// Whether the budget cut this one off with rows still waiting, which is
+    /// what the upload loop keeps draining on.
+    pub fn more_waits(&self) -> bool {
+        self.more
     }
 }
 
@@ -117,7 +127,11 @@ impl Delivery {
         let rows = self
             .spool
             .outstanding(self.row_budget(now, Payload::scrapes(vec![]))?)?;
-        self.seal_rows(now, rows, Payload::scrapes, SubmissionRows::Scrapes)
+        let more = match rows.last() {
+            Some(last) => self.spool.scrapes_after(last.id)?,
+            None => false,
+        };
+        self.seal_rows(now, rows, more, Payload::scrapes, SubmissionRows::Scrapes)
     }
 
     /// The same for outstanding trace lines.
@@ -128,32 +142,11 @@ impl Delivery {
         let rows = self
             .spool
             .outstanding_lines(self.row_budget(now, Payload::trace_lines(vec![]))?)?;
-        self.seal_rows(now, rows, Payload::trace_lines, SubmissionRows::Lines)
-    }
-
-    /// Whether what a stream still holds would fill a submission on its own.
-    /// What the upload loop drains on: less than this is a remainder, and
-    /// taking it costs a request, a counter and an object to carry what the
-    /// next tick would carry anyway.
-    pub fn scrapes_fill_a_submission(&self, now: OffsetDateTime) -> Result<bool, DeliveryError> {
-        self.fills(self.spool.pending_bytes()?, now, Payload::scrapes(vec![]))
-    }
-
-    pub fn lines_fill_a_submission(&self, now: OffsetDateTime) -> Result<bool, DeliveryError> {
-        self.fills(
-            self.spool.pending_line_bytes()?,
-            now,
-            Payload::trace_lines(vec![]),
-        )
-    }
-
-    fn fills(
-        &self,
-        pending: u64,
-        now: OffsetDateTime,
-        empty: Payload,
-    ) -> Result<bool, DeliveryError> {
-        Ok(pending >= self.row_budget(now, empty)?.max_bytes)
+        let more = match rows.last() {
+            Some(last) => self.spool.lines_after(last.id)?,
+            None => false,
+        };
+        self.seal_rows(now, rows, more, Payload::trace_lines, SubmissionRows::Lines)
     }
 
     /// Seal what a stream offered, as the schema that stream holds. The rows
@@ -164,6 +157,7 @@ impl Delivery {
         &mut self,
         now: OffsetDateTime,
         rows: Vec<SpooledRow>,
+        more: bool,
         payload: fn(Vec<PayloadLine>) -> Payload,
         acks: fn(Vec<i64>) -> SubmissionRows,
     ) -> Result<Option<SealedSubmission>, DeliveryError> {
@@ -171,7 +165,7 @@ impl Delivery {
             return Ok(None);
         }
         let (ids, lines) = rows.into_iter().map(|row| (row.id, row.line)).unzip();
-        self.seal(now, payload(lines), acks(ids)).map(Some)
+        self.seal(now, payload(lines), acks(ids), more).map(Some)
     }
 
     /// The budget the spool takes rows against (`spool::RowBudget`), measured by
@@ -211,6 +205,7 @@ impl Delivery {
         now: OffsetDateTime,
         payload: Payload,
         rows: SubmissionRows,
+        more: bool,
     ) -> Result<SealedSubmission, DeliveryError> {
         let counter = self.spool.next_counter()?;
         let envelope = self.envelope(counter, now, payload);
@@ -223,6 +218,7 @@ impl Delivery {
             counter,
             payload_digest,
             rows,
+            more,
         })
     }
 

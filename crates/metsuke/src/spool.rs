@@ -400,19 +400,28 @@ impl Spool {
         self.taken(&LINES, budget)
     }
 
-    /// What each stream is holding, off the running total rather than a scan,
-    /// so the upload loop can ask after every submission. Acked rows are gone
-    /// from it, so this is the remainder.
-    pub fn pending_bytes(&self) -> Result<u64, SpoolError> {
-        self.holding(&SCRAPES)
+    /// Whether the stream holds a row past `id`, which is what says a take
+    /// was cut off by its budget rather than by the stream running out. Asked
+    /// of the rows rather than of the bytes: a budget is measured against a
+    /// header whose length follows the clock, so comparing totals to it
+    /// decides a boundary case differently from one run to the next.
+    pub fn scrapes_after(&self, id: i64) -> Result<bool, SpoolError> {
+        self.has_after(&SCRAPES, id)
     }
 
-    pub fn pending_line_bytes(&self) -> Result<u64, SpoolError> {
-        self.holding(&LINES)
+    pub fn lines_after(&self, id: i64) -> Result<bool, SpoolError> {
+        self.has_after(&LINES, id)
     }
 
-    fn holding(&self, stream: &Stream) -> Result<u64, SpoolError> {
-        Ok(total_bytes(&self.conn, stream)?.max(0) as u64)
+    fn has_after(&self, stream: &Stream, id: i64) -> Result<bool, SpoolError> {
+        Ok(self.conn.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM {} WHERE id > ?1)",
+                stream.table
+            ),
+            [id],
+            |row| row.get(0),
+        )?)
     }
 
     fn taken(&mut self, stream: &Stream, budget: RowBudget) -> Result<Vec<SpooledRow>, SpoolError> {
