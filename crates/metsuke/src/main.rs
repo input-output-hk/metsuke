@@ -13,7 +13,7 @@ use metsuke::keys::{self, KeyError};
 use metsuke::logselect::{OutsideRoots, SelectConfig};
 use metsuke::logsource::{JournalSource, PipeSource, StartError};
 use metsuke::logtail::{self, DrainEnd};
-use metsuke::report::ScrapeReport;
+use metsuke::report::{Line, ScrapeReport};
 use metsuke::schedule::{Schedule, ScheduleConfig};
 use metsuke::scrape::ScrapeConfig;
 use metsuke::scraper::ScraperConfig;
@@ -142,18 +142,40 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
     };
     let mut schedule = Schedule::new();
     let mut scrapes = ScrapeReport::default();
-    let mut next_scrape = Instant::now();
-    // First upload immediately: rows left over from the previous run retry
-    // at startup (ADR 0004).
-    let mut next_upload = Instant::now();
+    // In pipe mode the node starts alongside the agent, so a scrape at once
+    // would meet an endpoint that is not bound yet and ship a failure nothing
+    // was wrong with. Waiting first is what avoids it; retrying on the same
+    // cadence is what covers a node slower than that. Both stage work and
+    // neither bounds anything, and neither is ever longer than the interval
+    // the operator configured, so a fast scrape cadence stays fast.
+    const FIRST_SCRAPE_DELAY: Duration = Duration::from_secs(10);
+    const FIRST_ANSWER_RETRY: Duration = Duration::from_secs(5);
+    let waited = FIRST_SCRAPE_DELAY.min(scrape_interval);
+    // Said rather than left as a gap: this is the last line before the wait,
+    // and in pipe mode an operator is watching a terminal when it happens.
+    // Without a duration, because the wait follows the configured interval and
+    // the recording the page shows is made on a short one.
+    eprintln!("{INFO}the first scrape waits for the node to bind its metrics endpoint");
+    let starting_until = Instant::now() + waited + scrape_interval;
+    let mut next_scrape = Instant::now() + waited;
+    // The first upload waits for that scrape rather than going out before
+    // there is one, so what an operator sees within seconds of starting is a
+    // submission carrying a scrape. Rows left over from the previous run go
+    // with it, which is what ADR 0004 asks of a start.
+    let mut next_upload = next_scrape;
     loop {
         let now = Instant::now();
         if now >= next_scrape {
+            let starting = now < starting_until;
             match agent.scrape_once() {
-                Ok(news) => warn(scrapes.record(&news)),
+                Ok(news) => log_report(scrapes.record(&news, starting)),
                 Err(error) => eprintln!("{ERR}scrape not spooled: {error}"),
             }
-            next_scrape = now + scrape_interval;
+            next_scrape = now
+                + match starting && !scrapes.answered() {
+                    true => FIRST_ANSWER_RETRY.min(scrape_interval),
+                    false => scrape_interval,
+                };
         }
         if now >= next_upload {
             next_upload =
@@ -233,10 +255,13 @@ fn start_trace_collection(
     Ok(())
 }
 
-/// The scrape report's lines, at the one severity all of them carry.
-fn warn(lines: Vec<String>) {
+/// The scrape report's lines, each at the severity the report gave it.
+fn log_report(lines: Vec<Line>) {
     for line in lines {
-        eprintln!("{WARNING}{line}");
+        match line {
+            Line::Info(text) => eprintln!("{INFO}{text}"),
+            Line::Warning(text) => eprintln!("{WARNING}{text}"),
+        }
     }
 }
 
@@ -250,7 +275,7 @@ fn upload_tick(
 ) -> Duration {
     // Before the attempt, so every path out of this function has said it:
     // sustained overload is exactly the case where the attempt fails.
-    warn(scrapes.drain());
+    log_report(scrapes.drain());
     let dropped = agent.take_dropped_report();
     if dropped > 0 {
         eprintln!(

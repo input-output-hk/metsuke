@@ -30,8 +30,9 @@ cardano-node run ... | {{try_agent}} --config config.pipe.toml --signing-key bls
 <p>That is the whole agent. It writes your node's output straight back out, and
 the redirect drops that copy: without it a node's trace stream buries what the
 agent has to say. What is left on your terminal is the agent's own. The first
-four lines arrive within seconds; the trace-line submission waits for the next
-upload, one hour by default:</p>
+four lines arrive at once, and the scrape submission about ten seconds later,
+once the node has had time to bind its endpoint; the trace-line submission
+waits for the next upload, one hour by default:</p>
 
 <pre>{{journal}}</pre>
 
@@ -164,10 +165,11 @@ pipeline goes in your container's entrypoint.</p>
 <pre>journalctl -u metsuke -f</pre>
 
 <p>The same lines the try-it printed, though not all at once. The first
-submission is sent as soon as the agent starts, so the startup lines and the
-scrape one appear within seconds and you do not wait out a cadence to find out
-something is wrong. Trace lines have not accumulated by then, so theirs goes out
-on the next upload, one hour by default.</p>
+submission goes out on the first scrape rather than on a cadence, so the
+startup lines and the scrape one appear within seconds of each other and you do
+not wait out an interval to find out something is wrong. Trace lines have not
+accumulated by then, so theirs goes out on the next upload, one hour by
+default.</p>
 
 <p>A refused submission logs this server's reason in place of one of those
 accepted lines, and the scrapes stay spooled, so nothing is lost while you fix
