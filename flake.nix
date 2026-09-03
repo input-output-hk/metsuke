@@ -184,12 +184,19 @@
               );
             };
 
+          # What a shipped binary says it was built from
+          # (crates/metsuke-wire/build.rs). A sandbox has no repository to
+          # read, so the commit is passed in; a dirty tree says so, and a
+          # source with no revision at all is honest about that too.
+          buildRev = self.shortRev or self.dirtyShortRev or "unknown";
+
           # Tests run once, in checks.test. Crane defaults doCheck to true,
           # which would run the suite again inside each binary.
           binaryArgs = {
             inherit cargoArtifacts version;
             strictDeps = true;
             doCheck = false;
+            METSUKE_REV = buildRev;
           };
 
           # What the suites reach for beside the crates: `checks.test` says why

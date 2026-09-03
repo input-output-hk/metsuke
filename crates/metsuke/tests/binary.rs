@@ -285,6 +285,10 @@ async fn the_journal_lines_the_page_shows_are_the_ones_the_agent_prints() {
     child.kill().unwrap();
     child.wait().unwrap();
     let recorded = recorded.replace(&format!("{}/metrics", server.uri()), SHIPPED_METRICS_URL);
+    // Which build printed these lines is not what the page is showing, and it
+    // differs between a run here and a run in the sandbox, so the recording
+    // carries the version alone.
+    let recorded = recorded.replace(&format!(" ({})", metsuke_wire::BUILD_REV), "");
 
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(JOURNAL_RECORDING);
     if std::env::var_os("METSUKE_RERECORD").is_some() {
@@ -425,7 +429,7 @@ fn version_is_printed_on_its_own_and_names_the_crates_version() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        env!("CARGO_PKG_VERSION")
+        metsuke_wire::version_line(env!("CARGO_PKG_VERSION"))
     );
 }
 

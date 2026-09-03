@@ -52,7 +52,7 @@ fn run() -> Result<(), Fatal> {
             Ok(())
         }
         Invocation::Version => {
-            println!("{VERSION}");
+            println!("{}", metsuke_wire::version_line(VERSION));
             Ok(())
         }
         Invocation::Run(args) => fetch(*args),
@@ -70,7 +70,11 @@ fn fetch(args: Args) -> Result<(), Fatal> {
     } = args;
     // Before anything that can fail, so a run that stops on its password file
     // or on the server has still named the build it stopped from.
-    eprintln!("metsuke-fetch {VERSION} against {}", access.server);
+    eprintln!(
+        "metsuke-fetch {} against {}",
+        metsuke_wire::version_line(VERSION),
+        access.server
+    );
     let archive = Archive::new(
         &access.server,
         &access.user,

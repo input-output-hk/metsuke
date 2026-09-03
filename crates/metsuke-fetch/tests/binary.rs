@@ -191,7 +191,7 @@ fn version_is_printed_on_its_own_and_names_the_crates_version() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        env!("CARGO_PKG_VERSION")
+        metsuke_wire::version_line(env!("CARGO_PKG_VERSION"))
     );
 }
 

@@ -70,13 +70,16 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         std::process::exit(0);
     }
     if argv.iter().any(|a| a == "--version") {
-        println!("{VERSION}");
+        println!("{}", metsuke_wire::version_line(VERSION));
         std::process::exit(0);
     }
     let args = Args::parse(argv.into_iter())?;
     // Before the config is even read: the start that most needs its build
     // named is the one about to fail, and everything below here can.
-    eprintln!("{INFO}metsuke {VERSION} starting");
+    eprintln!(
+        "{INFO}metsuke {} starting",
+        metsuke_wire::version_line(VERSION)
+    );
     let text =
         std::fs::read_to_string(&args.config).map_err(|source| StartupError::ReadConfig {
             path: args.config.display().to_string(),

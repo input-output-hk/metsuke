@@ -92,13 +92,16 @@ fn run() -> Result<(), Fatal> {
         return Ok(());
     }
     if argv.iter().any(|a| a == "--version") {
-        println!("{VERSION}");
+        println!("{}", metsuke_wire::version_line(VERSION));
         return Ok(());
     }
     let args = Args::parse(argv.into_iter())?;
     // Before the config is even read: the start that most needs its build
     // named is the one about to fail, and everything below here can.
-    eprintln!("{INFO}metsuke-server {VERSION} starting");
+    eprintln!(
+        "{INFO}metsuke-server {} starting",
+        metsuke_wire::version_line(VERSION)
+    );
     let text = std::fs::read_to_string(&args.config).map_err(|source| Fatal::ReadConfig {
         path: args.config.display().to_string(),
         source,
