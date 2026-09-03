@@ -184,8 +184,11 @@ fn uncomment(example: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         .replace("pool1CHANGEME", &test_pool_id().to_bech32())
-        // The signing_key line documents how the flag and config interact, not a default.
+        // Neither of these documents a default: signing_key shows how the flag
+        // and the config interact, agent_id what a set value looks like where
+        // the default is the hostname.
         .replace("signing_key = ", "# signing_key = ")
+        .replace("agent_id = ", "# agent_id = ")
 }
 
 // The example config's commented defaults must be the code's defaults:

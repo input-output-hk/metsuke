@@ -15,7 +15,7 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # than one Agent can tell them apart. Defaults to this Agent's hostname, folded
 # to lowercase a-z0-9 in dash-separated runs; a value set here is folded the
 # same way.
-#   agent_id = "edge-1"
+# agent_id = "edge-1"
 
 # Path to the signing key, a cardano-cli TextEnvelope: the cold key pool_id
 # above hashes from, or the pool's Leios key. A cold key that does not hash to
