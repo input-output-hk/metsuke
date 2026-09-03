@@ -69,8 +69,8 @@ rate_limit_window_secs = 3600
 
 # The accounts developers pull the archive back out as. The file holds one
 # `user = "password"` line each, so who has access is the secret's to say and
-# revoking one person is an edit to one line. A username is dash-separated runs
-# of a-z and 0-9.
+# revoking one person is an edit to one line. A username is letters, digits, '-'
+# and '_', matched exactly.
 [developer]
 password_file = "/run/credentials/metsuke-server.service/developerpassword"
 # One listing is one bucket request, so anything above 1000 is clamped to it.

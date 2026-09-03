@@ -160,8 +160,8 @@ fn a_secret_that_names_no_usable_account_is_refused() {
     for (written, expected) in [
         ("", "names no accounts"),
         ("dev = \"\"", "empty password"),
-        ("Dev = \"password\"", "dash-separated"),
-        ("dev- = \"password\"", "dash-separated"),
+        ("\"dev user\" = \"password\"", "not a username"),
+        ("\"dev:user\" = \"password\"", "not a username"),
         ("dev = 12", "does not parse"),
         ("[dev]\npassword = \"p\"", "does not parse"),
     ] {
@@ -171,6 +171,28 @@ fn a_secret_that_names_no_usable_account_is_refused() {
             "{written:?} must fail naming {expected:?}, got: {error}"
         );
     }
+}
+
+/// A person's name is what an operator writes here, so case is part of the
+/// username rather than something folded away, and it needs no quoting: the
+/// alphabet is a TOML bare key's.
+#[test]
+fn a_username_is_a_persons_name_as_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let accounts = Accounts::parse("JaneDoe = \"s3cret\"").expect("a bare key needs no quotes");
+    let developer = Developer::new(&developer_config(dir.path()), accounts);
+
+    assert!(
+        developer
+            .authorize(Some(&basic("JaneDoe", "s3cret")))
+            .is_ok()
+    );
+    assert!(
+        developer
+            .authorize(Some(&basic("janedoe", "s3cret")))
+            .is_err(),
+        "the digest is over the bytes, so the case is part of the credential"
+    );
 }
 
 /// The bound on a username is what keeps a refusal's log line bounded, and it

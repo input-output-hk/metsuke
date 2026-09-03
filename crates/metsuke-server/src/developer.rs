@@ -34,10 +34,16 @@ pub const LIST_MAX_ROWS_CAP: std::num::NonZeroU32 = std::num::NonZeroU32::new(10
 /// sides.
 const USERNAME_MAX_CHARS: usize = 64;
 
-/// A developer account's name. Dash-separated runs of `a-z` and `0-9`, in the
-/// shape of `AgentId`, and parsed rather than folded: an agent id comes from
-/// an operator's own config, where a username arrives in a header from
-/// anyone, so what reaches the log is what a parse already accepted.
+/// A developer account's name: letters, digits, `-` and `_`, which is exactly
+/// what a TOML bare key holds, so no name an operator picks has to be quoted
+/// in the secret. A person's name is what goes here, so case is kept, and it
+/// is matched byte for byte because the digest is over the bytes.
+///
+/// Parsed rather than folded, and this is why the alphabet is bounded at all:
+/// a username arrives in a header from anyone, and what a refusal puts in the
+/// journal has to be something a parse already accepted. It excludes `:`,
+/// which RFC 7617 makes the separator, so no account can be named something a
+/// Basic header could not carry.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Username(String);
 
@@ -45,8 +51,8 @@ pub struct Username(String);
 pub enum UsernameError {
     #[error("a username cannot be empty")]
     Empty,
-    #[error("username {found:?} is not dash-separated runs of a-z and 0-9")]
-    NotASlug { found: String },
+    #[error("{found:?} is not a username: letters, digits, '-' and '_' only")]
+    NotAUsername { found: String },
     #[error("a username is at most {USERNAME_MAX_CHARS} characters, and this one is {found}")]
     TooLong { found: usize },
 }
@@ -61,15 +67,12 @@ impl Username {
                 found: text.chars().count(),
             });
         }
-        let slug = text.split('-').all(|run| {
-            !run.is_empty()
-                && run
-                    .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        });
-        match slug {
+        let named = text
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'));
+        match named {
             true => Ok(Username(text.to_string())),
-            false => Err(UsernameError::NotASlug {
+            false => Err(UsernameError::NotAUsername {
                 found: text.to_string(),
             }),
         }
