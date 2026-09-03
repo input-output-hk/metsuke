@@ -294,6 +294,11 @@ async fn failed_upload_keeps_the_rows_for_the_next_attempt() {
 /// A submission cap that holds one trace line and no more, so a tick has to send
 /// one submission per line to clear the spool.
 fn one_line_per_submission(line: &str) -> u64 {
+    lines_per_submission(line, 1)
+}
+
+/// A submission cap that holds exactly `lines` of them.
+fn lines_per_submission(line: &str, lines: u64) -> u64 {
     // The framing is spent before any row is, as tests/delivery.rs measures it.
     // The timestamp carries subsecond digits because `upload_once` stamps with
     // `now_utc`, whose header line is longer than the epoch's by them.
@@ -308,7 +313,7 @@ fn one_line_per_submission(line: &str) -> u64 {
     let row = envelope::PayloadLine::trace_line(&trace_line(line), &test_provenance())
         .unwrap()
         .wire_bytes();
-    framing + row
+    framing + lines * row
 }
 
 // The wedge this fixes: a node emits more between ticks than one submission
@@ -359,6 +364,55 @@ async fn one_tick_drains_a_stream_that_outgrew_a_single_submission() {
     assert!(
         second.is_empty(),
         "the stream must be drained, got {second:?}"
+    );
+}
+
+// And what a tick drains is the backlog, not the stream: a node emitting
+// faster than a submission's round trip would otherwise be chased to the
+// allowance, a request and an object per handful of lines. What is left over
+// is under a submission's worth, so the next tick carries it.
+#[tokio::test]
+async fn a_tick_leaves_what_would_not_fill_a_submission() {
+    let metrics = metrics_server().await;
+    let uploads = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/submit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "latest_version": "0.1.0"
+        })))
+        .mount(&uploads)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let line = r#"{"ns":"Consensus.LeiosPeer.Msg"}"#;
+    let mut agent = agent_with(
+        &dir,
+        &metrics,
+        &uploads,
+        lines_per_submission(line, 2),
+        shipped_submissions(),
+    );
+    let mut spool = test_log_spool(&dir);
+    for _ in 0..5 {
+        spool.push(&trace_line(line)).unwrap();
+    }
+
+    let (first, second) = tokio::task::spawn_blocking(move || {
+        let first = agent.upload_once().unwrap();
+        let second = agent.upload_once().unwrap();
+        (first, second)
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        first.iter().map(|one| one.lines).collect::<Vec<_>>(),
+        [2, 2],
+        "a tick sends the full submissions and stops, got {first:?}"
+    );
+    assert_eq!(
+        second.iter().map(|one| one.lines).collect::<Vec<_>>(),
+        [1],
+        "the line left over is the next tick's, got {second:?}"
     );
 }
 

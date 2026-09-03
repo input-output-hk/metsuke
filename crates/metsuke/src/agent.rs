@@ -111,12 +111,22 @@ impl Agent {
     pub fn upload_once(&mut self) -> Result<Vec<Uploaded>, UploadError> {
         type Take =
             fn(&mut Delivery, OffsetDateTime) -> Result<Option<SealedSubmission>, DeliveryError>;
-        let streams: [Take; 2] = [Delivery::take_submission, Delivery::take_line_submission];
+        type Fills = fn(&Delivery, OffsetDateTime) -> Result<bool, DeliveryError>;
+        let streams: [(Take, Fills); 2] = [
+            (
+                Delivery::take_submission,
+                Delivery::scrapes_fill_a_submission,
+            ),
+            (
+                Delivery::take_line_submission,
+                Delivery::lines_fill_a_submission,
+            ),
+        ];
 
         let now = OffsetDateTime::now_utc();
         let allowance = self.upload.max_submissions.get();
         let mut sent = Vec::new();
-        for take in streams {
+        for (take, fills) in streams {
             while sent.len() < allowance {
                 let taken = take(&mut self.delivery, now).map_err(UploadError::NotAttempted)?;
                 let Some(one) = self.send(taken)? else {
@@ -126,6 +136,14 @@ impl Agent {
                 sent.push(one);
                 if !accepted {
                     return Ok(sent);
+                }
+                // What a tick drains is the backlog. A stream filling faster
+                // than one submission's round trip would otherwise be chased
+                // to the allowance, spending a request, a counter and an
+                // object on each handful of lines that arrived while the last
+                // one was in flight.
+                if !fills(&self.delivery, now).map_err(UploadError::NotAttempted)? {
+                    break;
                 }
             }
         }

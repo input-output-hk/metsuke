@@ -60,6 +60,55 @@ fn temp_log_spool(dir: &tempfile::TempDir) -> LogSpool {
     .unwrap()
 }
 
+// What the upload loop drains on. A stream holding a submission's worth is
+// worth another request; less than that is a remainder the next tick carries,
+// and chasing it is what filled an operator's journal with submissions of
+// twenty lines while their node was bulk syncing.
+#[test]
+fn a_stream_says_whether_what_it_holds_would_fill_a_submission() {
+    let dir = tempfile::tempdir().unwrap();
+    let now = OffsetDateTime::UNIX_EPOCH;
+    let one_scrape = spent_on_rows(&[scrape_at(1)]);
+    let mut delivery = delivery_with_submission_cap(&dir, one_scrape);
+
+    assert!(
+        !delivery.scrapes_fill_a_submission(now).unwrap(),
+        "an empty stream fills nothing"
+    );
+
+    delivery.push(&scrape_at(1)).unwrap();
+    assert!(delivery.scrapes_fill_a_submission(now).unwrap());
+
+    let submission = delivery.take_submission(now).unwrap().unwrap();
+    delivery.ack(submission).unwrap();
+    assert!(
+        !delivery.scrapes_fill_a_submission(now).unwrap(),
+        "what an ack drained is not still waiting"
+    );
+}
+
+/// A submission cap that exactly holds `rows`: the framing, which is spent
+/// before any row, plus what those rows cost the spool.
+fn spent_on_rows(rows: &[Scrape]) -> u64 {
+    let empty = envelope::Envelope::new(
+        test_provenance(),
+        metsuke::AGENT_VERSION.to_string(),
+        u64::MAX,
+        OffsetDateTime::UNIX_EPOCH,
+        Payload::scrapes(vec![]),
+    );
+    let framing = (envelope::HEADER_OFFSET + envelope::header_json(&empty).unwrap().len()) as u64;
+    framing
+        + rows
+            .iter()
+            .map(|scrape| {
+                PayloadLine::scrape(scrape, &test_provenance())
+                    .unwrap()
+                    .wire_bytes()
+            })
+            .sum::<u64>()
+}
+
 // The whole loop contract: what was pushed comes out as a submission the server's
 // own call (`open` with the verifying key) accepts, and an ack empties the
 // spool.

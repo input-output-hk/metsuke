@@ -131,6 +131,31 @@ impl Delivery {
         self.seal_rows(now, rows, Payload::trace_lines, SubmissionRows::Lines)
     }
 
+    /// Whether what a stream still holds would fill a submission on its own.
+    /// What the upload loop drains on: less than this is a remainder, and
+    /// taking it costs a request, a counter and an object to carry what the
+    /// next tick would carry anyway.
+    pub fn scrapes_fill_a_submission(&self, now: OffsetDateTime) -> Result<bool, DeliveryError> {
+        self.fills(self.spool.pending_bytes()?, now, Payload::scrapes(vec![]))
+    }
+
+    pub fn lines_fill_a_submission(&self, now: OffsetDateTime) -> Result<bool, DeliveryError> {
+        self.fills(
+            self.spool.pending_line_bytes()?,
+            now,
+            Payload::trace_lines(vec![]),
+        )
+    }
+
+    fn fills(
+        &self,
+        pending: u64,
+        now: OffsetDateTime,
+        empty: Payload,
+    ) -> Result<bool, DeliveryError> {
+        Ok(pending >= self.row_budget(now, empty)?.max_bytes)
+    }
+
     /// Seal what a stream offered, as the schema that stream holds. The rows
     /// arrive as the lines they will be on the wire, so the two streams differ
     /// only in which schema the payload declares and which table an ACK deletes

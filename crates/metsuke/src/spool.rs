@@ -400,6 +400,21 @@ impl Spool {
         self.taken(&LINES, budget)
     }
 
+    /// What each stream is holding, off the running total rather than a scan,
+    /// so the upload loop can ask after every submission. Acked rows are gone
+    /// from it, so this is the remainder.
+    pub fn pending_bytes(&self) -> Result<u64, SpoolError> {
+        self.holding(&SCRAPES)
+    }
+
+    pub fn pending_line_bytes(&self) -> Result<u64, SpoolError> {
+        self.holding(&LINES)
+    }
+
+    fn holding(&self, stream: &Stream) -> Result<u64, SpoolError> {
+        Ok(total_bytes(&self.conn, stream)?.max(0) as u64)
+    }
+
     fn taken(&mut self, stream: &Stream, budget: RowBudget) -> Result<Vec<SpooledRow>, SpoolError> {
         let taken = outstanding_rows(&mut self.conn, stream, budget)?;
         if let Some(bytes) = taken.uncarriable_bytes {
