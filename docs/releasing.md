@@ -1,7 +1,8 @@
 # Releasing
 
-The procedure behind ADR 0006. Read the ADR for why client and server are
-versioned apart. This file is what you actually run.
+The procedure behind [ADR 0006](adr/0006-independent-crate-versions.md). Read
+the ADR for why client and server are versioned apart. This file is what you
+actually run.
 
 ## What carries a version
 

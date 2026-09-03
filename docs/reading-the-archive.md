@@ -64,8 +64,9 @@ sent it.
 
 Only a Cold Key gives you the second half. A Leios Key hashes to nothing, so an
 object it signed has its signature checked like any other and its pool taken on
-the server's word, against a roster that no longer exists (ADR 0011). Its bytes
-are as proven as a cold-signed object's; only which pool sent them is not.
+the server's word, against a roster that no longer exists
+([ADR 0011](adr/0011-leios-key-submissions.md)). Its bytes are as proven as a
+cold-signed object's; only which pool sent them is not.
 
 An object that arrives without those headers cannot be checked at all. That is
 what a filesystem archive answers, having discarded the pair at ingest rather
@@ -183,14 +184,15 @@ everything again: nothing checks whether an object is already on disk.
 
 ## What a gap in an agent's sequence numbers is
 
-What a gap in `counter` says, and what it does not, is CONTEXT.md,
-**Sequence Number**.
+What a gap in `counter` says, and what it does not, is
+[CONTEXT.md](../CONTEXT.md), **Sequence Number**.
 
 **From the archive alone a gap cannot be resolved, and no read here will do
 it.** The submission that spent the number was refused, so it never became an
 object: there is nothing under the missing counter to compare the next one
-against. What the bucket holds is what landed, by ADR 0005, and an attempt that
-did not land is recorded only in the journal of the agent that made it.
+against. What the bucket holds is what landed, by
+[ADR 0005](adr/0005-archive-raw-signed-bytes.md), and an attempt that did not
+land is recorded only in the journal of the agent that made it.
 
 Whoever holds that journal can resolve it. Every line the agent logs about a
 submission names its payload digest, which covers the rows alone, so a refused

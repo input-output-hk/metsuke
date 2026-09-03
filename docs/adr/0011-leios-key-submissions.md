@@ -4,8 +4,9 @@ Status: accepted (2026-08-31)
 
 ## Context
 
-ADR 0001 has one signer: the cold key, whose hash is the pool id, so a
-submission names its pool by derivation and nothing is looked up. The cost is
+[ADR 0001](0001-raw-ed25519-detached-signature.md) has one signer: the cold
+key, whose hash is the pool id, so a submission names its pool by derivation
+and nothing is looked up. The cost is
 that every machine running an agent holds the pool's cold key. Operators are
 told to copy an offline key onto live hosts, which is what decades of practice
 says not to do, and the cold key cannot be rotated without re-registering the
@@ -65,7 +66,8 @@ in the other.
 - An archived Leios-signed object is no longer verifiable on its own. Checking
   one needs the roster that was current when it was written, and the fetch tool
   keeps none, so it presents such an object's attestation without checking it
-  and says so. A cold-key object stays self-verifying forever (ADR 0005).
+  and says so. A cold-key object stays self-verifying forever
+  ([ADR 0005](0005-archive-raw-signed-bytes.md)).
 - The agent and the server both gain a BLS implementation, against ADR 0001's
   preference for one verification path and this project's preference for the
   smallest attack surface. There is no cardano-cli command that signs with this

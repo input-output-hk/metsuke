@@ -19,8 +19,9 @@ deploying the server, not an afterthought.
 The e2e test avoids this by putting both on one host and uploading to
 `http://127.0.0.1:8080`. A real deployment does not get that.
 
-The agent also refuses a `metrics_url` that is not loopback (ADR 0007). The
-agent therefore lives on the node host. That is not negotiable by configuration.
+The agent also refuses a `metrics_url` that is not loopback
+([ADR 0007](adr/0007-agent-reads-only-loopback-prometheus.md)). The agent
+therefore lives on the node host. That is not negotiable by configuration.
 
 ## Before anything is deployed
 
@@ -84,7 +85,8 @@ looks exactly like a program nobody joined. It emits the `[ingest.allowlist]`
 table the server module's `settings.ingest.allowlist` expects.
 
 **The Leios key roster.** Only where agents sign with a Leios key rather than a
-cold key (ADR 0011). Generated the same way, from a node this time:
+cold key ([ADR 0011](adr/0011-leios-key-submissions.md)). Generated the same
+way, from a node this time:
 
 ```
 metsuke-roster query dijkstra \
@@ -190,8 +192,8 @@ what those defaults are.
 Leave `settings.log` out unless you want the node's trace stream. Setting it
 adds `SupplementaryGroups=systemd-journal` and turns `ProcSubset=pid` into
 `ProcSubset=all`, and that group reads every unit's journal on the host. That is
-the entire privilege difference and it is the reason ADR 0010 made the feature
-opt-in.
+the entire privilege difference and it is the reason
+[ADR 0010](adr/0010-log-based-trace-collection.md) made the feature opt-in.
 
 The module offers only `source = "journald"`. The other source, `"pipe"`, puts
 the agent downstream of the node on a shell pipeline, so it is the node's unit
@@ -250,7 +252,8 @@ metsuke-fetch sync --server https://<server> --user metsuke-dev \
 ```
 
 `sync` prints the duckdb read that matches what it downloaded.
-`docs/reading-the-archive.md` says why that read is not the obvious one.
+[`docs/reading-the-archive.md`](reading-the-archive.md) says why that read is
+not the obvious one.
 
 ## On a cardano-parts host
 

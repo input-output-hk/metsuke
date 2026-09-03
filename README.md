@@ -14,7 +14,8 @@ Which pool a submission is from follows from the key that signed it. A cold key
 hashes to the pool id, so the server derives it rather than believing a field. A
 Leios key hashes to nothing, so a submission it signed claims its pool in a
 header and the server believes the claim only where a roster file lists that key
-for that pool. docs/adr/0011 is the decision and what each key costs.
+for that pool. [docs/adr/0011](docs/adr/0011-leios-key-submissions.md) is the
+decision and what each key costs.
 
 ## The four crates
 
@@ -35,7 +36,8 @@ One submission is a plain JSON header frame, then the scrapes zstd compressed,
 one JSON object per line, with a detached Ed25519 signature over the whole byte
 sequence. The header rides in a zstd skippable frame, so `zstd -d` on a stored
 object hands back the lines and nothing else. There is no COSE and no CBOR on
-the submission path (ADR 0001).
+the submission path
+([ADR 0001](docs/adr/0001-raw-ed25519-detached-signature.md)).
 
 A scrape carries every metric the endpoint returned, plus the time the agent
 scraped and the clock offset its own SNTP query measured. A scrape that failed
@@ -54,9 +56,10 @@ recording of the agent's own output and the wire types themselves, so neither
 can document a default the agent does not ship. The markup is
 `crates/metsuke-server/assets/`, and `instructions.rs` fills it.
 
-**Deploying a server and an agent** is `docs/deploying.md`.
+**Deploying a server and an agent** is [`docs/deploying.md`](docs/deploying.md).
 
-**Reading the archive back** is `docs/reading-the-archive.md`.
+**Reading the archive back** is
+[`docs/reading-the-archive.md`](docs/reading-the-archive.md).
 
 ## Working on it
 
@@ -88,19 +91,20 @@ docs/research/    notes behind them
 
 ## Documentation
 
-`CONTEXT.md` is the domain language. Read it first, and treat it as binding.
-Terms on an entry's _Avoid_ list do not belong in code or prose.
+[`CONTEXT.md`](CONTEXT.md) is the domain language. Read it first, and treat it
+as binding. Terms on an entry's _Avoid_ list do not belong in code or prose.
 
 `docs/adr/` holds accepted decisions, not proposals. Their filenames say what
 each decided; read the one covering ground you are about to work near before you
 work near it. `CLAUDE.md` lists the ones that constrain everyday code, and
-`docs/adr/README.md` says what an ADR is allowed to change after it is accepted.
+[`docs/adr/README.md`](docs/adr/README.md) says what an ADR is allowed to
+change after it is accepted.
 
 ## Versioning
 
 Client and server are versioned and tagged independently, and the update nudge
-is embedded at server build time. `docs/releasing.md` is the procedure, ADR 0006
-is why.
+is embedded at server build time. [`docs/releasing.md`](docs/releasing.md) is
+the procedure, [ADR 0006](docs/adr/0006-independent-crate-versions.md) is why.
 
 ## Security
 
@@ -108,10 +112,12 @@ Least privilege is the top constraint, and the agent is where it is spent. It
 never opens the node socket, and it reads exactly one key, the cold or Leios
 signing key the operator points it at. A cold key has to hash to the configured
 pool id or the agent refuses to start; a Leios key hashes to nothing, and
-keeping the cold key off a reporting machine is what it is for (ADR 0011).
+keeping the cold key off a reporting machine is what it is for
+([ADR 0011](docs/adr/0011-leios-key-submissions.md)).
 
 What the `[log]` section costs in privilege, and why that made the feature
-opt-in, is ADR 0010. Its two sources do not cost the same: `journald` needs the
+opt-in, is [ADR 0010](docs/adr/0010-log-based-trace-collection.md). Its two
+sources do not cost the same: `journald` needs the
 `systemd-journal` group, which reads every unit's journal, and `pipe` reads the
 node's stdout on the agent's stdin and needs no group at all. `CLAUDE.md`
 states the invariant.
