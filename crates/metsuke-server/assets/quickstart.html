@@ -22,7 +22,7 @@ refused until it is. <a href="{{DETAILS_PATH}}#code">What that means</a>.</p>
 <pre>{{try_fetch}}
 curl -O {{files_url}}config.pipe.toml
 
-# Update your pool id
+# Set your pool id, and a spool_path you can write
 $EDITOR config.pipe.toml
 
 cardano-node run ... | {{try_agent}} --config config.pipe.toml --signing-key bls.skey &gt; /dev/null</pre>
@@ -42,6 +42,11 @@ on: whatever read your node's output before still reads it.</p>
 <p>The config already points at this server, and its metrics URL is the port
 most nodes already serve Prometheus on. If your node is configured differently,
 that is the second line to change in the config file.</p>
+
+<p><code>spool_path</code> is the line a run from a shell usually has to change.
+It ships as the state directory the systemd shapes below create, which a shell
+may not be able to write to by default, and the agent says so and stops rather
+than starting with nowhere to put a scrape.</p>
 
 <h2>How you'll run it for real</h2>
 

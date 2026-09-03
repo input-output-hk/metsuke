@@ -70,6 +70,17 @@ pub struct SpooledRow {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SpoolError {
+    /// The default path is the systemd state directory, so this is what an
+    /// operator running the agent any other way meets, and the setting is
+    /// what the message has to name.
+    #[error(
+        "its directory {path} is not there and cannot be created: {source}; set spool_path somewhere this user can write"
+    )]
+    Directory {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]
@@ -136,6 +147,18 @@ const LINES: Stream = Stream {
 /// takes a shared lock that blocks the trace-line writer, so the upload loop
 /// reading a submission would stall the stream for as long as it takes.
 fn open_spool(path: &PathBuf, busy_timeout: Duration) -> Result<Connection, SpoolError> {
+    // sqlite creates the file and not the directory over it. The systemd
+    // shapes get theirs from StateDirectory; a shell or a container run has
+    // whatever the operator named in `spool_path`.
+    if let Some(directory) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        std::fs::create_dir_all(directory).map_err(|source| SpoolError::Directory {
+            path: directory.display().to_string(),
+            source,
+        })?;
+    }
     let conn = Connection::open(path)?;
     conn.busy_timeout(busy_timeout)?;
     conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;

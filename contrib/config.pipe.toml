@@ -1,6 +1,6 @@
 # metsuke agent, metrics and trace lines off the node's stdout. Copy to
-# /etc/metsuke/config.toml, set the three values below, and start the pair with
-# contrib/node-pipe.conf.
+# /etc/metsuke/config.toml, set your pool id, check the three lines under it,
+# and start the pair with contrib/node-pipe.conf.
 #
 # This source reads no journal and needs no group. Your node has to emit the
 # trace namespaces first; the server's details page has that snippet.
@@ -16,6 +16,11 @@ metrics_url = "http://127.0.0.1:12798/metrics"
 
 # The server you report to.
 upload_url = "https://metsuke.example.org/v1/submit"
+
+# Where the spool goes. This is the state directory contrib/node-pipe.conf
+# creates, so leave it alone under systemd or in a container; running the pair
+# from a shell, set a path you can write.
+spool_path = "/var/lib/metsuke/spool.sqlite"
 
 [log]
 source = "pipe"

@@ -73,6 +73,52 @@ fn temp_log_config(dir: &tempfile::TempDir, max_bytes: u64) -> LogSpoolConfig {
     }
 }
 
+// sqlite creates the file and not the directory over it, and the shipped
+// default is the systemd state directory, so an operator running the agent any
+// other way would otherwise have to mkdir it first.
+#[test]
+fn a_spool_directory_that_is_not_there_yet_is_created() {
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("metsuke").join("state");
+    let config = SpoolConfig {
+        path: nested.join("spool.sqlite"),
+        ..temp_config(&dir, WHOLE_SPOOL)
+    };
+
+    let mut spool = Spool::open(&config).unwrap();
+    spool.push(&scrape_at(1)).unwrap();
+
+    assert!(
+        config.path.is_file(),
+        "the spool is not at {:?}",
+        config.path
+    );
+}
+
+// And where it cannot be created, the refusal names the directory and the
+// setting, because the default path is one most operators cannot write.
+#[test]
+fn a_spool_directory_that_cannot_be_created_names_the_setting() {
+    let dir = tempfile::tempdir().unwrap();
+    let over_a_file = dir.path().join("a-file");
+    std::fs::write(&over_a_file, b"not a directory").unwrap();
+    let config = SpoolConfig {
+        path: over_a_file.join("under-a-file").join("spool.sqlite"),
+        ..temp_config(&dir, WHOLE_SPOOL)
+    };
+
+    let error = match Spool::open(&config) {
+        Err(error) => error.to_string(),
+        Ok(_) => panic!("a spool under a file must not open"),
+    };
+
+    assert!(error.contains("spool_path"), "got: {error}");
+    assert!(
+        error.contains(&over_a_file.display().to_string()),
+        "got: {error}"
+    );
+}
+
 #[test]
 fn undelivered_rows_survive_restart() {
     let dir = tempfile::tempdir().unwrap();
