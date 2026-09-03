@@ -15,7 +15,7 @@ use metsuke_server::archive::{
 };
 use metsuke_server::authority::{Attributed, Signed};
 use metsuke_server::config::{AbsolutePath, DeveloperConfig, HttpConfig, IngestConfig};
-use metsuke_server::developer::percent_decoded;
+use metsuke_server::developer::{Accounts, percent_decoded};
 use metsuke_wire::envelope::{
     self, AgentId, Attestation, Envelope, Payload, PayloadLine, PoolId, Provenance, Scrape,
     SigningKey, SubmissionKey, TraceLine,
@@ -444,14 +444,30 @@ pub fn example_s3_archive(endpoint: &str, put_retries: u32) -> String {
 }
 
 /// What every test's credential file holds. One place, so the unit tests and
-/// the spawned binary authenticate as the same account.
+/// the spawned binary authenticate as the same accounts, and two of them so
+/// nothing under test passes only because there is one.
+pub const DEVELOPER_USER: &str = "metsuke-dev";
 pub const DEVELOPER_PASSWORD: &str = "hunter2";
+pub const OTHER_DEVELOPER_USER: &str = "other-dev";
+pub const OTHER_DEVELOPER_PASSWORD: &str = "correct-horse";
+
+/// The secret as the file holds it, which is what `Accounts::parse` reads.
+pub fn developer_secret() -> String {
+    format!(
+        "{DEVELOPER_USER} = \"{DEVELOPER_PASSWORD}\"\n\
+         {OTHER_DEVELOPER_USER} = \"{OTHER_DEVELOPER_PASSWORD}\"\n"
+    )
+}
+
+/// Those accounts parsed, for a test that authorizes without a file.
+pub fn developer_accounts() -> Accounts {
+    Accounts::parse(&developer_secret()).expect("the test secret parses")
+}
 
 /// The developer half over a credential file under `dir`. Writing that file is
 /// `developer_toml`'s job, because only a spawned server reads it.
 pub fn developer_config(dir: &Path) -> DeveloperConfig {
     DeveloperConfig {
-        user: "metsuke-dev".to_string(),
         password_file: absolute(dir.join("developer-password")),
         list_max_rows: nonzero_u32(100),
     }
@@ -468,18 +484,16 @@ pub fn developer_toml(dir: &Path) -> String {
 /// a page at the bound says.
 pub fn developer_toml_with_rows(dir: &Path, list_max_rows: u32) -> String {
     let DeveloperConfig {
-        user,
         password_file,
         list_max_rows,
     } = DeveloperConfig {
         list_max_rows: nonzero_u32(list_max_rows),
         ..developer_config(dir)
     };
-    std::fs::write(password_file.as_path(), DEVELOPER_PASSWORD).unwrap();
+    std::fs::write(password_file.as_path(), developer_secret()).unwrap();
     format!(
         r#"
 [developer]
-user = "{user}"
 password_file = "{password_file}"
 list_max_rows = {list_max_rows}
 "#,

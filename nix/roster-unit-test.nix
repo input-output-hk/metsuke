@@ -13,7 +13,9 @@
 }:
 let
   poolId = "pool13vscgf9dwn0jt56u965wp99ychz6avktk3pyrye326f3xctz4nm";
-  password = pkgs.writeText "developer-password" "not-a-real-secret";
+  password = pkgs.writeText "developer-password" ''
+    metsuke-dev = "not-a-real-secret"
+  '';
 
   machine = pkgs.nixos (
     { config, ... }:
@@ -57,7 +59,6 @@ let
             rate_limit_window_secs = 3600;
           };
           developer = {
-            user = "metsuke-dev";
             list_max_rows = 1000;
             password_file = "${password}";
           };

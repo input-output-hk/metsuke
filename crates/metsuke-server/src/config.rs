@@ -99,17 +99,18 @@ impl<'de> Deserialize<'de> for AbsolutePath {
     }
 }
 
-/// The one account that may pull the archive back out (ticket metsuke-4zo.10).
-/// Not optional: a serving host either has the credential or refuses to start,
-/// where an absent section would leave the routes quietly open or quietly gone.
+/// The accounts that may pull the archive back out (ticket metsuke-4zo.10).
+/// Not optional: a serving host either has the credentials or refuses to
+/// start, where an absent section would leave the routes quietly open or
+/// quietly gone.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeveloperConfig {
-    /// The user developers authenticate as. Public, as this whole file is.
-    pub user: String,
-    /// A file holding the account's password and nothing else. The path is
-    /// config, the password is whatever systemd's `LoadCredential` put there,
-    /// so no password reaches the environment (metsuke-4zo.50).
+    /// A file holding one `user = "password"` line per developer and nothing
+    /// else, so who has access is the secret's to say rather than this file's
+    /// (`developer::Accounts`). The path is config, the contents are whatever
+    /// systemd's `LoadCredential` put there, so no password reaches the
+    /// environment (metsuke-4zo.50).
     pub password_file: AbsolutePath,
     /// Keys one listing may answer with. A value above the upstream cap is
     /// clamped rather than refused (`developer::Developer::list_max_rows`).

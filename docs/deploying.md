@@ -36,9 +36,22 @@ file, which is what keeps the config Nix-managed and readable in the open. Put
 them in a sops-managed file and hand it to the module as `environmentFile`. The
 module asserts it is set whenever the archive is S3.
 
-**The developer password.** One shared account, not one per person. A file the
-module loads through systemd `LoadCredential`, so the service user never reads
-the original path.
+**The developer passwords.** One account per person, in one file the module
+loads through systemd `LoadCredential`, so the service user never reads the
+original path. The file is a TOML table:
+
+```
+alice = "..."
+bob = "..."
+```
+
+Each developer takes their own line's value and puts it in a local file for
+`metsuke-fetch`. A username is dash-separated runs of `a-z` and `0-9`. Adding
+or revoking one person is an edit to one line of one encrypted file, and the
+server names the account in the log on every pull and every refusal.
+
+The usernames are the secret's, not the config's, so auditing who has access is
+a decrypt rather than a look at the published config.
 
 **The allowlist.** Generated offline, never hand-written:
 
@@ -138,7 +151,7 @@ one instead of S3, has to have its root under that path, and the module asserts
 it.
 
 `settings.developer.password_file` defaults to the path `LoadCredential` puts
-the password at. Leave it alone.
+the accounts at. Leave it alone.
 
 The shipped rate limits are a runaway-agent backstop, not abuse control, and
 `contrib/server.example.toml` states what headroom they assume. Beads

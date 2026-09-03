@@ -17,7 +17,7 @@ use metsuke_fetch::pull::Archive;
 use metsuke_server::applications::Codes;
 use metsuke_server::archive::{FilesystemArchive, Kind, ObjectName};
 use metsuke_server::config::{AbsolutePath, DeveloperConfig, HttpConfig, IngestConfig};
-use metsuke_server::developer::Developer;
+use metsuke_server::developer::{Accounts, Developer};
 use metsuke_server::instructions;
 use metsuke_server::intake::Intake;
 use metsuke_server::serve;
@@ -159,14 +159,14 @@ impl Server {
             .map(|index| seeded(&root, index))
             .collect::<Vec<Object>>();
         let password_file = dir.path().join("password");
-        std::fs::write(&password_file, format!("{PASSWORD}\n")).expect("the password file writes");
+        let secret = format!("{USER} = \"{PASSWORD}\"\n");
+        std::fs::write(&password_file, &secret).expect("the password file writes");
         let developer = Developer::new(
             &DeveloperConfig {
-                user: USER.to_string(),
                 password_file: AbsolutePath::new(password_file).expect("a temp dir is absolute"),
                 list_max_rows: nonzero_u32(list_max_rows),
             },
-            PASSWORD,
+            Accounts::parse(&secret).expect("the test secret parses"),
         );
         let listener = serve::bind("127.0.0.1:0").expect("a kernel-chosen port binds");
         let url = format!("http://{}", listener.address());

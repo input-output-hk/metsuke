@@ -18,7 +18,7 @@ mod support;
 use base64::Engine as _;
 use metsuke_wire::hex;
 use support::{
-    DEVELOPER_PASSWORD, FailingArchive, developer_config, envelope_for, other_key,
+    DEVELOPER_PASSWORD, DEVELOPER_USER, FailingArchive, developer_config, envelope_for, other_key,
     permissive_config, pool_of, seal, test_key,
 };
 
@@ -65,7 +65,7 @@ fn unreachable_archive() -> Server<FailingArchive> {
 }
 
 fn over<A: metsuke_server::archive::Store>(archive: A, dir: tempfile::TempDir) -> Server<A> {
-    let developer = Developer::new(&developer_config(dir.path()), DEVELOPER_PASSWORD);
+    let developer = Developer::new(&developer_config(dir.path()), support::developer_accounts());
     Server {
         intake: Intake::new(permissive_config(&[pool_of(&test_key())]), archive, None),
         developer,
@@ -89,7 +89,7 @@ fn get(target: &str) -> Request {
 
 /// A GET the configured developer account is authorized to make.
 fn pull(target: &str) -> Request {
-    let user = developer_config(std::path::Path::new("/tmp")).user;
+    let user = DEVELOPER_USER;
     let encoded =
         base64::engine::general_purpose::STANDARD.encode(format!("{user}:{DEVELOPER_PASSWORD}"));
     Request {

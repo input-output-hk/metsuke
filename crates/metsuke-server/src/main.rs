@@ -10,7 +10,7 @@ use metsuke_server::config::{
     ArchiveConfig, ConfigError, DeveloperConfig, DownloadsConfig, HttpConfig, IngestConfig,
     S3Config, ServerConfig,
 };
-use metsuke_server::developer::Developer;
+use metsuke_server::developer::{Accounts, AccountsError, Developer};
 use metsuke_server::http;
 use metsuke_server::instructions;
 use metsuke_server::intake::Intake;
@@ -39,14 +39,18 @@ enum Fatal {
     },
     #[error(transparent)]
     Config(#[from] ConfigError),
-    #[error("cannot read the developer password {path}: {source}")]
-    DeveloperPassword {
+    #[error("cannot read the developer accounts {path}: {source}")]
+    DeveloperAccounts {
         path: String,
         #[source]
         source: std::io::Error,
     },
-    #[error("the developer password {path} is empty, which would authorize anyone")]
-    EmptyDeveloperPassword { path: String },
+    #[error("the developer accounts {path} {source}")]
+    DeveloperSecret {
+        path: String,
+        #[source]
+        source: AccountsError,
+    },
     #[error(transparent)]
     Roster(#[from] RosterError),
     #[error(transparent)]
@@ -285,22 +289,23 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
     match listener.serve(limits, intake, developer, pages)? {}
 }
 
-/// The developer account, with the password read off the file the config
-/// names. A file that is missing, unreadable or empty stops startup: the
-/// routes would otherwise be open on a credential nobody set, and `user` is
-/// public in a config an operator publishes.
+/// The developer accounts, read off the file the config names. A file that is
+/// missing, unreadable or naming no usable account stops startup: the routes
+/// would otherwise be open on a credential nobody set.
 fn developer(config: &DeveloperConfig) -> Result<Developer, Fatal> {
     let path = config.password_file.as_path();
     let named = || path.display().to_string();
-    let password = std::fs::read_to_string(path).map_err(|source| Fatal::DeveloperPassword {
+    let written = std::fs::read_to_string(path).map_err(|source| Fatal::DeveloperAccounts {
         path: named(),
         source,
     })?;
-    // Trailing newline trimmed: an editor adds one and it is not part of the
-    // secret.
-    let password = password.trim_end_matches(['\r', '\n']);
-    if password.is_empty() {
-        return Err(Fatal::EmptyDeveloperPassword { path: named() });
-    }
-    Ok(Developer::new(config, password))
+    let accounts = Accounts::parse(&written).map_err(|source| Fatal::DeveloperSecret {
+        path: named(),
+        source,
+    })?;
+    eprintln!(
+        "{INFO}{} developer accounts may pull the archive",
+        accounts.count()
+    );
+    Ok(Developer::new(config, accounts))
 }

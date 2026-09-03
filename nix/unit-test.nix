@@ -41,7 +41,9 @@ let
       cborHex = "5820${pkgs.lib.strings.replicate 32 "07"}";
     }
   );
-  password = pkgs.writeText "password" "not-a-real-secret";
+  password = pkgs.writeText "password" ''
+    metsuke-dev = "not-a-real-secret"
+  '';
 
   # Named where both the config and the assertions can reach it.
   stateDirectory = "/var/lib/metsuke-server";
@@ -109,7 +111,6 @@ let
           rate_limit_window_secs = 3600;
         };
         developer = {
-          user = "metsuke-dev";
           list_max_rows = 1000;
         };
       };

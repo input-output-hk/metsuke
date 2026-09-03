@@ -113,8 +113,9 @@ in
       # and it is also what lets the secret be replaced without a rebuild.
       type = lib.types.str;
       description = ''
-        The developer account's password, alone in a file. Read by systemd as
-        root, so the deployed secret stays unreadable to the service user.
+        The developer accounts, as one `user = "password"` line each and
+        nothing else. Read by systemd as root, so the deployed secret stays
+        unreadable to the service user.
       '';
     };
 
@@ -313,7 +314,6 @@ in
           developer = mkOption {
             type = types.submodule {
               options = {
-                user = required types.str;
                 password_file = mkOption {
                   type = types.str;
                   default = credentialPath "developer-password";

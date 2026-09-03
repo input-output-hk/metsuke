@@ -13,7 +13,9 @@
 }:
 let
   poolId = "pool13vscgf9dwn0jt56u965wp99ychz6avktk3pyrye326f3xctz4nm";
-  password = pkgs.writeText "developer-password" "not-a-real-secret";
+  password = pkgs.writeText "developer-password" ''
+    metsuke-dev = "not-a-real-secret"
+  '';
 
   # Every limit the server refuses to start without, so the archive is the only
   # thing that differs between the two runs below. Port 0: the server reports
@@ -38,7 +40,6 @@ let
       rate_limit_window_secs = 3600;
     };
     developer = {
-      user = "metsuke-dev";
       list_max_rows = 1000;
       # Where systemd would have put it, named directly because nothing here
       # loads a credential.

@@ -137,10 +137,15 @@ let
   secretAccessKey = "0011223344556677889900112233445566778899001122334455667788990011";
   rpcSecret = "5c1915fa04d0b6739675c61bf5907eb0fe3d9c69850c83820f51b4d25d13868c";
 
-  # The developer account the download subtest authenticates as.
+  # The developer account the download subtest authenticates as. A second
+  # account is named beside it, so the secret this deployment reads is a table
+  # rather than the one-account case of one.
   developerUser = "metsuke-dev";
   developerPassword = "not-a-real-secret";
-  password = pkgs.writeText "password" developerPassword;
+  password = pkgs.writeText "password" ''
+    other-dev = "not-this-one-either"
+    ${developerUser} = "${developerPassword}"
+  '';
 
   awsEnvironment = pkgs.writeText "aws-environment" ''
     AWS_ACCESS_KEY_ID=${accessKeyId}
@@ -490,7 +495,6 @@ let
               rate_limit_window_secs = 3600;
             };
             developer = {
-              user = developerUser;
               list_max_rows = 1000;
             };
           };

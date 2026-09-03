@@ -151,9 +151,9 @@ impl Command {
 pub struct Access {
     pub server: String,
     pub user: String,
-    /// A file holding the account's password and nothing else, as the server
-    /// states it (`metsuke_server::config::DeveloperConfig`). A path, so no
-    /// secret reaches the process table.
+    /// A file holding this account's password and nothing else, which is the
+    /// one line a developer takes out of the server's own table of accounts.
+    /// A path, so no secret reaches the process table.
     pub password_file: PathBuf,
     pub timeout_ms: NonZeroU64,
 }

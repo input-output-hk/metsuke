@@ -114,9 +114,8 @@ const NONZERO_FIELDS: [&str; 15] = [
 
 /// The rest, where only absence is a mistake. Together with `NONZERO_FIELDS`
 /// this is every field the server reads, so a new one joins exactly one list.
-const OTHER_FIELDS: [&str; 8] = [
+const OTHER_FIELDS: [&str; 7] = [
     "listen",
-    "user",
     "bucket",
     "region",
     "endpoint",
