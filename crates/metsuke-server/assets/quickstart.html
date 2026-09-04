@@ -136,8 +136,8 @@ of this page.</p>
 
 <h2>2. Configure it</h2>
 
-<p>Take the config your selected row names from the setup table above, set your
-pool id, and put your signing key where the unit will look for it:</p>
+<p>Take the config your setup names in the table above, set your pool id, and
+put your signing key where the agent will look for it:</p>
 
 <pre># Both the config and signing-key files go here, and nothing has made this
 # directory yet
@@ -154,7 +154,7 @@ sudo curl -o {{config_path}} {{files_url}}config.pipe.toml
 # Metrics only
 sudo curl -o {{config_path}} {{files_url}}config.minimal.toml
 
-# Set your pool id, and check the metrics URL. Two rows have more to set:
+# Set your pool id, and check the metrics URL. Two setups have more to set:
 #   Its own unit  your node's unit, and journalctl's absolute path
 #   A shell       a spool_path you can write
 sudo $EDITOR {{config_path}}
@@ -174,9 +174,11 @@ and it needs no setting: unset, it is that host's hostname, which the startup
 line prints. Set it where the hostname is not the name you want, and in a
 container, where the hostname is the runtime's rather than yours.</p>
 
-<p>Those permissions are for the systemd setups, where the unit hands the key
-over as a credential and the service never reads the file itself. From a shell
-or a container you point <code>--signing-key</code> at your own copy instead.</p>
+<p>Those permissions are for the three systemd setups, where the unit hands the
+key over as a credential and the service never reads the file itself. If you
+took <strong>A container</strong> or <strong>A shell</strong>, you point
+<code>--signing-key</code> at your own copy instead, and it needs to be readable
+by whoever runs the agent.</p>
 
 <p>Both your Leios key and your cold key work; use your
 <strong>Leios key</strong>.
@@ -190,7 +192,9 @@ further guidance.</p>
 
 <h2>3. Run it</h2>
 
-<p>Two setups give the agent a unit of its own. Download one, and only one:</p>
+<p>Three branches from here, one per setup. If you took <strong>Its own
+unit</strong> or <strong>Metrics only</strong>, the agent runs under a unit of
+its own, and you download one of the two:</p>
 
 <pre># Its own unit
 sudo curl -o /etc/systemd/system/metsuke.service {{files_url}}metsuke-journald.service
@@ -202,8 +206,9 @@ sudo curl -o /etc/systemd/system/metsuke.service {{files_url}}metsuke.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now metsuke</pre>
 
-<p>Your node's unit takes a drop-in instead, which replaces the command that
-unit runs with the same command piped through the agent.
+<p>If you took <strong>Your node's unit</strong>, the agent gets no unit of its
+own. A drop-in replaces the command your node's unit already runs with that
+same command piped through the agent.
 <a href="{{DETAILS_PATH}}#pipe">Why it is a drop-in</a>.</p>
 
 <pre># The directory is yours to make. The zzzz- name sorts the drop-in last, so
@@ -219,27 +224,40 @@ sudo $EDITOR /etc/systemd/system/&lt;your-node&gt;.service.d/zzzz-metsuke.conf
 sudo systemctl daemon-reload
 sudo systemctl restart &lt;your-node&gt;</pre>
 
-<p>The last two setups start nothing of their own:
+<p>If you took <strong>A container</strong> or <strong>A shell</strong>, nothing
+above applies and nothing starts the agent for you:
 <a href="{{DETAILS_PATH}}#container">the pipeline goes in your container's
 entrypoint</a>, which the details page shows whole against the MusashiNet node
-image, or a shell runs the try-it command above, which nothing restarts.</p>
+image, or a shell runs the try-it command at the top of this page.</p>
 
 <h2>4. Check it</h2>
 
-<pre>journalctl -u metsuke -f</pre>
+<p>Where the agent's own lines come out depends on your setup:</p>
 
-<p>The same lines the try-it printed, though not all at once. The first
-submission goes out on the first scrape rather than on a cadence, so the
-startup lines and the scrape one appear within seconds of each other and you do
-not wait out an interval to find out something is wrong. Trace lines have not
-accumulated by then, so theirs goes out on the next upload, one hour by
-default.</p>
+<pre># Its own unit, or Metrics only
+journalctl -u metsuke -f
+
+# Your node's unit: the agent runs inside it, so its lines are the node's
+journalctl -u &lt;your-node&gt; -f
+
+# A container
+docker logs -f &lt;container&gt;
+
+# A shell: they are already on your terminal</pre>
+
+<p>Whichever command you ran, expect the same lines the try-it printed above,
+though not all at once. The first submission goes out on the first scrape
+rather than on a cadence, so the startup lines and the scrape one appear within
+seconds of each other and you do not wait out an interval to find out something
+is wrong. Trace lines have not accumulated by then, so theirs goes out on the
+next upload, one hour by default.</p>
 
 <p>A refused submission logs this server's reason in place of one of those
 accepted lines, and the scrapes stay spooled, so nothing is lost while you fix
 it.</p>
 
-<p>A failure naming <code>cannot read signing key</code> under
+<p>If you took <strong>Its own unit</strong> or <strong>Metrics only</strong>, a
+failure naming <code>cannot read signing key</code> under
 <code>/run/credentials</code> is usually the unit's credential being cleared
 rather than a permission problem. <code>systemctl cat metsuke</code> prints the
 unit and every drop-in that applies to it, including the host-wide ones under
@@ -256,13 +274,26 @@ EOF
 sudo systemctl daemon-reload
 sudo systemctl restart metsuke</pre>
 
+<p><strong>Your node's unit</strong> is already out of this: the drop-in you
+installed is named to sort after anything host-wide, which is what the
+<code>zzzz-</code> is for.</p>
+
 <h2>Staying up to date</h2>
 
 <p>This server was built against agent {{CLIENT_VERSION}} and tells every agent
 that uploads to it which version that is. The agent logs a warning when it is
-older. To update, repeat step 1 and restart:</p>
+older. To update, repeat step 1, then restart whatever runs it:</p>
 
-<pre>sudo systemctl restart metsuke</pre>
+<pre># Its own unit, or Metrics only
+sudo systemctl restart metsuke
+
+# Your node's unit: the agent restarts with the node
+sudo systemctl restart &lt;your-node&gt;
+
+# A container
+docker restart &lt;container&gt;
+
+# A shell: run the try-it command again</pre>
 
 <p>The spool is on disk, so queued scrapes survive the restart. Nothing is
 scraped while the agent is down.</p>
