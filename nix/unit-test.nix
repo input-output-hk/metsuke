@@ -132,7 +132,9 @@ pkgs.testers.runNixOSTest {
     systemd.services.metrics-endpoint = metricsEndpoint;
 
     # Root-only, so the agent reaching it proves systemd passed it as a
-    # credential rather than the service user reading the path.
+    # credential rather than the service user reading the path. Deliberately
+    # not the path the shipped unit loads: `signingKeyFile` takes any, and the
+    # `bare` node below is what covers the shipped one.
     environment.etc."metsuke/bls.skey" = {
       source = signingKey;
       mode = "0400";
@@ -211,7 +213,7 @@ pkgs.testers.runNixOSTest {
 
     environment.etc = {
       "metsuke/metsuke.service".source = contribUnit;
-      "metsuke/bls.skey" = {
+      "metsuke/signing-key" = {
         source = signingKey;
         mode = "0400";
       };
@@ -248,7 +250,7 @@ pkgs.testers.runNixOSTest {
       "metsuke/node-pipe.conf".text = builtins.replaceStrings [ nodeCommand ] [ "${nodeStandIn}" ] (
         builtins.readFile pipeDropIn
       );
-      "metsuke/bls.skey" = {
+      "metsuke/signing-key" = {
         source = signingKey;
         mode = "0400";
       };
@@ -403,7 +405,7 @@ pkgs.testers.runNixOSTest {
         spooled(bare)
         confined(bare, "metsuke.service", "/var/lib/metsuke")
         # systemd handed the key over, so the file itself stayed root-only.
-        bare.succeed("test 400 -eq \"$(stat -c %a /etc/metsuke/bls.skey)\"")
+        bare.succeed("test 400 -eq \"$(stat -c %a /etc/metsuke/signing-key)\"")
 
     with subtest("the pipe drop-in runs the agent downstream of the node"):
         piping.wait_for_unit("metrics-endpoint.service")
@@ -436,7 +438,7 @@ pkgs.testers.runNixOSTest {
 
         # The key arrived as a credential here too, which is what lets the
         # agent run as the node's user without the key being readable by it.
-        piping.succeed("test 400 -eq \"$(stat -c %a /etc/metsuke/bls.skey)\"")
+        piping.succeed("test 400 -eq \"$(stat -c %a /etc/metsuke/signing-key)\"")
         # And the drop-in grants no group, which is what the pipe buys over
         # the journal. ADR 0010 weighs the two.
         piping.fail("grep -q SupplementaryGroups /etc/metsuke/node-pipe.conf")

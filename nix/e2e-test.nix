@@ -676,8 +676,12 @@ let
 
         with subtest("the page's node-config snippets merge into an SPO's own config"):
             # Off the served page rather than restated here, so what this applies
-            # is what an operator pastes.
-            page = e2e.succeed("curl -sS http://127.0.0.1:${toString listenPort}/")
+            # is what an operator pastes. The details page and not the root: the
+            # quickstart links the node's tracing rather than printing it, and
+            # these two snippets are shown whole on that page alone.
+            page = e2e.succeed(
+                "curl -sS http://127.0.0.1:${toString listenPort}/details"
+            )
             snippets = []
             for block in page.split("<pre>")[1:]:
                 try:
