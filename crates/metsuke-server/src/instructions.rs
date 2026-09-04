@@ -170,7 +170,10 @@ fn install(offered: &[File], files_url: &str, binary: &str) -> String {
             format!("curl -O {files_url}{name}"),
             String::new(),
             "# Install it where the unit will look for it".to_string(),
-            format!("sudo install -m 0755 {name} {binary}"),
+            // -D: the directory is standard, but a minimal image can be
+            // without it, and the operator meets that as a failed install
+            // rather than as a missing path.
+            format!("sudo install -D -m 0755 {name} {binary}"),
         ],
         false => vec![
             "# Build the static agent".to_string(),
