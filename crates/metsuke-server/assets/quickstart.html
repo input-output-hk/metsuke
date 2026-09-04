@@ -191,6 +191,22 @@ default.</p>
 accepted lines, and the scrapes stay spooled, so nothing is lost while you fix
 it.</p>
 
+<p>A failure naming <code>cannot read signing key</code> under
+<code>/run/credentials</code> is usually the unit's credential being cleared
+rather than a permission problem. <code>systemctl show metsuke -p
+LoadCredential</code> should name your key; an empty value means a host-wide
+drop-in reset it, as the LXC and LXD images do. Restore it in a drop-in that
+sorts after theirs.</p>
+
+<pre>sudo mkdir -p /etc/systemd/system/metsuke.service.d
+sudo tee /etc/systemd/system/metsuke.service.d/zzzz-credential.conf &gt;/dev/null &lt;&lt;'EOF'
+[Service]
+LoadCredential=signing-key:/etc/metsuke/signing-key
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl restart metsuke</pre>
+
 <h2>Staying up to date</h2>
 
 <p>This server was built against agent {{CLIENT_VERSION}} and tells every agent

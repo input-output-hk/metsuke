@@ -302,7 +302,7 @@
           # everyone, so the credential is what ships rather than an option the
           # header offers.
           credential = "LoadCredential=signing-key:${agentKey}";
-          execStart = "${agentBinary} --config ${agentConfig} --signing-key \${CREDENTIALS_DIRECTORY}/signing-key";
+          execStart = "${agentBinary} --config ${agentConfig} --signing-key %d/signing-key";
 
           # One unit per log source, so an operator picks a file rather than a
           # set of directives to change. Everything below the header is shared,

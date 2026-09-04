@@ -157,7 +157,7 @@ in
           "--config"
           configFile
           "--signing-key"
-          "\${CREDENTIALS_DIRECTORY}/${credential}"
+          "%d/${credential}"
         ];
         LoadCredential = "${credential}:${cfg.signingKeyFile}";
         Restart = "always";

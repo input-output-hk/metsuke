@@ -23,7 +23,7 @@ Wants=network-online.target
 
 [Service]
 LoadCredential=signing-key:/etc/metsuke/signing-key
-ExecStart=/usr/local/bin/metsuke --config /etc/metsuke/config.toml --signing-key ${CREDENTIALS_DIRECTORY}/signing-key
+ExecStart=/usr/local/bin/metsuke --config /etc/metsuke/config.toml --signing-key %d/signing-key
 Restart=always
 RestartSec=30
 AmbientCapabilities=
