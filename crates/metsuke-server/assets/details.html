@@ -193,15 +193,19 @@ entrypoint.</p>
 
 <p>The agent is a static binary, which is what makes that cheap: it needs no
 image of its own and nothing in the node's image has to match it. Mount it in
-beside the node. Against the MusashiNet node image, with the two pieces you
-supply marked:</p>
+beside the node, with its config and its key. Nothing has to be installed on
+the host first, so a container setup can skip the install and configure steps
+of the quickstart and keep all three files in the directory the node already
+runs from. Against the MusashiNet node image:</p>
 
-<pre>docker run -d --name leios-relay --init \
+<pre># Run this from the directory holding the node's data and these three files
+docker run -d --name leios-relay --init \
   -p 3010:3010 \
-  -v "$WORKING_DIR:/data" \
-  -v "$WORKING_DIR/config:/app/config:ro" \
-  -v {{binary}}:{{binary}}:ro \
-  -v {{config_dir}}:{{config_dir}}:ro \
+  -v "$PWD:/data" \
+  -v "$PWD/config:/app/config:ro" \
+  -v "$PWD/metsuke:{{binary}}:ro" \
+  -v "$PWD/config.toml:{{config_path}}:ro" \
+  -v "$PWD/bls.skey:{{key_path}}:ro" \
   -v metsuke-spool:/var/lib/metsuke \
   --entrypoint /bin/sh \
   ghcr.io/input-output-hk/ouroboros-leios/cardano-node-testnet:THE-TAG-THE-TESTNET-DOCS-PIN \
@@ -211,9 +215,17 @@ supply marked:</p>
 
 <p><code>/app/run-node.sh</code> is that image's own launcher, which is what it
 runs when you do not override the entrypoint. On any other image,
-<code>docker inspect</code> prints the command to put there instead. The first
-three mounts and the port are the testnet documentation's own; the rest are the
-agent's, and only the tag is left to fill in.</p>
+<code>docker inspect</code> prints the command to put there instead.
+Every path left of a colon is on this host and every path right of one is
+inside the container, which is why the agent's three are mounted at the same
+places its unit would have put them. Write the host side as
+<code>$PWD/...</code> rather than <code>./...</code>: docker reads a source
+that does not start with a slash as the name of a volume, so a relative one
+either fails or quietly creates a volume instead of mounting your file. The
+port and the two mounts under it are the node's. The three below those are the
+agent's, all read-only because it only reads them, and the spool volume is what
+survives a restart. The tag is the one thing left to fill in, and the testnet
+documentation is what pins it.</p>
 
 <p><strong>Keep <code>--init</code>.</strong> A shell running a pipeline as PID 1
 does not pass SIGTERM on to what it started, so without an init the runtime waits

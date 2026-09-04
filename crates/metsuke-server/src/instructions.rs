@@ -342,10 +342,6 @@ pub fn details(config_example: &str) -> String {
             // off the unit for the same reason the quickstart does: written
             // out here they are a second copy that goes stale silently.
             ("key_path", escape(&credential_source(UNIT))),
-            (
-                "config_dir",
-                escape(&parent_of(&exec_start(UNIT, ExecStartField::Config))),
-            ),
         ],
     )
 }
