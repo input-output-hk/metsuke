@@ -147,6 +147,35 @@ fn the_example_node_unit_is_the_one_the_journald_setup_reads() {
     }
 }
 
+/// A shipped file names its siblings, and an operator holding a download has no
+/// checkout for `contrib/` to resolve against, so what they receive names this
+/// server instead. Only served names are rewritten: `contrib/server.example.toml`
+/// is the server operator's file and this page does not offer it, so it stays a
+/// repository path rather than becoming a link that 404s.
+#[test]
+fn a_served_file_reaches_the_siblings_it_names() {
+    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let mut linked = 0;
+    for file in pages
+        .files
+        .iter()
+        .filter(|file| file.content_type.starts_with("text/"))
+    {
+        let text = String::from_utf8(file.bytes.clone()).expect("a shipped text file is UTF-8");
+        for (name, _) in instructions::FILES {
+            assert!(
+                !text.contains(&format!("contrib/{name}")),
+                "{} names contrib/{name}, which a download cannot follow",
+                file.name
+            );
+            linked += text
+                .matches(&format!("{}{name}", instructions::FILES_PREFIX))
+                .count();
+        }
+    }
+    assert!(linked > 0, "no shipped file reaches a sibling at all");
+}
+
 #[test]
 fn the_quickstart_links_the_details_page() {
     assert!(
@@ -345,11 +374,32 @@ fn every_served_file_is_the_shipped_one() {
             .find(|file| file.name == name)
             .unwrap_or_else(|| panic!("{name} is named but not served"));
         assert!(!served.bytes.is_empty(), "{name} is served empty");
-        // Only a config is rewritten on the way out, and only its upload URL.
+        // Only what a deployment alone can resolve is rewritten: a config's
+        // upload URL, and the siblings a file names, which are paths into a
+        // checkout the operator does not have. Undoing the second recovers the
+        // shipped bytes, which is what says nothing else moved. A binary is not
+        // text and is compared as it came.
         if !name.ends_with(".toml") {
-            assert_eq!(served.bytes, shipped, "{name} was altered on the way out");
+            let recovered = match String::from_utf8(served.bytes.clone()) {
+                Ok(text) => unlinked(&text).into_bytes(),
+                Err(_) => served.bytes.clone(),
+            };
+            assert_eq!(recovered, shipped, "{name} was altered on the way out");
         }
     }
+}
+
+/// The reverse of the server's sibling linking, so the compare above can hold
+/// every shipped file to being otherwise untouched.
+fn unlinked(text: &str) -> String {
+    let files = public_url()
+        .join(instructions::FILES_PREFIX)
+        .expect("the files prefix joins onto an absolute URL");
+    instructions::FILES
+        .iter()
+        .fold(text.to_string(), |text, (name, _)| {
+            text.replace(&format!("{files}{name}"), &format!("contrib/{name}"))
+        })
 }
 
 /// Where a deployment ships builds, every place the page hands an operator an

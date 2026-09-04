@@ -91,9 +91,9 @@ pub const NAMED_NAMESPACES: [&str; 4] = [
 /// lines out of a browser.
 pub const FILES_PREFIX: &str = "/files/";
 
-/// Every file the page offers, by the name it is served and linked under. The
-/// configs are pointed at this deployment on the way out; the units are the
-/// shipped bytes.
+/// Every file the page offers, by the name it is served and linked under. On
+/// the way out a config is pointed at this deployment, and any file's
+/// references to the siblings below become links to them. Nothing else moves.
 pub const FILES: [(&str, &str); 8] = [
     ("config.pipe.toml", CONFIG_PIPE),
     ("config.journald.toml", CONFIG_JOURNALD),
@@ -131,9 +131,14 @@ pub fn pages(public_url: &url::Url, binaries: Vec<Binary>) -> Pages {
         .map(|(name, contents)| File {
             name,
             content_type: "text/plain; charset=utf-8",
-            bytes: match name.ends_with(".toml") {
-                true => pointed(contents).into_bytes(),
-                false => contents.as_bytes().to_vec(),
+            bytes: {
+                // Only the configs name an upload_url; every shipped file
+                // names its siblings.
+                let text = match name.ends_with(".toml") {
+                    true => pointed(contents),
+                    false => contents.to_string(),
+                };
+                siblings_linked(&text, public_url).into_bytes()
             },
         })
         .chain(binaries.into_iter().map(|binary| File {
@@ -227,6 +232,21 @@ fn try_it(offered: &[File], files_url: &str) -> (String, String) {
 /// line an operator edits is their pool id. The URL to replace is read out of
 /// the file's own `upload_url` rather than matched against a constant here,
 /// which would be a second place for the example host to live.
+/// A shipped file's references to its siblings, made reachable. In the
+/// repository `contrib/config.pipe.toml` is where that file sits; to an
+/// operator holding a download it is a path to nothing, and this deployment
+/// serves the same file. Driven off `FILES` rather than the `contrib/` prefix,
+/// so a name this server does not answer for keeps pointing at the repository
+/// instead of becoming a link that 404s.
+fn siblings_linked(text: &str, public_url: &url::Url) -> String {
+    let files = public_url
+        .join(FILES_PREFIX)
+        .expect("the files prefix joins onto an absolute URL");
+    FILES.iter().fold(text.to_string(), |text, (name, _)| {
+        text.replace(&format!("contrib/{name}"), &format!("{files}{name}"))
+    })
+}
+
 fn pointed_at(config: &str, public_url: &url::Url) -> String {
     let table: toml::Table = config.parse().expect("a shipped config parses as TOML");
     let example = table
