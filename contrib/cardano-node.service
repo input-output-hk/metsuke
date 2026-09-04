@@ -1,8 +1,8 @@
 # /etc/systemd/system/cardano-node.service
 #
 # An example to adapt, not a supported unit. cardano-node ships no service
-# file of its own, and both of metsuke's systemd shapes need the node to have
-# one: the journald shape reads its journal, the drop-in shape extends it.
+# file of its own, and both of metsuke's systemd setups need the node to have
+# one: the journald setup reads its journal, the drop-in setup extends it.
 #
 #   REPO=input-output-hk/ouroboros-leios
 #

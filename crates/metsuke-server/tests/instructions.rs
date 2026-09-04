@@ -18,7 +18,7 @@ mod support;
 use support::public_url;
 
 /// Something running before any decision, then the decision, then the four
-/// steps. The order is the point: an operator who is funnelled into a shape
+/// steps. The order is the point: an operator who is funnelled into a setup
 /// before seeing the others finds out too late.
 const QUICKSTART_SECTIONS: [&str; 6] = [
     "Try it",
@@ -114,12 +114,12 @@ fn the_configure_step_makes_the_directory_its_files_go_in() {
     );
 }
 
-/// The example node unit is offered because the journald shape needs one, so
-/// it has to satisfy what that shape reads: a unit named as the shipped
+/// The example node unit is offered because the journald setup needs one, so
+/// it has to satisfy what that setup reads: a unit named as the shipped
 /// config's `journal_unit`, whose output is still the journal. Either drifting
 /// leaves an agent collecting nothing and saying nothing.
 #[test]
-fn the_example_node_unit_is_the_one_the_journald_shape_reads() {
+fn the_example_node_unit_is_the_one_the_journald_setup_reads() {
     let unit = instructions::NODE_UNIT;
     let journal_unit = instructions::CONFIG_JOURNALD
         .lines()

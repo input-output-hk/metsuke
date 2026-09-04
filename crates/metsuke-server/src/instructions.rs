@@ -70,7 +70,7 @@ pub const UNIT: &str = include_str!("../../../contrib/metsuke.service");
 pub const UNIT_JOURNALD: &str = include_str!("../../../contrib/metsuke-journald.service");
 pub const PIPE_DROPIN: &str = include_str!("../../../contrib/node-pipe.conf");
 
-/// A unit for the node, which is not one of ours: the journald shape reads a
+/// A unit for the node, which is not one of ours: the journald setup reads a
 /// journal only a systemd unit has, and cardano-node ships no service file to
 /// make one. Offered so a pool testing this does not write one first.
 pub const NODE_UNIT: &str = include_str!("../../../contrib/cardano-node.service");

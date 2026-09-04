@@ -6,7 +6,7 @@
 
 <header>
 <h1>Metsuke Details</h1>
-<a class="logo-link" href="https://www.musashi.network/">{{logo}}</a>
+<a class="logo-link" href="https://musashi.network">{{logo}}</a>
 </header>
 
 <p>What the agent sends, which key signs, and every config setting available is
@@ -172,14 +172,14 @@ regardless of trace source; how the agent gets it is the choice below.</p>
 
 <h2 id="pipe">The pipe</h2>
 
-<p>In pipe mode the node runs as <code>cardano-node run ... | {{binary}}
+<p>In the pipe setup the node runs as <code>cardano-node run ... | {{binary}}
 --config {{config_path}}</code>. The agent reads the node's stdout on its own
 stdin, holds no group at all, and writes every line through to its own stdout
 unchanged, so whatever read the node's output before still reads it.</p>
 
 <p>It runs downstream of the node, so it needs no unit of its own. That makes
 this a change to the node's unit, and systemd has no pipelines, so the command
-is wrapped in a shell. This drop-in is the shape, and the empty
+is wrapped in a shell. This drop-in is that change, and the empty
 <code>ExecStart=</code> is what clears the command the node's unit already
 had: <a href="{{FILES_PREFIX}}node-pipe.conf">node-pipe.conf</a>, with
 <a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a> beside it.</p>
@@ -249,11 +249,11 @@ container network namespace and so reaches the loopback the image already binds.
 The image ships <code>Stdout MachineFormat</code> in its backends either way, so
 the trace lines themselves need nothing.</p>
 
-<p>The NixOS module only renders journald mode, not pipe mode.</p>
+<p>The NixOS module only renders the journald setup, not the pipe one.</p>
 
 <h2 id="journal">The journal</h2>
 
-<p>In journald mode the agent reads the node's journal under its own unit, so
+<p>In the journald setup the agent reads the node's journal under its own unit, so
 it takes a node that is a systemd unit and logs to the journal. That
 costs it membership of the <code>systemd-journal</code> group, which reads every
 unit's journal on the host and is the one privilege it holds beyond scraping

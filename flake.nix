@@ -383,13 +383,13 @@
               # contrib/node-pipe.conf is the source that costs no group.'';
           };
 
-          # Pipe mode is a change to the node's unit and not the agent's, since
-          # the agent runs downstream of the node and has no unit of its own. A
-          # drop-in rather than an edited unit, so the node's own packaging
-          # still owns its file.
+          # The pipe setup is a change to the node's unit and not the agent's,
+          # since the agent runs downstream of the node and has no unit of its
+          # own. A drop-in rather than an edited unit, so the node's own
+          # packaging still owns its file.
           contribPipeDropIn = pkgs.writeText "node-pipe.conf" ''
-            # Example drop-in for the node's unit, which is where pipe mode
-            # lives. Generated: edit nix/unit.nix, then
+            # Example drop-in for the node's unit, which is where the pipe
+            # setup lives. Generated: edit nix/unit.nix, then
             # `nix build .#metsuke-pipe-dropin` and commit what it wrote here.
             #
             # Copy to /etc/systemd/system/<your-node>.service.d/metsuke.conf.

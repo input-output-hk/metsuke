@@ -6,11 +6,11 @@
 
 <header>
 <h1>Metsuke</h1>
-<a class="logo-link" href="https://www.musashi.network/">{{logo}}</a>
+<a class="logo-link" href="https://musashi.network">{{logo}}</a>
 </header>
 
 <p>Metsuke is a small agent you run beside cardano-node on the
-<a href="https://www.musashi.network/">Musashi network</a>. It reads your node's
+<a href="https://musashi.network">Musashi network</a>. It reads your node's
 Prometheus endpoint over loopback, collects the trace lines it has been
 configured for, and sends this server a signed submission. It never opens your
 node socket, and it reads only the signing key you point it at.</p>
@@ -43,7 +43,7 @@ waits for the next upload, one hour by default:</p>
 <pre>{{journal}}</pre>
 
 <p>Drop the <code>&gt; /dev/null</code> and your node's output comes back,
-interleaved with these lines. That pass-through is what the shapes below depend
+interleaved with these lines. That pass-through is what the setups below depend
 on: whatever read your node's output before still reads it.</p>
 
 <p>The config already points at this server, and its metrics URL is the port
@@ -51,18 +51,18 @@ most nodes already serve Prometheus on. If your node is configured differently,
 that is the second line to change in the config file.</p>
 
 <p><code>spool_path</code> is the line a run from a shell usually has to change.
-It ships as the state directory the systemd shapes below create, which a shell
+It ships as the state directory the systemd setups below create, which a shell
 may not be able to write to by default, and the agent says so and stops rather
 than starting with nowhere to put a scrape.</p>
 
 <h2>How you'll run it for real</h2>
 
-<p>The shapes, and what each costs. Everything below is the same four steps
+<p>The setups, and what each costs. Everything below is the same four steps
 whichever row you take; only the filenames change.</p>
 
 <table>
 <tr>
-  <th>Shape<th>Trace line source<th>Group required<th>Restarts
+  <th>Setup<th>Trace line source<th>Group required<th>Restarts
   <th>Metsuke config<th>Systemd service<th>Systemd drop-in
 <tr>
   <td><strong>Its own unit</strong><br><span class="note">the usual one</span>
@@ -115,7 +115,7 @@ your node's, so restarting the agent restarts your node.</p>
 to the journal, which is where its trace lines are read from.
 <a href="{{FILES_PREFIX}}cardano-node.service">cardano-node.service</a> is an
 example to adapt where yours has no unit yet. It serves either row: the journald
-shape reads the journal it writes to, and the drop-in shape replaces the command
+setup reads the journal it writes to, and the drop-in setup replaces the command
 it runs.</p>
 
 <p>The last two are fallbacks rather than places to stay. Metrics only collects
@@ -136,16 +136,27 @@ of this page.</p>
 
 <h2>2. Configure it</h2>
 
-<p>Take the config your selected row names from the shape table above, set your
+<p>Take the config your selected row names from the setup table above, set your
 pool id, and put your signing key where the unit will look for it:</p>
 
-<pre># Both files below go here, and nothing has made it yet
+<pre># Both the config and signing-key files go here, and nothing has made this
+# directory yet
 sudo mkdir -p {{config_dir}}
 
-# Download the config your row names, the journald shape here
+# Download one config file, and only one, from the preferred setup above
+
+# Its own unit
 sudo curl -o {{config_path}} {{files_url}}config.journald.toml
 
-# Set your pool id, your node's unit and where journalctl lives
+# Your node's unit, A container, or A shell
+sudo curl -o {{config_path}} {{files_url}}config.pipe.toml
+
+# Metrics only
+sudo curl -o {{config_path}} {{files_url}}config.minimal.toml
+
+# Set your pool id, and check the metrics URL. Two rows have more to set:
+#   Its own unit  your node's unit, and journalctl's absolute path
+#   A shell       a spool_path you can write
 sudo $EDITOR {{config_path}}
 
 # Install your signing key, bls.skey or pool.skey, readable by root alone
@@ -163,7 +174,7 @@ and it needs no setting: unset, it is that host's hostname, which the startup
 line prints. Set it where the hostname is not the name you want, and in a
 container, where the hostname is the runtime's rather than yours.</p>
 
-<p>Those permissions are for the systemd shapes, where the unit hands the key
+<p>Those permissions are for the systemd setups, where the unit hands the key
 over as a credential and the service never reads the file itself. From a shell
 or a container you point <code>--signing-key</code> at your own copy instead.</p>
 
@@ -179,7 +190,7 @@ further guidance.</p>
 
 <h2>3. Run it</h2>
 
-<pre># Download the unit your row names, the journald shape here
+<pre># Download the unit your row names, the journald setup here
 sudo curl -o /etc/systemd/system/metsuke.service {{files_url}}metsuke-journald.service
 
 # Start it now, and on every boot
@@ -187,7 +198,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now metsuke</pre>
 
 <p>That covers the two rows that give the agent a unit of its own, the journald
-shape above and metrics only. The other three run it inside something you
+setup above and metrics only. The other three run it inside something you
 already have: <a href="{{DETAILS_PATH}}#pipe">a drop-in on your node's
 unit</a>, <a href="{{DETAILS_PATH}}#container">the pipeline in your container's
 entrypoint</a>, which the details page shows whole against the MusashiNet node
