@@ -77,6 +77,43 @@ fn every_outline_section_is_present_and_in_order() {
 /// The quickstart is the one an operator is pointed at, so the other page has
 /// to be reachable from it and nothing else has to be. No closing quote in the
 /// needle: every link is to a section of it rather than to the top.
+/// The configure step writes two files into a directory a fresh host does not
+/// have, so it makes it first, and what it makes has to be where those two
+/// actually go. Both paths are read off the shipped unit, so a unit that
+/// moves them would otherwise leave the step creating the old one.
+#[test]
+fn the_configure_step_makes_the_directory_its_files_go_in() {
+    let quickstart = instructions::pages(&public_url(), support::test_binaries()).quickstart;
+    let made = quickstart
+        .lines()
+        .find_map(|line| line.strip_prefix("sudo mkdir -p "))
+        .expect("the configure step makes the directory")
+        .to_string();
+
+    for written in quickstart
+        .lines()
+        // The page is markup, so a path at the end of a command carries the
+        // tag that closes the block it is in.
+        .filter_map(|line| line.split_whitespace().last())
+        .filter_map(|word| word.split('<').next())
+        .filter(|word| word.starts_with(&format!("{made}/")))
+    {
+        assert_eq!(
+            std::path::Path::new(written)
+                .parent()
+                .expect("a path under the directory has one")
+                .display()
+                .to_string(),
+            made,
+            "{written:?} is written into a directory the step does not make"
+        );
+    }
+    assert!(
+        quickstart.contains(&format!("{made}/")),
+        "the step makes {made:?} and writes nothing into it"
+    );
+}
+
 #[test]
 fn the_quickstart_links_the_details_page() {
     assert!(

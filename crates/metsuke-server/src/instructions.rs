@@ -257,6 +257,13 @@ pub fn quickstart(unit: &str, public_url: &url::Url, offered: &[File]) -> String
                 escape(&exec_start(unit, ExecStartField::Config)),
             ),
             ("key_path", escape(&credential_source(unit))),
+            // Where both of those go, so the step that writes them can make
+            // it first. Read off the config path rather than written down,
+            // because the unit is what decides it.
+            (
+                "config_dir",
+                escape(&parent_of(&exec_start(unit, ExecStartField::Config))),
+            ),
             // Named in the prose beside the install step, as the alternative to
             // downloading one, and nowhere else on this page.
             ("flake", escape(&flake_ref())),
@@ -459,6 +466,16 @@ fn credential_source(unit: &str) -> String {
         .expect("the shipped unit loads the signing key as a credential")
         .1
         .to_string()
+}
+
+/// The directory a path is in, for the step that has to create it. The root
+/// where a path names no directory, which no shipped unit does.
+fn parent_of(path: &str) -> String {
+    std::path::Path::new(path)
+        .parent()
+        .map(|parent| parent.display().to_string())
+        .filter(|parent| !parent.is_empty())
+        .unwrap_or_else(|| "/".to_string())
 }
 
 /// Where a document the details page links is read: the manifest's URL and

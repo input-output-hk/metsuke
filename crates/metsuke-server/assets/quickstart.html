@@ -122,7 +122,10 @@ of this page.</p>
 <p>Take the config your selected row names from the shape table above, set your
 pool id, and put your signing key where the unit will look for it:</p>
 
-<pre># Download the config your row names, the journald shape here
+<pre># Both files below go here, and nothing has made it yet
+sudo mkdir -p {{config_dir}}
+
+# Download the config your row names, the journald shape here
 sudo curl -o {{config_path}} {{files_url}}config.journald.toml
 
 # Update your pool id
