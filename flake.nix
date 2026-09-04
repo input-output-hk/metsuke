@@ -392,10 +392,14 @@
             # setup lives. Generated: edit nix/unit.nix, then
             # `nix build .#metsuke-pipe-dropin` and commit what it wrote here.
             #
-            # Copy to /etc/systemd/system/<your-node>.service.d/metsuke.conf.
-            # That directory is yours to make: `sudo mkdir -p` it, or let
-            # `systemctl edit <your-node>` make it and paste this in. And
-            # bring:
+            # Copy to
+            # /etc/systemd/system/<your-node>.service.d/zzzz-metsuke.conf. The
+            # name sorts last on purpose: drop-ins apply in lexicographic order
+            # across every directory they sit in, and an image shipping a
+            # host-wide service.d drop-in that resets LoadCredential= would
+            # otherwise clear the credential below.
+            #
+            # That directory is yours to make: `sudo mkdir -p` it. And bring:
             ${bringTheseFiles}
             #
             # Take contrib/config.pipe.toml as the configuration.
@@ -410,6 +414,11 @@
             # directory below. It passes every line through to its own stdout,
             # so the node's output still reaches the journal. ADR 0010 has what
             # each source costs.
+            #
+            # LoadCredential= and StateDirectory= below add to the node's own
+            # rather than replacing them, because systemd appends to both
+            # lists. One consequence: a node unit that reads $STATE_DIRECTORY
+            # will see two colon separated paths once this is in place.
 
             [Service]
             ${credential}

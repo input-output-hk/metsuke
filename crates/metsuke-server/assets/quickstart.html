@@ -190,20 +190,39 @@ further guidance.</p>
 
 <h2>3. Run it</h2>
 
-<pre># Download the unit your row names, the journald setup here
+<p>Two setups give the agent a unit of its own. Download one, and only one:</p>
+
+<pre># Its own unit
 sudo curl -o /etc/systemd/system/metsuke.service {{files_url}}metsuke-journald.service
+
+# Metrics only
+sudo curl -o /etc/systemd/system/metsuke.service {{files_url}}metsuke.service
 
 # Start it now, and on every boot
 sudo systemctl daemon-reload
 sudo systemctl enable --now metsuke</pre>
 
-<p>That covers the two rows that give the agent a unit of its own, the journald
-setup above and metrics only. The other three run it inside something you
-already have: <a href="{{DETAILS_PATH}}#pipe">a drop-in on your node's
-unit</a>, <a href="{{DETAILS_PATH}}#container">the pipeline in your container's
+<p>Your node's unit takes a drop-in instead, which replaces the command that
+unit runs with the same command piped through the agent.
+<a href="{{DETAILS_PATH}}#pipe">Why it is a drop-in</a>.</p>
+
+<pre># The directory is yours to make. The zzzz- name sorts the drop-in last, so
+# nothing host-wide can clear its credential after it
+sudo mkdir -p /etc/systemd/system/&lt;your-node&gt;.service.d
+sudo curl -o /etc/systemd/system/&lt;your-node&gt;.service.d/zzzz-metsuke.conf {{files_url}}node-pipe.conf
+
+# Replace YOUR-NODE-COMMAND with what your node already runs, which
+# systemctl cat &lt;your-node&gt;.service prints
+sudo $EDITOR /etc/systemd/system/&lt;your-node&gt;.service.d/zzzz-metsuke.conf
+
+# Restarting the node is what starts the agent
+sudo systemctl daemon-reload
+sudo systemctl restart &lt;your-node&gt;</pre>
+
+<p>The last two setups start nothing of their own:
+<a href="{{DETAILS_PATH}}#container">the pipeline goes in your container's
 entrypoint</a>, which the details page shows whole against the MusashiNet node
-image, or the try-it command above, which nothing starts for you and nothing
-restarts.</p>
+image, or a shell runs the try-it command above, which nothing restarts.</p>
 
 <h2>4. Check it</h2>
 

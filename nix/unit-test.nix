@@ -412,7 +412,7 @@ pkgs.testers.runNixOSTest {
         piping.succeed("mkdir -p /run/systemd/system/node-stand-in.service.d")
         piping.succeed(
             "cp /etc/metsuke/node-pipe.conf"
-            " /run/systemd/system/node-stand-in.service.d/metsuke.conf"
+            " /run/systemd/system/node-stand-in.service.d/zzzz-metsuke.conf"
         )
         piping.succeed("systemctl daemon-reload")
         piping.succeed("systemctl start node-stand-in.service")
