@@ -5,7 +5,7 @@
 # Copy to /etc/systemd/system/metsuke.service, and bring:
 #   the binary at /usr/local/bin/metsuke
 #   the configuration at /etc/metsuke/config.toml
-#   the signing key at /etc/metsuke/bls.skey, owned by root, mode 0400
+#   the signing key at /etc/metsuke/signing-key, owned by root, mode 0400
 #
 # Take contrib/config.minimal.toml as the configuration. This unit
 # collects metrics and reads no trace lines. For those,
@@ -19,7 +19,7 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-LoadCredential=signing-key:/etc/metsuke/bls.skey
+LoadCredential=signing-key:/etc/metsuke/signing-key
 ExecStart=/usr/local/bin/metsuke --config /etc/metsuke/config.toml --signing-key ${CREDENTIALS_DIRECTORY}/signing-key
 Restart=always
 RestartSec=30

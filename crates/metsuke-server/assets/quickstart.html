@@ -134,7 +134,7 @@ sudo curl -o {{config_path}} {{files_url}}config.journald.toml
 # Set your pool id, your node's unit and where journalctl lives
 sudo $EDITOR {{config_path}}
 
-# Install your signing key, readable by root alone
+# Install your signing key, bls.skey or pool.skey, readable by root alone
 sudo install -m 0400 -o root -g root bls.skey {{key_path}}</pre>
 
 <p>The journald config names two things the agent cannot guess: your node's

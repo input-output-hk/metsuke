@@ -718,9 +718,9 @@ fn the_installed_paths_come_from_the_shipped_unit() {
     let unit = instructions::UNIT
         .replace("/usr/local/bin/metsuke", "/opt/bin/metsuke")
         .replace("/etc/metsuke/config.toml", "/opt/metsuke.toml")
-        .replace("/etc/metsuke/bls.skey", "/opt/bls.skey");
+        .replace("/etc/metsuke/signing-key", "/opt/signing-key");
     let page = instructions::quickstart(&unit, &public_url(), &[]);
-    assert!(page.contains("/opt/bls.skey"), "key path not followed");
+    assert!(page.contains("/opt/signing-key"), "key path not followed");
     assert!(
         page.contains("/opt/metsuke.toml"),
         "config path not followed"

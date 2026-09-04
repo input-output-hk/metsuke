@@ -288,7 +288,9 @@
           # the binary and the config back out of ExecStart.
           agentBinary = "/usr/local/bin/metsuke";
           agentConfig = "/etc/metsuke/config.toml";
-          agentKey = "/etc/metsuke/bls.skey";
+          # Named for what it is rather than which key it holds so it works
+          # with both cold and Leios key types.
+          agentKey = "/etc/metsuke/signing-key";
 
           # systemd reads the key as root and hands the service a copy only it
           # can read. Naming the key in config.toml instead needs it readable by

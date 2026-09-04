@@ -103,7 +103,8 @@ have a reason to prefer it. If you use one it has to hash to the
 <code>pool_id</code> in your config, or the agent refuses to start.</p>
 
 <p>The agent reads the <code>bls.skey</code> or <code>pool.skey</code> you
-already have.</p>
+already have. The path the unit loads it from names neither, so either one
+installs there and the unit runs unedited.</p>
 
 <h2>The node's metrics endpoint</h2>
 
@@ -202,7 +203,7 @@ supply marked:</p>
   ghcr.io/input-output-hk/ouroboros-leios/cardano-node-testnet:THE-TAG-THE-TESTNET-DOCS-PIN \
   -c '/app/run-node.sh | /usr/local/bin/metsuke \
         --config /etc/metsuke/config.toml \
-        --signing-key /etc/metsuke/bls.skey'</pre>
+        --signing-key /etc/metsuke/signing-key'</pre>
 
 <p><code>/app/run-node.sh</code> is that image's own launcher, which is what it
 runs when you do not override the entrypoint. On any other image,
