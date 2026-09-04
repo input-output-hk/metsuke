@@ -249,10 +249,17 @@ impl<A: Store> Intake<A> {
         // refusal states the pool because it has no key to carry one. Without
         // this a journal shows only refusals, and an operator watching a
         // working server sees nothing but whatever scans the internet.
+        // The version is the agent's own account of itself, so it is bounded
+        // on the way to the journal like any other text from the other end
+        // (`metsuke_wire::http::one_line`). It is in the object too, being
+        // part of the header that was signed, but reading that takes bucket
+        // credentials, and which builds are reporting is the question during
+        // a rollout.
         eprintln!(
-            "{INFO}accepted {}, {} bytes",
+            "{INFO}accepted {}, {} bytes, from agent {}",
             stored.object_key(),
-            signed.wire_bytes.len()
+            signed.wire_bytes.len(),
+            metsuke_wire::http::one_line(header.agent_version),
         );
         Ok(Ack {
             latest_version: crate::CLIENT_VERSION.to_string(),

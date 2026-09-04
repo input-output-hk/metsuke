@@ -610,6 +610,12 @@ fn an_accepted_submission_is_logged_against_its_pool_and_object() {
         logged.contains(&format!("accepted {stored}")),
         "the acceptance must name the object it became, got: {logged}"
     );
+    // Which build reported, for a rollout. It is in the object's own header
+    // too, but reading that takes bucket credentials.
+    assert!(
+        logged.contains(&format!("from agent {}", metsuke_server::CLIENT_VERSION)),
+        "the acceptance must name the agent version, got: {logged}"
+    );
     assert!(
         stored.contains(&pool_of(&key).to_string()),
         "and that name is what says whose it was, so the line does not repeat \
