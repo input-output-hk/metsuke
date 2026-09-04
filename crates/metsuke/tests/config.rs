@@ -2,10 +2,12 @@
 //! out. Required fields fail loudly when absent; cadence and probe knobs
 //! default to the shipped values the example config documents.
 
+use std::path::Path;
 use std::time::Duration;
 
 use metsuke::config::{Config, LogConfig, LogSource};
 use metsuke::logsource::JournalConfig;
+use metsuke_wire::envelope::AgentId;
 
 mod support;
 use support::test_pool_id;
@@ -243,6 +245,45 @@ fn the_example_log_section_documents_the_real_defaults() {
     .log
     .unwrap();
     assert_eq!(documented, shipped);
+}
+
+/// The startup dump is hand-built, so nothing but this stops a new setting
+/// being added and never appearing in the line an operator pastes. The example
+/// is the anchor because it already has to document every key, and the two
+/// resolved values are asserted by their resolved form: `agent_id` as the name
+/// handed in rather than the config's, `signing_key` as the path the flag won.
+#[test]
+fn the_startup_dump_names_every_setting_the_example_documents() {
+    let config = Config::from_toml(&uncomment(EXAMPLE)).unwrap();
+    let agent_id = AgentId::parse("relay-1").expect("a fixed name is a slug");
+    let dump = config.resolved(&agent_id, Some(Path::new("/run/credentials/signing-key")));
+
+    let mut checked = 0;
+    for key in uncomment(EXAMPLE)
+        .lines()
+        .filter_map(|line| line.split_once(" = "))
+        .map(|(key, _)| key.trim())
+        .filter(|key| !key.is_empty() && !key.starts_with('#'))
+    {
+        assert!(
+            dump.contains(&format!("\"{key}\"")),
+            "the example documents {key}, which the startup dump never names: {dump}"
+        );
+        checked += 1;
+    }
+    // A literal, because a loop over nothing passes every assertion in it and
+    // would report that the dump names every key while naming none.
+    assert!(
+        checked > 15,
+        "only {checked} keys were read out of the example, so this proves nothing"
+    );
+    // The two the file cannot tell you, which is the reason the dump is built
+    // rather than derived.
+    assert!(dump.contains("\"agent_id\":\"relay-1\""), "{dump}");
+    assert!(
+        dump.contains("\"signing_key\":\"/run/credentials/signing-key\""),
+        "{dump}"
+    );
 }
 
 /// The configs an operator copies, one per log source. `config.example.toml` is

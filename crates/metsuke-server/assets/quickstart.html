@@ -36,11 +36,18 @@ cardano-node run ... | {{try_agent}} --config config.pipe.toml --signing-key bls
 <p>That is the whole agent. It writes your node's output straight back out, and
 the redirect drops that copy: without it a node's trace stream buries what the
 agent has to say. What is left on your terminal is the agent's own. The first
-four lines arrive at once, and the scrape submission about ten seconds later,
+five lines arrive at once, and the scrape submission about ten seconds later,
 once the node has had time to bind its endpoint; the trace-line submission
 waits for the next upload, one hour by default:</p>
 
 <pre>{{journal}}</pre>
+
+<p>The second line, cut short above, is every setting the agent is running with,
+including the ones you did not set and what they defaulted to. Yours runs to
+about nine hundred characters. <strong>Send that line if you ask anyone for
+help.</strong> It answers most of what a reader would otherwise have to ask you
+for, and it holds no key material: the signing key appears as the path it was
+read from, never its contents.</p>
 
 <p>Drop the <code>&gt; /dev/null</code> and your node's output comes back,
 interleaved with these lines. That pass-through is what the setups below depend

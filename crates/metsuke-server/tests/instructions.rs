@@ -176,6 +176,31 @@ fn a_served_file_reaches_the_siblings_it_names() {
     assert!(linked > 0, "no shipped file reaches a sibling at all");
 }
 
+/// The agent's startup dump is one line naming every setting, which is what
+/// makes it worth pasting and what would make it a nine-hundred-character
+/// scrollbar under the page's first example. The page cuts it short by matching
+/// how it begins, so a rename in the agent would quietly restore the wall.
+#[test]
+fn the_page_shows_no_more_of_the_config_dump_than_its_shape() {
+    let quickstart = instructions::pages(&public_url(), support::test_binaries()).quickstart;
+    // Found by length rather than by prefix, so this test does not agree with
+    // the page about the spelling and then pass on both being wrong.
+    let dumped = instructions::JOURNAL
+        .lines()
+        .find(|line| line.len() > 500)
+        .expect("the recording carries the agent's config dump");
+
+    assert!(
+        !quickstart.contains(dumped),
+        "the page shows all {} characters of the config dump",
+        dumped.len()
+    );
+    assert!(
+        quickstart.contains(" …}"),
+        "the page never abbreviated the config dump, so it is showing something else"
+    );
+}
+
 #[test]
 fn the_quickstart_links_the_details_page() {
     assert!(
@@ -491,14 +516,18 @@ fn the_shipped_config_and_unit_are_carried_whole() {
     // The quickstart carries no config or unit at all now: it links them, so
     // an operator downloads the file rather than selecting it out of a browser.
     // The recording is the exception, because it is matched against their own
-    // journal rather than copied anywhere.
-    assert!(
-        carried(
-            &pages.quickstart,
-            include_str!("../../metsuke/tests/fixtures/recordings/agent-journal.log")
-        ),
-        "the quickstart does not carry the recorded journal lines whole"
-    );
+    // journal rather than copied anywhere. Line for line rather than whole,
+    // because the agent's config dump is cut short there and every other line
+    // still has to arrive intact, which is what the matching needs.
+    for line in instructions::JOURNAL.trim_end().lines() {
+        if line.len() > 500 {
+            continue;
+        }
+        assert!(
+            carried(&pages.quickstart, line),
+            "the quickstart does not carry the recorded line {line:?} whole"
+        );
+    }
     // Neither page prints a file it could link. Printing one costs an operator
     // a browser selection instead of a download, and costs every other reader
     // the length of it.

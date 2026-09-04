@@ -90,6 +90,17 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         keys::resolve_signing_key(args.signing_key.as_deref(), config.signing_key.as_deref())?;
     identity::check_pool_id(config.pool_id, &key)?;
     let agent_id = identity::agent_id(config.agent_id.as_deref())?;
+    // Second, before anything that can fail on a setting: an operator pasting
+    // a log hands over their whole configuration with it, and the paste that
+    // needs it is the one nobody thought to collect.
+    let signing_key_path = args
+        .signing_key
+        .as_deref()
+        .or(config.signing_key.as_deref());
+    eprintln!(
+        "{INFO}config: {}",
+        config.resolved(&agent_id, signing_key_path)
+    );
     // Resolved once and handed to both spool writers: it is what stamps every
     // line and what a submission's header names, so one value or they could
     // disagree.

@@ -174,6 +174,14 @@ const JOURNAL_RECORDING: &str = "tests/fixtures/recordings/agent-journal.log";
 /// shipped one is what their own config will make it say.
 const SHIPPED_METRICS_URL: &str = "http://127.0.0.1:12798/metrics";
 
+/// The rest of what the startup dump names, as a shipped config and unit carry
+/// it, so the recording the page shows holds a deployment's paths rather than
+/// this run's tempdir and mock port. The upload URL is the example's, which is
+/// what `instructions::pointed_at` rewrites to the deployment's own.
+const SHIPPED_UPLOAD_URL: &str = "https://metsuke.example.org/v1/submit";
+const SHIPPED_SPOOL_PATH: &str = "/var/lib/metsuke/spool.sqlite";
+const SHIPPED_SIGNING_KEY: &str = "/etc/metsuke/signing-key";
+
 /// A line as journalctl shows it. systemd reads the priority prefix off the
 /// front and does not pass it on, so an operator never sees one.
 fn without_priority(line: &str) -> &str {
@@ -285,6 +293,17 @@ async fn the_journal_lines_the_page_shows_are_the_ones_the_agent_prints() {
     child.kill().unwrap();
     child.wait().unwrap();
     let recorded = recorded.replace(&format!("{}/metrics", server.uri()), SHIPPED_METRICS_URL);
+    // The startup dump names every path and endpoint this run used, and all of
+    // them are a mock's port or a tempdir. Left alone they would reach the page
+    // as somebody's /tmp, so each is put back to the value a shipped config
+    // carries. The upload URL is the example one on purpose: `pointed_at` is
+    // what turns it into a deployment's own, here as in every served config.
+    let recorded = recorded.replace(&format!("{}/v1/submit", server.uri()), SHIPPED_UPLOAD_URL);
+    let recorded = recorded.replace(
+        &dir.path().join("spool.sqlite").display().to_string(),
+        SHIPPED_SPOOL_PATH,
+    );
+    let recorded = recorded.replace(&key_path.display().to_string(), SHIPPED_SIGNING_KEY);
     // Which build printed these lines is not what the page is showing, and it
     // differs between a run here and a run in the sandbox, so the recording
     // carries the version alone.

@@ -64,6 +64,12 @@ pub const CONFIG_EXAMPLE: &str = include_str!("../../../contrib/config.example.t
 /// because that run is the only place these lines exist.
 pub const JOURNAL: &str = include_str!("../../metsuke/tests/fixtures/recordings/agent-journal.log");
 
+/// How the agent's startup dump of every resolved setting begins, which is the
+/// line the page shows cut short. A literal because the agent crate is not
+/// linked here; `the_page_shows_no_more_of_the_config_dump_than_its_shape`
+/// holds the recording to still carrying one.
+const CONFIG_LINE: &str = "config: ";
+
 /// The shipped units, generated from nix/unit.nix and kept current by the
 /// flake's `contrib-unit` check. `UNIT` is the one the quickstart installs.
 pub const UNIT: &str = include_str!("../../../contrib/metsuke.service");
@@ -263,6 +269,40 @@ fn pointed_at(config: &str, public_url: &url::Url) -> String {
     config.replace(example, ours.as_str())
 }
 
+/// The recording as the page shows it, which is the recording with its config
+/// line cut short. That line is every setting the agent resolved, on one line
+/// so it can be pasted into a report whole, and it runs to nine hundred
+/// characters against sixty for its neighbours. Shown in full it would put a
+/// scrollbar under the first example on the page and hide the lines the step
+/// is actually about. The fixture itself stays verbatim, because that is what
+/// holds it to what the agent prints.
+fn journal_shown() -> String {
+    /// Enough to recognise the line by when it appears in your own terminal.
+    const SHOWN: usize = 52;
+    JOURNAL
+        .trim_end()
+        .lines()
+        .map(|line| match line.strip_prefix(CONFIG_LINE) {
+            // Every other line is one the step is about, however long.
+            None => line.to_string(),
+            Some(_) => {
+                // Cut at a comma, so it never lands inside a value, and take
+                // the index off `char_indices` so it never lands inside a
+                // character either.
+                let head = line
+                    .char_indices()
+                    .take_while(|(at, _)| *at <= SHOWN)
+                    .filter(|(_, character)| *character == ',')
+                    .map(|(at, _)| at)
+                    .last()
+                    .unwrap_or(0);
+                format!("{} …}}", &line[..=head])
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The four steps and nothing else. It links the files rather than printing
 /// them, so what it takes is the unit whose paths it tells an operator to put
 /// things at, and the URL those links are absolute against.
@@ -285,7 +325,7 @@ pub fn quickstart(unit: &str, public_url: &url::Url, offered: &[File]) -> String
             // Absolute, because these end up in a `curl` an operator runs
             // somewhere other than the browser that rendered the link.
             ("files_url", escape(files.as_str())),
-            ("journal", escape(JOURNAL.trim_end())),
+            ("journal", escape(&journal_shown())),
             ("try_fetch", try_fetch),
             ("try_agent", try_agent),
             // The binary path reaches the page inside this block and nowhere
