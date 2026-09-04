@@ -183,13 +183,13 @@ fn install(offered: &[File], files_url: &str, binary: &str) -> String {
     let lines = match offers_a_build(offered) {
         true => vec![
             "# Download the build for your architecture".to_string(),
-            format!("curl -O {files_url}{name}"),
+            format!("curl -o metsuke {files_url}{name}"),
             String::new(),
             "# Install it where the unit will look for it".to_string(),
             // -D: the directory is standard, but a minimal image can be
             // without it, and the operator meets that as a failed install
             // rather than as a missing path.
-            format!("sudo install -D -m 0755 {name} {binary}"),
+            format!("sudo install -D -m 0755 metsuke {binary}"),
         ],
         false => vec![
             "# Build the static agent".to_string(),
@@ -217,9 +217,13 @@ fn offers_a_build(offered: &[File]) -> bool {
 fn try_it(offered: &[File], files_url: &str) -> (String, String) {
     let name = BINARIES[0];
     match offers_a_build(offered) {
+        // Renamed as it lands, so the try-it runs the same `metsuke` that the
+        // install step, the units and every later command name.
         true => (
-            escape(&format!("curl -O {files_url}{name}\nchmod +x {name}")),
-            escape(&format!("./{name}")),
+            escape(&format!(
+                "curl -o metsuke {files_url}{name}\nchmod +x metsuke"
+            )),
+            "./metsuke".to_string(),
         ),
         false => (
             escape(&format!("nix build {}#{name}", flake_ref())),
