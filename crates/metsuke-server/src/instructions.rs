@@ -65,6 +65,11 @@ pub const UNIT: &str = include_str!("../../../contrib/metsuke.service");
 pub const UNIT_JOURNALD: &str = include_str!("../../../contrib/metsuke-journald.service");
 pub const PIPE_DROPIN: &str = include_str!("../../../contrib/node-pipe.conf");
 
+/// A unit for the node, which is not one of ours: the journald shape reads a
+/// journal only a systemd unit has, and cardano-node ships no service file to
+/// make one. Offered so a pool testing this does not write one first.
+pub const NODE_UNIT: &str = include_str!("../../../contrib/cardano-node.service");
+
 /// The node namespaces the trace step gives an explicit severity. These are the
 /// node's own namespaces, not the agent's selection prefixes: what a node emits
 /// and what the agent keeps are two settings in two files. Why each entry, and
@@ -84,7 +89,7 @@ pub const FILES_PREFIX: &str = "/files/";
 /// Every file the page offers, by the name it is served and linked under. The
 /// configs are pointed at this deployment on the way out; the units are the
 /// shipped bytes.
-pub const FILES: [(&str, &str); 7] = [
+pub const FILES: [(&str, &str); 8] = [
     ("config.pipe.toml", CONFIG_PIPE),
     ("config.journald.toml", CONFIG_JOURNALD),
     ("config.minimal.toml", CONFIG_MINIMAL),
@@ -92,6 +97,7 @@ pub const FILES: [(&str, &str); 7] = [
     ("metsuke.service", UNIT),
     ("metsuke-journald.service", UNIT_JOURNALD),
     ("node-pipe.conf", PIPE_DROPIN),
+    ("cardano-node.service", NODE_UNIT),
 ];
 
 /// The names the static agent builds are served and linked under. The flake's

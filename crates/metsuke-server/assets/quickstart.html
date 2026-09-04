@@ -97,7 +97,10 @@ whichever row you take; only the filenames change.</p>
 </table>
 
 <p>The first row is what most pools want: the agent restarts without touching
-your node, and the group is the cost. The second gives up nothing in privilege
+your node, and the group is the cost. It takes a node that already runs as a
+systemd unit and logs to the journal;
+<a href="{{FILES_PREFIX}}cardano-node.service">cardano-node.service</a> is an
+example to adapt where yours has no unit yet. The second gives up nothing in privilege
 but ties the agent's lifecycle to your node's, so restarting the agent restarts
 your node.</p>
 
@@ -128,11 +131,18 @@ sudo mkdir -p {{config_dir}}
 # Download the config your row names, the journald shape here
 sudo curl -o {{config_path}} {{files_url}}config.journald.toml
 
-# Update your pool id
+# Set your pool id, your node's unit and where journalctl lives
 sudo $EDITOR {{config_path}}
 
 # Install your signing key, readable by root alone
 sudo install -m 0400 -o root -g root bls.skey {{key_path}}</pre>
+
+<p>The journald config names two things the agent cannot guess: your node's
+unit, and where journalctl lives on your distribution. They fail differently.
+A journalctl that is not at the path you gave stops the agent at startup and
+says so. A unit name that matches nothing does not: journalctl follows it and
+prints nothing, so the agent starts, ships its scrapes, and never ships a
+trace line.</p>
 
 <p><code>agent_id</code> is what a submission calls the machine it came from,
 and it needs no setting: unset, it is that host's hostname, which the startup

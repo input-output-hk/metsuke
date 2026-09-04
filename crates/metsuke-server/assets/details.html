@@ -248,7 +248,8 @@ the trace lines themselves need nothing.</p>
 
 <h2 id="journal">The journal</h2>
 
-<p>In journald mode the agent reads the node's journal under its own unit. That
+<p>In journald mode the agent reads the node's journal under its own unit, so
+it takes a node that is a systemd unit and logs to the journal. That
 costs it membership of the <code>systemd-journal</code> group, which reads every
 unit's journal on the host and is the one privilege it holds beyond scraping
 loopback. Two directives are the whole difference from the quickstart's unit,

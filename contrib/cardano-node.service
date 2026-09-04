@@ -1,0 +1,61 @@
+# /etc/systemd/system/cardano-node.service
+#
+# An example to adapt, not a supported unit. cardano-node ships no service
+# file of its own, and metsuke's journald shape needs the node to have one.
+#
+#   REPO=input-output-hk/ouroboros-leios
+#
+#   TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=30" |
+#     awk -F'"' '/"tag_name"/ && !t && $4 ~ /^prototype-[0-9]+w[0-9]+[a-z]?$/ {t=$4} END {print t}')
+#   echo "${TAG:?no prototype release found in the newest 30}"
+#
+#   BASE=https://github.com/$REPO/releases/download/$TAG
+#   ARCHIVE=cardano-node-leios-x86_64-linux.tar.gz     # or aarch64-linux
+#
+#   cd "$(mktemp -d)"
+#   curl -L -O "$BASE/$ARCHIVE"
+#   curl -L -O "$BASE/${ARCHIVE%.tar.gz}.sha256"
+#   sha256sum -c "${ARCHIVE%.tar.gz}.sha256"
+#   tar -xzf "$ARCHIVE"
+#   sudo install -D -m 0755 bin/cardano-node /usr/local/bin/cardano-node
+#   sudo install -D -m 0755 bin/cardano-cli /usr/local/bin/cardano-cli
+#   sudo install -D -m 0755 bin/mempool-monitor /usr/local/bin/mempool-monitor
+#   sudo install -D -m 0755 bin/tx-firehose /usr/local/bin/tx-firehose
+#
+#   sudo mkdir -p /var/lib/cardano-node
+#   cd /var/lib/cardano-node
+#   sudo curl -LO https://raw.githubusercontent.com/$REPO/main/testnet/pin-config.sh
+#   sudo bash pin-config.sh
+#
+#   sudo cp <THIS_FILE> /etc/systemd/system/cardano-node.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cardano-node
+#   journalctl -u cardano-node -f
+#
+[Unit]
+Description=cardano-node (Musashi)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+StateDirectory=cardano-node
+WorkingDirectory=/var/lib/cardano-node
+ExecStart=/usr/local/bin/cardano-node run \
+  --topology config/topology.json \
+  --database-path db \
+  --socket-path node.socket \
+  --config config/config.json \
+  --host-addr 0.0.0.0 \
+  --port 3010
+Restart=on-failure
+RestartSec=5
+# The node closes its databases on SIGINT. Killed instead, the next start
+# replays, which is the expensive kind of restart.
+KillSignal=SIGINT
+TimeoutStopSec=300
+LimitNOFILE=32768
+SyslogIdentifier=cardano-node
+
+[Install]
+WantedBy=multi-user.target

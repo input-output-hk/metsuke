@@ -114,6 +114,39 @@ fn the_configure_step_makes_the_directory_its_files_go_in() {
     );
 }
 
+/// The example node unit is offered because the journald shape needs one, so
+/// it has to satisfy what that shape reads: a unit named as the shipped
+/// config's `journal_unit`, whose output is still the journal. Either drifting
+/// leaves an agent collecting nothing and saying nothing.
+#[test]
+fn the_example_node_unit_is_the_one_the_journald_shape_reads() {
+    let unit = instructions::NODE_UNIT;
+    let journal_unit = instructions::CONFIG_JOURNALD
+        .lines()
+        .find_map(|line| line.strip_prefix("journal_unit = "))
+        .expect("the journald config names the node's unit")
+        .trim_matches('"')
+        .to_string();
+
+    assert!(
+        instructions::FILES
+            .iter()
+            .any(|(name, _)| *name == format!("{journal_unit}.service")),
+        "the shipped config follows {journal_unit:?}, which no served unit is named for"
+    );
+    // Only what the unit sets, not what its header shows an operator running.
+    for setting in unit
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .filter_map(|line| line.strip_prefix("StandardOutput="))
+    {
+        assert!(
+            matches!(setting.trim(), "journal" | "inherit"),
+            "the example unit sends its output to {setting:?}, which is not the journal"
+        );
+    }
+}
+
 #[test]
 fn the_quickstart_links_the_details_page() {
     assert!(
