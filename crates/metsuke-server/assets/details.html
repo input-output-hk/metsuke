@@ -291,13 +291,14 @@ are pinned to the code, so a value there is a value the agent ships.</p>
 <p>The agent and this server are
 <a href="{{REPOSITORY}}">one repository</a>, and its
 <a href="{{DOCS_PREFIX}}README.md">README</a> is what metsuke is and which
-crate does what. Everything a decision here rests on is written down as an
-accepted decision rather than left in the code:</p>
+crate does what. Everything a decision here rests on is written down as a
+decision on the record rather than left in the code, superseded ones included:</p>
 
 <ul>
 <li><a href="{{DOCS_PREFIX}}docs/adr/0007-agent-reads-only-loopback-prometheus.md">ADR
-0007</a>, why the agent scrapes loopback and nothing else, which is what puts it
-on your node host.</li>
+0007</a>, why the agent scrapes loopback rather than the node socket, which is
+what puts it on your node host. Superseded by 0010 below, which is what moved
+the boundary for trace lines.</li>
 <li><a href="{{DOCS_PREFIX}}docs/adr/0010-log-based-trace-collection.md">ADR
 0010</a>, the two trace sources and what each costs in privilege. The journal
 row's group is decided here.</li>
