@@ -386,8 +386,10 @@
             # lives. Generated: edit nix/unit.nix, then
             # `nix build .#metsuke-pipe-dropin` and commit what it wrote here.
             #
-            # Copy to /etc/systemd/system/<your-node>.service.d/metsuke.conf,
-            # and bring:
+            # Copy to /etc/systemd/system/<your-node>.service.d/metsuke.conf.
+            # That directory is yours to make: `sudo mkdir -p` it, or let
+            # `systemctl edit <your-node>` make it and paste this in. And
+            # bring:
             ${bringTheseFiles}
             #
             # Take contrib/config.pipe.toml as the configuration.
