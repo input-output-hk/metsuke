@@ -49,6 +49,8 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # accepted submission picks a point in upload_jitter_max_secs and every upload
 # after it keeps that point, so agents installed together do not all upload in
 # the same second while yours still lands on a cadence you can watch for.
+# It is a ceiling: a spread wider than the interval places nobody better than
+# one exactly as wide, so a shorter upload_interval_secs bounds it instead.
 #
 # upload_batch_max_bytes counts the header frame and the payload before
 # compression; the server's own ceiling is [ingest].max_body_bytes on the

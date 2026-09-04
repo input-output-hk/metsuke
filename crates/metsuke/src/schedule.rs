@@ -67,7 +67,10 @@ impl Schedule {
             UploadOutcome::Acked(_) => {
                 self.consecutive_rejections = 0;
                 match std::mem::replace(&mut self.phase_chosen, true) {
-                    false => config.upload_interval + jitter(config.jitter_max, entropy),
+                    false => {
+                        config.upload_interval
+                            + jitter(config.jitter_max, config.upload_interval, entropy)
+                    }
                     true => config.upload_interval,
                 }
             }
@@ -76,7 +79,7 @@ impl Schedule {
                 // a retryable failure means the latest attempt did not
                 // observe one.
                 self.consecutive_rejections = 0;
-                config.upload_interval + jitter(config.jitter_max, entropy)
+                config.upload_interval + jitter(config.jitter_max, config.upload_interval, entropy)
             }
             UploadOutcome::Rejected { .. } => {
                 self.consecutive_rejections = self.consecutive_rejections.saturating_add(1);
@@ -95,8 +98,12 @@ impl Default for Schedule {
     }
 }
 
-/// A duration in `[0, max]` derived uniformly-enough from `entropy`.
-fn jitter(max: Duration, entropy: u64) -> Duration {
-    let span = max.as_millis() as u64 + 1;
+/// A duration in `[0, max]` derived uniformly-enough from `entropy`, never
+/// wider than the interval it is spreading agents across. A spread past one
+/// interval places nobody better than a spread of exactly one does, and the
+/// shipped bound is sized against the shipped interval: on a short one it
+/// would be most of the wait rather than a spread inside it.
+fn jitter(max: Duration, interval: Duration, entropy: u64) -> Duration {
+    let span = max.min(interval).as_millis() as u64 + 1;
     Duration::from_millis(entropy % span)
 }

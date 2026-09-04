@@ -76,7 +76,9 @@ pub struct Config {
     pub upload_timeout_secs: u64,
     /// Upper bound on the spread that places this agent within the interval,
     /// and on the spread a retry adds, so agents installed together do not
-    /// upload in step (`schedule::Schedule::after`).
+    /// upload in step (`schedule::Schedule::after`). A ceiling rather than the
+    /// spread: one wider than the interval is taken as the interval, so a
+    /// cadence shorter than this default keeps it.
     #[serde(default = "default_upload_jitter_max_secs")]
     pub upload_jitter_max_secs: u64,
     /// Clamp on the exponential backoff after 4xx rejections.

@@ -73,6 +73,33 @@ fn the_first_ack_places_the_agent_within_the_jitter_bound() {
     }
 }
 
+// A spread wider than the interval places nobody better than one exactly as
+// wide, and on a short interval it would be most of the wait: the shipped
+// bound is five minutes, which is a spread inside an hour and five times a
+// minute. What an operator sets is a ceiling, not the spread itself.
+#[test]
+fn the_placement_never_reaches_past_the_interval_it_spreads_across() {
+    let interval = Duration::from_secs(60);
+    let wider = ScheduleConfig {
+        upload_interval: interval,
+        jitter_max: Duration::from_secs(300),
+        backoff_max: Duration::from_secs(86400),
+    };
+    for entropy in [0, 1, 59, 60, 61, 299_999, 300_000, u64::MAX] {
+        let mut schedule = Schedule::new();
+        let placed = schedule.after(&acked(), &wider, entropy);
+        assert!(
+            (interval..=interval + interval).contains(&placed),
+            "entropy {entropy}: {placed:?} is past one interval of spread"
+        );
+        assert!(
+            schedule.after(&UploadOutcome::Retryable("503".into()), &wider, entropy)
+                <= interval + interval,
+            "entropy {entropy}: a retry spreads past one interval"
+        );
+    }
+}
+
 // And that placement has to actually differ between agents, or it is
 // decorative.
 #[test]
