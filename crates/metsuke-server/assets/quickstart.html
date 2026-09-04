@@ -193,10 +193,11 @@ it.</p>
 
 <p>A failure naming <code>cannot read signing key</code> under
 <code>/run/credentials</code> is usually the unit's credential being cleared
-rather than a permission problem. <code>systemctl show metsuke -p
-LoadCredential</code> should name your key; an empty value means a host-wide
-drop-in reset it, as the LXC and LXD images do. Restore it in a drop-in that
-sorts after theirs.</p>
+rather than a permission problem. <code>systemctl cat metsuke</code> prints the
+unit and every drop-in that applies to it, including the host-wide ones under
+<code>/usr/lib/systemd/system/service.d/</code> that the LXC and LXD images
+ship. A bare <code>LoadCredential=</code> in one of those resets the list after
+your unit's own line. Restore it in a drop-in that sorts after theirs.</p>
 
 <pre>sudo mkdir -p /etc/systemd/system/metsuke.service.d
 sudo tee /etc/systemd/system/metsuke.service.d/zzzz-credential.conf &gt;/dev/null &lt;&lt;'EOF'
