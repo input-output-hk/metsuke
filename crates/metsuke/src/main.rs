@@ -296,15 +296,25 @@ fn upload_tick(
             uncarriable.oversized, uncarriable.largest_bytes,
         );
     }
+    // Every path out of a tick says where the next one is. A tick that sends
+    // nothing is every tick of an agent uploading faster than it scrapes, and
+    // silence past the time the last line named reads as a stopped agent.
+    let nothing_sent = |wait: Duration| {
+        eprintln!(
+            "{INFO}{}",
+            schedule::nothing_sent_line(time::OffsetDateTime::now_utc(), wait)
+        );
+        wait
+    };
     let sent = match attempted {
         Ok(sent) => sent,
         Err(error) => {
             eprintln!("{ERR}{error}");
-            return config.upload_interval;
+            return nothing_sent(config.upload_interval);
         }
     };
     let Some(last) = sent.last() else {
-        return config.upload_interval;
+        return nothing_sent(config.upload_interval);
     };
     // Every submission of the tick, because which one a line is about is what
     // ties it to an archived object and to what stays spooled.
@@ -351,6 +361,6 @@ fn upload_tick(
     let wait = schedule.after(&last.outcome, config, now.unix_timestamp_nanos() as u64);
     // Only where the tick had something to send: a line saying when the next
     // one is, after a round that said nothing, is a line about nothing.
-    eprintln!("{INFO}{}", schedule::next_upload_line(now, wait));
+    eprintln!("{INFO}{}", schedule::next_submission_line(now, wait));
     wait
 }

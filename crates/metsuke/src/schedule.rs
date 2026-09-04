@@ -14,14 +14,26 @@ use crate::uploader::UploadOutcome;
 /// finished. Neither the configured interval nor guessable from it, because
 /// jitter has placed this agent inside it and a refusal replaces it with a
 /// backoff.
-pub fn next_upload_line(now: OffsetDateTime, wait: Duration) -> String {
+pub fn next_submission_line(now: OffsetDateTime, wait: Duration) -> String {
+    format!("the next submission is scheduled at {}", at(now, wait))
+}
+
+/// The same for a tick that sent nothing, which is every tick of an agent
+/// uploading faster than it scrapes. Said rather than left silent: the time
+/// the last line named has just passed, and a quiet agent and a stopped one
+/// look alike until one of them says something.
+pub fn nothing_sent_line(now: OffsetDateTime, wait: Duration) -> String {
+    format!("nothing to send; the next upload is at {}", at(now, wait))
+}
+
+/// The instant, to the second: subsecond digits are the clock's rather than
+/// anything an operator set.
+fn at(now: OffsetDateTime, wait: Duration) -> String {
     let at = now + wait;
-    let at = at
-        .replace_nanosecond(0)
+    at.replace_nanosecond(0)
         .unwrap_or(at)
         .format(&Rfc3339)
-        .unwrap_or_else(|_| "a time this clock cannot render".to_string());
-    format!("the next submission is scheduled at {at}")
+        .unwrap_or_else(|_| "a time this clock cannot render".to_string())
 }
 
 pub struct ScheduleConfig {

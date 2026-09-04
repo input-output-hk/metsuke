@@ -5,7 +5,8 @@
 
 use std::time::Duration;
 
-use metsuke::schedule::{Schedule, ScheduleConfig, next_upload_line};
+use metsuke::schedule::{Schedule, ScheduleConfig, next_submission_line, nothing_sent_line};
+
 use metsuke::uploader::UploadOutcome;
 use metsuke_wire::envelope::Ack;
 use time::OffsetDateTime;
@@ -18,7 +19,7 @@ fn the_line_a_tick_ends_on_names_when_the_next_one_is() {
     let now = OffsetDateTime::from_unix_timestamp(1_780_000_000).unwrap();
 
     assert_eq!(
-        next_upload_line(now, Duration::from_secs(3540)),
+        next_submission_line(now, Duration::from_secs(3540)),
         "the next submission is scheduled at 2026-05-28T21:25:40Z"
     );
 }
@@ -29,7 +30,7 @@ fn the_line_a_tick_ends_on_names_when_the_next_one_is() {
 fn the_instant_is_named_to_the_second() {
     let now = OffsetDateTime::from_unix_timestamp_nanos(1_780_000_000_123_456_789).unwrap();
 
-    let line = next_upload_line(now, Duration::from_secs(60));
+    let line = next_submission_line(now, Duration::from_secs(60));
 
     assert!(line.contains("T20:27:40Z"), "got: {line}");
 }
@@ -190,4 +191,17 @@ fn ack_resets_the_backoff() {
     schedule.after(&acked(), &config(), 0);
     let delay = schedule.after(&rejected(), &config(), 0);
     assert_eq!(delay, Duration::from_secs(2 * 3600));
+}
+
+// A tick that sent nothing still says where the next one is: that is every
+// tick of an agent uploading faster than it scrapes, and silence past the
+// time the last line named reads as an agent that has stopped.
+#[test]
+fn a_tick_that_sent_nothing_still_names_the_next_one() {
+    let now = OffsetDateTime::from_unix_timestamp(1_780_000_000).unwrap();
+
+    assert_eq!(
+        nothing_sent_line(now, Duration::from_secs(60)),
+        "nothing to send; the next upload is at 2026-05-28T20:27:40Z"
+    );
 }
