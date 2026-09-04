@@ -184,6 +184,22 @@ is wrapped in a shell. This drop-in is that change, and the empty
 had: <a href="{{FILES_PREFIX}}node-pipe.conf">node-pipe.conf</a>, with
 <a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a> beside it.</p>
 
+<p>A node whose output goes to a file rather than the journal, by
+<code>StandardOutput=append:</code> with logrotate over it, needs nothing
+different. The drop-in replaces the command and leaves that directive alone,
+and the agent writes every line it reads straight back to its own stdout, so
+the same file receives the same content and rotation is unaffected.</p>
+
+<p>One thing to know if you redirect stdout to a file.
+<code>StandardError=</code> follows <code>StandardOutput=</code> unless you set
+it, so stderr goes to that file as well, and journald receives neither stream:
+<code>journalctl -u &lt;your-node&gt;</code> will show the unit starting and
+stopping and nothing from the node or the agent. Everything is in your file,
+where the agent's prose is easy to pick out from the node's JSON. If you would
+rather keep the file to the node alone, the pipeline is a shell command and
+takes a redirect of its own:
+<code>… | metsuke --config … 2&gt;&gt;/var/log/metsuke.log</code>.</p>
+
 <p id="container">Wherever your node's command lives rather than in a unit, the
 pipeline goes there instead. A shell or a terminal writes it as it stands.
 Written around the command that starts a container it only works while that
