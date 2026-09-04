@@ -186,11 +186,13 @@ sudo curl -o /etc/systemd/system/metsuke.service {{files_url}}metsuke-journald.s
 sudo systemctl daemon-reload
 sudo systemctl enable --now metsuke</pre>
 
-<p>If you took the pipe row instead, there is no unit of its own:
-<a href="{{DETAILS_PATH}}#pipe">the drop-in goes on your node's unit</a>, or
-<a href="{{DETAILS_PATH}}#container">the pipeline goes in your container's
+<p>That covers the two rows that give the agent a unit of its own, the journald
+shape above and metrics only. The other three run it inside something you
+already have: <a href="{{DETAILS_PATH}}#pipe">a drop-in on your node's
+unit</a>, <a href="{{DETAILS_PATH}}#container">the pipeline in your container's
 entrypoint</a>, which the details page shows whole against the MusashiNet node
-image.</p>
+image, or the try-it command above, which nothing starts for you and nothing
+restarts.</p>
 
 <h2>4. Check it</h2>
 
