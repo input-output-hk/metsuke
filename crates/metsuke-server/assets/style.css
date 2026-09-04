@@ -59,9 +59,42 @@ h2 {
   font-weight: 700;
 }
 
-h1 {
+/* The page title and the Leios wordmark on one line, with the accent rule the
+   title used to carry moved onto the row so it runs under both. */
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1em;
+  flex-wrap: wrap;
   border-bottom: 2px solid var(--accent);
   padding-bottom: 0.2em;
+}
+
+header h1 {
+  margin: 0;
+}
+
+/* The asset is one flat #180425, which the dark background very nearly is, so
+   the fills follow the text colour instead. The mask's own path stays white:
+   it is a luminance mask, and recolouring it would hide the wordmark it cuts. */
+.logo-link {
+  display: inline-flex;
+  flex: none;
+}
+
+.logo {
+  color: #180425;
+}
+
+.logo g[mask] path {
+  fill: currentColor;
+}
+
+@media (prefers-color-scheme: dark) {
+  .logo {
+    color: var(--fg);
+  }
 }
 
 h2 {
