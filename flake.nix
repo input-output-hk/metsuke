@@ -255,9 +255,12 @@
 
           # The server's tree. build.rs reads the agent manifest for
           # CLIENT_VERSION, so the agent crate has to be here in full even
-          # though nothing links against it; the two contrib files are carried
-          # whole into the instructions page with include_str!, as is the icon
-          # under assets/, so cargo sources alone do not build.
+          # though nothing links against it; the contrib files below are
+          # carried whole into the instructions page with include_str!, as is
+          # the icon under assets/, so cargo sources alone do not build. Every
+          # contrib file instructions.rs names has to be listed here, or only
+          # this derivation fails and the workspace src, which takes the whole
+          # directory, still builds.
           serverFileset = pkgs.lib.fileset.unions [
             (pkgs.lib.fileset.fromSource (crateSrc [
               ./crates/metsuke-wire
@@ -271,6 +274,7 @@
             ./contrib/metsuke.service
             ./contrib/metsuke-journald.service
             ./contrib/node-pipe.conf
+            ./contrib/cardano-node.service
             ./crates/metsuke-server/assets
             # What the check step shows, recorded by the agent's own test.
             ./crates/metsuke/tests/fixtures/recordings/agent-journal.log
