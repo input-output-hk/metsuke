@@ -40,7 +40,7 @@ const DETAILS_SECTIONS: [&str; 9] = [
     "What the node has to emit for trace lines",
     "The pipe",
     "The journal",
-    "Reading further",
+    "Further reading",
 ];
 
 /// Whether the documents the details page links are still in the repository

@@ -59,50 +59,61 @@ whichever row you take; only the filenames change.</p>
 
 <table>
 <tr>
-  <th>Shape<th>Trace lines from<th>Group it needs<th>Restarts<th>Files
+  <th>Shape<th>Trace line source<th>Group required<th>Restarts
+  <th>Metsuke config<th>Systemd service<th>Systemd drop-in
 <tr>
   <td><strong>Its own unit</strong><br><span class="note">the usual one</span>
   <td>the node's journal
-  <td><code>systemd-journal</code>, which reads every unit's journal on the host
+  <td><code>systemd-journal</code>
   <td>on its own
-  <td><div class="file"><a href="{{FILES_PREFIX}}config.journald.toml">config.journald.toml</a></div>
-      <div class="file"><a href="{{FILES_PREFIX}}metsuke-journald.service">metsuke-journald.service</a></div>
+  <td><a href="{{FILES_PREFIX}}config.journald.toml">config.journald.toml</a>
+  <td><a href="{{FILES_PREFIX}}metsuke-journald.service">metsuke-journald.service</a>
+  <td>none
 <tr>
   <td><strong>Your node's unit</strong><br><span class="note">a drop-in</span>
   <td>the node's stdout
   <td>none
   <td>with the node
-  <td><div class="file"><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a></div>
-      <div class="file"><a href="{{FILES_PREFIX}}node-pipe.conf">node-pipe.conf</a></div>
+  <td><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a>
+  <td>your node's own
+  <td><a href="{{FILES_PREFIX}}node-pipe.conf">node-pipe.conf</a>
 <tr>
   <td><strong>A container</strong><br><span class="note">no systemd</span>
   <td>the node's stdout
   <td>none
   <td>with the node
-  <td><div class="file"><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a></div>
-      <div class="file note">your own entrypoint</div>
+  <td><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a>
+  <td><span class="note">your own entrypoint</span>
+  <td>none
 <tr>
   <td><strong>Metrics only</strong><br><span class="note">fallback</span>
   <td>nothing
   <td>none
   <td>on its own
-  <td><div class="file"><a href="{{FILES_PREFIX}}config.minimal.toml">config.minimal.toml</a></div>
-      <div class="file"><a href="{{FILES_PREFIX}}metsuke.service">metsuke.service</a></div>
+  <td><a href="{{FILES_PREFIX}}config.minimal.toml">config.minimal.toml</a>
+  <td><a href="{{FILES_PREFIX}}metsuke.service">metsuke.service</a>
+  <td>none
 <tr>
   <td><strong>A shell</strong><br><span class="note">debugging</span>
   <td>the node's stdout
   <td>none
   <td>not at all
-  <td><div class="file"><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a></div>
+  <td><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a>
+  <td>none
+  <td>none
 </table>
 
 <p>The first row is what most pools want: the agent restarts without touching
-your node, and the group is the cost. It takes a node that already runs as a
-systemd unit and logs to the journal;
+your node, and the group, which reads every unit's journal on the host, is the
+cost. The second gives up nothing in privilege but ties the agent's lifecycle to
+your node's, so restarting the agent restarts your node.</p>
+
+<p>Both take a node that already runs as a systemd unit, the first also logging
+to the journal, which is where its trace lines are read from.
 <a href="{{FILES_PREFIX}}cardano-node.service">cardano-node.service</a> is an
-example to adapt where yours has no unit yet. The second gives up nothing in privilege
-but ties the agent's lifecycle to your node's, so restarting the agent restarts
-your node.</p>
+example to adapt where yours has no unit yet. It serves either row: the journald
+shape reads the journal it writes to, and the drop-in shape replaces the command
+it runs.</p>
 
 <p>The last two are fallbacks rather than places to stay. Metrics only collects
 no trace lines, which the program wants, and is where to drop back to if
@@ -173,8 +184,10 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now metsuke</pre>
 
 <p>If you took the pipe row instead, there is no unit of its own:
-<a href="{{DETAILS_PATH}}#pipe">the drop-in goes on your node's unit</a>, or the
-pipeline goes in your container's entrypoint.</p>
+<a href="{{DETAILS_PATH}}#pipe">the drop-in goes on your node's unit</a>, or
+<a href="{{DETAILS_PATH}}#container">the pipeline goes in your container's
+entrypoint</a>, which the details page shows whole against the MusashiNet node
+image.</p>
 
 <h2>4. Check it</h2>
 
@@ -218,3 +231,12 @@ older. To update, repeat step 1 and restart:</p>
 
 <p>The spool is on disk, so queued scrapes survive the restart. Nothing is
 scraped while the agent is down.</p>
+
+<h2>Further reading</h2>
+
+<p><a href="{{DETAILS_PATH}}">The details page</a> is what this one left out:
+<a href="{{DETAILS_PATH}}#keys">which key signs</a> and why one of yours is the
+wrong one to bring, <a href="{{DETAILS_PATH}}#traces">what your node has to
+emit</a> for the trace lines, and every setting the configs above only sample.
+Its <a href="{{DETAILS_PATH}}#reading">own further reading</a> is the
+repository, the README, and the decisions the two pages rest on.</p>

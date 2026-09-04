@@ -127,9 +127,3 @@ th {
 .note {
   color: var(--muted);
 }
-
-/* One file per line with air between them: run together they read as a single
-   wrapped name rather than as two things to download. */
-.file + .file {
-  margin-top: 0.6em;
-}

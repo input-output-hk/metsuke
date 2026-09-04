@@ -310,6 +310,15 @@ pub fn details(config_example: &str) -> String {
                 "config_path",
                 escape(&exec_start(UNIT, ExecStartField::Config)),
             ),
+            // The container example runs the agent itself rather than under a
+            // unit, so it names every path the unit would have supplied. Read
+            // off the unit for the same reason the quickstart does: written
+            // out here they are a second copy that goes stale silently.
+            ("key_path", escape(&credential_source(UNIT))),
+            (
+                "config_dir",
+                escape(&parent_of(&exec_start(UNIT, ExecStartField::Config))),
+            ),
         ],
     )
 }

@@ -181,11 +181,12 @@ is wrapped in a shell. This drop-in is the shape, and the empty
 had: <a href="{{FILES_PREFIX}}node-pipe.conf">node-pipe.conf</a>, with
 <a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a> beside it.</p>
 
-<p>Wherever your node's command lives rather than in a unit, the pipeline goes
-there instead. A shell or a terminal writes it as it stands. Written around the
-command that starts a container it only works while that command stays attached,
-since a detached one prints an id rather than the node's output, so in a
-container the pipeline has to go inside, as the entrypoint.</p>
+<p id="container">Wherever your node's command lives rather than in a unit, the
+pipeline goes there instead. A shell or a terminal writes it as it stands.
+Written around the command that starts a container it only works while that
+command stays attached, since a detached one prints an id rather than the
+node's output, so in a container the pipeline has to go inside, as the
+entrypoint.</p>
 
 <p>The agent is a static binary, which is what makes that cheap: it needs no
 image of its own and nothing in the node's image has to match it. Mount it in
@@ -196,14 +197,14 @@ supply marked:</p>
   -p 3010:3010 \
   -v "$WORKING_DIR:/data" \
   -v "$WORKING_DIR/config:/app/config:ro" \
-  -v /usr/local/bin/metsuke:/usr/local/bin/metsuke:ro \
-  -v /etc/metsuke:/etc/metsuke:ro \
+  -v {{binary}}:{{binary}}:ro \
+  -v {{config_dir}}:{{config_dir}}:ro \
   -v metsuke-spool:/var/lib/metsuke \
   --entrypoint /bin/sh \
   ghcr.io/input-output-hk/ouroboros-leios/cardano-node-testnet:THE-TAG-THE-TESTNET-DOCS-PIN \
-  -c '/app/run-node.sh | /usr/local/bin/metsuke \
-        --config /etc/metsuke/config.toml \
-        --signing-key /etc/metsuke/signing-key'</pre>
+  -c '/app/run-node.sh | {{binary}} \
+        --config {{config_path}} \
+        --signing-key {{key_path}}'</pre>
 
 <p><code>/app/run-node.sh</code> is that image's own launcher, which is what it
 runs when you do not override the entrypoint. On any other image,
@@ -270,7 +271,7 @@ their defaults.
 annotated form of the same file, with every default written out. Its comments
 are pinned to the code, so a value there is a value the agent ships.</p>
 
-<h2 id="reading">Reading further</h2>
+<h2 id="reading">Further reading</h2>
 
 <p>The agent and this server are
 <a href="{{REPOSITORY}}">one repository</a>, and its
