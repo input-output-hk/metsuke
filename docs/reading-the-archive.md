@@ -44,6 +44,22 @@ as a map, so neither reads usefully through `select *`. `duckdb -init
 docs/analytics.sql` flattens both and defines the views a consumer actually
 groups over.
 
+`docs/archive.sql` is the same flattening with none of the views, as three
+tables over whatever directory you point it at:
+
+```
+METSUKE_ARCHIVE=downloads duckdb -init docs/archive.sql downloads.duckdb
+```
+
+Name a database file as above and the tables persist, so later questions open
+`duckdb downloads.duckdb` and ask, rather than re-reading every object.
+
+Load that one where the question is not one analytics.sql already answers. It
+globs recursively rather than assuming the `v1/<day>/` layout, unions objects
+whose keys differ across days, and keeps a `scrape` row for every submission
+including the failed ones, which carry no metrics and so cannot appear in the
+flattened `metric` table.
+
 ## Checking that an object is a pool's
 
 The signature is detached, so it does not travel inside the object. A download
