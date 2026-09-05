@@ -492,21 +492,195 @@ fn a_deployment_with_no_agent_build_offers_none() {
     );
 }
 
-/// The analysis page is reachable, and from the details page alone. The
-/// quickstart's audience is a pool operator, and putting a developer tool in
-/// front of one is what the third page exists to avoid.
+/// The nav reaches every page and nothing else. A page the nav does not name
+/// is one only a held URL finds, which is what the analysis page was before
+/// there was a nav.
 #[test]
-fn the_details_page_links_the_analysis_page_and_the_quickstart_does_not() {
+fn the_nav_names_every_page_and_only_pages() {
+    let listed: Vec<&str> = instructions::NAV
+        .iter()
+        .flat_map(|(_, pages)| pages.iter().map(|(path, _)| *path))
+        .collect();
+    let served = [
+        instructions::PATH,
+        instructions::DETAILS_PATH,
+        instructions::ANALYSIS_PATH,
+    ];
+    for path in served {
+        assert!(listed.contains(&path), "the nav never names {path}");
+    }
+    for path in &listed {
+        assert!(
+            served.contains(path),
+            "the nav names {path}, which this server does not serve"
+        );
+    }
+}
+
+/// Every page carries the nav, with its own entry marked and no other.
+#[test]
+fn every_page_carries_the_nav_marking_itself() {
+    let pages = instructions::pages(&public_url(), support::test_binaries());
+    for (page, path) in [
+        (&pages.quickstart, instructions::PATH),
+        (&pages.details, instructions::DETAILS_PATH),
+        (&pages.analysis, instructions::ANALYSIS_PATH),
+    ] {
+        // The nav alone, not the page: the stylesheet is inlined into every
+        // document and names the same attribute as a selector.
+        let nav = nav_of(page);
+        assert_eq!(
+            nav.matches(r#"aria-current="page""#).count(),
+            1,
+            "{path} marks other than exactly one nav entry as itself"
+        );
+        assert!(
+            nav.contains(&format!(r#"<a href="{path}" aria-current="page">"#)),
+            "{path} does not mark its own nav entry"
+        );
+    }
+}
+
+/// The grouping is the reason a nav was allowed to name the analysis page at
+/// all: an operator sees which pages are theirs rather than meeting a
+/// developer's tooling in a flat list. So the two audiences stay apart, and the
+/// quickstart's own prose still does not send a pool operator to it.
+#[test]
+fn the_nav_keeps_the_analysis_page_out_of_the_operator_group() {
+    let group_of = |wanted: &str| {
+        instructions::NAV
+            .iter()
+            .find(|(_, pages)| pages.iter().any(|(path, _)| *path == wanted))
+            .map(|(audience, _)| *audience)
+            .unwrap_or_else(|| panic!("{wanted} is in no nav group"))
+    };
+    assert_ne!(
+        group_of(instructions::ANALYSIS_PATH),
+        group_of(instructions::PATH),
+        "the analysis page is grouped with the pages a pool operator follows"
+    );
+    assert_eq!(
+        group_of(instructions::PATH),
+        group_of(instructions::DETAILS_PATH),
+        "the two pages an operator follows are in different groups"
+    );
+
     let pages = instructions::pages(&public_url(), support::test_binaries());
     let link = format!(r#"href="{}"#, instructions::ANALYSIS_PATH);
     assert!(
-        pages.details.contains(&link),
-        "the details page never links the analysis page"
+        !main_of(&pages.quickstart).contains(&link),
+        "the quickstart's own prose links the analysis page"
     );
     assert!(
-        !pages.quickstart.contains(&link),
-        "the quickstart links the analysis page, which is not its audience's"
+        main_of(&pages.details).contains(&link),
+        "the details page's prose never links the analysis page"
     );
+}
+
+/// A page's contents lists exactly the sections it has, in order, so neither
+/// can be renamed without the other. Read off the rendered page, because the
+/// contents is generated rather than written into the template.
+#[test]
+fn every_page_lists_its_own_sections_in_order() {
+    let pages = instructions::pages(&public_url(), support::test_binaries());
+    for (page, name) in [
+        (&pages.quickstart, "quickstart"),
+        (&pages.details, "details"),
+        (&pages.analysis, "analysis"),
+    ] {
+        let sections: Vec<(String, String)> = main_of(page)
+            .split("<h2 id=\"")
+            .skip(1)
+            .map(|rest| {
+                let (id, rest) = rest.split_once("\">").expect("a section's id is quoted");
+                let (title, _) = rest.split_once("</h2>").expect("a section heading closes");
+                (id.to_string(), title.to_string())
+            })
+            .collect();
+        assert!(!sections.is_empty(), "{name} has no sections at all");
+
+        let contents = page
+            .split_once(r#"<nav class="toc""#)
+            .expect("a page carries its contents")
+            .1;
+        let mut cursor = 0;
+        for (id, title) in &sections {
+            let entry = format!("<li><a href=\"#{id}\">{title}</a>");
+            let found = contents[cursor..].find(&entry).unwrap_or_else(|| {
+                panic!("{name} has a section {title:?} its contents does not list in order")
+            });
+            cursor += found + entry.len();
+        }
+    }
+}
+
+/// Each page offers the pages either side of it, in the order the nav lists
+/// them, and the two ends offer nothing beyond themselves. A sequence that
+/// disagreed with the rail would be a reading order written down twice.
+#[test]
+fn each_page_offers_the_pages_either_side_of_it() {
+    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let order: Vec<&str> = instructions::NAV
+        .iter()
+        .flat_map(|(_, listed)| listed.iter().map(|(path, _)| *path))
+        .collect();
+    let rendered = [
+        (&pages.quickstart, instructions::PATH),
+        (&pages.details, instructions::DETAILS_PATH),
+        (&pages.analysis, instructions::ANALYSIS_PATH),
+    ];
+
+    for (page, path) in rendered {
+        let at = order
+            .iter()
+            .position(|listed| *listed == path)
+            .expect("a rendered page is one the nav lists");
+        let sequence = page
+            .split_once(r#"<nav class="sequence""#)
+            .expect("a page carries its sequence")
+            .1;
+        for (class, neighbour) in [
+            (
+                "prev",
+                at.checked_sub(1).and_then(|before| order.get(before)),
+            ),
+            ("next", order.get(at + 1)),
+        ] {
+            match neighbour {
+                Some(neighbour) => assert!(
+                    sequence.contains(&format!(r#"<a class="{class}" href="{neighbour}">"#)),
+                    "{path} does not offer {neighbour} as its {class}"
+                ),
+                // An end of the sequence carries no link at all, rather than
+                // one that goes nowhere.
+                None => assert!(
+                    !sequence.contains(&format!(r#"class="{class}""#)),
+                    "{path} offers a {class} page it has none of"
+                ),
+            }
+        }
+    }
+}
+
+/// The pages rail alone.
+fn nav_of(page: &str) -> &str {
+    page.split_once(r#"<nav class="pages""#)
+        .expect("a page carries the nav")
+        .1
+        .split_once("</nav>")
+        .expect("the nav closes")
+        .0
+}
+
+/// The document itself, without the two rails around it, for the tests that
+/// are about what a page says rather than what every page carries.
+fn main_of(page: &str) -> &str {
+    page.split_once("<main>")
+        .expect("a page has a document")
+        .1
+        .split_once("</main>")
+        .expect("a document closes")
+        .0
 }
 
 /// The same shape as the agent-build test above, for the tool this page hands

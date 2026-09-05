@@ -41,6 +41,23 @@ pub const DETAILS_PATH: &str = "/details";
 /// reading, which is where a reader who wants the other side already is.
 pub const ANALYSIS_PATH: &str = "/analysis";
 
+/// Every page this server serves, in the order the nav lists them, under the
+/// heading saying who each group is for.
+///
+/// Grouped rather than flat, and that is the whole design: the analysis page
+/// exists because a developer's tooling in front of a pool operator is a page
+/// serving neither. A flat list would put it there on every load. Naming the
+/// audience instead makes all three reachable while still saying which are
+/// yours, which is what hiding it achieved before at the cost of nobody
+/// finding it.
+pub const NAV: [(&str, &[(&str, &str)]); 2] = [
+    (
+        "Running a pool",
+        &[(PATH, "Quickstart"), (DETAILS_PATH, "Details")],
+    ),
+    ("Reading the archive", &[(ANALYSIS_PATH, "Analysis")]),
+];
+
 pub const ICON: &str = include_str!("../assets/favicon.svg");
 pub const ICON_PATH: &str = "/favicon.svg";
 /// The path a client asks for on its own, whatever the page links. Served
@@ -365,6 +382,9 @@ pub fn quickstart(unit: &str, public_url: &url::Url, offered: &[File]) -> String
             ("ICON_CONTENT_TYPE", ICON_CONTENT_TYPE.to_string()),
             ("style", STYLE.trim_end().to_string()),
             ("logo", LOGO.trim_end().to_string()),
+            ("nav", nav(PATH)),
+            ("toc", toc(QUICKSTART)),
+            ("sequence", sequence(PATH)),
             ("DETAILS_PATH", DETAILS_PATH.to_string()),
             ("FILES_PREFIX", FILES_PREFIX.to_string()),
             ("CLIENT_VERSION", CLIENT_VERSION.to_string()),
@@ -407,6 +427,9 @@ pub fn details(config_example: &str, public_url: &url::Url) -> String {
             ("ICON_CONTENT_TYPE", ICON_CONTENT_TYPE.to_string()),
             ("style", STYLE.trim_end().to_string()),
             ("logo", LOGO.trim_end().to_string()),
+            ("nav", nav(DETAILS_PATH)),
+            ("toc", toc(DETAILS)),
+            ("sequence", sequence(DETAILS_PATH)),
             ("PATH", PATH.to_string()),
             ("ANALYSIS_PATH", ANALYSIS_PATH.to_string()),
             ("HEADER_VKEY", HEADER_VKEY.to_string()),
@@ -474,6 +497,9 @@ pub fn analysis(public_url: &url::Url, offered: &[File]) -> String {
             ("ICON_CONTENT_TYPE", ICON_CONTENT_TYPE.to_string()),
             ("style", STYLE.trim_end().to_string()),
             ("logo", LOGO.trim_end().to_string()),
+            ("nav", nav(ANALYSIS_PATH)),
+            ("toc", toc(ANALYSIS)),
+            ("sequence", sequence(ANALYSIS_PATH)),
             ("PATH", PATH.to_string()),
             ("DETAILS_PATH", DETAILS_PATH.to_string()),
             ("FILES_PREFIX", FILES_PREFIX.to_string()),
@@ -491,6 +517,110 @@ pub fn analysis(public_url: &url::Url, offered: &[File]) -> String {
             ("server_url", escape(public_url.as_str())),
             ("REALM", crate::developer::REALM.to_string()),
         ],
+    )
+}
+
+/// The nav every page carries, with the one being rendered marked. Built from
+/// `NAV` rather than written into each template, so a page cannot be missing
+/// from one document's copy of it and a renamed path cannot leave two of them
+/// pointing at a route this server no longer answers.
+fn nav(current: &str) -> String {
+    let groups: Vec<String> = NAV
+        .iter()
+        .map(|(audience, pages)| {
+            let items: Vec<String> = pages
+                .iter()
+                .map(|(path, title)| {
+                    // The current page is still a link, so a reader who clicks
+                    // it lands where they already are rather than nowhere.
+                    // `aria-current` is what says which one it is, and the
+                    // stylesheet reads the same attribute.
+                    let here = match *path == current {
+                        true => " aria-current=\"page\"",
+                        false => "",
+                    };
+                    format!("<li><a href=\"{path}\"{here}>{title}</a>")
+                })
+                .collect();
+            format!(
+                "<p class=\"nav-audience\">{audience}</p>\n<ul>\n{}\n</ul>",
+                items.join("\n")
+            )
+        })
+        .collect();
+    format!(
+        "<nav class=\"pages\" aria-label=\"Pages\">\n{}\n</nav>",
+        groups.join("\n")
+    )
+}
+
+/// The pages either side of this one, as the nav orders them. Off `NAV` for
+/// the same reason the rail is: a reading order written down twice is one that
+/// disagrees with itself the first time a page moves.
+///
+/// An end of the sequence carries no link rather than a disabled one, so the
+/// quickstart does not offer a previous page and the analysis page does not
+/// offer a next.
+fn sequence(current: &str) -> String {
+    let order: Vec<(&str, &str)> = NAV
+        .iter()
+        .flat_map(|(_, pages)| pages.iter().copied())
+        .collect();
+    let at = order
+        .iter()
+        .position(|(path, _)| *path == current)
+        .expect("a rendered page is one the nav lists");
+    let link = |class: &str, label: &str, entry: Option<&(&str, &str)>| match entry {
+        None => String::new(),
+        Some((path, title)) => format!(
+            "<a class=\"{class}\" href=\"{path}\">\
+             <span class=\"sequence-label\">{label}</span>{title}</a>\n"
+        ),
+    };
+    format!(
+        "<nav class=\"sequence\" aria-label=\"Pages either side\">\n{}{}</nav>",
+        link(
+            "prev",
+            "Previous",
+            at.checked_sub(1).and_then(|before| order.get(before))
+        ),
+        link("next", "Next", order.get(at + 1)),
+    )
+}
+
+/// A page's own sections, read out of its `<h2>` headings, so a renamed or
+/// reordered section carries its entry with it and a hand-written contents
+/// cannot fall behind the document it is for.
+///
+/// Every heading has to carry an id, which is what the anchor is. Asserted
+/// rather than skipped: a section quietly missing from the contents is the
+/// failure this would otherwise become, and the pages render once before the
+/// listener binds, so it is a startup failure rather than something a reader
+/// meets.
+fn toc(template: &str) -> String {
+    assert_eq!(
+        template.matches("<h2").count(),
+        template.matches("<h2 id=\"").count(),
+        "every section needs an id for the contents to link it by"
+    );
+    let items: Vec<String> = template
+        .split("<h2 id=\"")
+        .skip(1)
+        .map(|rest| {
+            let (id, rest) = rest.split_once("\">").expect("a section's id is quoted");
+            let (title, _) = rest.split_once("</h2>").expect("a section heading closes");
+            assert!(
+                !title.contains('<'),
+                "the section {id} carries markup the contents cannot show"
+            );
+            format!("<li><a href=\"#{id}\">{title}</a>")
+        })
+        .collect();
+    assert!(!items.is_empty(), "a page lists no sections at all");
+    format!(
+        "<nav class=\"toc\" aria-label=\"On this page\">\n\
+         <p class=\"nav-audience\">On this page</p>\n<ul>\n{}\n</ul>\n</nav>",
+        items.join("\n")
     )
 }
 

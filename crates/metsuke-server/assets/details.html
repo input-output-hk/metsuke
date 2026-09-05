@@ -5,9 +5,14 @@
 <style>{{style}}</style>
 
 <header>
-<h1>Metsuke Details</h1>
 <a class="logo-link" href="https://musashi.network">{{logo}}</a>
+<h1>Metsuke Details</h1>
 </header>
+
+<div class="layout">
+{{nav}}
+
+<main>
 
 <p>What the agent sends, which key signs, and every config setting available is
 described on this page. <a href="{{PATH}}">The four steps to get running</a> are
@@ -28,7 +33,7 @@ submissions regardless of what key signs them. This is program registration
 rather than agent setup, so it is normally done before you reach the
 quickstart.</p>
 
-<h2>What leaves your machine</h2>
+<h2 id="wire">What leaves your machine</h2>
 
 <p>One submission is a plain JSON header, then your scrapes zstd compressed, one
 JSON object per line, with a detached Ed25519 signature over the whole byte
@@ -103,7 +108,7 @@ have a reason to prefer it. If you use one it has to hash to the
 already have. The path the unit loads it from names neither, so either one
 installs there and the unit runs unedited.</p>
 
-<h2>The node's metrics endpoint</h2>
+<h2 id="metrics">The node's metrics endpoint</h2>
 
 <p>The published MusashiNet configuration already serves this on loopback, and
 the config the quickstart hands you already points there, so this section is a
@@ -288,7 +293,7 @@ beside it.</p>
 <p>That config is the one place the agent cannot guess anything: neither your
 node's unit name nor where journalctl lives on your distribution.</p>
 
-<h2>Every setting</h2>
+<h2 id="settings">Every setting</h2>
 
 <p>The quickstart ships the values that have to be set and leaves the rest at
 their defaults.
@@ -328,32 +333,29 @@ and you point <code>signingKeyFile</code> at the path instead.</p>
 <p>The agent and this server are
 <a href="{{REPOSITORY}}">one repository</a>, and its
 <a href="{{DOCS_PREFIX}}README.md">README</a> is what metsuke is and which
-crate does what. Everything a decision here rests on is written down as a
-decision on the record rather than left in the code, superseded ones included:</p>
+crate does what. Every decision this page rests on is written down rather than
+left in the code, and three of them are worth reading if you run a pool:</p>
 
 <ul>
-<li><a href="{{DOCS_PREFIX}}docs/adr/0007-agent-reads-only-loopback-prometheus.md">ADR
-0007</a>, why the agent scrapes loopback rather than the node socket, which is
-what puts it on your node host. Superseded by 0010 below, which is what moved
-the boundary for trace lines.</li>
 <li><a href="{{DOCS_PREFIX}}docs/adr/0010-log-based-trace-collection.md">ADR
-0010</a>, the two trace sources and what each costs in privilege. The journal
-row's group is decided here.</li>
+0010</a>, the two trace sources and what each costs in privilege, which is the
+difference between the journald setup and the pipe.</li>
 <li><a href="{{DOCS_PREFIX}}docs/adr/0011-leios-key-submissions.md">ADR
 0011</a>, how a Leios key speaks for your pool, and what the key roster is.</li>
 <li><a href="{{DOCS_PREFIX}}docs/adr/0004-client-spool-is-the-durability-layer.md">ADR
 0004</a>, why the spool is the only place a scrape is kept, and what an
 unreachable server costs you.</li>
-<li><a href="{{DOCS_PREFIX}}docs/adr/0001-raw-ed25519-detached-signature.md">ADR
-0001</a>, the signature over a submission, in the shape shown above.</li>
-<li><a href="{{DOCS_PREFIX}}docs/adr/0005-archive-raw-signed-bytes.md">ADR
-0005</a>, what the archive keeps of what you send, which is the bytes you
-signed and nothing derived from them.</li>
-<li><a href="{{ANALYSIS_PATH}}">The analysis page</a>, and behind it
-<a href="{{DOCS_PREFIX}}docs/reading-the-archive.md">reading the archive</a>:
-how your submissions are read back on the other side. Both are written for the
-developers processing this data rather than for you, which is what makes them
-the account of what your lines are used for.</li>
-<li><a href="{{REPOSITORY}}/tree/main/docs/adr">The other decisions</a>, as
-the directory they sit in.</li>
 </ul>
+
+<p><a href="{{REPOSITORY}}/tree/main/docs/adr">The rest of them</a> are in the
+directory they sit in, superseded ones included.
+<a href="{{ANALYSIS_PATH}}">The analysis page</a> is how your submissions are
+read back on the other side; it is written for the developers processing this
+data rather than for you, which is what makes it the account of what your lines
+are used for.</p>
+
+</main>
+
+{{toc}}
+{{sequence}}
+</div>

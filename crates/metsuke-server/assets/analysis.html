@@ -5,9 +5,14 @@
 <style>{{style}}</style>
 
 <header>
-<h1>Metsuke Analysis</h1>
 <a class="logo-link" href="https://musashi.network">{{logo}}</a>
+<h1>Metsuke Analysis</h1>
 </header>
+
+<div class="layout">
+{{nav}}
+
+<main>
 
 <p>This server collects signed telemetry from the pools in the MusashiNet
 rewards program and keeps every submission exactly as it arrived. This page is
@@ -20,7 +25,7 @@ of the node trace lines the program selects. Both are JSON Lines, compressed,
 and every line carries the pool and agent it came from. Nothing is aggregated
 and nothing is rewritten, so what you download is what a pool signed.</p>
 
-<h2>1. Get an account</h2>
+<h2 id="account">1. Get an account</h2>
 
 <p>The archive is not public. Reading it needs a developer account on this
 server, which is a username and a password held in the
@@ -36,7 +41,7 @@ argument is visible in the process table, and an environment variable reaches
 every child process and anything that may read <code>/proc</code>. The tool
 below takes the path and reads it itself.</p>
 
-<h2>2. Get the tool</h2>
+<h2 id="tool">2. Get the tool</h2>
 
 <p><code>metsuke-fetch</code> is what pulls the archive down. It is one static
 binary with nothing to link against, the same as the agent:</p>
@@ -50,7 +55,7 @@ built rather than downloaded, with
 anything. <code>{{fetch}} --help</code> is the complete flag list; what follows
 is the part of it you need first.</p>
 
-<h2>3. Sync the archive</h2>
+<h2 id="sync">3. Sync the archive</h2>
 
 <p>Point it at this server, say who you are, and name two paths: a cursor file
 and a directory to download into.</p>
@@ -90,7 +95,7 @@ submission</em>, which is not when its rows were measured; an agent that
 spooled through an outage can put those days far apart. Slice by time in SQL,
 where the row's own timestamp is, rather than in the flags.</p>
 
-<h2>4. Read it</h2>
+<h2 id="read">4. Read it</h2>
 
 <p>An object is a zstd stream whose first frame is skippable, so duckdb reads
 the downloaded tree where it landed with no unpacking step. Neither kind reads
@@ -121,7 +126,7 @@ questions in another session open <code>duckdb archive.duckdb</code> and ask
 rather than re-reading every object. Both files carry their own instructions in
 their opening comments.</p>
 
-<h2>Further reading</h2>
+<h2 id="reading">Further reading</h2>
 
 <p><a href="{{DOCS_PREFIX}}docs/reading-the-archive.md">Reading the archive</a>
 is the complete account and the one to go to next. This page stops at getting
@@ -131,29 +136,31 @@ duckdb defaults that silently return NULL for a field they did not sample.</p>
 
 <p>The agent, this server and the fetch tool are
 <a href="{{REPOSITORY}}">one repository</a>, and its
-<a href="{{DOCS_PREFIX}}README.md">README</a> is what each crate does.
-Everything the shape of this data rests on is written down as a decision on the
-record:</p>
+<a href="{{DOCS_PREFIX}}README.md">README</a> is what each crate does. Three of
+the decisions behind the shape of this data are worth reading before you rely
+on it:</p>
 
 <ul>
 <li><a href="{{DOCS_PREFIX}}docs/adr/0005-archive-raw-signed-bytes.md">ADR
 0005</a>, why the archive keeps the raw signed bytes and nothing derived from
 them, which is what makes any of it checkable at all.</li>
-<li><a href="{{DOCS_PREFIX}}docs/adr/0001-raw-ed25519-detached-signature.md">ADR
-0001</a>, the signature itself, and why it is detached.</li>
 <li><a href="{{DOCS_PREFIX}}docs/adr/0011-leios-key-submissions.md">ADR
 0011</a>, how a Leios key speaks for a pool, which is what the attribution of
 most of this archive rests on.</li>
 <li><a href="{{DOCS_PREFIX}}docs/adr/0004-client-spool-is-the-durability-layer.md">ADR
 0004</a>, the spool, which is why receipt time and observation time come
 apart.</li>
-<li><a href="{{DOCS_PREFIX}}CONTEXT.md">CONTEXT.md</a>, the vocabulary: what a
-Cold Key and a Leios Key are, and what a gap in an agent's sequence numbers
-does and does not tell you.</li>
-<li><a href="{{REPOSITORY}}/tree/main/docs/adr">The other decisions</a>, as the
-directory they sit in.</li>
 </ul>
 
-<p><a href="{{DETAILS_PATH}}">The details page</a> is the other side of this
-one: what a pool operator installs, what leaves their machine, and what the
-node has to emit for the trace lines you are reading here.</p>
+<p><a href="{{DOCS_PREFIX}}CONTEXT.md">CONTEXT.md</a> is the vocabulary, and
+<a href="{{REPOSITORY}}/tree/main/docs/adr">the rest of the decisions</a> are in
+the directory they sit in. <a href="{{DETAILS_PATH}}">The details page</a> is
+the other side of this one: what a pool operator installs, what leaves their
+machine, and what the node has to emit for the trace lines you are reading
+here.</p>
+
+</main>
+
+{{toc}}
+{{sequence}}
+</div>

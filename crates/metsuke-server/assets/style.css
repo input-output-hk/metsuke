@@ -39,10 +39,10 @@
 }
 
 body {
-  /* The documentation site's own container is 1140px. Held a little under it
-     here because this page has no sidebar eating the difference, and a prose
-     line the full width of that container is a hard one to track back. */
-  max-width: 60em;
+  /* Wider than the documentation site's own 1140px container, because two
+     sidebars eat the difference: what is left for prose is about the 54em a
+     line can still be tracked back across. */
+  max-width: 84em;
   margin: 2em auto;
   padding: 0 1em;
   background: var(--bg);
@@ -59,20 +59,71 @@ h2 {
   font-weight: 700;
 }
 
-/* The page title and the Leios wordmark on one line, with the accent rule the
-   title used to carry moved onto the row so it runs under both. */
+/* How far down the viewport the header leaves things. Everything that sticks
+   or is scrolled to clears it by this, so the height is stated once: a header
+   that grew and a rail still pinned under its old height is the drift this
+   avoids. In rem, because the rails set their own font-size and an em here
+   would mean a different distance in each of them. */
+:root {
+  --header-offset: 4rem;
+}
+
+/* The Leios wordmark on the left as the documentation site has it, the page
+   title centred, and the accent rule under both. Three columns rather than a
+   flex row: the empty third is what centres the title against the header
+   rather than against whatever the wordmark left over.
+
+   Pinned, so which page you are on stays on screen through documents that run
+   long. Opaque, because the document scrolls underneath it rather than past
+   it, and above the rails in the stack for the same reason. */
 header {
-  display: flex;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg);
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
   gap: 1em;
-  flex-wrap: wrap;
   border-bottom: 2px solid var(--accent);
-  padding-bottom: 0.2em;
+  padding-bottom: 0.9em;
+  margin-bottom: 2em;
+}
+
+/* An anchor otherwise lands its heading at the very top of the viewport, which
+   is behind the header. Every id is a jump target: the contents links the
+   headings, and the quickstart links a paragraph on the details page. */
+[id] {
+  scroll-margin-top: var(--header-offset);
 }
 
 header h1 {
+  grid-column: 2;
   margin: 0;
+  text-align: center;
+}
+
+/* Narrow enough that the two would collide, so they stack and both centre.
+   Stacked they are two rows tall, which on a phone is a sixth of the viewport
+   to hold a wordmark, so here the header scrolls away with the document
+   instead of staying pinned. Nothing is left needing to clear it: the pages
+   rail is already a row above the document by this width, and the contents is
+   hidden. */
+@media (max-width: 40em) {
+  :root {
+    --header-offset: 1rem;
+  }
+
+  header {
+    position: static;
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    gap: 0.6em;
+  }
+
+  header h1 {
+    grid-column: 1;
+  }
 }
 
 /* The asset is one flat #180425, which the dark background very nearly is, so
@@ -159,4 +210,169 @@ th {
 
 .note {
   color: var(--muted);
+}
+
+/* Pages on the left, the document in the middle, its own sections on the
+   right. Both rails are sticky: the documents run long enough that a contents
+   scrolled off the top is a contents nobody uses. `align-items: start` is what
+   lets sticky work at all, since a stretched grid item is already as tall as
+   its row and has nowhere to stick to. */
+.layout {
+  display: grid;
+  grid-template-columns: 11em minmax(0, 1fr) 12em;
+  gap: 2.5em;
+  align-items: start;
+}
+
+/* Both rails stay put and the document scrolls between them. Pinned below the
+   header rather than at the top of the viewport, or they would slide under it.
+   */
+.pages,
+.toc {
+  position: sticky;
+  top: var(--header-offset);
+  font-size: 90%;
+  line-height: 1.5;
+  /* The document's first paragraph carries its own margin, so without this the
+     rails start hard against the rule while the prose beside them does not. */
+  padding-top: 0.8em;
+  /* Its own scrollbar rather than the page's, so a rail longer than the
+     viewport can still reach its last entry. */
+  max-height: calc(100vh - var(--header-offset) - 1rem);
+  overflow-y: auto;
+}
+
+.toc {
+  border-left: 1px solid var(--rule);
+  padding-left: 1em;
+}
+
+.pages ul,
+.toc ul {
+  list-style: none;
+  margin: 0 0 1.2em;
+  padding: 0;
+}
+
+.pages li,
+.toc li {
+  margin: 0.35em 0;
+}
+
+.pages a,
+.toc a {
+  text-decoration: none;
+}
+
+.pages a:hover,
+.toc a:hover {
+  text-decoration: underline;
+}
+
+/* The audience a group of pages is for, and the contents' own label. Not
+   headings: they are labels on a list, and as `h2` they would land in the
+   contents this page generates from its own headings. */
+.nav-audience {
+  margin: 0 0 0.4em;
+  color: var(--muted);
+  font-size: 90%;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* Where you already are. The rule sits on the accent so the marker is the same
+   colour as the one under the page title. */
+.pages a[aria-current="page"] {
+  color: var(--fg);
+  font-weight: 600;
+  border-left: 2px solid var(--accent);
+  margin-left: -0.7em;
+  padding-left: 0.5em;
+}
+
+/* What comes before and after this page, under the document and in its column.
+   Placed rather than auto-flowed: it is the fourth child of the layout, which
+   would otherwise land under the pages rail. */
+.sequence {
+  grid-column: 2;
+  display: flex;
+  gap: 1em;
+  margin-top: 3em;
+  padding-top: 1.2em;
+  border-top: 1px solid var(--rule);
+}
+
+.sequence a {
+  border: 1px solid var(--rule);
+  border-radius: 0.4rem;
+  padding: 0.6em 0.9em;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.sequence a:hover {
+  border-color: var(--accent);
+}
+
+/* Pushed to its own end, so a page with only one of the two still puts it on
+   the side that says which direction it goes. */
+.sequence .next {
+  margin-left: auto;
+  text-align: right;
+}
+
+.sequence-label {
+  display: block;
+  color: var(--muted);
+  font-size: 85%;
+  font-weight: 400;
+}
+
+/* The contents goes first, because it is the rail that costs the most width
+   and is the one a narrow screen can do without: every section it names is a
+   heading the reader will scroll past anyway. */
+@media (max-width: 74em) {
+  .layout {
+    grid-template-columns: 11em minmax(0, 1fr);
+  }
+
+  .toc {
+    display: none;
+  }
+}
+
+/* Then the pages rail stops being a rail and becomes a row above the
+   document, which is the only shape that does not need a script to open. */
+@media (max-width: 52em) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 1.5em;
+  }
+
+  .pages {
+    position: static;
+    max-height: none;
+    border-bottom: 1px solid var(--rule);
+    padding-bottom: 0.5em;
+  }
+
+  .pages ul {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0 1.2em;
+    margin-bottom: 0.6em;
+  }
+
+  /* One column, so there is no second one to place it in. */
+  .sequence {
+    grid-column: 1;
+  }
+
+  .pages a[aria-current="page"] {
+    border-left: none;
+    margin-left: 0;
+    padding-left: 0;
+    border-bottom: 2px solid var(--accent);
+  }
 }
