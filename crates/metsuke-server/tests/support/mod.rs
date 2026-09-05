@@ -15,7 +15,7 @@ use metsuke_server::archive::{
 };
 use metsuke_server::authority::{Attributed, Signed};
 use metsuke_server::config::{AbsolutePath, DeveloperConfig, HttpConfig, IngestConfig};
-use metsuke_server::developer::percent_decoded;
+use metsuke_server::developer::{Accounts, percent_decoded};
 use metsuke_wire::envelope::{
     self, AgentId, Attestation, Envelope, Payload, PayloadLine, PoolId, Provenance, Scrape,
     SigningKey, SubmissionKey, TraceLine,
@@ -122,6 +122,24 @@ pub fn envelope_carrying(
     )
 }
 
+/// An envelope naming `claimed`, header and lines alike, for the cases about a
+/// submission whose header says a pool its signing key does not.
+pub fn envelope_claiming(claimed: PoolId, counter: u64) -> Envelope {
+    let now = test_now();
+    let provenance = Provenance {
+        pool_id: claimed,
+        agent_id: test_agent_id(),
+    };
+    let line = PayloadLine::scrape(&test_scrape(now), &provenance).expect("a test scrape stamps");
+    Envelope::new(
+        provenance,
+        metsuke_server::CLIENT_VERSION.to_string(),
+        counter,
+        now,
+        Payload::scrapes(vec![line]),
+    )
+}
+
 /// The wire bytes and the attestation a client would send for this envelope.
 pub fn seal(key: &SigningKey, envelope: &Envelope) -> (Vec<u8>, Attestation) {
     seal_with(&SubmissionKey::ColdKey(key.clone()), envelope)
@@ -191,10 +209,33 @@ pub fn allowlist_toml(allowed: &BTreeMap<PoolId, ApplicationCode>) -> String {
 /// load rather than passing on a value nobody set.
 pub struct ServerToml {
     pub listen: String,
+    pub public_url: String,
     pub http: String,
     pub archive: String,
     pub ingest: String,
     pub developer: String,
+}
+
+/// What the suite's configs advertise as this server's address. One value, so a
+/// test about a rendered page and a test about a config agree on it.
+pub const PUBLIC_URL: &str = "https://metsuke.example.org";
+
+pub fn public_url() -> url::Url {
+    PUBLIC_URL.parse().expect("the suite's public URL parses")
+}
+
+/// The agent builds a test server offers. Stand-ins rather than real ones: what
+/// a test asserts is that the page links what the server serves and that the
+/// bytes come back unaltered, neither of which needs a cross build.
+pub fn test_binaries() -> Vec<metsuke_server::instructions::Binary> {
+    metsuke_server::instructions::BINARIES
+        .iter()
+        .enumerate()
+        .map(|(at, name)| metsuke_server::instructions::Binary {
+            name,
+            bytes: vec![at as u8; 8],
+        })
+        .collect()
 }
 
 /// A whole config over an archive under `dir`, on a kernel-chosen port, with
@@ -202,6 +243,7 @@ pub struct ServerToml {
 pub fn server_toml(dir: &Path, allowed: &[PoolId]) -> ServerToml {
     ServerToml {
         listen: "127.0.0.1:0".to_string(),
+        public_url: PUBLIC_URL.to_string(),
         http: http_toml(&permissive_http()),
         archive: filesystem_archive(&dir.join("archive")),
         ingest: ingest_toml(&permissive_config(allowed)),
@@ -245,6 +287,7 @@ impl ServerToml {
     pub fn render(&self) -> String {
         [
             format!("listen = \"{}\"", self.listen),
+            format!("public_url = \"{}\"", self.public_url),
             self.http.clone(),
             self.archive.clone(),
             self.ingest.clone(),
@@ -401,14 +444,47 @@ pub fn example_s3_archive(endpoint: &str, put_retries: u32) -> String {
 }
 
 /// What every test's credential file holds. One place, so the unit tests and
-/// the spawned binary authenticate as the same account.
+/// the spawned binary authenticate as the same accounts, and two of them so
+/// nothing under test passes only because there is one.
+pub const DEVELOPER_USER: &str = "metsuke-dev";
 pub const DEVELOPER_PASSWORD: &str = "hunter2";
+pub const OTHER_DEVELOPER_USER: &str = "other-dev";
+pub const OTHER_DEVELOPER_PASSWORD: &str = "correct-horse";
+
+/// What no account's password is, for the tests about a refusal.
+pub const WRONG_PASSWORD: &str = "not the password";
+
+/// A password holding the separator RFC 7617 makes the first colon, for the
+/// test that the rest of a credential is the password.
+pub const COLON_PASSWORD: &str = "pass:with:colons";
+
+/// A person's name as an operator writes it, for the tests about case.
+pub const MIXED_CASE_USER: &str = "JaneDoe";
+
+/// One account, as a line of the secret file. Here rather than written at each
+/// use, so a test naming its own account adds no credential of its own.
+pub fn secret_line(user: &str, password: &str) -> String {
+    format!("{user} = \"{password}\"\n")
+}
+
+/// The secret as the file holds it, which is what `Accounts::parse` reads.
+pub fn developer_secret() -> String {
+    format!(
+        "{}{}",
+        secret_line(DEVELOPER_USER, DEVELOPER_PASSWORD),
+        secret_line(OTHER_DEVELOPER_USER, OTHER_DEVELOPER_PASSWORD)
+    )
+}
+
+/// Those accounts parsed, for a test that authorizes without a file.
+pub fn developer_accounts() -> Accounts {
+    Accounts::parse(&developer_secret()).expect("the test secret parses")
+}
 
 /// The developer half over a credential file under `dir`. Writing that file is
 /// `developer_toml`'s job, because only a spawned server reads it.
 pub fn developer_config(dir: &Path) -> DeveloperConfig {
     DeveloperConfig {
-        user: "metsuke-dev".to_string(),
         password_file: absolute(dir.join("developer-password")),
         list_max_rows: nonzero_u32(100),
     }
@@ -425,18 +501,16 @@ pub fn developer_toml(dir: &Path) -> String {
 /// a page at the bound says.
 pub fn developer_toml_with_rows(dir: &Path, list_max_rows: u32) -> String {
     let DeveloperConfig {
-        user,
         password_file,
         list_max_rows,
     } = DeveloperConfig {
         list_max_rows: nonzero_u32(list_max_rows),
         ..developer_config(dir)
     };
-    std::fs::write(password_file.as_path(), DEVELOPER_PASSWORD).unwrap();
+    std::fs::write(password_file.as_path(), developer_secret()).unwrap();
     format!(
         r#"
 [developer]
-user = "{user}"
 password_file = "{password_file}"
 list_max_rows = {list_max_rows}
 "#,

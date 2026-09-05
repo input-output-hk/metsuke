@@ -3,9 +3,11 @@
 use std/assert
 use allowlist.nu *
 
-# fixtures/registered-codes.csv is written by hand in the shape `psql --csv`
-# answers REGISTERED_CODES with, not recorded from a db-sync: nothing here has
-# been run against a chain.
+# fixtures/registered-codes.csv is mostly hand-written in the shape `psql --csv`
+# answers REGISTERED_CODES with, so it can carry rows a real answer would not:
+# the three punctuation classes a code may use, and the malformed rows the
+# reader drops. Its last row and Dai are one pair recorded from a real
+# db-sync, which is the shape every code on chain actually has.
 const APPLICATIONS = path self fixtures/applications.csv
 const REGISTERED = path self fixtures/registered-codes.csv
 
@@ -17,6 +19,8 @@ const ADA_UNREGISTERED = "pool1t3nhylvgjw02nd9let27p6lkqyxpwg3d8pp5uktydaag2lj5t
 const BRAM_MISMATCHED = "pool10xzglx49kzaud5wuule06zqnrc5ng06224sxka5p3jt6yz46g5g"
 const BRAM_CONTRADICTED = "pool1j6s6ed7zehvw8mheqs835ffs8dr9zhr8wf7c3yu74x6t7al9j8x"
 const CAI = "pool16rd7du0uqufp62pn8ey4ghm2wkqgh94p4jmu9nwcu0h0jp7w2a2"
+const DAI = "pool102xtd26h9r7dw068zdc5645r736793lujx7fpgcfmajhyxs7ny8"
+const DAI_CODE = "f4636c5753b889dcffe0d004dcc8fcd36368d689e3c9015abb5ddb27289aaa4e"
 const STRANGER = "pool1kwlvn4xlat6sqzckyykrwsjdtp3ku7vy37d2tv9mcmgacf7uce4"
 
 def fixture [file: path]: nothing -> string {
@@ -41,6 +45,7 @@ def three-columns-flatten-to-one-row-per-pool [] {
     {pool_id: $BRAM_MISMATCHED, application_code: "MUSA.0002"}
     {pool_id: $BRAM_CONTRADICTED, application_code: "MUSA.0002"}
     {pool_id: $CAI, application_code: "MUSA_0003"}
+    {pool_id: $DAI, application_code: $DAI_CODE}
   ] | sort-by pool_id)
 }
 
@@ -73,7 +78,7 @@ def a-code-outside-the-identifier-alphabet-is-refused [] {
 }
 
 def the-answers-unreadable-rows-are-dropped [] {
-  assert equal (fixture $REGISTERED | read-registered | length) 7
+  assert equal (fixture $REGISTERED | read-registered | length) 8
 }
 
 def an-answer-missing-a-column-is-refused [] {
@@ -89,6 +94,7 @@ def each-pools-code-is-checked-against-its-registration [] {
     ($BRAM_MISMATCHED): "code-mismatch"
     ($BRAM_CONTRADICTED): "contradictory-codes"
     ($CAI): "allowed"
+    ($DAI): "allowed"
   }
 }
 
@@ -107,6 +113,7 @@ def the-emitted-block-is-the-allowlist-the-server-config-reads [] {
         ($ADA_FIRST): "MUSA-0001"
         ($ADA_PASTED): "MUSA-0001"
         ($CAI): "MUSA_0003"
+        ($DAI): $DAI_CODE
       }
     }
   }

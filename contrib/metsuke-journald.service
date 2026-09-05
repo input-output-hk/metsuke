@@ -1,0 +1,62 @@
+# Example hardened unit for a host that is not NixOS, collecting
+# the node's trace lines from its journal. Generated: edit
+# nix/unit.nix, then `nix build .#metsuke-journald-unit` and commit
+# what it wrote here.
+#
+# contrib/metsuke.service plus the two directives journalctl
+# needs: the systemd-journal group, which reads every unit's
+# journal on the host, and ProcSubset=all, without which
+# journalctl exits before its first line.
+#
+# Copy to /etc/systemd/system/metsuke.service, and bring:
+#   the binary at /usr/local/bin/metsuke
+#   the configuration at /etc/metsuke/config.toml
+#   the signing key at /etc/metsuke/signing-key, owned by root, mode 0400
+#
+# Take contrib/config.journald.toml as the configuration.
+# contrib/node-pipe.conf is the source that costs no group.
+
+[Unit]
+Description=metsuke telemetry agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+LoadCredential=signing-key:/etc/metsuke/signing-key
+ExecStart=/usr/local/bin/metsuke --config /etc/metsuke/config.toml --signing-key %d/signing-key
+Restart=always
+RestartSec=30
+AmbientCapabilities=
+CapabilityBoundingSet=
+DynamicUser=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProcSubset=all
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectProc=invisible
+ProtectSystem=strict
+RestrictAddressFamilies=AF_INET
+RestrictAddressFamilies=AF_INET6
+RestrictAddressFamilies=AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+StateDirectory=metsuke
+SupplementaryGroups=systemd-journal
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallFilter=~@resources
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

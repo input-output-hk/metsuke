@@ -85,13 +85,14 @@ pub fn classify(response: &mut ureq::http::Response<ureq::Body>) -> Result<(), R
 /// sees where it cut, and nothing is accepted or refused differently for it.
 const REASON_MAX_CHARS: usize = 200;
 
-/// The body as one bounded line, because a refusal is logged and a log line is
-/// a line. metsuke-server states a reason in a sentence, but anything between
-/// an agent and it can answer first, and a proxy's HTML error page would
-/// otherwise reach the journal as a screenful of markup whose newlines leave
-/// every entry after the first without the severity prefix that was written
-/// once, at the front.
-fn one_line(body: String) -> String {
+/// Text from the other end as one bounded line, because it is logged and a log
+/// line is a line. metsuke-server states a refusal in a sentence, but anything
+/// between an agent and it can answer first, and a proxy's HTML error page
+/// would otherwise reach the journal as a screenful of markup whose newlines
+/// leave every entry after the first without the severity prefix that was
+/// written once, at the front. The server puts what an agent says about itself
+/// through the same bound, for the same reason.
+pub fn one_line(body: String) -> String {
     let collapsed = body.split_whitespace().collect::<Vec<_>>().join(" ");
     match collapsed.char_indices().nth(REASON_MAX_CHARS) {
         None => collapsed,

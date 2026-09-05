@@ -7,9 +7,10 @@
 use metsuke_server::archive::{Bytes, FilesystemArchive, List, Store};
 use metsuke_server::cli::{Args, ArgsError, Command, USAGE, VERSION};
 use metsuke_server::config::{
-    ArchiveConfig, ConfigError, DeveloperConfig, HttpConfig, IngestConfig, S3Config, ServerConfig,
+    ArchiveConfig, ConfigError, DeveloperConfig, DownloadsConfig, HttpConfig, IngestConfig,
+    S3Config, ServerConfig,
 };
-use metsuke_server::developer::Developer;
+use metsuke_server::developer::{Accounts, AccountsError, Developer};
 use metsuke_server::http;
 use metsuke_server::instructions;
 use metsuke_server::intake::Intake;
@@ -30,16 +31,26 @@ enum Fatal {
         #[source]
         source: std::io::Error,
     },
-    #[error(transparent)]
-    Config(#[from] ConfigError),
-    #[error("cannot read the developer password {path}: {source}")]
-    DeveloperPassword {
+    #[error("cannot read the agent build at {path}: {source}")]
+    ReadDownload {
         path: String,
         #[source]
         source: std::io::Error,
     },
-    #[error("the developer password {path} is empty, which would authorize anyone")]
-    EmptyDeveloperPassword { path: String },
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+    #[error("cannot read the developer accounts {path}: {source}")]
+    DeveloperAccounts {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("the developer accounts {path} {source}")]
+    DeveloperSecret {
+        path: String,
+        #[source]
+        source: AccountsError,
+    },
     #[error(transparent)]
     Roster(#[from] RosterError),
     #[error(transparent)]
@@ -81,29 +92,36 @@ fn run() -> Result<(), Fatal> {
         return Ok(());
     }
     if argv.iter().any(|a| a == "--version") {
-        println!("{VERSION}");
+        println!("{}", metsuke_wire::version_line(VERSION));
         return Ok(());
     }
     let args = Args::parse(argv.into_iter())?;
     // Before the config is even read: the start that most needs its build
     // named is the one about to fail, and everything below here can.
-    eprintln!("{INFO}metsuke-server {VERSION} starting");
+    eprintln!(
+        "{INFO}metsuke-server {} starting",
+        metsuke_wire::version_line(VERSION)
+    );
     let text = std::fs::read_to_string(&args.config).map_err(|source| Fatal::ReadConfig {
         path: args.config.display().to_string(),
         source,
     })?;
     let ServerConfig {
         listen,
+        public_url,
         http,
         archive,
         ingest,
         developer,
+        downloads,
     } = ServerConfig::from_toml(&text)?;
     let serving = Serving {
         listen,
+        public_url,
         http,
         ingest,
         developer,
+        downloads,
     };
     // The archive kind is matched once: pairing it with the subcommand would
     // multiply the arms by every kind this grows.
@@ -118,7 +136,7 @@ fn run() -> Result<(), Fatal> {
                 "{WARNING}archiving to the filesystem at {}: this stores the submission bytes \
                  alone and drops the key and signature they were checked with, so nothing can \
                  verify this archive afterwards, verify-archive refuses it, and every download \
-                 reaches a consumer unverifiable. S3 is what production runs (ADR 0005).",
+                 reaches a consumer unattested. S3 is what production runs (ADR 0005).",
                 root.display()
             );
             dispatch(
@@ -144,9 +162,34 @@ fn run() -> Result<(), Fatal> {
 /// it.
 struct Serving {
     listen: String,
+    public_url: url::Url,
     http: HttpConfig,
     ingest: IngestConfig,
     developer: DeveloperConfig,
+    downloads: Option<DownloadsConfig>,
+}
+
+/// The static agent builds the page offers, read off disk. Empty where the
+/// deployment configures none, which the page then says.
+fn agent_builds(config: Option<&DownloadsConfig>) -> Result<Vec<instructions::Binary>, Fatal> {
+    let Some(config) = config else {
+        return Ok(Vec::new());
+    };
+    [
+        (instructions::BINARIES[0], &config.x86_64_linux),
+        (instructions::BINARIES[1], &config.aarch64_linux),
+    ]
+    .into_iter()
+    .map(|(name, path)| {
+        Ok(instructions::Binary {
+            name,
+            bytes: std::fs::read(path.as_path()).map_err(|source| Fatal::ReadDownload {
+                path: path.as_path().display().to_string(),
+                source,
+            })?,
+        })
+    })
+    .collect()
 }
 
 /// Run the named subcommand against one archive. `verify_archive` is the only
@@ -203,9 +246,11 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
 ) -> Result<(), Fatal> {
     let Serving {
         listen,
+        public_url,
         http: limits,
         ingest,
         developer: credentials,
+        downloads,
     } = serving;
     // Read here rather than at load: `verify-archive` answers no developer
     // request, so a credential file only this path needs must not decide
@@ -220,8 +265,10 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
         .map(|path| Roster::load(path.as_path()))
         .transpose()?;
     // Built from files compiled in, so a broken one is a build that must not
-    // reach an operator asking for it.
-    let page = instructions::page();
+    // reach an operator asking for it. The agent builds are the exception:
+    // read here, because a path that cannot be read is the deployment's
+    // mistake and this is where it should stop.
+    let pages = instructions::pages(&public_url, agent_builds(downloads.as_ref())?);
     let listener = serve::bind(&listen).map_err(|source| Fatal::Listen {
         listen: listen.clone(),
         reason: source.to_string(),
@@ -242,25 +289,26 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
         None => eprintln!("{INFO}cold-key submissions only: no Leios key roster is configured"),
     }
     let intake = Intake::new(ingest, archive, roster);
-    match listener.serve(limits, intake, developer, page)? {}
+    match listener.serve(limits, intake, developer, pages)? {}
 }
 
-/// The developer account, with the password read off the file the config
-/// names. A file that is missing, unreadable or empty stops startup: the
-/// routes would otherwise be open on a credential nobody set, and `user` is
-/// public in a config an operator publishes.
+/// The developer accounts, read off the file the config names. A file that is
+/// missing, unreadable or naming no usable account stops startup: the routes
+/// would otherwise be open on a credential nobody set.
 fn developer(config: &DeveloperConfig) -> Result<Developer, Fatal> {
     let path = config.password_file.as_path();
     let named = || path.display().to_string();
-    let password = std::fs::read_to_string(path).map_err(|source| Fatal::DeveloperPassword {
+    let written = std::fs::read_to_string(path).map_err(|source| Fatal::DeveloperAccounts {
         path: named(),
         source,
     })?;
-    // Trailing newline trimmed: an editor adds one and it is not part of the
-    // secret.
-    let password = password.trim_end_matches(['\r', '\n']);
-    if password.is_empty() {
-        return Err(Fatal::EmptyDeveloperPassword { path: named() });
-    }
-    Ok(Developer::new(config, password))
+    let accounts = Accounts::parse(&written).map_err(|source| Fatal::DeveloperSecret {
+        path: named(),
+        source,
+    })?;
+    eprintln!(
+        "{INFO}{} developer accounts may pull the archive",
+        accounts.count()
+    );
+    Ok(Developer::new(config, accounts))
 }

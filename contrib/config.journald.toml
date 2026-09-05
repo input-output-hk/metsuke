@@ -1,0 +1,34 @@
+# metsuke agent, metrics and trace lines read from the node's journal. Copy to
+# /etc/metsuke/config.toml, set the values below, and run it with
+# contrib/metsuke-journald.service.
+#
+# This source costs the agent the systemd-journal group, which reads every
+# unit's journal on the host. contrib/config.pipe.toml is the source that costs
+# no group. Your node has to emit the trace namespaces first; the server's
+# details page has that snippet.
+#
+# Everything else takes its shipped default, including which namespaces are
+# selected. contrib/config.example.toml documents all of them.
+
+# Your pool id, bech32.
+pool_id = "pool1CHANGEME"
+
+# Your node's PrometheusSimple endpoint, which has to be a loopback address.
+metrics_url = "http://127.0.0.1:12798/metrics"
+
+# The server you report to.
+upload_url = "https://metsuke.example.org/v1/submit"
+
+# What each line says it came from, so a pool reporting from more than one host
+# can tell them apart. Unset, it is this host's hostname, folded to lowercase.
+# agent_id = "edge-1"
+
+[log]
+source = "journald"
+
+# Your node's unit.
+journal_unit = "cardano-node"
+
+# journalctl's absolute path, because this unit's PATH cannot resolve a program.
+# /usr/bin/journalctl on most distributions.
+journalctl_path = "/usr/bin/journalctl"

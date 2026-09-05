@@ -1,24 +1,32 @@
-//! The onboarding page an operator is pointed at: nothing to accepted
-//! submissions. It is rendered rather than checked in so that every value it
-//! quotes comes out of the file that owns it. That is the shipped example
-//! config and unit whole, the agent version `build.rs` read, and the field list
-//! from the wire types. No edit here can document a default the agent does not
-//! ship.
+//! The onboarding an operator is pointed at: nothing to accepted submissions.
+//! Two documents, because one had to be true for every operator at once and so
+//! carried every branch inline. The quickstart is the path a pool takes and
+//! stops there; the details page holds what the quickstart leaves out, and is
+//! the only one that has to be complete.
+//!
+//! Values in both are filled rather than written down, so that every one they
+//! quote comes out of the file that owns it. That is the shipped configs and
+//! units whole, the agent version `build.rs` read, and the field list from the
+//! wire types. No edit here can document a default the agent does not ship.
 
 use std::collections::BTreeMap;
 
 use metsuke_wire::envelope::{
-    self, AgentId, Envelope, Failure, HEADER_SIGNATURE, HEADER_VKEY, Metric, Payload, PayloadLine,
-    PoolId, Provenance, Reason, Scrape, SigningKey,
+    self, AgentId, Envelope, Failure, HEADER_POOL, HEADER_SIGNATURE, HEADER_VKEY, Metric, Payload,
+    PayloadLine, PoolId, Provenance, Reason, Scrape, SigningKey,
 };
 use time::OffsetDateTime;
 
 use crate::CLIENT_VERSION;
 use crate::applications::{METADATA_KEY, METADATA_LABEL};
 
-/// Where the page is served. The root, because it is the only thing a person
-/// rather than a program comes here for.
+/// Where the quickstart is served. The root, because it is the only thing a
+/// person rather than a program comes here for.
 pub const PATH: &str = "/";
+
+/// Where the rest of it is served, linked from the quickstart and from nowhere
+/// else.
+pub const DETAILS_PATH: &str = "/details";
 
 pub const ICON: &str = include_str!("../assets/favicon.svg");
 pub const ICON_PATH: &str = "/favicon.svg";
@@ -28,13 +36,50 @@ pub const ICON_PATH: &str = "/favicon.svg";
 pub const ICON_LEGACY_PATH: &str = "/favicon.ico";
 pub const ICON_CONTENT_TYPE: &str = "image/svg+xml";
 
-/// The shipped agent configuration, whose commented values are pinned to the
-/// code's defaults by `crates/metsuke/tests/config.rs`.
+/// Each page's markup, with the placeholders its render fills. Files rather
+/// than string literals, so editing the most-read documents in the project is
+/// not editing Rust, and a literal brace is a literal brace.
+const QUICKSTART: &str = include_str!("../assets/quickstart.html");
+const DETAILS: &str = include_str!("../assets/details.html");
+
+/// Shared by both, so the two documents cannot drift apart visually.
+const STYLE: &str = include_str!("../assets/style.css");
+
+/// The Leios wordmark, in each page's header. Inlined rather than served and
+/// linked, because the stylesheet is what colours it: the asset is one dark
+/// purple, which the dark theme's background very nearly is.
+const LOGO: &str = include_str!("../assets/leios-logo.svg");
+
+/// The shipped agent configurations, one per log source. Their required values
+/// are tied to the code's defaults by `crates/metsuke/tests/config.rs`, which
+/// is also what pins the example's commented ones.
+pub const CONFIG_MINIMAL: &str = include_str!("../../../contrib/config.minimal.toml");
+pub const CONFIG_PIPE: &str = include_str!("../../../contrib/config.pipe.toml");
+pub const CONFIG_JOURNALD: &str = include_str!("../../../contrib/config.journald.toml");
 pub const CONFIG_EXAMPLE: &str = include_str!("../../../contrib/config.example.toml");
 
-/// The shipped unit, generated from nix/unit.nix and kept current by the
-/// flake's `contrib-unit` check.
+/// What a working agent prints, recorded off a real run of the built binary by
+/// `the_journal_lines_the_page_shows_are_the_ones_the_agent_prints`, which also
+/// fails when the agent stops printing it. From the agent's own fixtures,
+/// because that run is the only place these lines exist.
+pub const JOURNAL: &str = include_str!("../../metsuke/tests/fixtures/recordings/agent-journal.log");
+
+/// How the agent's startup dump of every resolved setting begins, which is the
+/// line the page shows cut short. A literal because the agent crate is not
+/// linked here; `the_page_shows_no_more_of_the_config_dump_than_its_shape`
+/// holds the recording to still carrying one.
+const CONFIG_LINE: &str = "config: ";
+
+/// The shipped units, generated from nix/unit.nix and kept current by the
+/// flake's `contrib-unit` check. `UNIT` is the one the quickstart installs.
 pub const UNIT: &str = include_str!("../../../contrib/metsuke.service");
+pub const UNIT_JOURNALD: &str = include_str!("../../../contrib/metsuke-journald.service");
+pub const PIPE_DROPIN: &str = include_str!("../../../contrib/node-pipe.conf");
+
+/// A unit for the node, which is not one of ours: the journald setup reads a
+/// journal only a systemd unit has, and cardano-node ships no service file to
+/// make one. Offered so a pool testing this does not write one first.
+pub const NODE_UNIT: &str = include_str!("../../../contrib/cardano-node.service");
 
 /// The node namespaces the trace step gives an explicit severity. These are the
 /// node's own namespaces, not the agent's selection prefixes: what a node emits
@@ -47,247 +92,340 @@ pub const NAMED_NAMESPACES: [&str; 4] = [
     "ChainDB.AddBlockEvent.AddedToCurrentChain",
 ];
 
-/// The page, ready to serve.
-pub fn page() -> String {
-    render(CONFIG_EXAMPLE, UNIT)
+/// Where the downloadable files are served. The page links these rather than
+/// printing them, so an operator runs `curl -O` instead of selecting sixty
+/// lines out of a browser.
+pub const FILES_PREFIX: &str = "/files/";
+
+/// Every file the page offers, by the name it is served and linked under. On
+/// the way out a config is pointed at this deployment, and any file's
+/// references to the siblings below become links to them. Nothing else moves.
+pub const FILES: [(&str, &str); 8] = [
+    ("config.pipe.toml", CONFIG_PIPE),
+    ("config.journald.toml", CONFIG_JOURNALD),
+    ("config.minimal.toml", CONFIG_MINIMAL),
+    ("config.example.toml", CONFIG_EXAMPLE),
+    ("metsuke.service", UNIT),
+    ("metsuke-journald.service", UNIT_JOURNALD),
+    ("node-pipe.conf", PIPE_DROPIN),
+    ("cardano-node.service", NODE_UNIT),
+];
+
+/// The names the static agent builds are served and linked under. The flake's
+/// own package names, so the page and `nix build` agree and
+/// `checks.instructions-outputs` can hold them to it.
+pub const BINARIES: [&str; 2] = [
+    "metsuke-static-x86_64-linux",
+    "metsuke-static-aarch64-linux",
+];
+
+/// One static agent build this deployment offers, read at startup by the
+/// caller: a path that cannot be read is a deployment mistake, and finding it
+/// at boot beats finding it when an operator follows the page.
+pub struct Binary {
+    pub name: &'static str,
+    pub bytes: Vec<u8>,
 }
 
-pub fn render(config_example: &str, unit: &str) -> String {
-    let metrics = MetricsEndpoint::from_config(config_example);
+/// Both pages and every file they link, ready to serve. `binaries` is empty
+/// where the deployment ships none, and the install step then says to build
+/// one instead of offering it.
+pub fn pages(public_url: &url::Url, binaries: Vec<Binary>) -> Pages {
+    let pointed = |config: &str| pointed_at(config, public_url);
+    let files = FILES
+        .iter()
+        .map(|(name, contents)| File {
+            name,
+            content_type: "text/plain; charset=utf-8",
+            bytes: {
+                // Only the configs name an upload_url; every shipped file
+                // names its siblings.
+                let text = match name.ends_with(".toml") {
+                    true => pointed(contents),
+                    false => contents.to_string(),
+                };
+                siblings_linked(&text, public_url).into_bytes()
+            },
+        })
+        .chain(binaries.into_iter().map(|binary| File {
+            name: binary.name,
+            content_type: "application/octet-stream",
+            bytes: binary.bytes,
+        }))
+        .collect::<Vec<File>>();
+    Pages {
+        quickstart: quickstart(UNIT_JOURNALD, public_url, &files),
+        details: details(&pointed(CONFIG_EXAMPLE), public_url),
+        files,
+    }
+}
+
+/// What this module renders, held together so a caller cannot serve one and
+/// forget the others.
+pub struct Pages {
+    pub quickstart: String,
+    pub details: String,
+    /// Everything served under `FILES_PREFIX`.
+    pub files: Vec<File>,
+}
+
+/// One file the pages link and the server answers for.
+pub struct File {
+    pub name: &'static str,
+    pub bytes: Vec<u8>,
+    pub content_type: &'static str,
+}
+
+/// The install step's commands: downloading the build this deployment offers
+/// where it offers one, and building it otherwise. Composed here rather than
+/// branched in the template, which has no conditionals and is better for it.
+///
+/// The nix line is kept either way, because a build from source is the answer
+/// for an architecture this server has no binary for.
+fn install(offered: &[File], files_url: &str, binary: &str) -> String {
+    // One architecture, not both: an operator has one. The other is named in
+    // the prose beside this block, which reads the same either way.
+    let name = BINARIES[0];
+    let lines = match offers_a_build(offered) {
+        true => vec![
+            "# Download the build for your architecture".to_string(),
+            format!("curl -o metsuke {files_url}{name}"),
+            String::new(),
+            "# Install it where the unit will look for it".to_string(),
+            // -D: the directory is standard, but a minimal image can be
+            // without it, and the operator meets that as a failed install
+            // rather than as a missing path.
+            format!("sudo install -D -m 0755 metsuke {binary}"),
+        ],
+        false => vec![
+            "# Build the static agent".to_string(),
+            format!("nix build {}#{name}", flake_ref()),
+            String::new(),
+            "# Install it where the unit will look for it".to_string(),
+            format!("sudo install -m 0755 result/bin/metsuke {binary}"),
+        ],
+    };
+    escape(&lines.join("\n"))
+}
+
+/// Whether this deployment hands out an agent, which decides how both the
+/// try-it and the install step tell an operator to get one.
+fn offers_a_build(offered: &[File]) -> bool {
+    offered.iter().any(|file| file.name == BINARIES[0])
+}
+
+/// How the try-it gets an agent, and what it then runs. Two values rather than
+/// one block, because the rest of that snippet is the same either way and reads
+/// better in the template than in a string here.
+///
+/// A downloaded file arrives without its execute bit, so the download path
+/// carries the `chmod` and the nix one does not.
+fn try_it(offered: &[File], files_url: &str) -> (String, String) {
+    let name = BINARIES[0];
+    match offers_a_build(offered) {
+        // Renamed as it lands, so the try-it runs the same `metsuke` that the
+        // install step, the units and every later command name.
+        true => (
+            escape(&format!(
+                "curl -o metsuke {files_url}{name}\nchmod +x metsuke"
+            )),
+            "./metsuke".to_string(),
+        ),
+        false => (
+            escape(&format!("nix build {}#{name}", flake_ref())),
+            "./result/bin/metsuke".to_string(),
+        ),
+    }
+}
+
+/// A shipped config with its upload URL pointed at this deployment, so the only
+/// line an operator edits is their pool id. The URL to replace is read out of
+/// the file's own `upload_url` rather than matched against a constant here,
+/// which would be a second place for the example host to live.
+/// A shipped file's references to its siblings, made reachable. In the
+/// repository `contrib/config.pipe.toml` is where that file sits; to an
+/// operator holding a download it is a path to nothing, and this deployment
+/// serves the same file. Driven off `FILES` rather than the `contrib/` prefix,
+/// so a name this server does not answer for keeps pointing at the repository
+/// instead of becoming a link that 404s.
+fn siblings_linked(text: &str, public_url: &url::Url) -> String {
+    let files = public_url
+        .join(FILES_PREFIX)
+        .expect("the files prefix joins onto an absolute URL");
+    FILES.iter().fold(text.to_string(), |text, (name, _)| {
+        text.replace(&format!("contrib/{name}"), &format!("{files}{name}"))
+    })
+}
+
+fn pointed_at(config: &str, public_url: &url::Url) -> String {
+    let table: toml::Table = config.parse().expect("a shipped config parses as TOML");
+    let example = table
+        .get("upload_url")
+        .and_then(|value| value.as_str())
+        .expect("a shipped config sets upload_url");
+    config.replace(example, submit_url(public_url).as_str())
+}
+
+/// Where this deployment takes submissions. The one value a shipped file
+/// cannot carry, which is why a config is pointed on the way out and why the
+/// NixOS example on the details page is filled rather than written down.
+fn submit_url(public_url: &url::Url) -> url::Url {
+    public_url
+        .join(crate::http::SUBMIT_PATH)
+        .expect("the submission path joins onto an absolute URL")
+}
+
+/// The recording as the page shows it, which is the recording with its config
+/// line cut short. That line is every setting the agent resolved, on one line
+/// so it can be pasted into a report whole, and it runs to nine hundred
+/// characters against sixty for its neighbours. Shown in full it would put a
+/// scrollbar under the first example on the page and hide the lines the step
+/// is actually about. The fixture itself stays verbatim, because that is what
+/// holds it to what the agent prints.
+fn journal_shown() -> String {
+    /// Enough to recognise the line by when it appears in your own terminal.
+    const SHOWN: usize = 52;
+    JOURNAL
+        .trim_end()
+        .lines()
+        .map(|line| match line.strip_prefix(CONFIG_LINE) {
+            // Every other line is one the step is about, however long.
+            None => line.to_string(),
+            Some(_) => {
+                // Cut at a comma, so it never lands inside a value, and take
+                // the index off `char_indices` so it never lands inside a
+                // character either.
+                let head = line
+                    .char_indices()
+                    .take_while(|(at, _)| *at <= SHOWN)
+                    .filter(|(_, character)| *character == ',')
+                    .map(|(at, _)| at)
+                    .last()
+                    .unwrap_or(0);
+                format!("{} …}}", &line[..=head])
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The four steps and nothing else. It links the files rather than printing
+/// them, so what it takes is the unit whose paths it tells an operator to put
+/// things at, and the URL those links are absolute against.
+pub fn quickstart(unit: &str, public_url: &url::Url, offered: &[File]) -> String {
+    let files = public_url
+        .join(FILES_PREFIX)
+        .expect("the files prefix joins onto an absolute URL");
     let binary = exec_start(unit, ExecStartField::Binary);
-    let config_path = exec_start(unit, ExecStartField::Config);
-    let flake = flake_ref();
-    format!(
-        r#"<!doctype html>
-<meta charset="utf-8">
-<title>metsuke: telemetry for the MusashiNet rewards program</title>
-<link rel="icon" href="{ICON_PATH}" type="{ICON_CONTENT_TYPE}">
-<style>body {{ max-width: 46em; margin: 2em auto; font-family: sans-serif }}
-pre {{ overflow-x: auto; background: #f4f4f4; padding: 1em }}</style>
-
-<h1>metsuke</h1>
-
-<p>metsuke is a small agent you run beside cardano-node. It reads your node's
-Prometheus metrics endpoint over loopback and sends this server a signed
-submission. It never opens your node socket and never touches a key beyond the one
-signing key you point it at. It reads your node's journal only if you turn that
-on in step 5, and then only the trace lines your own configuration selects.</p>
-
-<p>Steps 1 to 3 are decisions and on-chain work. Steps 4 to 9 are what you run
-on the machine your node is on.</p>
-
-<h2>1. What leaves your machine</h2>
-
-<p>One submission is a plain JSON header, then your scrapes zstd compressed, one
-JSON object per line, with a detached Ed25519 signature over the whole byte
-sequence. The header rides in a zstd skippable frame, so <code>zstd -d</code>
-on a submission hands back the lines and nothing else. This is an example of the
-whole thing: two scrapes, the first cut down to two metrics where a real line
-carries every one your node exposes, the second a scrape that failed.</p>
-
-<pre>{envelope}</pre>
-
-<p>One line per scrape, and its <code>metrics</code> are every metric your node
-exposes on the endpoint you open in step 4 whose value JSON can hold. Those are
-the same metric lines that command prints. Each entry carries the metric's
-<code>name</code>, its <code>labels</code> and its <code>value</code> as your
-node stated them, plus the <code>declared_type</code> its <code># TYPE</code>
-line gave where it had one. The agent reads nothing else on your machine. It
-contributes two facts of its own, <code>scraped_at</code>, the time it scraped,
-and <code>clock_offset_ms</code>, the offset its own NTP query measured.</p>
-
-<p>A scrape that failed is itself a signal, so the submission is sent either way:
-no
-metrics, and <code>failure</code> naming what stopped it. Its
-<code>reason</code> is one of {reasons}, and its <code>detail</code> is the
-message the agent had: the port, the status, or the size limit it was
-configured with.</p>
-
-<p>Every line names the pool and the machine that wrote it under
-<code>metsuke</code>, as <code>pool_id</code> and <code>agent_id</code>, the
-name you configure. One line read out of the archive on its own still says where
-it came from. That is the only key metsuke claims on a line.</p>
-
-<p>The header carries those same two, and four more: <code>agent_version</code>,
-the build that scraped; <code>counter</code>, which submission of yours this is;
-<code>timestamp</code>, when the submission was sealed; and
-<code>schema_version</code>, which shape its lines are.</p>
-
-<p>If you do step 5, trace lines travel as their own submissions: the same header
-with <code>schema_version</code> 2, and then the lines you selected, one per
-line, each the object your node wrote plus that same <code>metsuke</code>
-key.</p>
-
-<p>The signature travels beside the body in two headers:
-<code>{HEADER_VKEY}</code> and <code>{HEADER_SIGNATURE}</code>. Anything between
-your agent and this server has to pass both through unchanged, or the signature
-will not verify. Your pool id is not among them. It is the hash of the key in
-the first header, so this server derives it rather than taking your word for
-it.</p>
-
-<h2>2. Register your pool</h2>
-
-<p>Your application to the rewards program carries an application code. Put the
-same code in your pool registration transaction's metadata, under label
-{METADATA_LABEL}:</p>
-
-<pre>{metadata}</pre>
-
-<p>Only your cold key can sign a pool registration, so the two halves matching
-is what shows the application came from you. Until they do, this server refuses
-your submissions whatever key you sign them with.</p>
-
-<h2>3. Choose a signing key</h2>
-
-<p>Your pool's cold key signs submissions. That is the whole of it. A pool id is
-the hash of its cold verification key, so the key that signs is what says which
-pool a submission is for, and nothing else has to be looked up or believed.</p>
-
-<p>The agent reads the key as a cardano-cli TextEnvelope file, the
-<code>pool.skey</code> you already have. It refuses to start unless the key
-hashes to the <code>pool_id</code> you configured, which is the same check this
-server makes on every submission.</p>
-
-<h2>4. Enable the node's metrics endpoint</h2>
-
-<p>cardano-node exposes nothing to scrape until you add the backend. Add it to
-your node configuration's <code>TraceOptions</code>, bound to loopback so it is
-not reachable from anywhere else:</p>
-
-<pre>{backend}</pre>
-
-<p>If your node configuration has no <code>TraceOptions</code> at all, paste that
-as it stands. If it has one, merge into it rather than pasting over it. The
-<code>""</code> key is your node's root entry, so keep every other key it has
-and add to its backends list.</p>
-
-<p>Both backends have to end up in that list, and each replaces one of its own
-kind rather than joining it. If your root already names a
-<code>PrometheusSimple</code> or an <code>Stdout</code> backend, replace that one
-instead of keeping both. If you would rather keep your own
-<code>PrometheusSimple</code>, leave it and point step 7's
-<code>metrics_url</code> at its port. Get this wrong and metrics still work,
-step 5 looks applied, and not one trace line is ever collected.</p>
-
-<p>Restart the node, then check it answers:</p>
-
-<pre>curl -s {metrics_url}</pre>
-
-<h2>5. Optional: let the node's traces out</h2>
-
-<p>The metrics endpoint is a periodic snapshot. It carries no per-event
-timestamps, so it cannot answer when an announcement arrived, when a block body
-and its closure were received, or when a quorum was reached. Those live in the
-node's trace stream, and the agent ships every field of the lines you select
-from it. It reads one field to decide, and it computes nothing from any of
-them.</p>
-
-<p>Skip this step and the agent stays exactly as step 4 leaves it: metrics
-only, and no read of your journal. To turn it on, the node has to emit those
-traces in the first place. These are the namespaces it has to emit, again as
-keys to merge into your <code>TraceOptions</code>:</p>
-
-<pre>{traces}</pre>
-
-<p><strong>Check before you add them.</strong> Your configuration may already set
-some of these, and merging replaces a key's whole entry, so these take the
-place of whatever severity or rate limit you had on those namespaces. It may
-also set rate limits on namespaces this snippet does not name; pasting over the
-object rather than merging into it would drop those too.</p>
-
-<p>Each namespace carries its own <code>severity</code>, so your node's root
-threshold is left as you have it and nothing here depends on where you set it.
-There is no <code>""</code> key in this snippet, so it cannot disturb the root
-entry step 4 touched. <code>maxFrequency: 0</code> is not a typo, it means no
-rate limit, and leaving it out silently caps the stream.</p>
-
-<p>Restart the node. Its lines then go to the journal under its own unit, which
-is what the agent's <code>[log]</code> section in step 7 points at. That read
-costs the agent membership of the <code>systemd-journal</code> group, the one
-privilege it holds beyond scraping loopback; if you would rather it did not
-hold that, skip this step and leave <code>[log]</code> out.</p>
-
-<h2>6. Install the agent</h2>
-
-<p>The current agent is {CLIENT_VERSION}. On NixOS, add
-<code>{flake}</code> as a flake input and import its
-<code>nixosModules.metsuke</code>, which writes the config and the unit for
-you; the rest of this page is then a description of what that module does.</p>
-
-<p>Anywhere else, take the static build for your architecture and put it where
-the unit expects it:</p>
-
-<pre>nix build {flake}#metsuke-static-x86_64-linux
-sudo install -m 0755 result/bin/metsuke {binary}</pre>
-
-<p>Substitute <code>metsuke-static-aarch64-linux</code> on ARM. There is no
-install script and no self-update: updating is always something you do
-deliberately.</p>
-
-<h2>7. Configure the agent</h2>
-
-<p>Write this to <code>{config_path}</code>; its own comments say which values
-you must set.</p>
-
-<pre>{config}</pre>
-
-<p>The upload URL is this server. Replace the example host with the host you
-are reading this page on. The metrics URL has to match the endpoint you opened
-in step 4, and has to be a loopback address. The agent refuses to scrape
-anything else.</p>
-
-<h2>8. Run it under systemd</h2>
-
-<p>This unit runs the agent with no privileges beyond reading its own config
-and writing its spool; its own header says where to install it and how to hand
-it the signing key. If you did step 5, two directives change: add
-<code>SupplementaryGroups=systemd-journal</code>, and turn
-<code>ProcSubset=pid</code> into <code>ProcSubset=all</code>. journalctl needs
-both, and they are the whole difference; the NixOS module makes them for you
-when <code>[log]</code> is set.</p>
-
-<pre>{unit}</pre>
-
-<pre>sudo systemctl daemon-reload
-sudo systemctl enable --now metsuke</pre>
-
-<h2>9. Verify</h2>
-
-<p>The agent logs one line at startup naming the endpoint it scrapes and the
-pool it reports for, and one line per submission saying whether the server took
-it:</p>
-
-<pre>systemctl status metsuke
-journalctl -u metsuke -f</pre>
-
-<p>The first submission is sent as soon as the agent starts, so you do not have
-to wait out a cadence to find out that something is wrong. A refused submission
-logs the server's reason and the scrapes stay spooled. Nothing is lost
-while you fix it, and they upload once it is fixed.</p>
-
-<h2>10. Staying up to date</h2>
-
-<p>This server was built against agent {CLIENT_VERSION}, and tells every agent
-that uploads to it which version that is. Yours logs a warning when it is
-older. To update, repeat step 6 and restart the service:</p>
-
-<pre>sudo systemctl restart metsuke</pre>
-
-<p>The spool is on disk, so queued scrapes survive the restart; nothing is
-scraped while the agent is down.</p>
-"#,
-        envelope = escape(&example_envelope()),
-        reasons = failure_reasons(),
-        metadata = escape(&metadata_json()),
-        backend = escape(&metrics.backend_config()),
-        traces = escape(&trace_config()),
-        metrics_url = escape(metrics.url()),
-        config = escape(config_example.trim_end()),
-        unit = escape(unit.trim_end()),
-        binary = escape(&binary),
-        config_path = escape(&config_path),
-        flake = escape(&flake),
+    let (try_fetch, try_agent) = try_it(offered, files.as_str());
+    fill(
+        QUICKSTART,
+        &[
+            ("ICON_PATH", ICON_PATH.to_string()),
+            ("ICON_CONTENT_TYPE", ICON_CONTENT_TYPE.to_string()),
+            ("style", STYLE.trim_end().to_string()),
+            ("logo", LOGO.trim_end().to_string()),
+            ("DETAILS_PATH", DETAILS_PATH.to_string()),
+            ("FILES_PREFIX", FILES_PREFIX.to_string()),
+            ("CLIENT_VERSION", CLIENT_VERSION.to_string()),
+            // Absolute, because these end up in a `curl` an operator runs
+            // somewhere other than the browser that rendered the link.
+            ("files_url", escape(files.as_str())),
+            ("journal", escape(&journal_shown())),
+            ("try_fetch", try_fetch),
+            ("try_agent", try_agent),
+            // The binary path reaches the page inside this block and nowhere
+            // else on the quickstart, so it is not a value of its own here.
+            ("install", install(offered, files.as_str(), &binary)),
+            (
+                "config_path",
+                escape(&exec_start(unit, ExecStartField::Config)),
+            ),
+            ("key_path", escape(&credential_source(unit))),
+            // Where both of those go, so the step that writes them can make
+            // it first. Read off the config path rather than written down,
+            // because the unit is what decides it.
+            (
+                "config_dir",
+                escape(&parent_of(&exec_start(unit, ExecStartField::Config))),
+            ),
+            // Named in the prose beside the install step, as the alternative to
+            // downloading one, and nowhere else on this page.
+            ("flake", escape(&flake_ref())),
+        ],
     )
+}
+
+/// Everything the quickstart leaves out. Takes the annotated example, which is
+/// the one config it shows whole and the one the metrics endpoint is read from.
+pub fn details(config_example: &str, public_url: &url::Url) -> String {
+    let metrics = MetricsEndpoint::from_config(config_example);
+    fill(
+        DETAILS,
+        &[
+            ("ICON_PATH", ICON_PATH.to_string()),
+            ("ICON_CONTENT_TYPE", ICON_CONTENT_TYPE.to_string()),
+            ("style", STYLE.trim_end().to_string()),
+            ("logo", LOGO.trim_end().to_string()),
+            ("PATH", PATH.to_string()),
+            ("HEADER_VKEY", HEADER_VKEY.to_string()),
+            ("HEADER_SIGNATURE", HEADER_SIGNATURE.to_string()),
+            ("HEADER_POOL", HEADER_POOL.to_string()),
+            ("METADATA_LABEL", METADATA_LABEL.to_string()),
+            ("metadata", escape(&metadata_json())),
+            ("flake", escape(&flake_ref())),
+            ("DOCS_PREFIX", docs_prefix()),
+            ("REPOSITORY", env!("CARGO_PKG_REPOSITORY").to_string()),
+            ("envelope", escape(&example_envelope())),
+            ("reasons", failure_reasons()),
+            ("backend", escape(&metrics.backend_config())),
+            ("traces", escape(&trace_config())),
+            ("metrics_url", escape(metrics.url())),
+            ("submit_url", escape(submit_url(public_url).as_str())),
+            ("FILES_PREFIX", FILES_PREFIX.to_string()),
+            ("binary", escape(&exec_start(UNIT, ExecStartField::Binary))),
+            (
+                "config_path",
+                escape(&exec_start(UNIT, ExecStartField::Config)),
+            ),
+            // The container example runs the agent itself rather than under a
+            // unit, so it names every path the unit would have supplied. Read
+            // off the unit for the same reason the quickstart does: written
+            // out here they are a second copy that goes stale silently.
+            ("key_path", escape(&credential_source(UNIT))),
+        ],
+    )
+}
+
+/// Substitute the template's `{{name}}` placeholders. A name nothing fills, and
+/// a value the template never names, both panic: the page renders once before
+/// the listener binds, so either is a startup failure rather than something an
+/// operator can reach.
+///
+/// One pass, and a filled value is never re-scanned, so the `}}` a compact JSON
+/// example ends on cannot read as a placeholder.
+fn fill(template: &str, values: &[(&str, String)]) -> String {
+    let mut page = String::with_capacity(template.len());
+    let mut filled = vec![false; values.len()];
+    let mut rest = template;
+    while let Some(start) = rest.find("{{") {
+        page.push_str(&rest[..start]);
+        let (name, tail) = rest[start + "{{".len()..]
+            .split_once("}}")
+            .expect("every placeholder the template opens is closed");
+        let at = values
+            .iter()
+            .position(|(key, _)| *key == name)
+            .unwrap_or_else(|| panic!("the template names {name}, which nothing fills"));
+        page.push_str(&values[at].1);
+        filled[at] = true;
+        rest = tail;
+    }
+    page.push_str(rest);
+    for ((name, _), filled) in values.iter().zip(filled) {
+        assert!(filled, "the template does not name {name}");
+    }
+    page
 }
 
 /// The characters that would otherwise start a tag or an entity.
@@ -407,6 +545,38 @@ fn exec_start(unit: &str, field: ExecStartField) -> String {
     found
         .expect("the shipped unit's ExecStart names the binary and its config")
         .to_string()
+}
+
+/// Where the unit expects the signing key. Read out of `LoadCredential=` for
+/// the same reason the two paths above are read out of `ExecStart=`: the
+/// quickstart tells an operator to put a file somewhere, and the somewhere has
+/// to be where the unit will look.
+fn credential_source(unit: &str) -> String {
+    unit.lines()
+        .find_map(|line| line.strip_prefix("LoadCredential="))
+        .and_then(|value| value.split_once(':'))
+        .expect("the shipped unit loads the signing key as a credential")
+        .1
+        .to_string()
+}
+
+/// The directory a path is in, for the step that has to create it. The root
+/// where a path names no directory, which no shipped unit does.
+fn parent_of(path: &str) -> String {
+    std::path::Path::new(path)
+        .parent()
+        .map(|parent| parent.display().to_string())
+        .filter(|parent| !parent.is_empty())
+        .unwrap_or_else(|| "/".to_string())
+}
+
+/// Where a document the details page links is read: the manifest's URL and
+/// the default branch, so a link stays right as the file changes.
+fn docs_prefix() -> String {
+    format!(
+        "{}/blob/main/",
+        env!("CARGO_PKG_REPOSITORY").trim_end_matches('/')
+    )
 }
 
 /// How the repository is named to `nix build`. The manifest holds the browser

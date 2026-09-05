@@ -10,23 +10,40 @@ pub const DEFAULT_CONFIG_PATH: &str = "/etc/metsuke/config.toml";
 /// working: docs/releasing.md, Checking the nudge works.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-pub const USAGE: &str = "metsuke reports a cardano-node's telemetry for a MusashiNet pool.
+/// The repository is named at the end because the text cites paths inside it,
+/// and an operator who downloaded the binary has no checkout to resolve them
+/// against.
+pub const USAGE: &str = concat!(
+    "metsuke reports a cardano-node's telemetry for a MusashiNet pool.
 
 usage:
   metsuke [--config <path>] [--signing-key <path>]
+  cardano-node run ... | metsuke [--config <path>] [--signing-key <path>]
   metsuke --help | --version
 
 flags:
-  --config <path>        the agent's configuration, defaulting to
-                         /etc/metsuke/config.toml
-  --signing-key <path>   the pool's cold signing key, overriding the config's
-                         signing_key; this is what the unit's LoadCredential
-                         hands the agent
+  --config <path>        the agent's configuration;
+                         /etc/metsuke/config.toml by default
+  --signing-key <path>   the pool's cold or Leios signing key, overriding the
+                         config's signing_key; this is what the unit's
+                         LoadCredential hands the agent
 
 The agent scrapes the loopback Prometheus endpoint the config names, spools
 what it read, and uploads signed submissions to the config's upload_url. It
-runs until stopped. Every limit, cadence and path other than the two above is
-configuration: contrib/config.example.toml is the annotated example.";
+runs until stopped. Every limit, cadence and path other than these two flags is
+configuration: contrib/config.example.toml is the annotated example.
+
+Trace lines are collected only where the config has a [log] section, and its
+source says where from. \"journald\" reads the node's unit and needs the agent
+in the systemd-journal group. \"pipe\" is the second usage above: the node's
+stdout arrives on this agent's stdin, and every line is written through to its
+own stdout unchanged, so the agent sits between the node and whatever collected
+its output before. docs/adr/0010 is what each costs.
+
+The contrib/ and docs/ paths above are in this agent's repository:
+",
+    env!("CARGO_PKG_REPOSITORY")
+);
 
 /// Where a refusal sends the operator, rather than printing all of `USAGE` on
 /// top of the error.

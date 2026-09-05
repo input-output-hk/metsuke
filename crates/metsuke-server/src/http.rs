@@ -11,12 +11,12 @@
 //! TLS belongs to the reverse proxy in front of this
 //! (docs/research/endpoint-protection.md, Transport), as does any IP-keyed
 //! limit (same doc, cost asymmetry and abuse handling). This layer knows only
-//! pool ids and one developer credential. The proxy is defence in depth and
+//! pool ids and developer accounts. The proxy is defence in depth and
 //! nothing more: what the server refuses on its own it refuses with nothing in
 //! front of it (`config::HttpConfig`).
 
 use metsuke_wire::envelope::PoolId;
-use metsuke_wire::journal::{ERR, WARNING};
+use metsuke_wire::journal::{ERR, INFO, WARNING};
 use time::OffsetDateTime;
 
 use crate::archive::{ArchiveError, Attestation, Bytes, List, ObjectStream, Store};
@@ -77,6 +77,7 @@ pub fn status_for(rejection: &Rejection) -> u16 {
         Rejection::NotASubmission(_)
         | Rejection::UnreadableHeader(_)
         | Rejection::KeylessSchema { .. }
+        | Rejection::NotItsProvenance { .. }
         | Rejection::StaleTimestamp { .. } => 400,
     }
 }
@@ -100,26 +101,100 @@ pub enum AnswerBody {
     Stream(Box<ObjectStream>),
 }
 
+/// One rendered document, answered.
+fn html(body: bytes::Bytes) -> Answer {
+    Answer {
+        status: 200,
+        content_type: "text/html; charset=utf-8",
+        body: AnswerBody::Bytes(body),
+        headers: Vec::new(),
+    }
+}
+
+/// The rendered documents as they are sent. `Bytes` rather than the `String`
+/// they came from, so a GET clones a refcount and not the document
+/// (metsuke-jfb.27).
+pub struct Pages {
+    quickstart: bytes::Bytes,
+    details: bytes::Bytes,
+    files: Vec<Served>,
+}
+
+/// One downloadable, as sent. The content type travels with it: the configs and
+/// units are text an operator may read in a browser, and the agent builds are
+/// not.
+struct Served {
+    name: &'static str,
+    bytes: bytes::Bytes,
+    content_type: &'static str,
+}
+
+impl From<instructions::Pages> for Pages {
+    fn from(pages: instructions::Pages) -> Pages {
+        Pages {
+            quickstart: bytes::Bytes::from(pages.quickstart),
+            details: bytes::Bytes::from(pages.details),
+            files: pages
+                .files
+                .into_iter()
+                .map(|file| Served {
+                    name: file.name,
+                    bytes: bytes::Bytes::from(file.bytes),
+                    content_type: file.content_type,
+                })
+                .collect(),
+        }
+    }
+}
+
+impl Pages {
+    fn file(&self, name: &str) -> Option<&Served> {
+        self.files.iter().find(|served| served.name == name)
+    }
+}
+
 /// One request answered. Blocking, because it stores to and reads from the
 /// archive (`serve::bind`).
 pub fn answer<A: Store + Bytes + List>(
     intake: &Intake<A>,
     developer: &Developer,
-    page: &bytes::Bytes,
+    pages: &Pages,
     request: Request,
 ) -> Answer {
     let path = request.path().to_string();
     match path.as_str() {
-        // Unauthenticated: it is what an operator reads before they have
-        // anything to authenticate with.
+        // Unauthenticated, both of them: they are what an operator reads
+        // before they have anything to authenticate with.
         instructions::PATH => match request.method {
-            Method::Get => Answer {
-                status: 200,
-                content_type: "text/html; charset=utf-8",
-                body: AnswerBody::Bytes(page.clone()),
-                headers: Vec::new(),
-            },
+            Method::Get => html(pages.quickstart.clone()),
             _ => refuse(None, 405, format!("{} takes GET", instructions::PATH)),
+        },
+        instructions::DETAILS_PATH => match request.method {
+            Method::Get => html(pages.details.clone()),
+            _ => refuse(
+                None,
+                405,
+                format!("{} takes GET", instructions::DETAILS_PATH),
+            ),
+        },
+        // The files the page links, under the names it links them by. A name
+        // outside the shipped set is a 404 naming none of them: what is served
+        // here is a fixed table, not a path an operator's request selects.
+        served if served.starts_with(instructions::FILES_PREFIX) => match request.method {
+            Method::Get => match pages.file(&served[instructions::FILES_PREFIX.len()..]) {
+                Some(file) => Answer {
+                    status: 200,
+                    content_type: file.content_type,
+                    body: AnswerBody::Bytes(file.bytes.clone()),
+                    headers: Vec::new(),
+                },
+                None => refuse(None, 404, "no such file".to_string()),
+            },
+            _ => refuse(
+                None,
+                405,
+                format!("{} takes GET", instructions::FILES_PREFIX),
+            ),
         },
         instructions::ICON_PATH | instructions::ICON_LEGACY_PATH => match request.method {
             Method::Get => Answer {
@@ -140,12 +215,16 @@ pub fn answer<A: Store + Bytes + List>(
         // would confirm the route exists to a client that never presented a
         // credential.
         SUBMISSIONS_PATH | OBJECT_PATH => {
-            if let Err(error) = developer.authorize(request.authorization.as_deref()) {
-                return challenge(&path, &error);
-            }
+            let account = match developer.authorize(request.authorization.as_deref()) {
+                Ok(account) => account,
+                Err(error) => return challenge(&path, &error),
+            };
             if request.method != Method::Get {
                 return refuse(None, 405, format!("{path} takes GET"));
             }
+            // Who read what, which is the account's whole point: a refusal
+            // names one and so does the request that was allowed.
+            eprintln!("{INFO}{account} is reading {path}");
             match path.as_str() {
                 SUBMISSIONS_PATH => listing(intake, developer, &request.target),
                 _ => object(intake, &request.target),

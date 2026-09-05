@@ -137,10 +137,15 @@ let
   secretAccessKey = "0011223344556677889900112233445566778899001122334455667788990011";
   rpcSecret = "5c1915fa04d0b6739675c61bf5907eb0fe3d9c69850c83820f51b4d25d13868c";
 
-  # The developer account the download subtest authenticates as.
+  # The developer account the download subtest authenticates as. A second
+  # account is named beside it, so the secret this deployment reads is a table
+  # rather than the one-account case of one.
   developerUser = "metsuke-dev";
   developerPassword = "not-a-real-secret";
-  password = pkgs.writeText "password" developerPassword;
+  password = pkgs.writeText "password" ''
+    other-dev = "not-this-one-either"
+    ${developerUser} = "${developerPassword}"
+  '';
 
   awsEnvironment = pkgs.writeText "aws-environment" ''
     AWS_ACCESS_KEY_ID=${accessKeyId}
@@ -461,6 +466,7 @@ let
 
           settings = {
             listen = "127.0.0.1:${toString listenPort}";
+            public_url = "https://metsuke.example.org";
             http = {
               idle_timeout_ms = 30000;
               read_timeout_ms = 60000;
@@ -489,7 +495,6 @@ let
               rate_limit_window_secs = 3600;
             };
             developer = {
-              user = developerUser;
               list_max_rows = 1000;
             };
           };
@@ -671,8 +676,12 @@ let
 
         with subtest("the page's node-config snippets merge into an SPO's own config"):
             # Off the served page rather than restated here, so what this applies
-            # is what an operator pastes.
-            page = e2e.succeed("curl -sS http://127.0.0.1:${toString listenPort}/")
+            # is what an operator pastes. The details page and not the root: the
+            # quickstart links the node's tracing rather than printing it, and
+            # these two snippets are shown whole on that page alone.
+            page = e2e.succeed(
+                "curl -sS http://127.0.0.1:${toString listenPort}/details"
+            )
             snippets = []
             for block in page.split("<pre>")[1:]:
                 try:

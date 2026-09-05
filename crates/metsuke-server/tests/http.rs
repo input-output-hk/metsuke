@@ -18,16 +18,16 @@ mod support;
 use base64::Engine as _;
 use metsuke_wire::hex;
 use support::{
-    DEVELOPER_PASSWORD, FailingArchive, developer_config, envelope_for, other_key,
+    DEVELOPER_PASSWORD, DEVELOPER_USER, FailingArchive, developer_config, envelope_for, other_key,
     permissive_config, pool_of, seal, test_key,
 };
 
 /// The server one request is answered by: an archive under a temporary
-/// directory, the suite's developer account, and the shipped page.
+/// directory, the suite's developer account, and the shipped pages.
 struct Server<A: metsuke_server::archive::Store> {
     intake: Intake<A>,
     developer: Developer,
-    page: bytes::Bytes,
+    pages: http::Pages,
     _dir: tempfile::TempDir,
 }
 
@@ -38,7 +38,7 @@ where
         + metsuke_server::archive::List,
 {
     fn answer(&self, request: Request) -> Answer {
-        http::answer(&self.intake, &self.developer, &self.page, request)
+        http::answer(&self.intake, &self.developer, &self.pages, request)
     }
 }
 
@@ -65,11 +65,14 @@ fn unreachable_archive() -> Server<FailingArchive> {
 }
 
 fn over<A: metsuke_server::archive::Store>(archive: A, dir: tempfile::TempDir) -> Server<A> {
-    let developer = Developer::new(&developer_config(dir.path()), DEVELOPER_PASSWORD);
+    let developer = Developer::new(&developer_config(dir.path()), support::developer_accounts());
     Server {
         intake: Intake::new(permissive_config(&[pool_of(&test_key())]), archive, None),
         developer,
-        page: bytes::Bytes::from(instructions::page()),
+        pages: http::Pages::from(instructions::pages(
+            &support::public_url(),
+            support::test_binaries(),
+        )),
         _dir: dir,
     }
 }
@@ -86,7 +89,7 @@ fn get(target: &str) -> Request {
 
 /// A GET the configured developer account is authorized to make.
 fn pull(target: &str) -> Request {
-    let user = developer_config(std::path::Path::new("/tmp")).user;
+    let user = DEVELOPER_USER;
     let encoded =
         base64::engine::general_purpose::STANDARD.encode(format!("{user}:{DEVELOPER_PASSWORD}"));
     Request {
@@ -139,8 +142,73 @@ fn the_instructions_page_is_answered_without_credentials() {
     let answer = server.answer(get(instructions::PATH));
 
     assert_eq!(answer.status, 200);
-    assert_eq!(body(&answer), instructions::page());
+    assert_eq!(
+        body(&answer),
+        instructions::pages(&support::public_url(), support::test_binaries()).quickstart
+    );
     assert!(answer.content_type.starts_with("text/html"));
+}
+
+/// Unauthenticated like the pages, because an operator downloads these before
+/// they have anything to authenticate with.
+#[test]
+fn every_linked_file_is_served_without_credentials() {
+    let server = server();
+    for (name, _) in instructions::FILES {
+        let target = format!("{}{name}", instructions::FILES_PREFIX);
+
+        let answer = server.answer(get(&target));
+
+        assert_eq!(answer.status, 200, "{name}");
+        assert!(answer.content_type.starts_with("text/plain"), "{name}");
+        assert!(!body(&answer).is_empty(), "{name}");
+    }
+}
+
+/// A fixed table, not a path the request selects: nothing outside it is
+/// reachable, however the name is spelled.
+#[test]
+fn a_file_outside_the_shipped_set_is_not_served() {
+    let server = server();
+    for name in ["passwd", "../../etc/passwd", "config.example.tom", ""] {
+        let answer = server.answer(get(&format!("{}{name}", instructions::FILES_PREFIX)));
+
+        assert_eq!(answer.status, 404, "{name:?} was answered");
+    }
+}
+
+#[test]
+fn a_linked_file_takes_only_get() {
+    let answer = server().answer(Request {
+        method: Method::Post,
+        ..get(&format!("{}config.pipe.toml", instructions::FILES_PREFIX))
+    });
+
+    assert_eq!(answer.status, 405);
+}
+
+#[test]
+fn the_details_page_is_answered_without_credentials() {
+    let server = server();
+
+    let answer = server.answer(get(instructions::DETAILS_PATH));
+
+    assert_eq!(answer.status, 200);
+    assert_eq!(
+        body(&answer),
+        instructions::pages(&support::public_url(), support::test_binaries()).details
+    );
+    assert!(answer.content_type.starts_with("text/html"));
+}
+
+#[test]
+fn the_details_page_takes_only_get() {
+    let answer = server().answer(Request {
+        method: Method::Post,
+        ..get(instructions::DETAILS_PATH)
+    });
+
+    assert_eq!(answer.status, 405);
 }
 
 #[test]

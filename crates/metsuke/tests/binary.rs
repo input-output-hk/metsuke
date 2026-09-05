@@ -19,6 +19,9 @@ use support::{TEST_LIMITS, attestation_of, sh_stand_in, test_key};
 
 const RECORDED_CHAIN: &str = include_str!("fixtures/recordings/leios-node.prom");
 
+/// A real node's trace stream, fed to the recorder on stdin as the node would.
+const RECORDED_TRACES: &str = include_str!("fixtures/recordings/leios-node-traces.log");
+
 /// The name the config gives this machine, and the id it folds down to
 /// (`AgentId::slugify`): what the startup line and every header must carry.
 const AGENT_NAME: &str = "Test_Relay 1";
@@ -34,6 +37,7 @@ fn write_config(
         server_uri,
         signing_key_line,
         PoolId::from_cold_key(&test_key().verifying_key()),
+        AGENT_NAME,
     )
 }
 
@@ -42,6 +46,7 @@ fn write_config_for(
     server_uri: &str,
     signing_key_line: &str,
     pool_id: PoolId,
+    agent_name: &str,
 ) -> std::path::PathBuf {
     let path = dir.path().join("config.toml");
     std::fs::write(
@@ -49,7 +54,7 @@ fn write_config_for(
         format!(
             r#"
             pool_id = "{}"
-            agent_id = "{AGENT_NAME}"
+            agent_id = "{agent_name}"
             metrics_url = "{server_uri}/metrics"
             upload_url = "{server_uri}/v1/submit"
             scrape_interval_secs = 1
@@ -105,7 +110,7 @@ fn binary_refuses_a_pool_id_the_signing_key_does_not_hash_to() {
     let other = PoolId::from_cold_key(
         &metsuke_wire::envelope::SigningKey::from_bytes(&[9u8; 32]).verifying_key(),
     );
-    let config = write_config_for(&dir, "http://127.0.0.1:9", "", other);
+    let config = write_config_for(&dir, "http://127.0.0.1:9", "", other, AGENT_NAME);
 
     let output = Command::new(env!("CARGO_BIN_EXE_metsuke"))
         .args(["--config", config.to_str().unwrap()])
@@ -155,6 +160,166 @@ fn binary_refuses_a_journalctl_that_cannot_read_the_journal() {
     assert!(
         said.contains("journal") && said.contains("13"),
         "startup failure must name the journal and journalctl's status, got: {said}"
+    );
+}
+
+/// What the onboarding page's check step shows, recorded off a real run rather
+/// than written by hand. `METSUKE_RERECORD=1 cargo test --test binary` rewrites
+/// it, and `metsuke-server` carries it whole.
+const JOURNAL_RECORDING: &str = "tests/fixtures/recordings/agent-journal.log";
+
+/// The endpoint the shipped config names. The recorder binds an ephemeral port,
+/// so the one it scraped is rewritten to this before the recording is kept: the
+/// port is the only thing about that line an operator cannot reproduce, and the
+/// shipped one is what their own config will make it say.
+const SHIPPED_METRICS_URL: &str = "http://127.0.0.1:12798/metrics";
+
+/// The rest of what the startup dump names, as a shipped config and unit carry
+/// it, so the recording the page shows holds a deployment's paths rather than
+/// this run's tempdir and mock port. The upload URL is the example's, which is
+/// what `instructions::pointed_at` rewrites to the deployment's own.
+const SHIPPED_UPLOAD_URL: &str = "https://metsuke.example.org/v1/submit";
+const SHIPPED_SPOOL_PATH: &str = "/var/lib/metsuke/spool.sqlite";
+const SHIPPED_SIGNING_KEY: &str = "/etc/metsuke/signing-key";
+
+/// A line as journalctl shows it. systemd reads the priority prefix off the
+/// front and does not pass it on, so an operator never sees one.
+fn without_priority(line: &str) -> &str {
+    [
+        metsuke_wire::journal::INFO,
+        metsuke_wire::journal::WARNING,
+        metsuke_wire::journal::ERR,
+    ]
+    .iter()
+    .find_map(|prefix| line.strip_prefix(prefix))
+    .unwrap_or(line)
+}
+
+/// The line with every number and digest blanked. What a second run repeats is
+/// the words and their order; the build, the counter, the digest, how much each
+/// submission carried and its size all follow the run. Word by word rather than
+/// field by field, because the two accepted lines carry different fields.
+///
+/// A word is blanked only if it is nothing but hex digits and dots, so a pool
+/// id, a URL and every ordinary word survive.
+fn shape(line: &str) -> String {
+    line.split_whitespace()
+        .map(|word| {
+            match word
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() || byte == b'.')
+            {
+                true => "#",
+                false => word,
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The check step's promise: an agent that is working says so, in lines an
+/// operator can match against their own journal. Recorded from the built
+/// binary, so the page cannot show a line the agent does not print.
+#[tokio::test]
+async fn the_journal_lines_the_page_shows_are_the_ones_the_agent_prints() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(RECORDED_CHAIN, "text/plain;version=0.0.4;charset=utf-8"),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "latest_version": env!("CARGO_PKG_VERSION")
+        })))
+        .mount(&server)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = write_test_envelope(&dir);
+    let config = write_config_for(
+        &dir,
+        &server.uri(),
+        // The source the page's own try-it uses, so what is recorded is what an
+        // operator following it sees. It also gives the second accepted line:
+        // scrapes and trace lines are separate streams and a tick sends one
+        // submission for each.
+        "[log]\nsource = \"pipe\"",
+        PoolId::from_cold_key(&test_key().verifying_key()),
+        // Not the slugification fixture the other tests use: this name reaches
+        // an operator's screen, and `relay-1` is what one of theirs looks like.
+        "relay-1",
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_metsuke"))
+        .args(["--config", config.to_str().unwrap()])
+        .args(["--signing-key", key_path.to_str().unwrap()])
+        .stdin(Stdio::piped())
+        // Written through unchanged, which is the node's output and not
+        // something this test reads.
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut stderr = child.stderr.take().expect("stderr was piped");
+
+    // The node's share of the pipeline: the recorded stream, then a handle held
+    // open. Closing it is EOF, which the agent stops on, and it has to still be
+    // running when the upload tick fires.
+    let mut stdin = child.stdin.take().expect("stdin was piped");
+    std::io::Write::write_all(&mut stdin, RECORDED_TRACES.as_bytes()).unwrap();
+    std::io::Write::flush(&mut stdin).unwrap();
+
+    // Up to the accepted trace-line submission, which is the last line the step
+    // promises. Reading is what bounds this: the agent uploads on its first
+    // tick, and a run that never got there blocks and fails the suite's clock
+    // rather than passing on the lines it had.
+    let mut reader = std::io::BufReader::new(&mut stderr);
+    let mut recorded = String::new();
+    loop {
+        let mut line = String::new();
+        assert!(
+            reader.read_line(&mut line).unwrap() > 0,
+            "the agent stopped before it accepted both submissions, said: {recorded}"
+        );
+        let line = without_priority(&line);
+        recorded.push_str(line);
+        if line.contains("trace lines,") {
+            break;
+        }
+    }
+    drop(stdin);
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let recorded = recorded.replace(&format!("{}/metrics", server.uri()), SHIPPED_METRICS_URL);
+    // The startup dump names every path and endpoint this run used, and all of
+    // them are a mock's port or a tempdir. Left alone they would reach the page
+    // as somebody's /tmp, so each is put back to the value a shipped config
+    // carries. The upload URL is the example one on purpose: `pointed_at` is
+    // what turns it into a deployment's own, here as in every served config.
+    let recorded = recorded.replace(&format!("{}/v1/submit", server.uri()), SHIPPED_UPLOAD_URL);
+    let recorded = recorded.replace(
+        &dir.path().join("spool.sqlite").display().to_string(),
+        SHIPPED_SPOOL_PATH,
+    );
+    let recorded = recorded.replace(&key_path.display().to_string(), SHIPPED_SIGNING_KEY);
+    // Which build printed these lines is not what the page is showing, and it
+    // differs between a run here and a run in the sandbox, so the recording
+    // carries the version alone.
+    let recorded = recorded.replace(&format!(" ({})", metsuke_wire::BUILD_REV), "");
+
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(JOURNAL_RECORDING);
+    if std::env::var_os("METSUKE_RERECORD").is_some() {
+        std::fs::write(&path, &recorded).unwrap();
+        return;
+    }
+    let shipped = std::fs::read_to_string(&path).expect("the recording is committed");
+    let blank = |text: &str| text.lines().map(shape).collect::<Vec<_>>().join("\n");
+    assert_eq!(
+        blank(&recorded),
+        blank(&shipped),
+        "the agent no longer prints what the page shows; re-record with METSUKE_RERECORD=1"
     );
 }
 
@@ -283,7 +448,7 @@ fn version_is_printed_on_its_own_and_names_the_crates_version() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        env!("CARGO_PKG_VERSION")
+        metsuke_wire::version_line(env!("CARGO_PKG_VERSION"))
     );
 }
 

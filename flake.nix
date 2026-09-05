@@ -58,6 +58,8 @@
                 metrics = ./crates/metsuke/tests/fixtures/recordings/leios-node.prom;
                 traces = ./crates/metsuke/tests/fixtures/recordings/leios-node-traces.log;
                 contribUnit = ./contrib/metsuke.service;
+                pipeDropIn = ./contrib/node-pipe.conf;
+                nodeCommand = (import ./nix/unit.nix).nodeCommandPlaceholder;
                 agent = self.packages.${system}.metsuke;
               }
             );
@@ -113,14 +115,15 @@
         {
           config,
           pkgs,
+          system,
           ...
         }:
         let
           craneLib = inputs.crane.mkLib pkgs;
-          # Cargo sources, the fixtures and the server's icon: the scrape
-          # bodies, the trace recordings and the icon are compiled in with
-          # include_str!, the submission recordings and the S3 cassette are
-          # read at test time.
+          # Cargo sources, the fixtures and the server's page: the scrape
+          # bodies, the trace recordings, the instructions markup and the icon
+          # are compiled in with include_str!, the submission recordings and the
+          # S3 cassette are read at test time.
           #
           # Under crates/ alone, because this filter is not gitignore-aware: a
           # devnet run leaves .hex files in the working tree, and matching
@@ -131,6 +134,8 @@
             ".hex"
             ".http"
             ".svg"
+            ".html"
+            ".css"
           ];
           cratesDir = "${toString ./crates}/";
           # The shipped config and unit, which both crates compile in whole:
@@ -180,12 +185,53 @@
               );
             };
 
+          # What a shipped binary says it was built from
+          # (crates/metsuke-wire/build.rs). A sandbox has no repository to
+          # read, so the commit is passed in; a dirty tree says so, and a
+          # source with no revision at all is honest about that too.
+          buildRev = self.shortRev or self.dirtyShortRev or "unknown";
+
+          nixosOptionsMarkdown =
+            let
+              host = inputs.nixpkgs.lib.nixosSystem {
+                inherit system;
+                modules = [
+                  self.nixosModules.metsuke
+                  {
+                    boot.loader.grub.enable = false;
+                    fileSystems."/".device = "none";
+                    system.stateVersion = lib.trivial.release;
+                  }
+                ];
+              };
+              repository = (lib.importTOML ./Cargo.toml).workspace.package.repository;
+            in
+            (pkgs.nixosOptionsDoc {
+              options.services.metsuke = host.options.services.metsuke;
+              transformOptions =
+                option:
+                option
+                // {
+                  declarations = map (
+                    declaration:
+                    let
+                      path = lib.removePrefix "${toString self}/" (toString declaration);
+                    in
+                    {
+                      name = path;
+                      url = "${repository}/blob/main/${path}";
+                    }
+                  ) option.declarations;
+                };
+            }).optionsCommonMark;
+
           # Tests run once, in checks.test. Crane defaults doCheck to true,
           # which would run the suite again inside each binary.
           binaryArgs = {
             inherit cargoArtifacts version;
             strictDeps = true;
             doCheck = false;
+            METSUKE_REV = buildRev;
           };
 
           # What the suites reach for beside the crates: `checks.test` says why
@@ -244,9 +290,12 @@
 
           # The server's tree. build.rs reads the agent manifest for
           # CLIENT_VERSION, so the agent crate has to be here in full even
-          # though nothing links against it; the two contrib files are carried
-          # whole into the instructions page with include_str!, as is the icon
-          # under assets/, so cargo sources alone do not build.
+          # though nothing links against it; the contrib files below are
+          # carried whole into the instructions page with include_str!, as is
+          # the icon under assets/, so cargo sources alone do not build. Every
+          # contrib file instructions.rs names has to be listed here, or only
+          # this derivation fails and the workspace src, which takes the whole
+          # directory, still builds.
           serverFileset = pkgs.lib.fileset.unions [
             (pkgs.lib.fileset.fromSource (crateSrc [
               ./crates/metsuke-wire
@@ -254,8 +303,16 @@
               ./crates/metsuke-server
             ]))
             ./contrib/config.example.toml
+            ./contrib/config.minimal.toml
+            ./contrib/config.pipe.toml
+            ./contrib/config.journald.toml
             ./contrib/metsuke.service
+            ./contrib/metsuke-journald.service
+            ./contrib/node-pipe.conf
+            ./contrib/cardano-node.service
             ./crates/metsuke-server/assets
+            # What the check step shows, recorded by the agent's own test.
+            ./crates/metsuke/tests/fixtures/recordings/agent-journal.log
           ];
 
           unit = import ./nix/unit.nix;
@@ -265,39 +322,144 @@
           # nothing.
           directives = pkgs.lib.generators.toKeyValue { listsAsDuplicateKeys = true; };
 
-          contribUnit = pkgs.writeText "metsuke.service" ''
-            # Example hardened unit for a host that is not NixOS. Generated:
-            # edit nix/unit.nix, then `nix build .#metsuke-unit` and commit
-            # what it wrote here.
-            #
-            # Copy to /etc/systemd/system/metsuke.service, with the binary at
-            # /usr/local/bin/metsuke and the configuration at
-            # /etc/metsuke/config.toml.
-            #
-            # Optional, and what the NixOS module does: keep the signing key
-            # unreadable to the service user by loading it as a credential. Add
-            #   LoadCredential=signing-key:/etc/metsuke/pool.skey
-            # append
-            #   --signing-key ''${CREDENTIALS_DIRECTORY}/signing-key
-            # to ExecStart, and leave signing_key out of config.toml.
+          # The three files an operator brings, named once so a unit's prose and
+          # its ExecStart cannot point at different paths. instructions.rs reads
+          # the binary and the config back out of ExecStart.
+          agentBinary = "/usr/local/bin/metsuke";
+          agentConfig = "/etc/metsuke/config.toml";
+          # Named for what it is rather than which key it holds so it works
+          # with both cold and Leios key types.
+          agentKey = "/etc/metsuke/signing-key";
 
-            [Unit]
-            Description=metsuke telemetry agent
-            After=network-online.target
-            Wants=network-online.target
+          # systemd reads the key as root and hands the service a copy only it
+          # can read. Naming the key in config.toml instead needs it readable by
+          # the unit's DynamicUser, which for a cold key means readable by
+          # everyone, so the credential is what ships rather than an option the
+          # header offers.
+          credential = "LoadCredential=signing-key:${agentKey}";
+          execStart = "${agentBinary} --config ${agentConfig} --signing-key %d/signing-key";
+
+          # One unit per log source, so an operator picks a file rather than a
+          # set of directives to change. Everything below the header is shared,
+          # and `readsTheJournal` is the only difference between the two.
+          agentUnit =
+            {
+              name,
+              header,
+              readsTheJournal ? false,
+            }:
+            pkgs.writeText name ''
+              ${header}
+
+              [Unit]
+              Description=metsuke telemetry agent
+              After=network-online.target
+              Wants=network-online.target
+
+              [Service]
+              ${credential}
+              ExecStart=${execStart}
+              Restart=always
+              RestartSec=${toString unit.restartSecs}
+              ${directives (
+                unit.hardening {
+                  stateDirectory = "metsuke";
+                  inherit (unit) addressFamilies;
+                  inherit readsTheJournal;
+                }
+              )}
+              [Install]
+              WantedBy=multi-user.target
+            '';
+
+          # What an operator brings, which is the same list whichever unit they
+          # take. A list rather than a sentence: these are paths the unit will
+          # look for, and one of them carries a mode that matters.
+          bringTheseFiles = ''
+            #   the binary at ${agentBinary}
+            #   the configuration at ${agentConfig}
+            #   the signing key at ${agentKey}, owned by root, mode 0400'';
+
+          contribUnit = agentUnit {
+            name = "metsuke.service";
+            header = ''
+              # Example hardened unit for a host that is not NixOS. Generated:
+              # edit nix/unit.nix, then `nix build .#metsuke-unit` and commit
+              # what it wrote here.
+              #
+              # Copy to /etc/systemd/system/metsuke.service, and bring:
+              ${bringTheseFiles}
+              #
+              # Take contrib/config.minimal.toml as the configuration. This unit
+              # collects metrics and reads no trace lines. For those,
+              # contrib/metsuke-journald.service reads the node's journal and
+              # contrib/node-pipe.conf reads its stdout; ADR 0010 has what each
+              # one costs.'';
+          };
+
+          contribJournaldUnit = agentUnit {
+            name = "metsuke-journald.service";
+            readsTheJournal = true;
+            header = ''
+              # Example hardened unit for a host that is not NixOS, collecting
+              # the node's trace lines from its journal. Generated: edit
+              # nix/unit.nix, then `nix build .#metsuke-journald-unit` and commit
+              # what it wrote here.
+              #
+              # contrib/metsuke.service plus the two directives journalctl
+              # needs: the systemd-journal group, which reads every unit's
+              # journal on the host, and ProcSubset=all, without which
+              # journalctl exits before its first line.
+              #
+              # Copy to /etc/systemd/system/metsuke.service, and bring:
+              ${bringTheseFiles}
+              #
+              # Take contrib/config.journald.toml as the configuration.
+              # contrib/node-pipe.conf is the source that costs no group.'';
+          };
+
+          # The pipe setup is a change to the node's unit and not the agent's,
+          # since the agent runs downstream of the node and has no unit of its
+          # own. A drop-in rather than an edited unit, so the node's own
+          # packaging still owns its file.
+          contribPipeDropIn = pkgs.writeText "node-pipe.conf" ''
+            # Example drop-in for the node's unit, which is where the pipe
+            # setup lives. Generated: edit nix/unit.nix, then
+            # `nix build .#metsuke-pipe-dropin` and commit what it wrote here.
+            #
+            # Copy to
+            # /etc/systemd/system/<your-node>.service.d/zzzz-metsuke.conf. The
+            # name sorts last on purpose: drop-ins apply in lexicographic order
+            # across every directory they sit in, and an image shipping a
+            # host-wide service.d drop-in that resets LoadCredential= would
+            # otherwise clear the credential below.
+            #
+            # That directory is yours to make: `sudo mkdir -p` it. And bring:
+            ${bringTheseFiles}
+            #
+            # Take contrib/config.pipe.toml as the configuration.
+            #
+            # Replace ${unit.nodeCommandPlaceholder} below with the command your node's unit
+            # already runs, which `systemctl cat <your-node>.service` prints.
+            # The empty ExecStart= is what clears that command before this one
+            # replaces it, and the shell is because systemd has no pipelines.
+            #
+            # The agent then runs as whatever user the node runs as, holds no
+            # group and reads no journal, and writes its spool under the state
+            # directory below. It passes every line through to its own stdout,
+            # so the node's output still reaches the journal. ADR 0010 has what
+            # each source costs.
+            #
+            # LoadCredential= and StateDirectory= below add to the node's own
+            # rather than replacing them, because systemd appends to both
+            # lists. One consequence: a node unit that reads $STATE_DIRECTORY
+            # will see two colon separated paths once this is in place.
 
             [Service]
-            ExecStart=/usr/local/bin/metsuke --config /etc/metsuke/config.toml
-            Restart=always
-            RestartSec=${toString unit.restartSecs}
-            ${directives (
-              unit.hardening {
-                stateDirectory = "metsuke";
-                inherit (unit) addressFamilies;
-              }
-            )}
-            [Install]
-            WantedBy=multi-user.target
+            ${credential}
+            StateDirectory=metsuke
+            ExecStart=
+            ExecStart=/bin/sh -c '${unit.nodeCommandPlaceholder} | ${execStart}'
           '';
 
           # What "static" has to mean for the operator dropping this on a host
@@ -321,8 +483,40 @@
         in
         {
           packages = {
+            # `suiteTools`, exposed. docs/reading-the-archive.md tells a
+            # developer to run both over a downloaded tree, and a sync's own
+            # summary prints a duckdb line, so a host that has neither can
+            # reach them by `nix run` rather than by cloning for a devShell.
+            inherit (pkgs) duckdb zstd;
+
             metsuke = craneLib.buildPackage agentArgs;
             metsuke-unit = contribUnit;
+            metsuke-journald-unit = contribJournaldUnit;
+            metsuke-pipe-dropin = contribPipeDropIn;
+            # Every `services.metsuke` option as markdown, rendered from the
+            # module rather than written beside it, so the committed copy in
+            # docs/ cannot describe an option that is not there. Declarations
+            # are rewritten to repository links: left as they come they are
+            # store paths, which change on every commit and would leave the
+            # committed copy stale after each one.
+            nixos-options =
+              let
+                header = pkgs.writeText "nixos-options-header" ''
+                  # NixOS options
+
+                  `services.metsuke`, as `nixosModules.metsuke` declares it.
+
+                  Generated: edit `nix/agent-module.nix`, then
+                  `nix build .#nixos-options` and commit what it wrote here.
+                  Every description and default below is read out of
+                  `contrib/config.example.toml`, so those are changed there.
+
+                '';
+              in
+              pkgs.runCommand "nixos-options.md" { } ''
+                cat ${header} ${nixosOptionsMarkdown} > $out
+              '';
+
             metsuke-allowlist = (import ./nix/allowlist.nix { inherit pkgs; }).package;
             metsuke-roster = (import ./nix/roster.nix { inherit pkgs; }).package;
             # The developer's pull tool, which links the wire crate alone. The
@@ -397,30 +591,53 @@
                 touch $out
               '';
 
-            contrib-unit = pkgs.runCommand "contrib-unit-is-current" { } ''
-              diff -u ${./contrib/metsuke.service} ${contribUnit} \
-                || { echo "contrib/metsuke.service is stale; its header says how"; exit 1; }
+            # The same rule the units below are held to, for the same reason: a
+            # generated file that is committed is a file that can be edited by
+            # hand or left behind by a module change.
+            nixos-options = pkgs.runCommand "nixos-options-are-current" { } ''
+              diff -u ${./docs/nixos-options.md} ${config.packages.nixos-options} || {
+                echo "docs/nixos-options.md is stale; its header says how"
+                exit 1
+              }
               touch $out
             '';
 
-            # The instructions page tells an operator to build these by name,
-            # and nothing in the Rust tree can see whether they still exist.
+            contrib-unit = pkgs.runCommand "contrib-units-are-current" { } ''
+              stale() {
+                echo "contrib/$1 is stale; its header says how"
+                exit 1
+              }
+              diff -u ${./contrib/metsuke.service} ${contribUnit} \
+                || stale metsuke.service
+              diff -u ${./contrib/metsuke-journald.service} ${contribJournaldUnit} \
+                || stale metsuke-journald.service
+              diff -u ${./contrib/node-pipe.conf} ${contribPipeDropIn} \
+                || stale node-pipe.conf
+              touch $out
+            '';
+
+            # The pages tell an operator to build these by name, and
+            # instructions.rs composes the rest of those commands, so both are
+            # read. Nothing in the Rust tree can see whether an output still
+            # exists, and the page's own `$ARCH` placeholder is why the suffix
+            # must match at least one character: `metsuke-static-` alone is not
+            # a package anyone can build.
             instructions-outputs = pkgs.runCommand "instructions-name-real-outputs" { } ''
-              page=${./crates/metsuke-server/src/instructions.rs}
+              pages="${./crates/metsuke-server/assets/quickstart.html} ${./crates/metsuke-server/assets/details.html} ${./crates/metsuke-server/src/instructions.rs}"
               # Each grep is asserted non-empty first: a rename that also
               # reflowed the literal would otherwise leave a loop over nothing.
               # `|| true`: a grep that matches nothing exits 1, and under
               # `set -o pipefail` that would abort with an empty log instead of
               # the message below.
-              packages=$(grep -o 'metsuke-static-[a-z0-9_-]*' $page | sort -u || true)
-              modules=$(grep -o 'nixosModules\.[a-z-]*' $page | cut -d. -f2 | sort -u || true)
-              [ -n "$packages" ] || { echo "instructions.rs offers no build to run"; exit 1; }
-              [ -n "$modules" ] || { echo "instructions.rs points at no module"; exit 1; }
+              packages=$(grep -oh 'metsuke-static-[a-z0-9_-][a-z0-9_-]*' $pages | sort -u || true)
+              modules=$(grep -oh 'nixosModules\.[a-z-]*' $pages | cut -d. -f2 | sort -u || true)
+              [ -n "$packages" ] || { echo "no page offers a build to run"; exit 1; }
+              [ -n "$modules" ] || { echo "no page points at a module"; exit 1; }
               for name in $packages; do
                 case " ${toString (builtins.attrNames config.packages)} " in
                   *" $name "*) ;;
                   *)
-                    echo "instructions.rs offers $name, which this flake does not build"
+                    echo "a page offers $name, which this flake does not build"
                     exit 1
                     ;;
                 esac
@@ -429,10 +646,39 @@
                 case " ${toString (builtins.attrNames self.nixosModules)} " in
                   *" $name "*) ;;
                   *)
-                    echo "instructions.rs points at nixosModules.$name, which does not exist"
+                    echo "a page points at nixosModules.$name, which does not exist"
                     exit 1
                     ;;
                 esac
+              done
+              touch $out
+            '';
+
+            # The same reason as the check above, for the documents the details
+            # page links: the Rust source is filtered to the crates and
+            # contrib, so a test there cannot see a document, and a renamed one
+            # would leave a 404 on the page. Read off the template rather than
+            # a render, because the prefix is what a render supplies.
+            instructions-documents = pkgs.runCommand "instructions-link-real-documents" { } ''
+              documents=${pkgs.lib.sourceFilesBySuffices ./. [ ".md" ]}
+              page=${./crates/metsuke-server/assets/details.html}
+              # `|| true` for the same reason the check above gives.
+              files=$(grep -oh '{{DOCS_PREFIX}}[^"]*' $page |
+                sed 's|^{{DOCS_PREFIX}}||' | sort -u || true)
+              trees=$(grep -oh '{{REPOSITORY}}/tree/main/[^"]*' $page |
+                sed 's|^{{REPOSITORY}}/tree/main/||' | sort -u || true)
+              [ -n "$files" ] || { echo "the details page links no documents"; exit 1; }
+              for path in $files; do
+                [ -f "$documents/$path" ] || {
+                  echo "the details page links $path, which is not a file in this repository"
+                  exit 1
+                }
+              done
+              for path in $trees; do
+                [ -d "$documents/$path" ] || {
+                  echo "the details page links $path as a directory, which it is not"
+                  exit 1
+                }
               done
               touch $out
             '';

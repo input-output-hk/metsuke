@@ -1,7 +1,8 @@
 # Deploying a server and an agent
 
 What we run, as opposed to what an operator runs. The operator's side is the
-onboarding page the server renders at `/`, and this file does not repeat it.
+quickstart the server renders at `/`, with `/details` behind it, and this file
+does not repeat them.
 
 `nix/e2e-test.nix` stands the whole thing up in one VM and is the reference
 every value here was read against. When this file and that test disagree, the
@@ -18,8 +19,9 @@ deploying the server, not an afterthought.
 The e2e test avoids this by putting both on one host and uploading to
 `http://127.0.0.1:8080`. A real deployment does not get that.
 
-The agent also refuses a `metrics_url` that is not loopback (ADR 0007). The
-agent therefore lives on the node host. That is not negotiable by configuration.
+The agent also refuses a `metrics_url` that is not loopback
+([ADR 0007](adr/0007-agent-reads-only-loopback-prometheus.md)). The agent
+therefore lives on the node host. That is not negotiable by configuration.
 
 ## Before anything is deployed
 
@@ -35,9 +37,24 @@ file, which is what keeps the config Nix-managed and readable in the open. Put
 them in a sops-managed file and hand it to the module as `environmentFile`. The
 module asserts it is set whenever the archive is S3.
 
-**The developer password.** One shared account, not one per person. A file the
-module loads through systemd `LoadCredential`, so the service user never reads
-the original path.
+**The developer passwords.** One account per person, in one file the module
+loads through systemd `LoadCredential`, so the service user never reads the
+original path. The file is a TOML table:
+
+```
+alice = "..."
+bob = "..."
+```
+
+Each developer takes their own line's value and puts it in a local file for
+`metsuke-fetch`. A username is letters, digits, `-` and `_`, which is a TOML
+bare key's alphabet, so no name has to be quoted; it is matched exactly, so
+case counts. Adding or revoking one person is an edit to one line of one
+encrypted file, and the server names the account in the log on every pull and
+every refusal.
+
+The usernames are the secret's, not the config's, so auditing who has access is
+a decrypt rather than a look at the published config.
 
 **The allowlist.** Generated offline, never hand-written:
 
@@ -54,7 +71,7 @@ metsuke-allowlist generate applications.csv registrations.csv \
 ```
 
 The label and key are `METADATA_LABEL` and `METADATA_KEY` in
-`crates/metsuke-server/src/applications.rs`, and the onboarding page's step 2
+`crates/metsuke-server/src/applications.rs`, and the quickstart's first step
 shows an operator the same pair. `--statement-timeout` is a duration, not
 milliseconds.
 
@@ -68,7 +85,8 @@ looks exactly like a program nobody joined. It emits the `[ingest.allowlist]`
 table the server module's `settings.ingest.allowlist` expects.
 
 **The Leios key roster.** Only where agents sign with a Leios key rather than a
-cold key (ADR 0011). Generated the same way, from a node this time:
+cold key ([ADR 0011](adr/0011-leios-key-submissions.md)). Generated the same
+way, from a node this time:
 
 ```
 metsuke-roster query dijkstra \
@@ -137,7 +155,7 @@ one instead of S3, has to have its root under that path, and the module asserts
 it.
 
 `settings.developer.password_file` defaults to the path `LoadCredential` puts
-the password at. Leave it alone.
+the accounts at. Leave it alone.
 
 The shipped rate limits are a runaway-agent backstop, not abuse control, and
 `contrib/server.example.toml` states what headroom they assume. Beads
@@ -147,10 +165,10 @@ cadence is settled. Until then they are guesses.
 ## The node host
 
 cardano-node exposes nothing to scrape until its `TraceOptions` root entry names
-a `PrometheusSimple` backend on loopback. The onboarding page's step 4 has the
-snippet and the rule for merging it in, and `instructions.rs` has the reason
-behind that rule. Follow the page here rather than improvising, the failure it
-warns about is silent.
+a `PrometheusSimple` backend on loopback. The details page has the snippet and
+the rule for merging it in, under the node's metrics endpoint, and
+`instructions.rs` has the reason behind that rule. Follow the page here rather
+than improvising, the failure it warns about is silent.
 
 Then import `nixosModules.metsuke`:
 
@@ -174,8 +192,16 @@ what those defaults are.
 Leave `settings.log` out unless you want the node's trace stream. Setting it
 adds `SupplementaryGroups=systemd-journal` and turns `ProcSubset=pid` into
 `ProcSubset=all`, and that group reads every unit's journal on the host. That is
-the entire privilege difference and it is the reason ADR 0010 made the feature
-opt-in.
+the entire privilege difference and it is the reason
+[ADR 0010](adr/0010-log-based-trace-collection.md) made the feature opt-in.
+
+The module offers only `source = "journald"`. The other source, `"pipe"`, puts
+the agent downstream of the node on a shell pipeline, so it is the node's unit
+that changes and the agent has none of its own; a module that rendered it would
+give the agent `/dev/null` for stdin and respawn it forever on the EOF. Nothing
+here stops a NixOS host running that shape, but it is the node's unit to write,
+and `contrib/metsuke.service` has the line. It costs no group at all, which is
+why an operator who must not grant `systemd-journal` picks it.
 
 The agent's spool has to be under `/var/lib/metsuke`, which the module asserts.
 
@@ -199,11 +225,10 @@ leaving the default to time out on every tick.
 
 ## Confirming it works
 
-On the node host, what to run and what the lines mean is the onboarding page's
-step 9:
+On the node host, the quickstart's check step has this and the lines a working
+agent prints:
 
 ```
-systemctl status metsuke
 journalctl -u metsuke -f
 ```
 
@@ -227,7 +252,8 @@ metsuke-fetch sync --server https://<server> --user metsuke-dev \
 ```
 
 `sync` prints the duckdb read that matches what it downloaded.
-`docs/reading-the-archive.md` says why that read is not the obvious one.
+[`docs/reading-the-archive.md`](reading-the-archive.md) says why that read is
+not the obvious one.
 
 ## On a cardano-parts host
 

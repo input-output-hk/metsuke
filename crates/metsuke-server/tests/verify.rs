@@ -8,8 +8,8 @@ use metsuke_wire::envelope::{Envelope, Header, SigningKey};
 
 mod support;
 use support::{
-    MAX_HEADER_BYTES, envelope_for, object_name, other_key, pool_of, seal, seal_with,
-    test_agent_id, test_key, test_leios_key, test_now,
+    MAX_HEADER_BYTES, envelope_claiming, envelope_for, object_name, other_key, pool_of, seal,
+    seal_with, test_agent_id, test_key, test_leios_key, test_now,
 };
 
 /// The object the archive holds for `envelope`, signed by `signer` and filed
@@ -102,6 +102,45 @@ fn a_leios_object_filed_under_a_pool_its_header_does_not_claim_does_not_verify()
     let error = verified(&misfiled).unwrap_err();
     assert!(
         matches!(error, VerifyError::Misfiled { .. }),
+        "got: {error}"
+    );
+}
+
+/// The pool is claimed twice over, by the header and by the key, and a cold
+/// key's derivation says nothing about the header's copy. An object the right
+/// pool signed and filed, carrying a header that names someone else, is what
+/// the derivation alone never looked at.
+#[test]
+fn an_object_whose_header_names_another_pool_does_not_verify() {
+    let key = test_key();
+    let (wire_bytes, attestation) = seal(&key, &envelope_claiming(pool_of(&other_key()), 7));
+    let object = FetchedObject {
+        name: object_name(&key, test_now(), Kind::Metrics),
+        attestation,
+        wire_bytes,
+    };
+    let error = verified(&object).unwrap_err();
+    assert!(
+        matches!(error, VerifyError::Misfiled { .. }),
+        "got: {error}"
+    );
+}
+
+/// The other half: header and filing agree, and the key that signed derives a
+/// third pool. Checking the header against the filing would pass this, so the
+/// derivation is checked on its own.
+#[test]
+fn an_object_signed_by_a_key_deriving_another_pool_does_not_verify() {
+    let key = test_key();
+    let (wire_bytes, attestation) = seal(&other_key(), &envelope_for(&key, 7));
+    let object = FetchedObject {
+        name: object_name(&key, test_now(), Kind::Metrics),
+        attestation,
+        wire_bytes,
+    };
+    let error = verified(&object).unwrap_err();
+    assert!(
+        matches!(error, VerifyError::NotItsKey { .. }),
         "got: {error}"
     );
 }

@@ -6,11 +6,13 @@ use std::process::Command;
 mod support;
 use support::{PASSWORD, Server, USER};
 
-/// The tool with a password file the test wrote, against `server`.
+/// The tool with a password file the test wrote, against `server`. Run from
+/// `dir`, so a case may name its paths relatively as an operator would.
 fn run(server: &Server, dir: &std::path::Path, extra: &[&str]) -> std::process::Output {
     let password_file = dir.join("password");
     std::fs::write(&password_file, format!("{PASSWORD}\n")).expect("the password file writes");
     Command::new(env!("CARGO_BIN_EXE_metsuke-fetch"))
+        .current_dir(dir)
         .args(extra)
         .args([
             "--server",
@@ -60,6 +62,88 @@ fn a_sync_prints_the_keys_it_wrote_and_exits_zero() {
     }
 }
 
+/// Every count is of what the prefix listed and not of the archive, so the
+/// line states the prefix and its three parts add up to what came back. Called
+/// "outside the filters" the middle number read as everything the run did not
+/// take, and was short by every key the prefix never listed.
+#[test]
+fn the_listing_line_names_its_prefix_and_its_counts_add_up() {
+    let server = Server::with_objects(4, 10);
+    let dir = tempfile::tempdir().expect("a temp dir");
+
+    let output = run(&server, dir.path(), &["list", "--kind", "metrics"]);
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "4 keys under v1/; 2 selected, 2 outside the selection, 0 this build cannot name"
+        ),
+        "got: {stderr}"
+    );
+}
+
+/// A refused object lands in no count but its own, so the printed listing
+/// total has to add it back. Reported without that, a run refusing most of
+/// what it selected said fewer keys were listed than it had refused.
+#[test]
+fn the_listing_line_counts_refusals_too() {
+    let server = Server::attesting(3, 10);
+    let dir = tempfile::tempdir().expect("a temp dir");
+    server.tamper(&server.keys()[0]);
+
+    let output = run(
+        &server,
+        dir.path(),
+        &["sync", "--state", "cursor.json", "--into", "objects"],
+    );
+
+    // A refusal is a nonzero exit by design, so the run's own answer is on
+    // stderr rather than in the status.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("3 keys under v1/; 3 selected, 0 outside the selection"),
+        "got: {stderr}"
+    );
+    assert!(
+        stderr.contains("2 objects into objects,") && stderr.contains("1 not written"),
+        "got: {stderr}"
+    );
+}
+
+/// Paths named without a directory, which is what an operator types in the
+/// directory they are syncing into. `Path::parent` answers `Some("")` for one,
+/// and the run stopped after its first object with the cursor already renamed
+/// into place, so the whole sync failed on a file it had just written.
+#[test]
+fn a_sync_takes_paths_named_without_a_directory() {
+    let server = Server::with_objects(2, 1);
+    let dir = tempfile::tempdir().expect("a temp dir");
+
+    let output = run(
+        &server,
+        dir.path(),
+        &["sync", "--state", "cursor.json", "--into", "objects"],
+    );
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for key in server.keys() {
+        assert!(
+            dir.path().join("objects").join(&key).is_file(),
+            "{key} did not land"
+        );
+    }
+    assert!(dir.path().join("cursor.json").is_file(), "no cursor");
+}
+
 #[test]
 fn an_empty_password_file_is_refused_by_name() {
     let server = Server::with_objects(1, 100);
@@ -107,7 +191,7 @@ fn version_is_printed_on_its_own_and_names_the_crates_version() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        env!("CARGO_PKG_VERSION")
+        metsuke_wire::version_line(env!("CARGO_PKG_VERSION"))
     );
 }
 

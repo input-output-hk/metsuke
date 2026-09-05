@@ -19,7 +19,7 @@ fn the_shipped_example_config_loads() {
     let ArchiveConfig::S3(s3) = config.archive else {
         panic!("the example names an S3 archive");
     };
-    assert_eq!(s3.bucket, "cardano-playground-metsuke");
+    assert_eq!(s3.bucket, "metsuke-archive-example");
     assert_eq!(s3.put_retries, 1);
     assert_eq!(
         s3.endpoint.host_str(),
@@ -114,9 +114,8 @@ const NONZERO_FIELDS: [&str; 15] = [
 
 /// The rest, where only absence is a mistake. Together with `NONZERO_FIELDS`
 /// this is every field the server reads, so a new one joins exactly one list.
-const OTHER_FIELDS: [&str; 8] = [
+const OTHER_FIELDS: [&str; 7] = [
     "listen",
-    "user",
     "bucket",
     "region",
     "endpoint",

@@ -4,7 +4,7 @@
 //! shipped default (see contrib/config.example.toml).
 
 use std::num::{NonZeroU64, NonZeroUsize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::endpoint::{MetricsUrl, UploadUrl};
 use crate::logsource::{JournalConfig, PipeConfig};
 use crate::sntp;
-use metsuke_wire::envelope::PoolId;
+use metsuke_wire::envelope::{AgentId, PoolId};
 
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,10 +33,13 @@ pub struct Config {
     /// Path to the signing key; `--signing-key` overrides it.
     #[serde(default)]
     pub signing_key: Option<PathBuf>,
+    /// Zero would leave no interval to wait out, and a 429 is retryable rather
+    /// than a backoff, so a zero cadence hammers the node or this server
+    /// without ever slowing down. The type refuses it.
     #[serde(default = "default_scrape_interval_secs")]
-    pub scrape_interval_secs: u64,
+    pub scrape_interval_secs: NonZeroU64,
     #[serde(default = "default_upload_interval_secs")]
-    pub upload_interval_secs: u64,
+    pub upload_interval_secs: NonZeroU64,
     /// How many submissions one upload tick may send. One is not enough for a
     /// trace stream: what a node emits between ticks can be more than a single
     /// submission carries, and the difference accumulates until the spool's cap
@@ -73,7 +76,9 @@ pub struct Config {
     pub upload_timeout_secs: u64,
     /// Upper bound on the spread that places this agent within the interval,
     /// and on the spread a retry adds, so agents installed together do not
-    /// upload in step (`schedule::Schedule::after`).
+    /// upload in step (`schedule::Schedule::after`). A ceiling rather than the
+    /// spread: one wider than the interval is taken as the interval, so a
+    /// cadence shorter than this default keeps it.
     #[serde(default = "default_upload_jitter_max_secs")]
     pub upload_jitter_max_secs: u64,
     /// Clamp on the exponential backoff after 4xx rejections.
@@ -210,12 +215,12 @@ impl TryFrom<LogToml> for LogConfig {
     }
 }
 
-fn default_scrape_interval_secs() -> u64 {
-    300
+fn default_scrape_interval_secs() -> NonZeroU64 {
+    NonZeroU64::new(300).expect("300 is not zero")
 }
 
-fn default_upload_interval_secs() -> u64 {
-    3600
+fn default_upload_interval_secs() -> NonZeroU64 {
+    NonZeroU64::new(3600).expect("3600 is not zero")
 }
 
 /// Room for several times what a Leios producer was measured to spool between
@@ -322,5 +327,72 @@ pub enum ConfigError {
 impl Config {
     pub fn from_toml(text: &str) -> Result<Config, ConfigError> {
         Ok(toml::from_str(text)?)
+    }
+
+    /// Every setting and the value it resolved to, one JSON line, so an
+    /// operator pasting a log hands over their whole configuration with it.
+    /// A startup line rather than a flag: the paste that needs it is the one
+    /// nobody thought to collect.
+    ///
+    /// Built by hand rather than derived. `Serialize` on `Config` would print
+    /// the file rather than the run, and two fields differ: `agent_id` is
+    /// absent from almost every config and resolves to this host's name, and
+    /// `signing_key` is absent under systemd because the unit passes the
+    /// credential on the command line. Both arrive here already resolved.
+    /// `tests/config.rs` holds this to naming every key the example documents.
+    pub fn resolved(&self, agent_id: &AgentId, signing_key: Option<&Path>) -> String {
+        let log = match &self.log {
+            None => serde_json::Value::Null,
+            Some(log) => {
+                let mut fields = serde_json::json!({
+                    "namespace_roots": log.namespace_roots,
+                    "namespaces": log.namespaces,
+                    "log_max_bytes": log.log_max_bytes,
+                    "respawn_backoff_secs": log.respawn_backoff_secs,
+                });
+                let source = match &log.source {
+                    LogSource::Journald(journal) => serde_json::json!({
+                        "source": "journald",
+                        "journal_unit": journal.journal_unit,
+                        "journalctl_path": journal.journalctl_path,
+                        "start_grace_secs": journal.start_grace.as_secs(),
+                    }),
+                    LogSource::Pipe(pipe) => serde_json::json!({
+                        "source": "pipe",
+                        "pipe_queue_capacity": pipe.queue_capacity.get(),
+                    }),
+                };
+                let (Some(fields), Some(source)) = (fields.as_object_mut(), source.as_object())
+                else {
+                    unreachable!("both are object literals");
+                };
+                fields.extend(source.clone());
+                serde_json::Value::Object(fields.clone())
+            }
+        };
+        serde_json::json!({
+            "pool_id": self.pool_id.to_string(),
+            "agent_id": agent_id.to_string(),
+            "metrics_url": self.metrics_url.as_str(),
+            "upload_url": self.upload_url.as_str(),
+            "signing_key": signing_key,
+            "scrape_interval_secs": self.scrape_interval_secs.get(),
+            "upload_interval_secs": self.upload_interval_secs.get(),
+            "upload_max_submissions": self.upload_max_submissions.get(),
+            "sntp_servers": self.sntp_servers,
+            "sntp_timeout_secs": self.sntp_timeout_secs,
+            "spool_path": self.spool_path,
+            "spool_max_bytes": self.spool_max_bytes,
+            "spool_busy_timeout_secs": self.spool_busy_timeout_secs,
+            "upload_batch_max_bytes": self.upload_batch_max_bytes,
+            "scrape_timeout_secs": self.scrape_timeout_secs,
+            "scrape_max_body_bytes": self.scrape_max_body_bytes,
+            "upload_timeout_secs": self.upload_timeout_secs,
+            "upload_jitter_max_secs": self.upload_jitter_max_secs,
+            "upload_backoff_max_secs": self.upload_backoff_max_secs,
+            "compression_level": self.compression_level,
+            "log": log,
+        })
+        .to_string()
     }
 }

@@ -6,6 +6,11 @@
 {
   restartSecs = 30;
 
+  # What an operator replaces in the shipped pipe drop-in with their node's own
+  # command. Unmistakable on purpose: a plausible-looking command is one
+  # somebody installs as it stands, and this one cannot start a node.
+  nodeCommandPlaceholder = "YOUR-NODE-COMMAND";
+
   # AF_NETLINK is not reachability: glibc asks the kernel which addresses the
   # host has before it resolves a name, and the units that speak HTTP name
   # hosts. No AF_UNIX: a unit that talks to a local socket asks for it, which

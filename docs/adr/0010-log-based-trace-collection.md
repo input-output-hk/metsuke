@@ -1,6 +1,7 @@
 # 10. Trace lines off the journal, selected by configuration
 
-Status: accepted (2026-08-27). Supersedes ADR 0007.
+Status: accepted (2026-08-27). Supersedes
+[ADR 0007](0007-agent-reads-only-loopback-prometheus.md).
 Amended by metsuke-jfb.11, which moved where a line's stamp is applied, by
 metsuke-jfb.19, which dropped severity as a selection rule, by
 metsuke-4zo.98, which settled what the archive says about lost lines: nothing,
@@ -74,7 +75,9 @@ beyond the state directory. The two are one parameter in nix/unit.nix, because
 a unit holding the group without the second cannot start journalctl at all.
 
 Selected lines land in the existing spool under their own byte cap and upload
-as schema v2 envelopes on the same signed path as scrapes (ADR 0001, 0005).
+as schema v2 envelopes on the same signed path as scrapes
+([ADR 0001](0001-raw-ed25519-detached-signature.md),
+[0005](0005-archive-raw-signed-bytes.md)).
 They are the data frame's lines, each the node's object with the agent's
 provenance added under the one reserved `metsuke` key, so a trace line and a
 metrics line have the same shape and one query over the archive reads both. One
@@ -113,8 +116,8 @@ upstream of it.
   to merge, never a `TraceOptions` to paste over one. An operator's own config
   may already carry these namespaces and settings on them that replacing the
   object would discard. The instructions page carries the step and
-  docs/research/cardano-node-11-tracing.md carries why, and what the published
-  configs hold.
+  [docs/research/cardano-node-11-tracing.md](../research/cardano-node-11-tracing.md)
+  carries why, and what the published configs hold.
 - The grant is real and lasts as long as `[log]` is set. `systemd-journal`
   reads the whole system journal, not the node's unit. An agent compromised on
   a host that logs anything sensitive to the journal reads that too. The

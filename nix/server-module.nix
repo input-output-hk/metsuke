@@ -83,13 +83,17 @@ let
     };
   };
 
-  # The one nullable setting is absent rather than null in the file: TOML has
-  # no null, and the server reads absence as "no Leios keys" (ADR 0011).
+  # TOML has no null, so a nullable setting is left out of the file rather than
+  # written as one, and the server reads the absence. No `leios_roster` is no
+  # Leios keys (ADR 0011); no `downloads` is a deployment offering no agent
+  # build, whose page then says to build one.
   configFile = toml.generate "metsuke-server-config.toml" (
-    cfg.settings
-    // {
-      ingest = lib.filterAttrs (_: value: value != null) cfg.settings.ingest;
-    }
+    lib.filterAttrs (_: value: value != null) (
+      cfg.settings
+      // {
+        ingest = lib.filterAttrs (_: value: value != null) cfg.settings.ingest;
+      }
+    )
   );
 in
 {
@@ -109,8 +113,9 @@ in
       # and it is also what lets the secret be replaced without a rebuild.
       type = lib.types.str;
       description = ''
-        The developer account's password, alone in a file. Read by systemd as
-        root, so the deployed secret stays unreadable to the service user.
+        The developer accounts, as one `user = "password"` line each and
+        nothing else. Read by systemd as root, so the deployed secret stays
+        unreadable to the service user.
       '';
     };
 
@@ -247,6 +252,23 @@ in
       type = types.submodule {
         options = {
           listen = required types.str;
+          public_url = required types.str;
+
+          # Optional, and null by default rather than pointing at the flake's
+          # own static packages: defaulting them would make every VM test build
+          # two cross-compiled agents to stand up a server node.
+          downloads = mkOption {
+            type = types.nullOr (
+              types.submodule {
+                options = {
+                  x86_64_linux = required types.path;
+                  aarch64_linux = required types.path;
+                };
+              }
+            );
+            default = null;
+            description = "Static agent builds this server offers for download.";
+          };
 
           http = mkOption {
             type = types.submodule {
@@ -292,7 +314,6 @@ in
           developer = mkOption {
             type = types.submodule {
               options = {
-                user = required types.str;
                 password_file = mkOption {
                   type = types.str;
                   default = credentialPath "developer-password";
@@ -419,7 +440,7 @@ in
         services.metsuke-server.settings.archive.filesystem stores the submission
         bytes alone and drops the key and signature they were checked with, so
         nothing can verify that archive afterwards, verify-archive refuses it, and
-        every download reaches a consumer unverifiable. S3 is what production runs
+        every download reaches a consumer unattested. S3 is what production runs
         (ADR 0005).
       '';
 

@@ -294,6 +294,14 @@ async fn failed_upload_keeps_the_rows_for_the_next_attempt() {
 /// A submission cap that holds one trace line and no more, so a tick has to send
 /// one submission per line to clear the spool.
 fn one_line_per_submission(line: &str) -> u64 {
+    lines_per_submission(line, 1)
+}
+
+/// A submission cap that holds `lines` of them and no more. Half a row of
+/// slack, because the header carries a timestamp whose subsecond digits vary
+/// per run: a cap measured to the byte sometimes holds one line fewer, which
+/// makes what a tick does a coin flip rather than a count.
+fn lines_per_submission(line: &str, lines: u64) -> u64 {
     // The framing is spent before any row is, as tests/delivery.rs measures it.
     // The timestamp carries subsecond digits because `upload_once` stamps with
     // `now_utc`, whose header line is longer than the epoch's by them.
@@ -308,7 +316,7 @@ fn one_line_per_submission(line: &str) -> u64 {
     let row = envelope::PayloadLine::trace_line(&trace_line(line), &test_provenance())
         .unwrap()
         .wire_bytes();
-    framing + row
+    framing + lines * row + row / 2
 }
 
 // The wedge this fixes: a node emits more between ticks than one submission
@@ -359,6 +367,60 @@ async fn one_tick_drains_a_stream_that_outgrew_a_single_submission() {
     assert!(
         second.is_empty(),
         "the stream must be drained, got {second:?}"
+    );
+}
+
+// And what a tick drains is the backlog it found, not the stream: a node
+// emitting faster than a submission's round trip was chased to the allowance,
+// a request, a counter and an object per handful of lines that arrived while
+// the last one was in flight. The server here appends one as it answers each,
+// which is that node in miniature.
+#[tokio::test]
+async fn a_tick_does_not_chase_lines_that_arrive_while_it_runs() {
+    let metrics = metrics_server().await;
+    let uploads = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let line = r#"{"ns":"Consensus.LeiosPeer.Msg"}"#;
+    let writing = std::sync::Arc::new(std::sync::Mutex::new(test_log_spool(&dir)));
+    let arriving = std::sync::Arc::clone(&writing);
+    Mock::given(method("POST"))
+        .and(path("/v1/submit"))
+        .respond_with(move |_: &wiremock::Request| {
+            arriving
+                .lock()
+                .expect("no panic holds this lock")
+                .push(&trace_line(line))
+                .expect("the line spools");
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "latest_version": "0.1.0"
+            }))
+        })
+        .mount(&uploads)
+        .await;
+    let mut agent = agent_with(
+        &dir,
+        &metrics,
+        &uploads,
+        lines_per_submission(line, 3),
+        shipped_submissions(),
+    );
+    for _ in 0..5 {
+        writing
+            .lock()
+            .expect("no panic holds this lock")
+            .push(&trace_line(line))
+            .unwrap();
+    }
+
+    let sent = tokio::task::spawn_blocking(move || agent.upload_once().unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(
+        sent.iter().map(|one| one.lines).collect::<Vec<_>>(),
+        [3, 3],
+        "the five spooled leave in two, and what arrived meanwhile waits for \
+         the next tick, got {sent:?}"
     );
 }
 

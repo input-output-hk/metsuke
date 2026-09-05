@@ -5,7 +5,36 @@
 
 use std::time::Duration;
 
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
+
 use crate::uploader::UploadOutcome;
+
+/// When the next submission is, for the operator reading the tick that just
+/// finished. Neither the configured interval nor guessable from it, because
+/// jitter has placed this agent inside it and a refusal replaces it with a
+/// backoff.
+pub fn next_submission_line(now: OffsetDateTime, wait: Duration) -> String {
+    format!("the next submission is scheduled at {}", at(now, wait))
+}
+
+/// The same for a tick that sent nothing, which is every tick of an agent
+/// uploading faster than it scrapes. Said rather than left silent: the time
+/// the last line named has just passed, and a quiet agent and a stopped one
+/// look alike until one of them says something.
+pub fn nothing_sent_line(now: OffsetDateTime, wait: Duration) -> String {
+    format!("nothing to send; the next upload is at {}", at(now, wait))
+}
+
+/// The instant, to the second: subsecond digits are the clock's rather than
+/// anything an operator set.
+fn at(now: OffsetDateTime, wait: Duration) -> String {
+    let at = now + wait;
+    at.replace_nanosecond(0)
+        .unwrap_or(at)
+        .format(&Rfc3339)
+        .unwrap_or_else(|_| "a time this clock cannot render".to_string())
+}
 
 pub struct ScheduleConfig {
     pub upload_interval: Duration,
@@ -50,7 +79,10 @@ impl Schedule {
             UploadOutcome::Acked(_) => {
                 self.consecutive_rejections = 0;
                 match std::mem::replace(&mut self.phase_chosen, true) {
-                    false => config.upload_interval + jitter(config.jitter_max, entropy),
+                    false => {
+                        config.upload_interval
+                            + jitter(config.jitter_max, config.upload_interval, entropy)
+                    }
                     true => config.upload_interval,
                 }
             }
@@ -59,7 +91,7 @@ impl Schedule {
                 // a retryable failure means the latest attempt did not
                 // observe one.
                 self.consecutive_rejections = 0;
-                config.upload_interval + jitter(config.jitter_max, entropy)
+                config.upload_interval + jitter(config.jitter_max, config.upload_interval, entropy)
             }
             UploadOutcome::Rejected { .. } => {
                 self.consecutive_rejections = self.consecutive_rejections.saturating_add(1);
@@ -78,8 +110,12 @@ impl Default for Schedule {
     }
 }
 
-/// A duration in `[0, max]` derived uniformly-enough from `entropy`.
-fn jitter(max: Duration, entropy: u64) -> Duration {
-    let span = max.as_millis() as u64 + 1;
+/// A duration in `[0, max]` derived uniformly-enough from `entropy`, never
+/// wider than the interval it is spreading agents across. A spread past one
+/// interval places nobody better than a spread of exactly one does, and the
+/// shipped bound is sized against the shipped interval: on a short one it
+/// would be most of the wait rather than a spread inside it.
+fn jitter(max: Duration, interval: Duration, entropy: u64) -> Duration {
+    let span = max.min(interval).as_millis() as u64 + 1;
     Duration::from_millis(entropy % span)
 }

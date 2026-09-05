@@ -1,0 +1,7 @@
+metsuke 0.1.0 starting
+config: {"agent_id":"relay-1","compression_level":0,"log":{"log_max_bytes":268435456,"namespace_roots":["Consensus","ChainDB","Forge"],"namespaces":["Consensus.LeiosKernel","Consensus.LeiosPeer","ChainDB.AddBlockEvent.AddedToCurrentChain","Forge.Loop.AdoptedBlock"],"pipe_queue_capacity":4096,"respawn_backoff_secs":30,"source":"pipe"},"metrics_url":"http://127.0.0.1:12798/metrics","pool_id":"pool13vscgf9dwn0jt56u965wp99ychz6avktk3pyrye326f3xctz4nm","scrape_interval_secs":1,"scrape_max_body_bytes":4194304,"scrape_timeout_secs":5,"signing_key":"/etc/metsuke/signing-key","sntp_servers":[],"sntp_timeout_secs":5,"spool_busy_timeout_secs":5,"spool_max_bytes":33554432,"spool_path":"/var/lib/metsuke/spool.sqlite","upload_backoff_max_secs":86400,"upload_batch_max_bytes":4194304,"upload_interval_secs":1,"upload_jitter_max_secs":300,"upload_max_submissions":16,"upload_timeout_secs":60,"upload_url":"https://metsuke.example.org/v1/submit"}
+metsuke on relay-1 scraping http://127.0.0.1:12798/metrics for pool13vscgf9dwn0jt56u965wp99ychz6avktk3pyrye326f3xctz4nm
+collecting trace lines from the node's stdout: namespaces Consensus.LeiosKernel, Consensus.LeiosPeer, ChainDB.AddBlockEvent.AddedToCurrentChain, Forge.Loop.AdoptedBlock
+the first scrape waits for the node to bind its metrics endpoint
+submission 1 payload 0344ee9a766babe1 accepted: 1 scrape, 1901 bytes
+submission 2 payload 5b6ee4aad24b66ef accepted: 176 trace lines, 6193 bytes

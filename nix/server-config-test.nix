@@ -13,7 +13,9 @@
 }:
 let
   poolId = "pool13vscgf9dwn0jt56u965wp99ychz6avktk3pyrye326f3xctz4nm";
-  password = pkgs.writeText "developer-password" "not-a-real-secret";
+  password = pkgs.writeText "developer-password" ''
+    metsuke-dev = "not-a-real-secret"
+  '';
 
   # Every limit the server refuses to start without, so the archive is the only
   # thing that differs between the two runs below. Port 0: the server reports
@@ -21,6 +23,7 @@ let
   settingsFor = archive: {
     inherit archive;
     listen = "127.0.0.1:0";
+    public_url = "https://metsuke.example.org";
     http = {
       idle_timeout_ms = 30000;
       read_timeout_ms = 60000;
@@ -37,7 +40,6 @@ let
       rate_limit_window_secs = 3600;
     };
     developer = {
-      user = "metsuke-dev";
       list_max_rows = 1000;
       # Where systemd would have put it, named directly because nothing here
       # loads a credential.
@@ -65,7 +67,7 @@ let
 
   s3 = execStartFor {
     s3 = {
-      bucket = "cardano-playground-metsuke";
+      bucket = "metsuke-archive-example";
       region = "eu-central-1";
       # Nothing is reached: startup constructs the archive and touches no
       # bucket, which is what makes this a config check and not a live one.

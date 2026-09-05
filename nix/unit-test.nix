@@ -17,6 +17,10 @@
   # node below.
   traces,
   contribUnit,
+  # The drop-in an operator adds to the node's own unit for pipe mode, and the
+  # placeholder in it they replace with the node's command.
+  pipeDropIn,
+  nodeCommand,
   # The binary contrib/metsuke.service names at /usr/local/bin/metsuke. The
   # module nodes take theirs from the module's own default.
   agent,
@@ -30,14 +34,16 @@ let
   poolId = "pool13vscgf9dwn0jt56u965wp99ychz6avktk3pyrye326f3xctz4nm";
   # Throwaway: what is exercised is that systemd hands the file over and the
   # agent parses it, not what it signs.
-  signingKey = pkgs.writeText "pool.skey" (
+  signingKey = pkgs.writeText "bls.skey" (
     builtins.toJSON {
       type = "StakePoolSigningKey_ed25519";
       description = "";
       cborHex = "5820${pkgs.lib.strings.replicate 32 "07"}";
     }
   );
-  password = pkgs.writeText "password" "not-a-real-secret";
+  password = pkgs.writeText "password" ''
+    metsuke-dev = "not-a-real-secret"
+  '';
 
   # Named where both the config and the assertions can reach it.
   stateDirectory = "/var/lib/metsuke-server";
@@ -61,6 +67,15 @@ let
   # spooled, which is what ADR 0004 asks for.
   uploadUrl = "http://127.0.0.1:1/v1/submit";
 
+  # cardano-node's share of pipe mode: something that writes trace lines to
+  # stdout and stays up. It sleeps rather than exiting, because the agent stops
+  # with the node's output and a pipeline that ended would leave nothing to
+  # read the confinement of.
+  nodeStandIn = pkgs.writeShellScript "node-stand-in" ''
+    ${pkgs.coreutils}/bin/cat ${traces}
+    exec ${pkgs.coreutils}/bin/sleep infinity
+  '';
+
   # The one archive kind a booted server is needed for. That the module renders
   # a config the server accepts is checks.server-config's, for both kinds and
   # without a VM; what only a machine can show is the confinement below, and
@@ -79,6 +94,7 @@ let
       settings = {
         archive.filesystem.root = "${stateDirectory}/archive";
         listen = "127.0.0.1:${toString listenPort}";
+        public_url = "https://metsuke.example.org";
         http = {
           idle_timeout_ms = 30000;
           read_timeout_ms = 60000;
@@ -95,7 +111,6 @@ let
           rate_limit_window_secs = 3600;
         };
         developer = {
-          user = "metsuke-dev";
           list_max_rows = 1000;
         };
       };
@@ -117,8 +132,10 @@ pkgs.testers.runNixOSTest {
     systemd.services.metrics-endpoint = metricsEndpoint;
 
     # Root-only, so the agent reaching it proves systemd passed it as a
-    # credential rather than the service user reading the path.
-    environment.etc."metsuke/pool.skey" = {
+    # credential rather than the service user reading the path. Deliberately
+    # not the path the shipped unit loads: `signingKeyFile` takes any, and the
+    # `bare` node below is what covers the shipped one.
+    environment.etc."metsuke/bls.skey" = {
       source = signingKey;
       mode = "0400";
     };
@@ -127,7 +144,7 @@ pkgs.testers.runNixOSTest {
 
     services.metsuke = {
       enable = true;
-      signingKeyFile = "/etc/metsuke/pool.skey";
+      signingKeyFile = "/etc/metsuke/bls.skey";
       settings = {
         pool_id = poolId;
         metrics_url = metricsUrl;
@@ -166,14 +183,14 @@ pkgs.testers.runNixOSTest {
 
     environment.systemPackages = [ pkgs.sqlite ];
 
-    environment.etc."metsuke/pool.skey" = {
+    environment.etc."metsuke/bls.skey" = {
       source = signingKey;
       mode = "0400";
     };
 
     services.metsuke = {
       enable = true;
-      signingKeyFile = "/etc/metsuke/pool.skey";
+      signingKeyFile = "/etc/metsuke/bls.skey";
       settings = {
         pool_id = poolId;
         metrics_url = metricsUrl;
@@ -185,10 +202,10 @@ pkgs.testers.runNixOSTest {
     };
   };
 
-  # No module: the file an operator copies, at the two paths its header names,
-  # started the way its header says to start it. The key is named in the
-  # configuration rather than loaded as a credential, which is the half the
-  # module's LoadCredential replaces and nothing else here executes.
+  # No module: the file an operator copies, at the paths its header names,
+  # started the way its header says to start it. The key is 0400 root, which is
+  # what the shipped unit's LoadCredential is for; naming it in config.toml
+  # instead would need it readable by the unit's DynamicUser.
   nodes.bare = {
     systemd.services.metrics-endpoint = metricsEndpoint;
 
@@ -196,19 +213,55 @@ pkgs.testers.runNixOSTest {
 
     environment.etc = {
       "metsuke/metsuke.service".source = contribUnit;
-      # Readable by the DynamicUser the unit runs as: with no credential in
-      # play, the service opens this path itself.
-      "metsuke/pool.skey" = {
+      "metsuke/signing-key" = {
         source = signingKey;
-        mode = "0444";
+        mode = "0400";
       };
       "metsuke/config.toml".text = ''
         pool_id = "${poolId}"
         metrics_url = "${metricsUrl}"
         upload_url = "${uploadUrl}"
-        signing_key = "/etc/metsuke/pool.skey"
         scrape_interval_secs = 1
         sntp_servers = []
+      '';
+    };
+
+    systemd.tmpfiles.rules = [
+      "L+ /usr/local/bin/metsuke - - - - ${agent}/bin/metsuke"
+    ];
+  };
+
+  # Pipe mode, which is a drop-in on the node's unit rather than a unit of the
+  # agent's. `nodeStandIn` is the node: a long-running process writing the
+  # recording to stdout, which is the whole of what the agent reads from it.
+  nodes.piping = {
+    systemd.services.metrics-endpoint = metricsEndpoint;
+
+    environment.systemPackages = [ pkgs.sqlite ];
+
+    # What the drop-in overrides. Its ExecStart is deliberately not the
+    # pipeline: that the shipped `ExecStart=` clears the command a node's unit
+    # already had is half of what this exercises.
+    systemd.services.node-stand-in.serviceConfig.ExecStart = "${pkgs.coreutils}/bin/true";
+
+    environment.etc = {
+      # The shipped drop-in with the one substitution its header asks an
+      # operator to make, so what runs here is the file they copy.
+      "metsuke/node-pipe.conf".text = builtins.replaceStrings [ nodeCommand ] [ "${nodeStandIn}" ] (
+        builtins.readFile pipeDropIn
+      );
+      "metsuke/signing-key" = {
+        source = signingKey;
+        mode = "0400";
+      };
+      "metsuke/config.toml".text = ''
+        pool_id = "${poolId}"
+        metrics_url = "${metricsUrl}"
+        upload_url = "${uploadUrl}"
+        scrape_interval_secs = 1
+        sntp_servers = []
+        [log]
+        source = "pipe"
       '';
     };
 
@@ -220,7 +273,7 @@ pkgs.testers.runNixOSTest {
   nodes.hub = hubNode;
 
   testScript = ''
-    # The four nodes are independent. Nothing here sends a submission from one
+    # The five nodes are independent. Nothing here sends a submission from one
     # to another, which is e2e-test.nix's job. Booted on first reference they
     # boot one after another, and the boots are most of this test's runtime.
     start_all()
@@ -287,7 +340,7 @@ pkgs.testers.runNixOSTest {
         # It scraped and spooled, which is the only thing it may write.
         spooled(pool)
         # The signing key stayed root-only, so it arrived as a credential.
-        pool.succeed("test 400 -eq \"$(stat -c %a /etc/metsuke/pool.skey)\"")
+        pool.succeed("test 400 -eq \"$(stat -c %a /etc/metsuke/bls.skey)\"")
 
     with subtest("the agent holds nothing ADR 0007 refuses"):
         confined(pool, "metsuke.service", "/var/lib/metsuke")
@@ -351,6 +404,44 @@ pkgs.testers.runNixOSTest {
         bare.succeed("systemctl start metsuke.service")
         spooled(bare)
         confined(bare, "metsuke.service", "/var/lib/metsuke")
+        # systemd handed the key over, so the file itself stayed root-only.
+        bare.succeed("test 400 -eq \"$(stat -c %a /etc/metsuke/signing-key)\"")
+
+    with subtest("the pipe drop-in runs the agent downstream of the node"):
+        piping.wait_for_unit("metrics-endpoint.service")
+        piping.wait_for_open_port(${toString metricsPort}, addr = "127.0.0.1")
+        # /run for the same reason the bare node uses it: /etc is read-only.
+        piping.succeed("mkdir -p /run/systemd/system/node-stand-in.service.d")
+        piping.succeed(
+            "cp /etc/metsuke/node-pipe.conf"
+            " /run/systemd/system/node-stand-in.service.d/zzzz-metsuke.conf"
+        )
+        piping.succeed("systemctl daemon-reload")
+        piping.succeed("systemctl start node-stand-in.service")
+
+        # Metrics are scraped as they are under any source.
+        spooled(piping)
+        # And the trace lines arrived on stdin, with no journal read and no
+        # journalctl started.
+        piping.wait_until_succeeds(
+            "test 0 -lt \"$(sqlite3 -readonly /var/lib/metsuke/spool.sqlite"
+            " 'select count(*) from log_lines')\""
+        )
+        piping.fail("journalctl -u node-stand-in.service | grep -q 'trace lines not collected'")
+
+        # Every line went through to the agent's own stdout, which under this
+        # unit is the node's, so a consumer downstream still reads the node.
+        piping.wait_until_succeeds(
+            "journalctl -u node-stand-in.service"
+            " | grep -q '\"ns\":\"Consensus.LeiosKernel.Certified\"'"
+        )
+
+        # The key arrived as a credential here too, which is what lets the
+        # agent run as the node's user without the key being readable by it.
+        piping.succeed("test 400 -eq \"$(stat -c %a /etc/metsuke/signing-key)\"")
+        # And the drop-in grants no group, which is what the pipe buys over
+        # the journal. ADR 0010 weighs the two.
+        piping.fail("grep -q SupplementaryGroups /etc/metsuke/node-pipe.conf")
 
     with subtest("the server starts on the configuration its module rendered"):
         hub.wait_for_unit("metsuke-server.service")

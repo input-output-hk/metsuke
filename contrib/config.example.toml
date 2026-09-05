@@ -15,13 +15,15 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # than one Agent can tell them apart. Defaults to this Agent's hostname, folded
 # to lowercase a-z0-9 in dash-separated runs; a value set here is folded the
 # same way.
-#   agent_id = "edge-1"
+# agent_id = "edge-1"
 
-# Path to the signing key (cardano-cli TextEnvelope). It has to be the cold key
-# pool_id above hashes from, or the agent refuses to start. The --signing-key
-# flag overrides this: with systemd, leave this unset and pass the key as a
-# credential. See contrib/metsuke.service.
-# signing_key = "/etc/metsuke/pool.skey"
+# Path to the signing key, a cardano-cli TextEnvelope: the cold key pool_id
+# above hashes from, or the pool's Leios key. A cold key that does not hash to
+# pool_id refuses to start; a Leios key hashes to nothing, so nothing is
+# checked here and the server's roster settles which pool it speaks for. The
+# --signing-key flag overrides this: with systemd, leave this unset and pass
+# the key as a credential. See contrib/metsuke.service.
+# signing_key = "/etc/metsuke/bls.skey"
 
 # Cadences: scraping and uploading are independent.
 # scrape_interval_secs = 300
@@ -47,6 +49,8 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # accepted submission picks a point in upload_jitter_max_secs and every upload
 # after it keeps that point, so agents installed together do not all upload in
 # the same second while yours still lands on a cadence you can watch for.
+# It is a ceiling: a spread wider than the interval places nobody better than
+# one exactly as wide, so a shorter upload_interval_secs bounds it instead.
 #
 # upload_batch_max_bytes counts the header frame and the payload before
 # compression; the server's own ceiling is [ingest].max_body_bytes on the
@@ -74,7 +78,7 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # node's journal, which the unit has to be allowed to do. The instructions
 # page says which two directives change, and the NixOS module makes both when
 # this section is set (docs/adr/0010). The node also has to be configured to
-# write these traces at all: that step is on the instructions page too.
+# write these traces at all: that is on the server's details page too.
 #
 # source picks the stream and is never guessed. With "journald", journal_unit
 # and journalctl_path have no default: name your node's unit, and give
@@ -98,11 +102,24 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # before the agent accepts it as following, so a unit that may not read the
 # journal fails the start rather than collecting nothing (docs/adr/0010).
 # [log]
+#
+# Which stream the lines come from, "journald" or "pipe". Never guessed.
 # source = "journald"
+#
+# Your node's unit, and journalctl's absolute path. Neither has a default.
 # journal_unit = "cardano-node"
 # journalctl_path = "/usr/bin/journalctl"
+#
+# The ceiling on what may be selected, and the selection itself. Both are
+# prefixes matched on segment boundaries.
 # namespace_roots = ["Consensus", "ChainDB", "Forge"]
 # namespaces = ["Consensus.LeiosKernel", "Consensus.LeiosPeer", "ChainDB.AddBlockEvent.AddedToCurrentChain", "Forge.Loop.AdoptedBlock"]
+#
+# The trace-line spool's cap, and how long a journalctl that died waits before
+# it is started again.
 # log_max_bytes = 268435456
 # respawn_backoff_secs = 30
+#
+# How long a just-started journalctl has to stay running before the agent
+# accepts it as following.
 # start_grace_secs = 1

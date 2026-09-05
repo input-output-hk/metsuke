@@ -16,10 +16,10 @@ use time::OffsetDateTime;
 mod support;
 use metsuke_server::config::{HttpConfig, IngestConfig};
 use support::{
-    DEVELOPER_PASSWORD, ServerToml, developer_config, developer_toml_with_rows, envelope_at,
-    example_s3_archive, filesystem_archive, http_toml, ingest_toml, nonzero_u32, nonzero_u64,
-    object_name, other_key, permissive_config, permissive_http, pool_of, seal, server_toml,
-    stored_submission, test_key,
+    DEVELOPER_PASSWORD, DEVELOPER_USER, ServerToml, developer_config, developer_toml_with_rows,
+    envelope_at, example_s3_archive, filesystem_archive, http_toml, ingest_toml, nonzero_u32,
+    nonzero_u64, object_name, other_key, permissive_config, permissive_http, pool_of, seal,
+    server_toml, stored_submission, test_key,
 };
 
 /// What the S3 archive reads its credentials from. Passed to every spawn, so
@@ -252,10 +252,7 @@ impl Server {
 
     /// GET `path` with the configured developer credentials.
     fn pull(&self, path: &str) -> (u16, Vec<u8>, Vec<(String, String)>) {
-        self.pull_as(
-            path,
-            Some((&developer_config(self.dir.path()).user, DEVELOPER_PASSWORD)),
-        )
+        self.pull_as(path, Some((DEVELOPER_USER, DEVELOPER_PASSWORD)))
     }
 
     fn pull_as(
@@ -613,6 +610,12 @@ fn an_accepted_submission_is_logged_against_its_pool_and_object() {
         logged.contains(&format!("accepted {stored}")),
         "the acceptance must name the object it became, got: {logged}"
     );
+    // Which build reported, for a rollout. It is in the object's own header
+    // too, but reading that takes bucket credentials.
+    assert!(
+        logged.contains(&format!("from agent {}", metsuke_server::CLIENT_VERSION)),
+        "the acceptance must name the agent version, got: {logged}"
+    );
     assert!(
         stored.contains(&pool_of(&key).to_string()),
         "and that name is what says whose it was, so the line does not repeat \
@@ -727,9 +730,11 @@ fn the_instructions_page_is_served_without_credentials() {
     let server = Server::start(&[pool_of(&key)]);
     let (status, body, headers) = server.pull_as(metsuke_server::instructions::PATH, None);
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    // No binaries: this server is spawned from a config with no `[downloads]`,
+    // and its page offers a build rather than a download because of it.
     assert_eq!(
         String::from_utf8_lossy(&body),
-        metsuke_server::instructions::page()
+        metsuke_server::instructions::pages(&support::public_url(), Vec::new()).quickstart
     );
     let content_type = headers
         .iter()
@@ -779,12 +784,12 @@ fn the_instructions_page_takes_only_get() {
 fn a_wrong_developer_password_is_refused_on_both_routes() {
     let key = test_key();
     let server = Server::start(&[pool_of(&key)]);
-    let user = developer_config(server.dir.path()).user;
+    let user = DEVELOPER_USER;
     for path in [
         metsuke_server::http::SUBMISSIONS_PATH.to_string(),
         format!("{}?key=anything", metsuke_server::http::OBJECT_PATH),
     ] {
-        let (status, body, _) = server.pull_as(&path, Some((&user, "not the password")));
+        let (status, body, _) = server.pull_as(&path, Some((user, "not the password")));
         assert_eq!(status, 401, "{path}");
         assert_eq!(
             String::from_utf8_lossy(&body),
@@ -1319,10 +1324,8 @@ fn big_object(server: &Server, key: &SigningKey) -> (String, usize) {
 /// reading past the head.
 fn stalled_download(server: &Server, stored: &str) -> (Raw, usize) {
     let mut download = Raw::connect(server);
-    let credentials = base64::engine::general_purpose::STANDARD.encode(format!(
-        "{}:{DEVELOPER_PASSWORD}",
-        developer_config(server.dir.path()).user
-    ));
+    let credentials = base64::engine::general_purpose::STANDARD
+        .encode(format!("{}:{DEVELOPER_PASSWORD}", DEVELOPER_USER));
     download.send(
         &format!(
             "GET {path}?{field}={key} HTTP/1.1\r\n\
@@ -1518,14 +1521,17 @@ fn a_connection_that_sends_no_request_is_closed_at_the_idle_timeout() {
     );
 }
 
-/// Every credential file that yields no password stops startup, because
-/// `user:`, half of it already in the public config, would otherwise
-/// authorize every pull. `None` is the file never written at all.
+/// Every credential file that names no usable account stops startup: an empty
+/// password authorizes anyone who names its user, and a file naming nobody
+/// leaves routes that answer to no one. `None` is the file never written at
+/// all.
 #[test]
-fn a_developer_password_file_with_no_password_in_it_stops_startup() {
+fn a_developer_secret_that_names_no_usable_account_stops_startup() {
     for (written, reason) in [
-        (Some(""), "empty"),
-        (Some("\n"), "empty"),
+        (Some(""), "names no accounts"),
+        (Some("\n"), "names no accounts"),
+        (Some("metsuke-dev = \"\"\n"), "empty password"),
+        (Some("hunter2\n"), "does not parse"),
         (None, "No such file"),
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -1599,7 +1605,7 @@ fn version_is_printed_on_its_own_and_names_the_crates_version() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        env!("CARGO_PKG_VERSION")
+        metsuke_wire::version_line(env!("CARGO_PKG_VERSION"))
     );
 }
 

@@ -18,10 +18,31 @@ use crate::applications::Codes;
 pub struct ServerConfig {
     /// `host:port` to bind, plain HTTP (what fronts it: `http`).
     pub listen: String,
+    /// Where operators reach this server, which `listen` does not say: behind a
+    /// proxy the bound address is not the one anyone types. The onboarding page
+    /// hands out configs pointing at it, so an operator edits their pool id and
+    /// nothing else.
+    pub public_url: Url,
     pub http: HttpConfig,
     pub archive: ArchiveConfig,
     pub ingest: IngestConfig,
     pub developer: DeveloperConfig,
+    /// The static agent builds this deployment offers, so an operator needs no
+    /// nix to get one. Optional as a whole rather than defaulted, because a
+    /// deployment that ships none is a deployment whose page must say so, and
+    /// because requiring it would make every VM test build two cross-compiled
+    /// agents to stand up a server.
+    #[serde(default)]
+    pub downloads: Option<DownloadsConfig>,
+}
+
+/// Where each architecture's static agent is on this host. Both, because the
+/// page names both and an operator on either should not have to build.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DownloadsConfig {
+    pub x86_64_linux: AbsolutePath,
+    pub aarch64_linux: AbsolutePath,
 }
 
 /// What the transport refuses, as against what the intake refuses. Every field
@@ -78,17 +99,18 @@ impl<'de> Deserialize<'de> for AbsolutePath {
     }
 }
 
-/// The one account that may pull the archive back out (ticket metsuke-4zo.10).
-/// Not optional: a serving host either has the credential or refuses to start,
-/// where an absent section would leave the routes quietly open or quietly gone.
+/// The accounts that may pull the archive back out (ticket metsuke-4zo.10).
+/// Not optional: a serving host either has the credentials or refuses to
+/// start, where an absent section would leave the routes quietly open or
+/// quietly gone.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeveloperConfig {
-    /// The user developers authenticate as. Public, as this whole file is.
-    pub user: String,
-    /// A file holding the account's password and nothing else. The path is
-    /// config, the password is whatever systemd's `LoadCredential` put there,
-    /// so no password reaches the environment (metsuke-4zo.50).
+    /// A file holding one `user = "password"` line per developer and nothing
+    /// else, so who has access is the secret's to say rather than this file's
+    /// (`developer::Accounts`). The path is config, the contents are whatever
+    /// systemd's `LoadCredential` put there, so no password reaches the
+    /// environment (metsuke-4zo.50).
     pub password_file: AbsolutePath,
     /// Keys one listing may answer with. A value above the upstream cap is
     /// clamped rather than refused (`developer::Developer::list_max_rows`).

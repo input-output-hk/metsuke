@@ -71,7 +71,7 @@ pub enum KeyError {
     },
     #[error(
         "no signing key: pass --signing-key <path> (systemd: \
-         --signing-key \"${{CREDENTIALS_DIRECTORY}}/signing-key\") or set \
+         --signing-key \"%d/signing-key\") or set \
          signing_key in the config file"
     )]
     Missing,

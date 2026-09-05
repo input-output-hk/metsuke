@@ -119,13 +119,25 @@ impl Agent {
         for take in streams {
             while sent.len() < allowance {
                 let taken = take(&mut self.delivery, now).map_err(UploadError::NotAttempted)?;
+                // What a tick drains is the backlog it found. A batch that
+                // took everything spooled says there is none left, and a
+                // stream filling faster than a round trip would otherwise be
+                // chased to the allowance, spending a request, a counter and
+                // an object on each handful that arrived mid-tick.
+                let more = taken.as_ref().is_some_and(SealedSubmission::more_waits);
                 let Some(one) = self.send(taken)? else {
                     break;
                 };
                 let accepted = matches!(one.outcome, UploadOutcome::Acked(_));
                 sent.push(one);
+                // A refusal ends the tick, because pressing on would ignore
+                // the answer; a drained stream ends only this one, because
+                // the other still has its own backlog to send.
                 if !accepted {
                     return Ok(sent);
+                }
+                if !more {
+                    break;
                 }
             }
         }

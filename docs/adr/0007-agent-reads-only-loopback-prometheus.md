@@ -1,6 +1,7 @@
 # 7. Agent reads only the loopback Prometheus endpoint
 
-Status: accepted (2026-08-19), superseded by ADR 0010 (2026-08-27)
+Status: accepted (2026-08-19), superseded by
+[ADR 0010](0010-log-based-trace-collection.md) (2026-08-27)
 
 ## Context
 

@@ -5,9 +5,35 @@
 
 use std::time::Duration;
 
-use metsuke::schedule::{Schedule, ScheduleConfig};
+use metsuke::schedule::{Schedule, ScheduleConfig, next_submission_line, nothing_sent_line};
+
 use metsuke::uploader::UploadOutcome;
 use metsuke_wire::envelope::Ack;
+use time::OffsetDateTime;
+
+// What a tick says once it has sent what it had: when the next one is,
+// which an operator reading a journal cannot work out, because jitter placed
+// this agent inside the interval and a refusal replaces it with a backoff.
+#[test]
+fn the_line_a_tick_ends_on_names_when_the_next_one_is() {
+    let now = OffsetDateTime::from_unix_timestamp(1_780_000_000).unwrap();
+
+    assert_eq!(
+        next_submission_line(now, Duration::from_secs(3540)),
+        "the next submission is scheduled at 2026-05-28T21:25:40Z"
+    );
+}
+
+// Subsecond digits are the clock's, not an interval an operator set, so the
+// instant is named to the second.
+#[test]
+fn the_instant_is_named_to_the_second() {
+    let now = OffsetDateTime::from_unix_timestamp_nanos(1_780_000_000_123_456_789).unwrap();
+
+    let line = next_submission_line(now, Duration::from_secs(60));
+
+    assert!(line.contains("T20:27:40Z"), "got: {line}");
+}
 
 fn config() -> ScheduleConfig {
     ScheduleConfig {
@@ -44,6 +70,33 @@ fn the_first_ack_places_the_agent_within_the_jitter_bound() {
         assert!(
             (interval..=interval + jitter_max).contains(&delay),
             "entropy {entropy}: delay {delay:?} outside [interval, interval + jitter_max]"
+        );
+    }
+}
+
+// A spread wider than the interval places nobody better than one exactly as
+// wide, and on a short interval it would be most of the wait: the shipped
+// bound is five minutes, which is a spread inside an hour and five times a
+// minute. What an operator sets is a ceiling, not the spread itself.
+#[test]
+fn the_placement_never_reaches_past_the_interval_it_spreads_across() {
+    let interval = Duration::from_secs(60);
+    let wider = ScheduleConfig {
+        upload_interval: interval,
+        jitter_max: Duration::from_secs(300),
+        backoff_max: Duration::from_secs(86400),
+    };
+    for entropy in [0, 1, 59, 60, 61, 299_999, 300_000, u64::MAX] {
+        let mut schedule = Schedule::new();
+        let placed = schedule.after(&acked(), &wider, entropy);
+        assert!(
+            (interval..=interval + interval).contains(&placed),
+            "entropy {entropy}: {placed:?} is past one interval of spread"
+        );
+        assert!(
+            schedule.after(&UploadOutcome::Retryable("503".into()), &wider, entropy)
+                <= interval + interval,
+            "entropy {entropy}: a retry spreads past one interval"
         );
     }
 }
@@ -138,4 +191,17 @@ fn ack_resets_the_backoff() {
     schedule.after(&acked(), &config(), 0);
     let delay = schedule.after(&rejected(), &config(), 0);
     assert_eq!(delay, Duration::from_secs(2 * 3600));
+}
+
+// A tick that sent nothing still says where the next one is: that is every
+// tick of an agent uploading faster than it scrapes, and silence past the
+// time the last line named reads as an agent that has stopped.
+#[test]
+fn a_tick_that_sent_nothing_still_names_the_next_one() {
+    let now = OffsetDateTime::from_unix_timestamp(1_780_000_000).unwrap();
+
+    assert_eq!(
+        nothing_sent_line(now, Duration::from_secs(60)),
+        "nothing to send; the next upload is at 2026-05-28T20:27:40Z"
+    );
 }

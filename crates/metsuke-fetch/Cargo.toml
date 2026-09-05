@@ -14,6 +14,9 @@ base64 = "0.22.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.20"
+# `parsing` alone, for the RFC 3339 form of --from and --to. The day form is
+# hand-parsed like every other flag, which is what keeps `macros` out.
+time = { version = "0.3.55", features = ["parsing"] }
 # rustls, because a server reached over TLS is the deployed case and ureq
 # without a provider answers TlsRequired.
 ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
@@ -23,4 +26,3 @@ metsuke-wire = { path = "../metsuke-wire", features = ["fixtures"] }
 # tests/support/mod.rs says what the server is doing here.
 metsuke-server = { path = "../metsuke-server" }
 tempfile = "3.27.0"
-time = "0.3.55"

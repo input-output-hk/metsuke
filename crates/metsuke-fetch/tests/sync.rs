@@ -8,8 +8,8 @@ use std::process::Command;
 use metsuke_fetch::cursor::Cursor;
 
 use metsuke_fetch::recipe;
-use metsuke_fetch::select::{Filters, Selection};
-use metsuke_fetch::sync::{self, Destination, SyncError, Verification};
+use metsuke_fetch::select::{Days, Filters, Selection};
+use metsuke_fetch::sync::{self, Destination, Insist, SyncError, Verification};
 use metsuke_wire::envelope::{self, AgentId, Limits};
 use metsuke_wire::http::Listing;
 use metsuke_wire::key::{KEY_PREFIX, Kind, ObjectName};
@@ -38,6 +38,7 @@ fn state_of(dir: &Path) -> std::path::PathBuf {
 
 /// What a run was asked for, owned so a test can hold it across two runs.
 struct Asked {
+    days: Days,
     prefix: String,
     selection: Selection,
 }
@@ -47,6 +48,7 @@ impl Asked {
         Filters {
             prefix: &self.prefix,
             selection: &self.selection,
+            days: &self.days,
         }
     }
 }
@@ -56,6 +58,7 @@ impl Asked {
 fn everything() -> Asked {
     Asked {
         prefix: KEY_PREFIX.to_string(),
+        days: Days::default(),
         selection: Selection::default(),
     }
 }
@@ -64,17 +67,18 @@ fn everything() -> Asked {
 fn only(selection: Selection) -> Asked {
     Asked {
         prefix: KEY_PREFIX.to_string(),
+        days: Days::default(),
         selection,
     }
 }
 
 /// What a test that is not about the checking asks for: an object bound no
-/// fixture reaches, and unverifiable objects counted rather than refused,
+/// fixture reaches, and unattested objects counted rather than refused,
 /// which is what a filesystem archive hands back.
 fn permissive() -> Verification {
     Verification {
         max_object_bytes: NonZeroU64::new(1 << 20).unwrap(),
-        require_verified: false,
+        insist: Insist::Nothing,
     }
 }
 
@@ -159,9 +163,10 @@ fn a_downloaded_object_is_the_archived_bytes_and_still_verifies() {
             unnameable: 0,
             // The suite's server stores to a filesystem archive, which
             // discards the pair at ingest, so nothing it serves can be checked
-            // by anybody. `verified` is the attesting server's to answer.
-            verified: 0,
-            unverifiable: 1,
+            // by anybody. `cold_signed` is the attesting server's to answer.
+            cold_signed: 0,
+            leios_signed: 0,
+            unattested: 1,
             rejected: Vec::new(),
         }
     );
@@ -176,8 +181,8 @@ fn an_object_that_carries_its_key_and_signature_is_checked() {
 
     let synced = synced(&server, &everything());
 
-    assert_eq!(synced.report.verified, 2);
-    assert_eq!(synced.report.unverifiable, 0);
+    assert_eq!(synced.report.cold_signed, 2);
+    assert_eq!(synced.report.unattested, 0);
     assert_eq!(synced.report.rejected, Vec::new());
     for key in server.keys() {
         assert!(synced.path(&key).is_file(), "{key} did not land");
@@ -195,7 +200,7 @@ fn an_object_whose_bytes_do_not_verify_is_not_written() {
 
     let synced = synced(&server, &everything());
 
-    assert_eq!(synced.report.verified, 0);
+    assert_eq!(synced.report.cold_signed, 0);
     assert_eq!(synced.report.objects, 0);
     assert!(!synced.path(&key).exists(), "{key} must not be on disk");
     assert_eq!(synced.report.rejected.len(), 1, "{:?}", synced.report);
@@ -230,7 +235,7 @@ fn an_object_signed_by_another_pool_is_not_written() {
     assert!(!synced.path(&key).exists(), "{key} must not be on disk");
 }
 
-/// An archive that stores no metadata leaves every object unverifiable, and a
+/// An archive that stores no metadata leaves every object unattested, and a
 /// run against one still syncs: refusing by default would leave the tool
 /// unable to read the archive a single-host deployment writes.
 #[test]
@@ -239,16 +244,16 @@ fn an_object_with_nothing_to_check_it_by_lands_and_is_counted() {
 
     let synced = synced(&server, &everything());
 
-    assert_eq!(synced.report.unverifiable, 1);
-    assert_eq!(synced.report.verified, 0);
+    assert_eq!(synced.report.unattested, 1);
+    assert_eq!(synced.report.cold_signed, 0);
     assert_eq!(synced.report.rejected, Vec::new());
     assert!(synced.path(&server.keys()[0]).is_file());
 }
 
-/// And what `--require-verified` is for: the consumer that needs the guarantee
-/// says so, and then unverifiable is a refusal like any other.
+/// And what `--require-attested` is for: the consumer that needs the guarantee
+/// says so, and then unattested is a refusal like any other.
 #[test]
-fn require_verified_refuses_an_object_with_nothing_to_check_it_by() {
+fn require_attested_refuses_an_object_with_nothing_to_check_it_by() {
     let server = Server::with_objects(1, 100);
     let asked = everything();
 
@@ -257,7 +262,7 @@ fn require_verified_refuses_an_object_with_nothing_to_check_it_by() {
         &asked,
         tempfile::tempdir().expect("a temp dir"),
         Verification {
-            require_verified: true,
+            insist: Insist::Attested,
             ..permissive()
         },
     )
@@ -267,11 +272,149 @@ fn require_verified_refuses_an_object_with_nothing_to_check_it_by() {
     assert!(
         synced.report.rejected[0]
             .reason
-            .contains("no key and signature"),
+            .contains("unattested: no key and signature"),
         "got: {}",
         synced.report.rejected[0].reason
     );
     assert!(!synced.path(&server.keys()[0]).exists());
+}
+
+/// The bounds walk the listing rather than filter it. The suite seeds one
+/// object per day, so bounding to the middle two leaves the first and last
+/// unlisted, and `passed` stays zero: a key outside the range was never
+/// listed, which is not the same as one the selection turned down.
+#[test]
+fn the_bounds_leave_a_key_outside_them_unlisted() {
+    let server = Server::with_objects(4, 100);
+    let days: Vec<String> = server
+        .keys()
+        .iter()
+        .map(|key| {
+            key.split('/')
+                .nth(1)
+                .expect("a key names its day")
+                .to_string()
+        })
+        .collect();
+
+    let (listed, report) = listed(
+        &server,
+        &Asked {
+            days: Days {
+                from: Some(format!("{KEY_PREFIX}{}", days[1])),
+                until: Some(format!("{KEY_PREFIX}{}", days[3])),
+            },
+            ..everything()
+        },
+    );
+
+    assert_eq!(listed, server.keys()[1..3], "{report:?}");
+    assert_eq!(report.listed(), 2, "{report:?}");
+    assert_eq!(report.passed, 0, "{report:?}");
+}
+
+/// A refused object increments none of the landing counts, so the listing
+/// total has to add it back. Reported without that, a run that refused most of
+/// what it selected said the prefix had listed only what landed.
+#[test]
+fn the_listing_total_counts_what_was_refused() {
+    let server = Server::attesting(3, 100);
+    let refused = server.keys()[0].clone();
+    server.tamper(&refused);
+
+    let synced = synced(
+        &server,
+        &only(Selection {
+            kind: Some(Kind::Metrics),
+            ..Selection::default()
+        }),
+    );
+
+    let report = &synced.report;
+    assert_eq!(report.rejected.len(), 1, "{report:?}");
+    assert_eq!(report.selected(), report.objects + 1, "{report:?}");
+    assert_eq!(
+        report.listed(),
+        report.selected() + report.passed + report.unnameable,
+        "{report:?}"
+    );
+    // The archive holds three objects and every one of them was listed.
+    assert_eq!(report.listed(), 3, "{report:?}");
+}
+
+/// A Leios key names no pool, so its object's filing is the server's word. Its
+/// bytes are not: the signature is checked here like any other's, and counting
+/// it beside an object that carried no signature at all would say the two were
+/// equally unchecked.
+#[test]
+fn a_leios_signed_object_is_counted_apart_from_one_carrying_no_signature() {
+    let server = Server::attesting(2, 100);
+    let leios = server.keys()[0].clone();
+    server.leios_sign(&leios);
+
+    let synced = synced(&server, &everything());
+
+    assert_eq!(synced.report.cold_signed, 1, "{:?}", synced.report);
+    assert_eq!(synced.report.leios_signed, 1, "{:?}", synced.report);
+    assert_eq!(synced.report.unattested, 0, "{:?}", synced.report);
+    assert_eq!(synced.report.rejected, Vec::new());
+    assert!(synced.path(&leios).is_file(), "{leios} did not land");
+}
+
+/// The flag a consumer wants once pools hold no cold key: the bytes are proven
+/// either way, so both land and only what carries no signature is refused.
+#[test]
+fn require_attested_takes_a_leios_signed_object() {
+    let server = Server::attesting(2, 100);
+    let leios = server.keys()[0].clone();
+    server.leios_sign(&leios);
+
+    let synced = sync_verifying(
+        &server,
+        &everything(),
+        tempfile::tempdir().expect("a temp dir"),
+        Verification {
+            insist: Insist::Attested,
+            ..permissive()
+        },
+    )
+    .unwrap_or_else(|(error, _, _)| panic!("the sync failed: {error}"));
+
+    assert_eq!(synced.report.rejected, Vec::new(), "{:?}", synced.report);
+    assert_eq!(synced.report.leios_signed, 1);
+    assert!(synced.path(&leios).is_file(), "{leios} did not land");
+}
+
+/// The strict flag, which keeps only what stays checkable from the object
+/// alone. The refusal says the signature stood, so it does not read as bad
+/// bytes.
+#[test]
+fn require_cold_signed_refuses_a_leios_signed_object() {
+    let server = Server::attesting(2, 100);
+    let leios = server.keys()[0].clone();
+    server.leios_sign(&leios);
+
+    let synced = sync_verifying(
+        &server,
+        &everything(),
+        tempfile::tempdir().expect("a temp dir"),
+        Verification {
+            insist: Insist::ColdSigned,
+            ..permissive()
+        },
+    )
+    .unwrap_or_else(|(error, _, _)| panic!("the sync failed: {error}"));
+
+    assert_eq!(synced.report.rejected.len(), 1, "{:?}", synced.report);
+    assert_eq!(synced.report.rejected[0].key, leios);
+    assert!(
+        synced.report.rejected[0]
+            .reason
+            .contains("Leios signature verified, not cold-signed"),
+        "got: {}",
+        synced.report.rejected[0].reason
+    );
+    assert!(!synced.path(&leios).exists(), "{leios} must not be on disk");
 }
 
 /// Checking an object means holding it, so the run states what it will hold.
@@ -457,8 +600,12 @@ fn an_interrupted_sync_resumes_after_the_object_it_last_wrote() {
         .expect_err("a download that cannot be written stops the sync");
 
     assert_eq!(landed, keys[..2].to_vec(), "stopped early: {error}");
-    let cursor =
-        Cursor::read(&state_of(dir.path()), &everything().filters()).expect("the cursor reads");
+    let cursor = Cursor::read(
+        &state_of(dir.path()),
+        &everything().filters(),
+        Insist::Nothing,
+    )
+    .expect("the cursor reads");
     assert_eq!(cursor.after, keys[1]);
     // Unblocked, and the two already written deleted: a resumed run must not
     // fetch them, so their absence afterwards is what says it resumed.
@@ -517,6 +664,7 @@ fn a_prefix_selects_a_day_without_downloading() {
         &server,
         &Asked {
             prefix: day,
+            days: Days::default(),
             selection: Selection::default(),
         },
     );
@@ -587,8 +735,12 @@ fn a_filtered_sync_downloads_only_what_it_selected() {
 
     assert_eq!(synced.landed, vec![keys[1].clone()]);
     assert_eq!(synced.report.passed, 2);
-    let cursor =
-        Cursor::read(&state_of(synced.dir.path()), &asked.filters()).expect("the cursor reads");
+    let cursor = Cursor::read(
+        &state_of(synced.dir.path()),
+        &asked.filters(),
+        Insist::Nothing,
+    )
+    .expect("the cursor reads");
     assert_eq!(cursor.after, keys[2]);
 }
 
@@ -633,8 +785,12 @@ fn an_object_this_build_cannot_name_is_counted_and_left() {
     assert_eq!(synced.report.unnameable, 1);
     assert!(!synced.path(foreign).exists());
     // Past it, so the next run does not stop there either.
-    let cursor =
-        Cursor::read(&state_of(synced.dir.path()), &asked.filters()).expect("the cursor reads");
+    let cursor = Cursor::read(
+        &state_of(synced.dir.path()),
+        &asked.filters(),
+        Insist::Nothing,
+    )
+    .expect("the cursor reads");
     assert_eq!(cursor.after, foreign);
 }
 

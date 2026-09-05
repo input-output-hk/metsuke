@@ -1,11 +1,14 @@
-//! Developer pull access to the archive (ticket metsuke-4zo.10): one account,
-//! a listing off the index, and objects handed back untransformed
-//! (`archive::Bytes`).
+//! Developer pull access to the archive (ticket metsuke-4zo.10): an account
+//! per developer, a listing off the index, and objects handed back
+//! untransformed (`archive::Bytes`).
 //!
-//! Why one shared account rather than a user per developer: the alternative is
-//! a credential store this server has no other use for, and the bytes it
-//! guards are self-verifying. What the credential decides is who may pull the
-//! corpus, not whether it can be trusted.
+//! The accounts are the secret's contents rather than the config's, so what an
+//! operator publishes names none of them and revoking one person is an edit to
+//! one line of one encrypted file. What a credential decides is who may pull
+//! the corpus, not whether it can be trusted: the bytes it guards are
+//! self-verifying.
+
+use std::collections::BTreeMap;
 
 use blake2::digest::consts::U32;
 use blake2::{Blake2b, Digest as _};
@@ -25,11 +28,124 @@ pub const REALM: &str = "metsuke archive";
 /// would report a page as the whole archive.
 pub const LIST_MAX_ROWS_CAP: std::num::NonZeroU32 = std::num::NonZeroU32::new(1000).unwrap();
 
-/// The one account developer pulls authenticate as. Holds the credential
-/// hashed, so a heap dump of a serving process does not carry the password.
-pub struct Developer {
-    credential: [u8; 32],
-    list_max_rows: std::num::NonZeroU32,
+/// How long a username may be. It bounds what a refusal can put in the
+/// journal, and it refuses no credential that would have worked: an account
+/// this long cannot be configured either, because the same parse reads both
+/// sides.
+const USERNAME_MAX_CHARS: usize = 64;
+
+/// A developer account's name: letters, digits, `-` and `_`, which is exactly
+/// what a TOML bare key holds, so no name an operator picks has to be quoted
+/// in the secret. A person's name is what goes here, so case is kept, and it
+/// is matched byte for byte because the digest is over the bytes.
+///
+/// Parsed rather than folded, and this is why the alphabet is bounded at all:
+/// a username arrives in a header from anyone, and what a refusal puts in the
+/// journal has to be something a parse already accepted. It excludes `:`,
+/// which RFC 7617 makes the separator, so no account can be named something a
+/// Basic header could not carry.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Username(String);
+
+#[derive(Debug, thiserror::Error)]
+pub enum UsernameError {
+    #[error("a username cannot be empty")]
+    Empty,
+    #[error("{found:?} is not a username: letters, digits, '-' and '_' only")]
+    NotAUsername { found: String },
+    #[error("a username is at most {USERNAME_MAX_CHARS} characters, and this one is {found}")]
+    TooLong { found: usize },
+}
+
+impl Username {
+    pub fn parse(text: &str) -> Result<Username, UsernameError> {
+        if text.is_empty() {
+            return Err(UsernameError::Empty);
+        }
+        if text.chars().count() > USERNAME_MAX_CHARS {
+            return Err(UsernameError::TooLong {
+                found: text.chars().count(),
+            });
+        }
+        let named = text
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'));
+        match named {
+            true => Ok(Username(text.to_string())),
+            false => Err(UsernameError::NotAUsername {
+                found: text.to_string(),
+            }),
+        }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for Username {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// Every account the secret names, each as the digest of the credential it
+/// presents. The passwords are not held: a heap dump of a serving process
+/// carries none of them.
+pub struct Accounts(BTreeMap<[u8; 32], Username>);
+
+impl std::fmt::Debug for Accounts {
+    /// The count alone. A digest is what this server compares a presented
+    /// credential against, so it is not a thing to format anywhere.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "Accounts({})", self.0.len())
+    }
+}
+
+/// Why a secret file names no usable set of accounts. Each is a startup
+/// failure: the routes would otherwise be open on something nobody set, or
+/// closed to everybody the operator meant to let in.
+#[derive(Debug, thiserror::Error)]
+pub enum AccountsError {
+    #[error("does not parse as a table of username to password: {0}")]
+    NotATable(#[from] toml::de::Error),
+    #[error("names no accounts, so nothing could read the archive")]
+    Empty,
+    #[error("names an unusable account: {source}")]
+    Username {
+        #[source]
+        source: UsernameError,
+    },
+    #[error("gives {user} an empty password, which would authorize anyone naming that user")]
+    EmptyPassword { user: Username },
+}
+
+impl Accounts {
+    /// The secret as it is written: one `user = "password"` line each. A TOML
+    /// string is exact, so nothing here trims what an operator quoted.
+    pub fn parse(text: &str) -> Result<Accounts, AccountsError> {
+        let written: BTreeMap<String, String> = toml::from_str(text)?;
+        if written.is_empty() {
+            return Err(AccountsError::Empty);
+        }
+        let mut accounts = BTreeMap::new();
+        for (user, password) in written {
+            let user =
+                Username::parse(&user).map_err(|source| AccountsError::Username { source })?;
+            if password.is_empty() {
+                return Err(AccountsError::EmptyPassword { user });
+            }
+            accounts.insert(digest(&format!("{user}:{password}")), user);
+        }
+        Ok(Accounts(accounts))
+    }
+
+    /// How many accounts may pull, for the operator's startup line. The names
+    /// are the secret's, so a count is all a log may say about them. Never
+    /// zero, which is what `AccountsError::Empty` refuses.
+    pub fn count(&self) -> usize {
+        self.0.len()
+    }
 }
 
 /// A request that may not read the archive. The reason is for the operator's
@@ -37,8 +153,30 @@ pub struct Developer {
 /// client learns whether the user exists, so the caller that answers is what
 /// keeps it out of the body (`http::challenge`).
 #[derive(Debug, thiserror::Error)]
-#[error("{0}")]
-pub struct Unauthorized(&'static str);
+pub struct Unauthorized {
+    reason: &'static str,
+    /// The account the client named, where it named one a parse accepts. A
+    /// refusal carrying none is one nothing could attribute.
+    presented: Option<Username>,
+}
+
+impl std::fmt::Display for Unauthorized {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.presented {
+            Some(user) => write!(formatter, "{}, presented as {user}", self.reason),
+            None => formatter.write_str(self.reason),
+        }
+    }
+}
+
+impl Unauthorized {
+    fn anonymous(reason: &'static str) -> Unauthorized {
+        Unauthorized {
+            reason,
+            presented: None,
+        }
+    }
+}
 
 /// Blake2b-256 over `user:password`, which is the byte string Basic auth
 /// carries. Comparing digests rather than the secrets is what keeps the
@@ -51,10 +189,17 @@ fn digest(credential: &str) -> [u8; 32] {
     hash.finalize().into()
 }
 
+/// The accounts developer pulls authenticate as, and the listing bound they
+/// share.
+pub struct Developer {
+    accounts: Accounts,
+    list_max_rows: std::num::NonZeroU32,
+}
+
 impl Developer {
-    pub fn new(config: &DeveloperConfig, password: &str) -> Developer {
+    pub fn new(config: &DeveloperConfig, accounts: Accounts) -> Developer {
         Developer {
-            credential: digest(&format!("{}:{password}", config.user)),
+            accounts,
             list_max_rows: config.list_max_rows,
         }
     }
@@ -67,39 +212,59 @@ impl Developer {
         self.list_max_rows.min(LIST_MAX_ROWS_CAP)
     }
 
-    /// Whether `authorization` presents this account's credential. Everything
+    /// Which account `authorization` presents the credential of. Everything
     /// malformed is refused exactly as a wrong credential is, and differs only
     /// in what the refusal says to the log.
-    pub fn authorize(&self, authorization: Option<&str>) -> Result<(), Unauthorized> {
-        let presented =
-            basic_credential(authorization.ok_or(Unauthorized("no authorization header"))?)?;
-        match digest(&presented) == self.credential {
-            true => Ok(()),
-            false => Err(Unauthorized("the credential is not this account's")),
-        }
+    pub fn authorize(&self, authorization: Option<&str>) -> Result<&Username, Unauthorized> {
+        let presented = basic_credential(
+            authorization.ok_or(Unauthorized::anonymous("no authorization header"))?,
+        )?;
+        self.accounts
+            .0
+            .get(&digest(&presented.credential))
+            .ok_or(Unauthorized {
+                reason: "the credential is not an account's",
+                presented: Some(presented.user),
+            })
     }
 }
 
-/// The `user:password` a Basic header carries, or `Unauthorized` for anything
-/// that is not one. A credential with no colon in it is not a credential:
-/// RFC 7617 makes the first colon the separator, so its absence means the
-/// client sent something else.
-fn basic_credential(authorization: &str) -> Result<String, Unauthorized> {
+/// What a Basic header presents: the account it names, and the `user:password`
+/// a digest is taken over.
+struct Presented {
+    user: Username,
+    credential: String,
+}
+
+/// The credential a Basic header carries, or `Unauthorized` for anything that
+/// is not one. A credential with no colon in it is not a credential: RFC 7617
+/// makes the first colon the separator, so its absence means the client sent
+/// something else.
+///
+/// A username the parse refuses is not repeated back to the log. It is the one
+/// part of a request this layer reads that nothing has bounded yet.
+fn basic_credential(authorization: &str) -> Result<Presented, Unauthorized> {
     let (scheme, encoded) = authorization
         .split_once(' ')
-        .ok_or(Unauthorized("the authorization header names no scheme"))?;
+        .ok_or(Unauthorized::anonymous(
+            "the authorization header names no scheme",
+        ))?;
     if !scheme.eq_ignore_ascii_case("Basic") {
-        return Err(Unauthorized("the authorization scheme is not Basic"));
+        return Err(Unauthorized::anonymous(
+            "the authorization scheme is not Basic",
+        ));
     }
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(encoded.trim())
-        .map_err(|_| Unauthorized("the Basic credential is not base64"))?;
+        .map_err(|_| Unauthorized::anonymous("the Basic credential is not base64"))?;
     let credential = String::from_utf8(decoded)
-        .map_err(|_| Unauthorized("the Basic credential is not UTF-8"))?;
-    match credential.contains(':') {
-        true => Ok(credential),
-        false => Err(Unauthorized("the Basic credential holds no colon")),
-    }
+        .map_err(|_| Unauthorized::anonymous("the Basic credential is not UTF-8"))?;
+    let (user, _) = credential.split_once(':').ok_or(Unauthorized::anonymous(
+        "the Basic credential holds no colon",
+    ))?;
+    let user = Username::parse(user)
+        .map_err(|_| Unauthorized::anonymous("the Basic credential names no username"))?;
+    Ok(Presented { user, credential })
 }
 
 /// The two filters a listing request may carry.

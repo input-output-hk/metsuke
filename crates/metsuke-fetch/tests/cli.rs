@@ -1,10 +1,12 @@
 //! The flags, which are the whole operator interface. Nothing is defaulted, so
 //! every refusal here is a run that would otherwise have synced from somewhere
-//! nobody named.
+//! nobody named. The environment is handed in, never read, so no case here
+//! turns on what the machine running it exports.
 
+use std::num::NonZeroU64;
 use std::path::PathBuf;
 
-use metsuke_fetch::cli::{Args, ArgsError, Command, Invocation};
+use metsuke_fetch::cli::{self, Access, Args, ArgsError, Command, Invocation};
 use metsuke_fetch::select::Selection;
 use metsuke_wire::envelope::{AgentId, PoolId, SigningKey};
 use metsuke_wire::key::{KEY_PREFIX, Kind};
@@ -17,8 +19,37 @@ const ACCESS: [[&str; 2]; 4] = [
     ["--timeout-ms", "30000"],
 ];
 
+/// The same values, named in the environment instead.
+const ENVIRONMENT: [(&str, &str); 4] = [
+    (cli::ENV_SERVER, ACCESS[0][1]),
+    (cli::ENV_USER, ACCESS[1][1]),
+    (cli::ENV_PASSWORD_FILE, ACCESS[2][1]),
+    (cli::ENV_TIMEOUT_MS, ACCESS[3][1]),
+];
+
+/// What either spelling of `ACCESS` has to parse to.
+fn expected_access() -> Access {
+    Access {
+        server: ACCESS[0][1].to_string(),
+        user: ACCESS[1][1].to_string(),
+        password_file: PathBuf::from(ACCESS[2][1]),
+        timeout_ms: ACCESS[3][1].parse::<NonZeroU64>().expect("a deadline"),
+    }
+}
+
+/// Parsed against an empty environment, so a case about flags stays about
+/// flags whatever the machine running it exports.
 fn invoked(args: &[&str]) -> Result<Invocation, ArgsError> {
-    Invocation::parse(args.iter().map(|argument| argument.to_string()))
+    invoked_with(args, &[])
+}
+
+/// The same, with `env` standing in for the environment.
+fn invoked_with(args: &[&str], env: &[(&str, &str)]) -> Result<Invocation, ArgsError> {
+    Invocation::parse(args.iter().map(|argument| argument.to_string()), |name| {
+        env.iter()
+            .find(|(variable, _)| *variable == name)
+            .map(|(_, value)| value.to_string())
+    })
 }
 
 /// The cases below are all about a command's flags, so they read the `Args` a
@@ -176,9 +207,161 @@ fn every_access_flag_is_required() {
         let error = parsed(&args).expect_err("nothing here has a default");
 
         assert!(
-            matches!(&error, ArgsError::Missing { flag: missing, .. } if *missing == flag),
+            matches!(&error, ArgsError::MissingAccess { flag: missing, .. } if *missing == flag),
             "{flag}: {error}"
         );
+    }
+}
+
+/// The refusal names both ways in, so an operator who set the variable is not
+/// sent looking at the flag.
+#[test]
+fn a_missing_access_flag_names_its_variable() {
+    let mut args = vec!["list"];
+    args.extend(
+        ACCESS
+            .iter()
+            .filter(|[name, _]| *name != "--server")
+            .flatten(),
+    );
+    let error = parsed(&args).expect_err("no --server and no variable");
+
+    assert!(error.to_string().contains(cli::ENV_SERVER), "got: {error}");
+}
+
+#[test]
+fn every_access_flag_can_come_from_the_environment_instead() {
+    let args = invoked_with(&["list"], &ENVIRONMENT).expect("the environment carries all four");
+
+    let Invocation::Run(args) = args else {
+        panic!("these arguments name a command");
+    };
+    assert_eq!(args.access, expected_access());
+}
+
+/// A run that says both means the flag, which is the one an operator wrote
+/// this time.
+#[test]
+fn a_flag_wins_over_the_variable_that_stands_in_for_it() {
+    let args = invoked_with(&["list", "--server", "http://named.example"], &ENVIRONMENT)
+        .expect("the environment carries the rest");
+
+    let Invocation::Run(args) = args else {
+        panic!("these arguments name a command");
+    };
+    assert_eq!(args.access.server, "http://named.example");
+}
+
+#[test]
+fn a_variable_set_to_nothing_counts_as_unset() {
+    let mut env = ENVIRONMENT;
+    env[0] = (cli::ENV_SERVER, "");
+    let error = invoked_with(&["list"], &env).expect_err("an empty variable is not an endpoint");
+
+    assert!(
+        matches!(
+            error,
+            ArgsError::MissingAccess {
+                flag: "--server",
+                ..
+            }
+        ),
+        "got: {error}"
+    );
+}
+
+/// A day bound means the whole day, so `--from` sorts below its first key and
+/// `--to` becomes the day after, exclusive. `v1/<day>` carrying no trailing
+/// slash is what puts it above every key of the day before.
+#[test]
+fn a_day_bound_covers_the_whole_day() {
+    let args = parsed_command("list", &["--from", "2026-09-01", "--to", "2026-09-03"])
+        .expect("two days parse");
+
+    assert_eq!(args.days.from.as_deref(), Some("v1/2026-09-01"));
+    assert_eq!(args.days.until.as_deref(), Some("v1/2026-09-04"));
+}
+
+/// An instant bound is exact to the millisecond, because that is a uuidv7's
+/// whole resolution and its first 13 characters are where it sits in the key
+/// order.
+#[test]
+fn an_instant_bound_is_the_millisecond_it_names() {
+    let args = parsed_command(
+        "list",
+        &[
+            "--from",
+            "2026-09-01T08:47:23.635Z",
+            "--to",
+            "2026-09-01T08:47:23.635Z",
+        ],
+    )
+    .expect("two instants parse");
+
+    // 2026-09-01T08:47:23.635Z is 1788252443635ms, which is 0x01a05c26d3f3.
+    assert_eq!(
+        args.days.from.as_deref(),
+        Some("v1/2026-09-01/01a05c26-d3f3")
+    );
+    // Inclusive, so the exclusive end is one millisecond on.
+    assert_eq!(
+        args.days.until.as_deref(),
+        Some("v1/2026-09-01/01a05c26-d3f4")
+    );
+}
+
+/// Refused rather than run: a range holding no day reports a clean sync of
+/// nothing, which reads as an archive that holds nothing.
+#[test]
+fn a_range_that_holds_no_day_is_refused() {
+    let error = parsed_command("list", &["--from", "2026-09-03", "--to", "2026-09-01"])
+        .expect_err("the range is empty");
+
+    assert!(
+        matches!(error, ArgsError::EmptyRange { .. }),
+        "got: {error}"
+    );
+}
+
+#[test]
+fn a_bound_that_is_neither_a_day_nor_an_instant_is_refused() {
+    for value in [
+        "2026-9-1",
+        "2026-09-01T08:47",
+        "yesterday",
+        "",
+        "2026-13-01",
+    ] {
+        let error = parsed_command("list", &["--from", value]).expect_err("not a bound");
+
+        assert!(
+            matches!(&error, ArgsError::NotABound { flag: "--from", .. }),
+            "{value:?}: {error}"
+        );
+    }
+}
+
+/// The help states the naming as a rule rather than listing four names, so
+/// the rule is what has to hold.
+#[test]
+fn every_variable_is_its_own_flag_upper_cased() {
+    for ([flag, _], (variable, _)) in ACCESS.iter().zip(ENVIRONMENT) {
+        let expected = format!(
+            "METSUKE_FETCH_{}",
+            flag.trim_start_matches("--")
+                .replace('-', "_")
+                .to_uppercase()
+        );
+        assert_eq!(variable, expected, "{flag}");
+    }
+}
+
+/// Every variable still reaches the help text, now through the worked example,
+/// so one added here cannot go undocumented.
+#[test]
+fn usage_names_every_access_variable() {
+    for (variable, _) in ENVIRONMENT {
+        assert!(cli::USAGE.contains(variable), "{variable} is not in --help");
     }
 }
 

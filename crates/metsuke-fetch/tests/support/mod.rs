@@ -17,7 +17,7 @@ use metsuke_fetch::pull::Archive;
 use metsuke_server::applications::Codes;
 use metsuke_server::archive::{FilesystemArchive, Kind, ObjectName};
 use metsuke_server::config::{AbsolutePath, DeveloperConfig, HttpConfig, IngestConfig};
-use metsuke_server::developer::Developer;
+use metsuke_server::developer::{Accounts, Developer};
 use metsuke_server::instructions;
 use metsuke_server::intake::Intake;
 use metsuke_server::serve;
@@ -26,6 +26,7 @@ use metsuke_wire::envelope::{
     SubmissionKey, seal,
 };
 use metsuke_wire::fixtures;
+use metsuke_wire::leios::LeiosSigningKey;
 use time::OffsetDateTime;
 
 /// The one account the routes authenticate.
@@ -67,7 +68,7 @@ pub struct Object {
 
 /// A filesystem archive that answers the metadata an S3 one holds beside an
 /// object. A real filesystem archive discards the pair at ingest, so a suite
-/// built on one could only ever exercise the unverifiable path; what a test
+/// built on one could only ever exercise the unattested path; what a test
 /// seeds into `attested` is what the download then carries.
 /// Shared, so a test can answer a different pair after the server is up.
 pub type Attested = std::sync::Arc<std::sync::Mutex<HashMap<String, Attestation>>>;
@@ -158,14 +159,14 @@ impl Server {
             .map(|index| seeded(&root, index))
             .collect::<Vec<Object>>();
         let password_file = dir.path().join("password");
-        std::fs::write(&password_file, format!("{PASSWORD}\n")).expect("the password file writes");
+        let secret = format!("{USER} = \"{PASSWORD}\"\n");
+        std::fs::write(&password_file, &secret).expect("the password file writes");
         let developer = Developer::new(
             &DeveloperConfig {
-                user: USER.to_string(),
                 password_file: AbsolutePath::new(password_file).expect("a temp dir is absolute"),
                 list_max_rows: nonzero_u32(list_max_rows),
             },
-            PASSWORD,
+            Accounts::parse(&secret).expect("the test secret parses"),
         );
         let listener = serve::bind("127.0.0.1:0").expect("a kernel-chosen port binds");
         let url = format!("http://{}", listener.address());
@@ -185,7 +186,17 @@ impl Server {
             None,
         );
         std::thread::spawn(move || {
-            match listener.serve(http_config(), intake, developer, instructions::page()) {
+            // Its own copy of the server suite's value, which metsuke-jfb.33 is
+            // about: nothing ties this test support to that one.
+            let public_url = "https://metsuke.example.org"
+                .parse()
+                .expect("a fixed URL parses");
+            match listener.serve(
+                http_config(),
+                intake,
+                developer,
+                instructions::pages(&public_url, Vec::new()),
+            ) {
                 Ok(never) => match never {},
                 Err(error) => panic!("the test server stopped accepting: {error}"),
             }
@@ -215,6 +226,25 @@ impl Server {
             .iter()
             .map(|object| object.key.clone())
             .collect()
+    }
+
+    /// Answer `key`'s pair as a Leios key's, over the same stored bytes. The
+    /// object is untouched: what changes is the pair the download carries, and
+    /// that is the whole difference between a cold-signed object and one whose
+    /// pool nothing but the server's word files it.
+    pub fn leios_sign(&self, key: &str) {
+        let object = self
+            .objects
+            .iter()
+            .find(|object| object.key == key)
+            .expect("a key this server seeded");
+        let leios = SubmissionKey::LeiosKey(
+            LeiosSigningKey::from_bytes(&[3u8; 32]).expect("a fixed seed is a scalar"),
+        );
+        self.attested
+            .lock()
+            .expect("the attested map is never poisoned")
+            .insert(key.to_string(), leios.attest(&object.wire_bytes));
     }
 
     /// One object the archive lists and cannot read.
