@@ -1,78 +1,35 @@
 # Reading the archive
 
 What a consumer runs over a directory `metsuke-fetch sync --into` wrote, and
-why that read is not the obvious one.
+why that read is not the obvious one. Fetch first, then read: the sections are
+in that order.
 
-## The read
+## The tools
 
-An object is a zstd stream whose first frame is skippable, so every conforming
-zstd tool inflates the JSON Lines after it and duckdb reads a downloaded tree
-where it landed, with no unpacking step:
-
-```sql
-select * from read_json('downloads/v1/*/*.jsonl.zst', sample_size=-1)
-```
-
-Both tools are flake outputs, pinned to what this page measured against, so a
-host that has neither needs no checkout and no devShell:
+Three programs read an archive, and each is a flake output pinned to what this
+page measured against, so a host that has none of them needs no checkout and no
+devShell:
 
 ```
+nix run github:input-output-hk/metsuke#metsuke-fetch
 nix run github:input-output-hk/metsuke#duckdb
 nix run github:input-output-hk/metsuke#zstd
 ```
 
-`metsuke-fetch` itself is the same, and cross-builds to one static file for a
-host with no nix at all:
+`metsuke-fetch` is the one that pulls the archive down, and it cross-builds to
+one static file for a host with no nix at all, on either architecture:
 
 ```
-nix run github:input-output-hk/metsuke#metsuke-fetch
 nix build github:input-output-hk/metsuke#metsuke-fetch-static-x86_64-linux
+nix build github:input-output-hk/metsuke#metsuke-fetch-static-aarch64-linux
 ```
 
-A deployment may also serve that build under `/files/`, in which case `curl` it
-from the server you pull the archive from. Its `/analysis` page is the short
-version of this document against that particular deployment, and offers the
-build along with the two init files below. The pool operator's pages do not:
-they are a different audience, which is why the analysis page is a third one.
-
-A metrics scrape and a trace line share no fields, so a read of both leaves
-whichever it did not come from NULL. The kind is the last segment of every
-object's name, which reads them apart without a column:
-
-```sql
-select * from read_json('downloads/v1/*/*-metrics.jsonl.zst', sample_size=-1)
-select * from read_json('downloads/v1/*/*-logs.jsonl.zst', sample_size=-1)
-```
-
-`metsuke-fetch sync` prints the one of these that matches what it downloaded.
-It cannot print a usable one for a download directory whose own name holds a
-glob character. `*` and `[` survive being bracketed, and on duckdb 1.5.5 a
-directory named `q?m` read back through `q[?]m` handed the compressed bytes to
-the JSON parser. Name the directory without them.
-
-Every line carries the pool and agent that wrote it under the `metsuke` key, so
-a row selected out of any of these still says where it came from.
-
-A scrape holds its metrics as a nested list and a trace line holds its payload
-as a map, so neither reads usefully through `select *`. `duckdb -init
-docs/analytics.sql` flattens both and defines the views a consumer actually
-groups over.
-
-`docs/archive.sql` is the same flattening with none of the views, as three
-tables over whatever directory you point it at:
-
-```
-METSUKE_ARCHIVE=downloads duckdb -init docs/archive.sql downloads.duckdb
-```
-
-Name a database file as above and the tables persist, so later questions open
-`duckdb downloads.duckdb` and ask, rather than re-reading every object.
-
-Load that one where the question is not one analytics.sql already answers. It
-globs recursively rather than assuming the `v1/<day>/` layout, unions objects
-whose keys differ across days, and keeps a `scrape` row for every submission
-including the failed ones, which carry no metrics and so cannot appear in the
-flattened `metric` table.
+A deployment may also serve those builds under `/files/`, in which case `curl`
+the one you want from the server you pull the archive from. Its `/analysis`
+page is the short version of this document against that particular deployment,
+and offers them along with the two init files below. The pool operator's pages
+do not: they are a different audience, which is why the analysis page is a
+third one.
 
 ## Checking that an object is a pool's
 
@@ -166,7 +123,9 @@ That gap has no ceiling. A day bound is no safer here than an instant one; both
 get you approximately the right files and neither gets you exactly the right
 rows.
 
-Row-level time is in the payload, and it is exact. Slice there:
+Row-level time is in the payload, and it is exact. Slice there instead, in
+duckdb, which reads the downloaded objects where they landed and is what The
+read below is about:
 
 ```sql
 select * from read_json('archive/v1/*/*-metrics.jsonl.zst', sample_size=-1)
@@ -212,10 +171,85 @@ metsuke-fetch sync --from 2026-08-28 --state range.json --into archive
 Deleting a state file is the only rewind, and the run after it downloads
 everything again: nothing checks whether an object is already on disk.
 
+## The read
+
+An object is a zstd stream whose first frame is skippable, so every conforming
+zstd tool inflates the JSON Lines after it, and a downloaded tree reads where it
+landed with no unpacking step. From a duckdb session:
+
+```sql
+select * from read_json('downloads/v1/*/*.jsonl.zst', sample_size=-1)
+```
+
+A metrics scrape and a trace line share no fields, so a read of both leaves
+whichever it did not come from NULL. The kind is the last segment of every
+object's name, which reads them apart without a column:
+
+```sql
+select * from read_json('downloads/v1/*/*-metrics.jsonl.zst', sample_size=-1)
+select * from read_json('downloads/v1/*/*-logs.jsonl.zst', sample_size=-1)
+```
+
+`metsuke-fetch sync` prints the one of these that matches what it downloaded,
+so the first read is usually a paste rather than something you write. It cannot
+do that for a download directory whose own name holds `*`, `?` or `[`, which
+are the glob's own characters. Name the directory without them.
+
+Every line carries the pool and agent that wrote it under the `metsuke` key, so
+a row selected out of any of these still says where it came from.
+
+A scrape holds its metrics as a nested list and a trace line holds its payload
+as a map, so neither reads usefully through `select *`. Two init files flatten
+both, and each takes the directory to read from `$METSUKE_ARCHIVE`:
+
+```
+METSUKE_ARCHIVE=downloads duckdb -init docs/analytics.sql
+METSUKE_ARCHIVE=downloads duckdb -init docs/archive.sql downloads.duckdb
+```
+
+`docs/analytics.sql` defines the views a consumer actually groups over. Being
+views, they follow the root: `set variable archive = 'edge-1'` from the prompt
+re-points them without reloading. Do not name a database file for this one. The
+views persist into it and the variable does not, so reopening it answers
+`read_json cannot take NULL list as parameter` until the variable is set again.
+
+`docs/archive.sql` is the same flattening with none of the views, as three
+tables over whatever directory you point it at. Its root has to arrive before
+it runs, since the tables are built as it loads. Name a database file as above
+and they persist, so later questions open `duckdb downloads.duckdb` and ask,
+rather than re-reading every object.
+
+Load that one where the question is not one analytics.sql already answers. It
+globs recursively rather than assuming the `v1/<day>/` layout, unions objects
+whose keys differ across days, and keeps a `scrape` row for every submission
+including the failed ones, which carry no metrics and so cannot appear in the
+flattened `metric` table.
+
+Once one is loaded, `show tables` lists what it defined. `scrape`, `metric` and
+`trace` are the flattened objects; the rest are the analytics:
+
+```
+counter_reset  coverage  eb_lifecycle  forge_scoreboard  log_cost
+metric  mover  peer_activity  rts_pressure  scrape  trace
+```
+
+Each is a plain relation, so `select * from log_cost` is the whole of using
+one, and `describe coverage` names its columns. To see what one is doing,
+`select sql from duckdb_views() where view_name = 'log_cost'` prints its
+definition. The comment above each in `docs/analytics.sql` says what it is for,
+and `counter_reset` in particular is meant to come back empty: a rate computed
+across a row it returns spans a node restart and is wrong.
+
+Three of them are a good first look at an archive you have not seen before.
+`log_cost` is what it is being spent on, by namespace, with each one's share.
+`coverage` is the gap between consecutive scrapes per agent, against the
+cadence one was configured for. `forge_scoreboard` is one row per scrape of the
+block producer's counters, with the deltas between scrapes beside them.
+
 ## What a gap in an agent's sequence numbers is
 
-What a gap in `counter` says, and what it does not, is
-[CONTEXT.md](../CONTEXT.md), **Sequence Number**.
+What a gap in `counter` says, and what it does not, is in
+[CONTEXT.md](../CONTEXT.md) under **Sequence Number**.
 
 **From the archive alone a gap cannot be resolved, and no read here will do
 it.** The submission that spent the number was refused, so it never became an

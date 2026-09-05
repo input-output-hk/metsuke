@@ -1,6 +1,10 @@
 -- Views over a directory `metsuke-fetch sync --into` wrote. Load with
---   duckdb -init docs/analytics.sql
--- and override the root first if it is not ./into:
+--   METSUKE_ARCHIVE=downloads duckdb -init docs/analytics.sql
+--
+-- Which directory is read comes from the first of: an `archive` variable
+-- already set, $METSUKE_ARCHIVE, then ./into. These are views rather than
+-- tables, so unlike docs/archive.sql the variable can also be set afterwards,
+-- from the prompt, and the next query reads the new root:
 --   set variable archive = 'downloads';
 --
 -- `select *` over the raw objects is not a useful read: a scrape holds its
@@ -8,7 +12,10 @@
 -- views below flatten both, so every question after this is one GROUP BY.
 -- docs/reading-the-archive.md explains sample_size=-1 and the name globs.
 
-set variable archive = 'into';
+-- nullif, because getenv answers an unset variable with the empty string
+-- rather than NULL, and coalesce would take it and read the filesystem root.
+set variable archive =
+  coalesce(getvariable('archive'), nullif(getenv('METSUKE_ARCHIVE'), ''), 'into');
 
 -- One row per scrape, metrics still nested.
 create or replace view scrape as

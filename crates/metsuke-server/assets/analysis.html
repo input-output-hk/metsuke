@@ -85,7 +85,7 @@ archive is Leios-signed by design, and
 has the flags that keep only what you are willing to trust.</p>
 
 <p>Start with an unbounded sync as above. <code>--from</code> and
-<code>--to</code> exist and they bound by <em>when this server received a
+<code>--to</code> exist, and they bound a run by <em>when this server received a
 submission</em>, which is not when its rows were measured; an agent that
 spooled through an outage can put those days far apart. Slice by time in SQL,
 where the row's own timestamp is, rather than in the flags.</p>
@@ -93,10 +93,10 @@ where the row's own timestamp is, rather than in the flags.</p>
 <h2>4. Read it</h2>
 
 <p>An object is a zstd stream whose first frame is skippable, so duckdb reads
-the downloaded tree where it landed with no unpacking step. It is not a useful
-<code>select *</code> though: a scrape holds its metrics as a nested list and a
-trace line holds its payload as a map, so both want flattening first. Two init
-files do that, and this server hands them out:</p>
+the downloaded tree where it landed with no unpacking step. Neither kind reads
+usefully through <code>select *</code> though: a scrape holds its metrics as a
+nested list and a trace line holds its payload as a map, so both want
+flattening first. Two init files do that, and this server hands them out:</p>
 
 <pre>curl -O {{files_url}}analytics.sql
 curl -O {{files_url}}archive.sql</pre>
@@ -106,8 +106,7 @@ start with. It defines the views a consumer actually groups over, coverage per
 agent, the block producer's scoreboard, the lifecycle of every endorsement
 block, and it answers most first questions without you writing a join:</p>
 
-<pre>duckdb -init analytics.sql
-set variable archive = '/home/you/archive';</pre>
+<pre>METSUKE_ARCHIVE=~/archive duckdb -init analytics.sql</pre>
 
 <p><a href="{{FILES_PREFIX}}archive.sql">archive.sql</a> is the same flattening
 with none of the views, as three tables over whatever directory you point it

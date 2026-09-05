@@ -24,7 +24,10 @@
 -- questions about a cardano-node archive. This file answers none, and is the
 -- one to load when the question is not one of those.
 
-set variable archive = coalesce(getvariable('archive'), getenv('METSUKE_ARCHIVE'), 'into');
+-- nullif, because getenv answers an unset variable with the empty string
+-- rather than NULL, and coalesce would take it and read the filesystem root.
+set variable archive =
+  coalesce(getvariable('archive'), nullif(getenv('METSUKE_ARCHIVE'), ''), 'into');
 
 -- '**' matches zero directories as well as many, so this reads the v1/<day>/
 -- tree metsuke-fetch writes and an unnested pile of objects equally.
