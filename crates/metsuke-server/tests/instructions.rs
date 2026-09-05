@@ -33,13 +33,16 @@ const QUICKSTART_SECTIONS: [&str; 6] = [
 /// do not answer, in the order they raise it.
 const DETAILS_SECTIONS: [&str; 9] = [
     "Your application code on chain",
-    "On NixOS",
     "What leaves your machine",
     "Which key signs",
     "The node's metrics endpoint",
     "What the node has to emit for trace lines",
     "The pipe",
     "The journal",
+    // Last of the answers, because it is the smallest audience: a NixOS
+    // operator skips most of the page above, and everybody else was reading
+    // past it to reach the questions they did have.
+    "On NixOS",
     "Further reading",
 ];
 
@@ -565,7 +568,7 @@ fn the_metrics_endpoint_comes_from_the_shipped_config() {
     // The needle is the example's own metrics_url authority; a stale one makes
     // the replace a no-op and fails the asserts below rather than passing.
     let config = instructions::CONFIG_EXAMPLE.replace("127.0.0.1:12798", "127.0.0.1:19999");
-    let page = instructions::details(&config);
+    let page = instructions::details(&config, &public_url());
     assert!(
         page.contains("PrometheusSimple 127.0.0.1 19999"),
         "the backend line does not follow the config's metrics_url"
@@ -655,7 +658,7 @@ fn trace_options(page: &str) -> Vec<serde_json::Value> {
 /// floor an operator has to stay under: ADR 0010.
 #[test]
 fn no_node_config_snippet_sets_a_root_severity() {
-    let page = instructions::details(instructions::CONFIG_EXAMPLE);
+    let page = instructions::details(instructions::CONFIG_EXAMPLE, &public_url());
     let snippets = trace_options(&page);
     assert_eq!(snippets.len(), 2, "the page lost a TraceOptions snippet");
     // Step 4's is the one with a root entry, and `backends` is what says it is
@@ -681,7 +684,7 @@ fn no_node_config_snippet_sets_a_root_severity() {
 /// Why each namespace is named rather than inheriting: ADR 0010.
 #[test]
 fn every_named_namespace_carries_its_own_severity() {
-    let page = instructions::details(instructions::CONFIG_EXAMPLE);
+    let page = instructions::details(instructions::CONFIG_EXAMPLE, &public_url());
     let snippets = trace_options(&page);
     assert_eq!(snippets.len(), 2, "the page lost a TraceOptions snippet");
     // The second: step 5's, the namespace keys.
@@ -705,7 +708,7 @@ fn every_named_namespace_carries_its_own_severity() {
 /// on `instructions::MetricsEndpoint::backend_config` (metsuke-jfb.24).
 #[test]
 fn the_backend_step_names_the_machine_format_backend() {
-    let page = instructions::details(instructions::CONFIG_EXAMPLE);
+    let page = instructions::details(instructions::CONFIG_EXAMPLE, &public_url());
     let backends = trace_options(&page)[0]["TraceOptions"][""]["backends"]
         .as_array()
         .expect("the root entry lists backends")
@@ -766,7 +769,7 @@ fn the_node_config_step_covers_every_namespace_the_agent_selects() {
 /// step 4 added. Why merging is the instruction: ADR 0010.
 #[test]
 fn the_trace_step_cannot_disturb_the_root_entry() {
-    let page = instructions::details(instructions::CONFIG_EXAMPLE);
+    let page = instructions::details(instructions::CONFIG_EXAMPLE, &public_url());
     let snippets = trace_options(&page);
     assert_eq!(snippets.len(), 2, "the page lost a TraceOptions snippet");
     let traces = snippets[1]["TraceOptions"]

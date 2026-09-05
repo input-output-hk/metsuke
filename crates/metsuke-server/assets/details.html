@@ -28,12 +28,6 @@ submissions regardless of what key signs them. This is program registration
 rather than agent setup, so it is normally done before you reach the
 quickstart.</p>
 
-<h2 id="nixos">On NixOS</h2>
-
-<p>Add <code>{{flake}}</code> as a flake input and import its
-<code>nixosModules.metsuke</code>. That writes the configuration and the unit
-for you, including the two directives the journal source needs.</p>
-
 <h2>What leaves your machine</h2>
 
 <p>One submission is a plain JSON header, then your scrapes zstd compressed, one
@@ -301,6 +295,39 @@ their defaults.
 <a href="{{FILES_PREFIX}}config.example.toml">config.example.toml</a> is the
 annotated form of the same file, with every default written out. Its comments
 are pinned to the code, so a value there is a value the agent ships.</p>
+
+<h2 id="nixos">On NixOS</h2>
+
+<p>Add <code>{{flake}}</code> as a flake input and import its
+<code>nixosModules.metsuke</code>. That writes the configuration and the unit
+for you, including the two directives the journal source needs.</p>
+
+<p>Everything in the config files above is an option under
+<code>services.metsuke.settings</code>, named the same. The three required ones
+have to be set, and the module's own README-in-place is
+<a href="{{FILES_PREFIX}}config.example.toml">config.example.toml</a>, which is
+where each option's meaning and default are written. The exception is
+<code>signing_key</code>, which is not an option: the module hands the key over
+as a systemd credential, and you point <code>signingKeyFile</code> at the path
+instead.</p>
+
+<pre>services.metsuke = {
+  enable = true;
+  signingKeyFile = "/run/secrets/metsuke-signing-key";
+  settings = {
+    pool_id = "pool1…";
+    metrics_url = "{{metrics_url}}";
+    upload_url = "{{submit_url}}";
+    log.journal_unit = "cardano-node.service";
+  };
+};</pre>
+
+<p><a href="{{DOCS_PREFIX}}docs/nixos-options.md">Every option, its type and its
+default</a> is generated from the module itself and kept current by a check, so
+it is the same list your own evaluation would give you. On a host that already
+imports the module,
+<code>nixos-option services.metsuke.settings.&lt;name&gt;</code> answers for one
+of them.</p>
 
 <h2 id="reading">Further reading</h2>
 

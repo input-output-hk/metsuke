@@ -115,6 +115,7 @@
         {
           config,
           pkgs,
+          system,
           ...
         }:
         let
@@ -189,6 +190,40 @@
           # read, so the commit is passed in; a dirty tree says so, and a
           # source with no revision at all is honest about that too.
           buildRev = self.shortRev or self.dirtyShortRev or "unknown";
+
+          nixosOptionsMarkdown =
+            let
+              host = inputs.nixpkgs.lib.nixosSystem {
+                inherit system;
+                modules = [
+                  self.nixosModules.metsuke
+                  {
+                    boot.loader.grub.enable = false;
+                    fileSystems."/".device = "none";
+                    system.stateVersion = lib.trivial.release;
+                  }
+                ];
+              };
+              repository = (lib.importTOML ./Cargo.toml).workspace.package.repository;
+            in
+            (pkgs.nixosOptionsDoc {
+              options.services.metsuke = host.options.services.metsuke;
+              transformOptions =
+                option:
+                option
+                // {
+                  declarations = map (
+                    declaration:
+                    let
+                      path = lib.removePrefix "${toString self}/" (toString declaration);
+                    in
+                    {
+                      name = path;
+                      url = "${repository}/blob/main/${path}";
+                    }
+                  ) option.declarations;
+                };
+            }).optionsCommonMark;
 
           # Tests run once, in checks.test. Crane defaults doCheck to true,
           # which would run the suite again inside each binary.
@@ -458,6 +493,30 @@
             metsuke-unit = contribUnit;
             metsuke-journald-unit = contribJournaldUnit;
             metsuke-pipe-dropin = contribPipeDropIn;
+            # Every `services.metsuke` option as markdown, rendered from the
+            # module rather than written beside it, so the committed copy in
+            # docs/ cannot describe an option that is not there. Declarations
+            # are rewritten to repository links: left as they come they are
+            # store paths, which change on every commit and would leave the
+            # committed copy stale after each one.
+            nixos-options =
+              let
+                header = pkgs.writeText "nixos-options-header" ''
+                  # NixOS options
+
+                  `services.metsuke`, as `nixosModules.metsuke` declares it.
+
+                  Generated: edit `nix/agent-module.nix`, then
+                  `nix build .#nixos-options` and commit what it wrote here.
+                  Every description and default below is read out of
+                  `contrib/config.example.toml`, so those are changed there.
+
+                '';
+              in
+              pkgs.runCommand "nixos-options.md" { } ''
+                cat ${header} ${nixosOptionsMarkdown} > $out
+              '';
+
             metsuke-allowlist = (import ./nix/allowlist.nix { inherit pkgs; }).package;
             metsuke-roster = (import ./nix/roster.nix { inherit pkgs; }).package;
             # The developer's pull tool, which links the wire crate alone. The
@@ -531,6 +590,17 @@
                 }
                 touch $out
               '';
+
+            # The same rule the units below are held to, for the same reason: a
+            # generated file that is committed is a file that can be edited by
+            # hand or left behind by a module change.
+            nixos-options = pkgs.runCommand "nixos-options-are-current" { } ''
+              diff -u ${./docs/nixos-options.md} ${config.packages.nixos-options} || {
+                echo "docs/nixos-options.md is stale; its header says how"
+                exit 1
+              }
+              touch $out
+            '';
 
             contrib-unit = pkgs.runCommand "contrib-units-are-current" { } ''
               stale() {

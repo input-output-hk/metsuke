@@ -39,27 +39,92 @@ let
 
   inherit (lib) mkOption types;
 
-  # No description on either: the option's name is the Rust field's name, and
-  # `settings` below names the file that documents every one of them. What
-  # carries a description of its own is the handful where this module's
-  # behaviour is not the file's, because that is what no pointer can supply.
-  required = type: mkOption { inherit type; };
+  # The annotated example, read rather than restated. Every default and every
+  # description below comes out of it, so the prose and the digits live in the
+  # file an operator editing by hand already reads, and a key it stops
+  # documenting throws here on evaluation. That is the whole guard: this file
+  # cannot go quietly stale against it.
+  exampleLines = lib.splitString "\n" (builtins.readFile ../contrib/config.example.toml);
 
-  # Every default the annotated example documents, as `# key = value`. Read
-  # rather than restated, so `nixos-option` can show what a null leaves the
-  # agent doing without this file keeping its own copy of the digits. A key the
-  # example stops documenting throws on evaluation here, which is the whole
-  # guard: it cannot go quietly stale.
-  documented = lib.pipe (builtins.readFile ../contrib/config.example.toml) [
-    (lib.splitString "\n")
-    (map (line: builtins.match "# ([a-z_]+) = (.*)" line))
-    (builtins.filter (match: match != null))
-    (map (match: lib.nameValuePair (builtins.elemAt match 0) (builtins.elemAt match 1)))
-    builtins.listToAttrs
-  ];
+  # A key takes the comment block above it. Blocks cover groups, so keys in a
+  # group share one, and a blank line or a `[table]` header ends a block.
+  annotated =
+    (builtins.foldl'
+      (
+        acc: line:
+        let
+          key = builtins.match "#? ?([a-z_]+) = .*" line;
+          table = lib.hasPrefix "# [" line || lib.hasPrefix "[" line;
+        in
+        if line == "" || table then
+          acc
+          // {
+            prose = [ ];
+            sawKey = false;
+          }
+        else if key != null then
+          acc
+          // {
+            out = acc.out // {
+              ${builtins.head key} = {
+                inherit (acc) prose;
+                value = builtins.elemAt (builtins.match "#? ?[a-z_]+ = (.*)" line) 0;
+              };
+            };
+            sawKey = true;
+          }
+        # A comment after a key starts a fresh block rather than extending the
+        # one that key took, or a per-key line would inherit its neighbour's.
+        else if builtins.match "#.*" line != null then
+          (
+            if acc.sawKey then
+              acc
+              // {
+                prose = [ line ];
+                sawKey = false;
+              }
+            else
+              acc // { prose = acc.prose ++ [ line ]; }
+          )
+        else
+          acc
+      )
+      {
+        prose = [ ];
+        out = { };
+        sawKey = false;
+      }
+      exampleLines
+    ).out;
 
-  # Those values are TOML literals, so a string arrives with its quotes. A nix
-  # reader wants what is inside them.
+  # The first paragraph of a key's block. The later ones in the long blocks are
+  # about the group, and would repeat for every key in it. A leading separator
+  # is skipped so a block that opens with one still counts.
+  described =
+    key:
+    let
+      taken =
+        builtins.foldl'
+          (
+            acc: line:
+            if line == "#" && acc.out == [ ] then
+              acc
+            else if line == "#" then
+              acc // { done = true; }
+            else if acc.done then
+              acc
+            else
+              acc // { out = acc.out ++ [ line ]; }
+          )
+          {
+            done = false;
+            out = [ ];
+          }
+          annotated.${key}.prose;
+    in
+    lib.concatStringsSep " " (map (line: lib.removePrefix "# " line) taken.out);
+
+  # TOML string literals arrive quoted; a nix reader wants what is inside them.
   unquoted =
     value:
     let
@@ -67,16 +132,26 @@ let
     in
     if quoted == null then value else builtins.head quoted;
 
+  # The three the example marks Required. No default, so evaluation fails
+  # naming the option rather than the agent failing to start.
+  requiredOptions = builtins.mapAttrs (
+    key: type:
+    mkOption {
+      inherit type;
+      description = described key;
+    }
+  );
+
   # Defaulted fields of `crates/metsuke/src/config.rs`, keyed by the name each
   # has there. Null leaves one out of the rendered TOML, so the agent applies
-  # its own default and the digits stay in the crate that ships them; the
-  # example is where a reader is shown what that default is.
+  # its own default and the digits stay in the crate that ships them.
   shippedOptions = builtins.mapAttrs (
     key: type:
     mkOption {
       type = types.nullOr type;
       default = null;
-      defaultText = lib.literalMD (unquoted documented.${key});
+      defaultText = lib.literalMD (unquoted annotated.${key}.value);
+      description = described key;
     }
   );
 
@@ -139,112 +214,116 @@ in
         behaves differently from that reference.
       '';
       type = types.submodule {
-        options = {
-          pool_id = required types.str;
-          metrics_url = required types.str;
-          upload_url = required types.str;
-
-          # The one field whose default is computed rather than a value the
-          # reference can show, so `null` here reads as "unset" when it means
-          # something specific and machine-dependent.
-          agent_id = mkOption {
-            type = types.nullOr types.str;
-            default = null;
-            defaultText = lib.literalMD "this host's name, folded to lowercase";
-            description = ''
-              What to call this agent on every line it ships, so a pool
-              reporting from more than one can tell them apart. Unset, it is
-              this host's hostname folded to lowercase `a-z0-9` in
-              dash-separated runs, and a value set here is folded the same way.
-              Set it where the hostname is not the name you want, and in a
-              container, where the hostname is the runtime's rather than yours.
-            '';
-          };
-          # Bounded here in a way the reference is not: the unit this module
-          # renders may write one directory and nowhere else.
-          spool_path = mkOption {
-            type = types.nullOr types.str;
-            default = null;
-            defaultText = lib.literalMD (unquoted documented.spool_path);
-            description = ''
-              Where the SQLite spool goes. It has to be under `${writable}`,
-              which is the StateDirectory this module's unit creates and the
-              only path `ProtectSystem=strict` leaves it able to write. An
-              assertion refuses anything else rather than rendering a unit that
-              dies on its first open.
-            '';
-          };
-          log = mkOption {
-            description = ''
-              Trace-line collection. Setting it opens the unit up by what
-              reading a journal takes, which is the privilege ADR 0010 is
-              about and which nix/unit.nix spells out; leaving it null starts
-              no journalctl and grants nothing.
-            '';
-            default = null;
-            type = types.nullOr (
-              types.submodule {
-                options = {
-                  # The unit this module renders runs the agent on its own, with
-                  # no node upstream of it, so the pipe has nothing to read.
-                  # Naming it here is refused rather than rendered, because a
-                  # rendered one gets /dev/null, reads EOF at once, and
-                  # Restart=always turns that into a loop collecting nothing.
-                  source = mkOption {
-                    type = types.enum [ "journald" ];
-                    default = "journald";
-                    description = ''
-                      Which stream the trace lines come from. Only `journald`
-                      here, unlike the reference, which also offers `pipe`: the
-                      unit this module renders runs the agent on its own with
-                      no node upstream, so a pipe would get `/dev/null`, read
-                      EOF at once, and `Restart=always` would loop it forever
-                      collecting nothing. Take the shipped drop-in instead if
-                      you want that source.
-                    '';
-                  };
-                  journal_unit = required types.str;
-                  # Not `shipped`: which journalctl exists is this module's to
-                  # know, and the hardened unit's PATH is not to be relied on.
-                  journalctl_path = mkOption {
-                    type = types.str;
-                    default = "${config.systemd.package}/bin/journalctl";
-                    defaultText = lib.literalMD "`journalctl` from `config.systemd.package`";
-                    description = ''
-                      Which journalctl to run. Defaulted here where the
-                      reference has no default for it, because this module
-                      knows which systemd the host is running and the hardened
-                      unit's `PATH` is not one to resolve a program on.
-                    '';
+        options =
+          requiredOptions {
+            pool_id = types.str;
+            metrics_url = types.str;
+            upload_url = types.str;
+          }
+          // {
+            # The one field whose default is computed rather than a value the
+            # reference can show, so `null` here reads as "unset" when it means
+            # something specific and machine-dependent.
+            agent_id = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+              defaultText = lib.literalMD "this host's name, folded to lowercase";
+              description = ''
+                What to call this agent on every line it ships, so a pool
+                reporting from more than one can tell them apart. Unset, it is
+                this host's hostname folded to lowercase `a-z0-9` in
+                dash-separated runs, and a value set here is folded the same way.
+                Set it where the hostname is not the name you want, and in a
+                container, where the hostname is the runtime's rather than yours.
+              '';
+            };
+            # Bounded here in a way the reference is not: the unit this module
+            # renders may write one directory and nowhere else.
+            spool_path = mkOption {
+              type = types.nullOr types.str;
+              default = null;
+              defaultText = lib.literalMD (unquoted annotated.spool_path.value);
+              description = ''
+                Where the SQLite spool goes. It has to be under `${writable}`,
+                which is the StateDirectory this module's unit creates and the
+                only path `ProtectSystem=strict` leaves it able to write. An
+                assertion refuses anything else rather than rendering a unit that
+                dies on its first open.
+              '';
+            };
+            log = mkOption {
+              description = ''
+                Trace-line collection. Setting it opens the unit up by what
+                reading a journal takes, which is the privilege ADR 0010 is
+                about and which nix/unit.nix spells out; leaving it null starts
+                no journalctl and grants nothing.
+              '';
+              default = null;
+              type = types.nullOr (
+                types.submodule {
+                  options = {
+                    # The unit this module renders runs the agent on its own, with
+                    # no node upstream of it, so the pipe has nothing to read.
+                    # Naming it here is refused rather than rendered, because a
+                    # rendered one gets /dev/null, reads EOF at once, and
+                    # Restart=always turns that into a loop collecting nothing.
+                    source = mkOption {
+                      type = types.enum [ "journald" ];
+                      default = "journald";
+                      description = ''
+                        Which stream the trace lines come from. Only `journald`
+                        here, unlike the reference, which also offers `pipe`: the
+                        unit this module renders runs the agent on its own with
+                        no node upstream, so a pipe would get `/dev/null`, read
+                        EOF at once, and `Restart=always` would loop it forever
+                        collecting nothing. Take the shipped drop-in instead if
+                        you want that source.
+                      '';
+                    };
+                  }
+                  // requiredOptions { journal_unit = types.str; }
+                  // {
+                    # Not `shipped`: which journalctl exists is this module's to
+                    # know, and the hardened unit's PATH is not to be relied on.
+                    journalctl_path = mkOption {
+                      type = types.str;
+                      default = "${config.systemd.package}/bin/journalctl";
+                      defaultText = lib.literalMD "`journalctl` from `config.systemd.package`";
+                      description = ''
+                        Which journalctl to run. Defaulted here where the
+                        reference has no default for it, because this module
+                        knows which systemd the host is running and the hardened
+                        unit's `PATH` is not one to resolve a program on.
+                      '';
+                    };
+                  }
+                  // shippedOptions {
+                    namespace_roots = types.listOf types.str;
+                    namespaces = types.listOf types.str;
+                    log_max_bytes = types.ints.unsigned;
+                    respawn_backoff_secs = types.ints.unsigned;
+                    start_grace_secs = types.ints.positive;
                   };
                 }
-                // shippedOptions {
-                  namespace_roots = types.listOf types.str;
-                  namespaces = types.listOf types.str;
-                  log_max_bytes = types.ints.unsigned;
-                  respawn_backoff_secs = types.ints.unsigned;
-                  start_grace_secs = types.ints.positive;
-                };
-              }
-            );
+              );
+            };
+          }
+          // shippedOptions {
+            scrape_interval_secs = types.ints.positive;
+            upload_interval_secs = types.ints.positive;
+            upload_max_submissions = types.ints.positive;
+            sntp_servers = types.listOf types.str;
+            sntp_timeout_secs = types.ints.unsigned;
+            spool_max_bytes = types.ints.unsigned;
+            spool_busy_timeout_secs = types.ints.unsigned;
+            scrape_timeout_secs = types.ints.unsigned;
+            scrape_max_body_bytes = types.ints.unsigned;
+            upload_timeout_secs = types.ints.unsigned;
+            upload_jitter_max_secs = types.ints.unsigned;
+            upload_backoff_max_secs = types.ints.unsigned;
+            upload_batch_max_bytes = types.ints.unsigned;
+            compression_level = types.int;
           };
-        }
-        // shippedOptions {
-          scrape_interval_secs = types.ints.positive;
-          upload_interval_secs = types.ints.positive;
-          upload_max_submissions = types.ints.positive;
-          sntp_servers = types.listOf types.str;
-          sntp_timeout_secs = types.ints.unsigned;
-          spool_max_bytes = types.ints.unsigned;
-          spool_busy_timeout_secs = types.ints.unsigned;
-          scrape_timeout_secs = types.ints.unsigned;
-          scrape_max_body_bytes = types.ints.unsigned;
-          upload_timeout_secs = types.ints.unsigned;
-          upload_jitter_max_secs = types.ints.unsigned;
-          upload_backoff_max_secs = types.ints.unsigned;
-          upload_batch_max_bytes = types.ints.unsigned;
-          compression_level = types.int;
-        };
       };
     };
   };

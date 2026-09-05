@@ -102,11 +102,24 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # before the agent accepts it as following, so a unit that may not read the
 # journal fails the start rather than collecting nothing (docs/adr/0010).
 # [log]
+#
+# Which stream the lines come from, "journald" or "pipe". Never guessed.
 # source = "journald"
+#
+# Your node's unit, and journalctl's absolute path. Neither has a default.
 # journal_unit = "cardano-node"
 # journalctl_path = "/usr/bin/journalctl"
+#
+# The ceiling on what may be selected, and the selection itself. Both are
+# prefixes matched on segment boundaries.
 # namespace_roots = ["Consensus", "ChainDB", "Forge"]
 # namespaces = ["Consensus.LeiosKernel", "Consensus.LeiosPeer", "ChainDB.AddBlockEvent.AddedToCurrentChain", "Forge.Loop.AdoptedBlock"]
+#
+# The trace-line spool's cap, and how long a journalctl that died waits before
+# it is started again.
 # log_max_bytes = 268435456
 # respawn_backoff_secs = 30
+#
+# How long a just-started journalctl has to stay running before the agent
+# accepts it as following.
 # start_grace_secs = 1

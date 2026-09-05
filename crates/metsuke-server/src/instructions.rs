@@ -155,7 +155,7 @@ pub fn pages(public_url: &url::Url, binaries: Vec<Binary>) -> Pages {
         .collect::<Vec<File>>();
     Pages {
         quickstart: quickstart(UNIT_JOURNALD, public_url, &files),
-        details: details(&pointed(CONFIG_EXAMPLE)),
+        details: details(&pointed(CONFIG_EXAMPLE), public_url),
         files,
     }
 }
@@ -263,10 +263,16 @@ fn pointed_at(config: &str, public_url: &url::Url) -> String {
         .get("upload_url")
         .and_then(|value| value.as_str())
         .expect("a shipped config sets upload_url");
-    let ours = public_url
+    config.replace(example, submit_url(public_url).as_str())
+}
+
+/// Where this deployment takes submissions. The one value a shipped file
+/// cannot carry, which is why a config is pointed on the way out and why the
+/// NixOS example on the details page is filled rather than written down.
+fn submit_url(public_url: &url::Url) -> url::Url {
+    public_url
         .join(crate::http::SUBMIT_PATH)
-        .expect("the submission path joins onto an absolute URL");
-    config.replace(example, ours.as_str())
+        .expect("the submission path joins onto an absolute URL")
 }
 
 /// The recording as the page shows it, which is the recording with its config
@@ -352,7 +358,7 @@ pub fn quickstart(unit: &str, public_url: &url::Url, offered: &[File]) -> String
 
 /// Everything the quickstart leaves out. Takes the annotated example, which is
 /// the one config it shows whole and the one the metrics endpoint is read from.
-pub fn details(config_example: &str) -> String {
+pub fn details(config_example: &str, public_url: &url::Url) -> String {
     let metrics = MetricsEndpoint::from_config(config_example);
     fill(
         DETAILS,
@@ -375,6 +381,7 @@ pub fn details(config_example: &str) -> String {
             ("backend", escape(&metrics.backend_config())),
             ("traces", escape(&trace_config())),
             ("metrics_url", escape(metrics.url())),
+            ("submit_url", escape(submit_url(public_url).as_str())),
             ("FILES_PREFIX", FILES_PREFIX.to_string()),
             ("binary", escape(&exec_start(UNIT, ExecStartField::Binary))),
             (
