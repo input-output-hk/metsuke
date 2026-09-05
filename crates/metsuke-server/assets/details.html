@@ -302,14 +302,12 @@ are pinned to the code, so a value there is a value the agent ships.</p>
 <code>nixosModules.metsuke</code>. That writes the configuration and the unit
 for you, including the two directives the journal source needs.</p>
 
-<p>Everything in the config files above is an option under
-<code>services.metsuke.settings</code>, named the same. The three required ones
-have to be set, and the module's own README-in-place is
-<a href="{{FILES_PREFIX}}config.example.toml">config.example.toml</a>, which is
-where each option's meaning and default are written. The exception is
-<code>signing_key</code>, which is not an option: the module hands the key over
-as a systemd credential, and you point <code>signingKeyFile</code> at the path
-instead.</p>
+<p>Every setting in
+<a href="{{FILES_PREFIX}}config.example.toml">config.example.toml</a> is an
+option under <code>services.metsuke.settings</code>, named the same, and the
+three required ones have to be set. The exception is <code>signing_key</code>,
+which is not an option: the module hands the key over as a systemd credential,
+and you point <code>signingKeyFile</code> at the path instead.</p>
 
 <pre>services.metsuke = {
   enable = true;
@@ -322,12 +320,8 @@ instead.</p>
   };
 };</pre>
 
-<p><a href="{{DOCS_PREFIX}}docs/nixos-options.md">Every option, its type and its
-default</a> is generated from the module itself and kept current by a check, so
-it is the same list your own evaluation would give you. On a host that already
-imports the module,
-<code>nixos-option services.metsuke.settings.&lt;name&gt;</code> answers for one
-of them.</p>
+<p>Every option, with its type and its default, is in the
+<a href="{{DOCS_PREFIX}}docs/nixos-options.md">options reference</a>.</p>
 
 <h2 id="reading">Further reading</h2>
 
@@ -355,9 +349,10 @@ unreachable server costs you.</li>
 <li><a href="{{DOCS_PREFIX}}docs/adr/0005-archive-raw-signed-bytes.md">ADR
 0005</a>, what the archive keeps of what you send, which is the bytes you
 signed and nothing derived from them.</li>
-<li><a href="{{DOCS_PREFIX}}docs/reading-the-archive.md">Reading the
-archive</a>, how your submissions are read back on the other side. Written for
-the developers processing this data rather than for you, which is what makes it
+<li><a href="{{ANALYSIS_PATH}}">The analysis page</a>, and behind it
+<a href="{{DOCS_PREFIX}}docs/reading-the-archive.md">reading the archive</a>:
+how your submissions are read back on the other side. Both are written for the
+developers processing this data rather than for you, which is what makes them
 the account of what your lines are used for.</li>
 <li><a href="{{REPOSITORY}}/tree/main/docs/adr">The other decisions</a>, as
 the directory they sit in.</li>

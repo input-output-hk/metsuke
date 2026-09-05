@@ -30,9 +30,10 @@ nix build github:input-output-hk/metsuke#metsuke-fetch-static-x86_64-linux
 ```
 
 A deployment may also serve that build under `/files/`, in which case `curl` it
-from the server you pull the archive from. It is named in the server's
-`[downloads]` but not linked from the onboarding pages, which are a pool
-operator's rather than a consumer's.
+from the server you pull the archive from. Its `/analysis` page is the short
+version of this document against that particular deployment, and offers the
+build along with the two init files below. The pool operator's pages do not:
+they are a different audience, which is why the analysis page is a third one.
 
 A metrics scrape and a trace line share no fields, so a read of both leaves
 whichever it did not come from NULL. The kind is the last segment of every

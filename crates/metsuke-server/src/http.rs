@@ -117,6 +117,7 @@ fn html(body: bytes::Bytes) -> Answer {
 pub struct Pages {
     quickstart: bytes::Bytes,
     details: bytes::Bytes,
+    analysis: bytes::Bytes,
     files: Vec<Served>,
 }
 
@@ -134,6 +135,7 @@ impl From<instructions::Pages> for Pages {
         Pages {
             quickstart: bytes::Bytes::from(pages.quickstart),
             details: bytes::Bytes::from(pages.details),
+            analysis: bytes::Bytes::from(pages.analysis),
             files: pages
                 .files
                 .into_iter()
@@ -163,8 +165,10 @@ pub fn answer<A: Store + Bytes + List>(
 ) -> Answer {
     let path = request.path().to_string();
     match path.as_str() {
-        // Unauthenticated, both of them: they are what an operator reads
-        // before they have anything to authenticate with.
+        // Unauthenticated, all three: they are what a reader reads before they
+        // have anything to authenticate with. That is the whole point of the
+        // analysis page too, which is where a developer is told an account is
+        // needed and who issues one.
         instructions::PATH => match request.method {
             Method::Get => html(pages.quickstart.clone()),
             _ => refuse(None, 405, format!("{} takes GET", instructions::PATH)),
@@ -175,6 +179,14 @@ pub fn answer<A: Store + Bytes + List>(
                 None,
                 405,
                 format!("{} takes GET", instructions::DETAILS_PATH),
+            ),
+        },
+        instructions::ANALYSIS_PATH => match request.method {
+            Method::Get => html(pages.analysis.clone()),
+            _ => refuse(
+                None,
+                405,
+                format!("{} takes GET", instructions::ANALYSIS_PATH),
             ),
         },
         // The files the page links, under the names it links them by. A name

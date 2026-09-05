@@ -224,12 +224,17 @@ pub fn public_url() -> url::Url {
     PUBLIC_URL.parse().expect("the suite's public URL parses")
 }
 
-/// The agent builds a test server offers. Stand-ins rather than real ones: what
-/// a test asserts is that the page links what the server serves and that the
+/// The builds a test server offers. Stand-ins rather than real ones: what a
+/// test asserts is that the page links what the server serves and that the
 /// bytes come back unaltered, neither of which needs a cross build.
+///
+/// Both sets, because the deployed profile serves both: the agents the
+/// quickstart hands a pool, and the fetch tool the analysis page hands a
+/// developer. A test about one page's branch passes its own set instead.
 pub fn test_binaries() -> Vec<metsuke_server::instructions::Binary> {
     metsuke_server::instructions::BINARIES
         .iter()
+        .chain(metsuke_server::instructions::FETCH_BINARIES.iter())
         .enumerate()
         .map(|(at, name)| metsuke_server::instructions::Binary {
             name: name.to_string(),

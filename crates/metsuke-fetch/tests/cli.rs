@@ -425,3 +425,91 @@ fn help_and_version_are_answered_wherever_they_are_written() {
         Ok(Invocation::Version)
     ));
 }
+
+/// The server's analysis page walks a developer through this tool, and the
+/// server crate cannot see these flags: it does not link this one. This crate
+/// dev-depends on the server, so the check goes here, where both the page and
+/// the flags it names are in scope.
+///
+/// Against `parse` rather than against `USAGE`, so a flag deleted from the
+/// parser and left in the help text still fails.
+#[test]
+fn every_flag_the_servers_analysis_page_shows_is_one_this_tool_takes() {
+    let page = metsuke_server::instructions::pages(
+        &"https://metsuke.example.org"
+            .parse()
+            .expect("a fixed URL parses"),
+        Vec::new(),
+    )
+    .analysis;
+
+    // The command blocks and the code spans, which is everywhere the page
+    // writes something a reader types. Not the whole document: the stylesheet
+    // is inlined into it, and a CSS custom property is spelled like a flag.
+    let quoted: Vec<&str> = ["<pre>", "<code>"]
+        .iter()
+        .flat_map(|open| {
+            let close = open.replace('<', "</");
+            page.split(open)
+                .skip(1)
+                .filter_map(move |rest| rest.split(&close).next())
+        })
+        .collect();
+
+    let flags: Vec<&str> = quoted
+        .iter()
+        .flat_map(|block| block.split_whitespace())
+        .filter(|word| word.starts_with("--"))
+        .map(|word| word.trim_end_matches([',', '.', ':', ')']))
+        .filter(|word| word.len() > 2)
+        .collect();
+    assert!(!flags.is_empty(), "the page shows no flag at all");
+
+    for flag in flags {
+        // `invoked` rather than `parsed`, because `--help` is a flag the page
+        // shows and an outcome rather than a run. Only being unrecognised
+        // fails: a value this test invented, or a flag the other command
+        // takes, is still a flag that exists.
+        assert!(
+            !matches!(
+                invoked(&["sync", flag, "x"]),
+                Err(ArgsError::Unknown { .. })
+            ),
+            "the analysis page shows {flag}, which this tool does not take"
+        );
+    }
+}
+
+/// And every environment variable the page's export block sets is one the tool
+/// reads, for the same reason: a renamed variable leaves a walkthrough whose
+/// commands ask for a credential the reader thought they had given.
+#[test]
+fn every_variable_the_servers_analysis_page_exports_is_one_this_tool_reads() {
+    let page = metsuke_server::instructions::pages(
+        &"https://metsuke.example.org"
+            .parse()
+            .expect("a fixed URL parses"),
+        Vec::new(),
+    )
+    .analysis;
+
+    let exported: Vec<&str> = page
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("export "))
+        .filter_map(|line| line.split('=').next())
+        .collect();
+    assert!(!exported.is_empty(), "the page exports nothing at all");
+
+    let read = [
+        cli::ENV_SERVER,
+        cli::ENV_USER,
+        cli::ENV_PASSWORD_FILE,
+        cli::ENV_TIMEOUT_MS,
+    ];
+    for name in exported {
+        assert!(
+            read.contains(&name),
+            "the analysis page exports {name}, which this tool never reads"
+        );
+    }
+}

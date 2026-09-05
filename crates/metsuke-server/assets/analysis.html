@@ -1,0 +1,160 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Metsuke: reading the telemetry archive</title>
+<link rel="icon" href="{{ICON_PATH}}" type="{{ICON_CONTENT_TYPE}}">
+<style>{{style}}</style>
+
+<header>
+<h1>Metsuke Analysis</h1>
+<a class="logo-link" href="https://musashi.network">{{logo}}</a>
+</header>
+
+<p>This server collects signed telemetry from the pools in the MusashiNet
+rewards program and keeps every submission exactly as it arrived. This page is
+how you get that archive onto a machine you can query. It is for whoever is
+analysing the data; the pool operators sending it start at
+<a href="{{PATH}}">the quickstart</a> instead.</p>
+
+<p>An archive object is one submission: a batch of metrics scrapes, or a batch
+of the node trace lines the program selects. Both are JSON Lines, compressed,
+and every line carries the pool and agent it came from. Nothing is aggregated
+and nothing is rewritten, so what you download is what a pool signed.</p>
+
+<h2>1. Get an account</h2>
+
+<p>The archive is not public. Reading it needs a developer account on this
+server, which is a username and a password held in the
+<code>{{REALM}}</code> realm, and the operators of this deployment are who
+issues one. Ask them, and put the password in a file of its own:</p>
+
+<pre>mkdir -p ~/.config/metsuke
+$EDITOR ~/.config/metsuke/password
+chmod 0600 ~/.config/metsuke/password</pre>
+
+<p>A file rather than a flag or a variable holding the secret itself: an
+argument is visible in the process table, and an environment variable reaches
+every child process and anything that may read <code>/proc</code>. The tool
+below takes the path and reads it itself.</p>
+
+<h2>2. Get the tool</h2>
+
+<p><code>metsuke-fetch</code> is what pulls the archive down. It is one static
+binary with nothing to link against, the same as the agent:</p>
+
+<pre>{{fetch_install}}</pre>
+
+<p>On ARM it is <code>metsuke-fetch-static-aarch64-linux</code>. Either can be
+built rather than downloaded, with
+<code>nix build {{flake}}#metsuke-fetch-static-$ARCH</code>, and
+<code>nix run {{flake}}#metsuke-fetch</code> runs it without installing
+anything. <code>{{fetch}} --help</code> is the complete flag list; what follows
+is the part of it you need first.</p>
+
+<h2>3. Sync the archive</h2>
+
+<p>Point it at this server, say who you are, and name two paths: a cursor file
+and a directory to download into.</p>
+
+<pre>export METSUKE_FETCH_SERVER={{server_url}}
+export METSUKE_FETCH_USER=&lt;your account&gt;
+export METSUKE_FETCH_PASSWORD_FILE=~/.config/metsuke/password
+export METSUKE_FETCH_TIMEOUT_MS=30000
+
+{{fetch}} sync --state ~/.local/state/metsuke-fetch/cursor.json --into ~/archive</pre>
+
+<p>Each object lands under its own key, so the directory is safe to sync into
+repeatedly. The run prints what it did:</p>
+
+<pre>3 keys under v1/; 3 selected, 0 outside the selection, 0 this build cannot name
+3 objects into ~/archive, 3145728 bytes; 1 cold-signed, 2 Leios-signed, 0 unattested, 0 not written</pre>
+
+<p>The cursor is what makes the next run a delta rather than a re-download: it
+records the last key seen, and a later run resumes past it. Deleting the file
+is the only way to start over, and the run after that downloads everything
+again, because nothing checks whether an object is already on disk.</p>
+
+<p>Those three counts on the second line are how much of the archive proves
+itself. A <strong>cold-signed</strong> object was signed by a key that derives
+the pool it is filed under, so it stays checkable from the object alone,
+forever. A <strong>Leios-signed</strong> object had its signature checked here
+too, but which pool it belongs to is this server's word against a roster;
+its bytes are as authentic, and only the attribution rests on us. An
+<strong>unattested</strong> object came with nothing to check. Most of the
+archive is Leios-signed by design, and
+<a href="{{DOCS_PREFIX}}docs/reading-the-archive.md">reading the archive</a>
+has the flags that keep only what you are willing to trust.</p>
+
+<p>Start with an unbounded sync as above. <code>--from</code> and
+<code>--to</code> exist and they bound by <em>when this server received a
+submission</em>, which is not when its rows were measured; an agent that
+spooled through an outage can put those days far apart. Slice by time in SQL,
+where the row's own timestamp is, rather than in the flags.</p>
+
+<h2>4. Read it</h2>
+
+<p>An object is a zstd stream whose first frame is skippable, so duckdb reads
+the downloaded tree where it landed with no unpacking step. It is not a useful
+<code>select *</code> though: a scrape holds its metrics as a nested list and a
+trace line holds its payload as a map, so both want flattening first. Two init
+files do that, and this server hands them out:</p>
+
+<pre>curl -O {{files_url}}analytics.sql
+curl -O {{files_url}}archive.sql</pre>
+
+<p><a href="{{FILES_PREFIX}}analytics.sql">analytics.sql</a> is the one to
+start with. It defines the views a consumer actually groups over, coverage per
+agent, the block producer's scoreboard, the lifecycle of every endorsement
+block, and it answers most first questions without you writing a join:</p>
+
+<pre>duckdb -init analytics.sql
+set variable archive = '/home/you/archive';</pre>
+
+<p><a href="{{FILES_PREFIX}}archive.sql">archive.sql</a> is the same flattening
+with none of the views, as three tables over whatever directory you point it
+at. Load that one where your question is not one the views already answered. It
+globs recursively rather than assuming the archive's layout, and it keeps a row
+for every submission including the failed ones:</p>
+
+<pre>METSUKE_ARCHIVE=~/archive duckdb -init archive.sql archive.duckdb</pre>
+
+<p>Naming a database file as above makes the tables persist, so for later
+questions in another session open <code>duckdb archive.duckdb</code> and ask
+rather than re-reading every object. Both files carry their own instructions in
+their opening comments.</p>
+
+<h2>Further reading</h2>
+
+<p><a href="{{DOCS_PREFIX}}docs/reading-the-archive.md">Reading the archive</a>
+is the complete account and the one to go to next. This page stops at getting
+you a first query; that document is why the read is not the obvious one, what
+makes an object provably a pool's, how the time bounds really behave, and the
+duckdb defaults that silently return NULL for a field they did not sample.</p>
+
+<p>The agent, this server and the fetch tool are
+<a href="{{REPOSITORY}}">one repository</a>, and its
+<a href="{{DOCS_PREFIX}}README.md">README</a> is what each crate does.
+Everything the shape of this data rests on is written down as a decision on the
+record:</p>
+
+<ul>
+<li><a href="{{DOCS_PREFIX}}docs/adr/0005-archive-raw-signed-bytes.md">ADR
+0005</a>, why the archive keeps the raw signed bytes and nothing derived from
+them, which is what makes any of it checkable at all.</li>
+<li><a href="{{DOCS_PREFIX}}docs/adr/0001-raw-ed25519-detached-signature.md">ADR
+0001</a>, the signature itself, and why it is detached.</li>
+<li><a href="{{DOCS_PREFIX}}docs/adr/0011-leios-key-submissions.md">ADR
+0011</a>, how a Leios key speaks for a pool, which is what the attribution of
+most of this archive rests on.</li>
+<li><a href="{{DOCS_PREFIX}}docs/adr/0004-client-spool-is-the-durability-layer.md">ADR
+0004</a>, the spool, which is why receipt time and observation time come
+apart.</li>
+<li><a href="{{DOCS_PREFIX}}CONTEXT.md">CONTEXT.md</a>, the vocabulary: what a
+Cold Key and a Leios Key are, and what a gap in an agent's sequence numbers
+does and does not tell you.</li>
+<li><a href="{{REPOSITORY}}/tree/main/docs/adr">The other decisions</a>, as the
+directory they sit in.</li>
+</ul>
+
+<p><a href="{{DETAILS_PATH}}">The details page</a> is the other side of this
+one: what a pool operator installs, what leaves their machine, and what the
+node has to emit for the trace lines you are reading here.</p>

@@ -141,12 +141,17 @@
           # The shipped config and unit, which both crates compile in whole:
           # the agent's config test and the server's instructions page.
           contribDir = "${toString ./contrib}/";
+          # The duckdb init files, which the server compiles in whole to serve
+          # them. By suffix rather than wholesale: the rest of docs/ is prose,
+          # and taking it would re-hash every derivation on a comment edit.
+          docsDir = "${toString ./docs}/";
           src = pkgs.lib.cleanSourceWith {
             src = ./.;
             filter =
               path: type:
               (craneLib.filterCargoSources path type)
               || pkgs.lib.hasPrefix contribDir path
+              || (pkgs.lib.hasPrefix docsDir path && pkgs.lib.hasSuffix ".sql" path)
               || (
                 pkgs.lib.hasPrefix cratesDir path
                 && pkgs.lib.any (suffix: pkgs.lib.hasSuffix suffix path) extraSources
@@ -333,6 +338,11 @@
             ./contrib/metsuke-journald.service
             ./contrib/node-pipe.conf
             ./contrib/cardano-node.service
+            # The duckdb init files the analysis page serves, which are under
+            # docs/ rather than contrib/ because a consumer reads them out of
+            # the repository too.
+            ./docs/analytics.sql
+            ./docs/archive.sql
             ./crates/metsuke-server/assets
             # What the check step shows, recorded by the agent's own test.
             ./crates/metsuke/tests/fixtures/recordings/agent-journal.log
@@ -654,13 +664,17 @@
             # must match at least one character: `metsuke-static-` alone is not
             # a package anyone can build.
             instructions-outputs = pkgs.runCommand "instructions-name-real-outputs" { } ''
-              pages="${./crates/metsuke-server/assets/quickstart.html} ${./crates/metsuke-server/assets/details.html} ${./crates/metsuke-server/src/instructions.rs}"
+              pages="${./crates/metsuke-server/assets/quickstart.html} ${./crates/metsuke-server/assets/details.html} ${./crates/metsuke-server/assets/analysis.html} ${./crates/metsuke-server/src/instructions.rs}"
               # Each grep is asserted non-empty first: a rename that also
               # reflowed the literal would otherwise leave a loop over nothing.
               # `|| true`: a grep that matches nothing exits 1, and under
               # `set -o pipefail` that would abort with an empty log instead of
               # the message below.
-              packages=$(grep -oh 'metsuke-static-[a-z0-9_-][a-z0-9_-]*' $pages | sort -u || true)
+              #
+              # `metsuke-fetch-` as well as `metsuke-`, because the analysis
+              # page offers the fetch builds and their names do not start the
+              # way the agent's do.
+              packages=$(grep -ohE 'metsuke-(fetch-)?static-[a-z0-9_-][a-z0-9_-]*' $pages | sort -u || true)
               modules=$(grep -oh 'nixosModules\.[a-z-]*' $pages | cut -d. -f2 | sort -u || true)
               [ -n "$packages" ] || { echo "no page offers a build to run"; exit 1; }
               [ -n "$modules" ] || { echo "no page points at a module"; exit 1; }
@@ -692,22 +706,24 @@
             # a render, because the prefix is what a render supplies.
             instructions-documents = pkgs.runCommand "instructions-link-real-documents" { } ''
               documents=${pkgs.lib.sourceFilesBySuffices ./. [ ".md" ]}
-              page=${./crates/metsuke-server/assets/details.html}
-              # `|| true` for the same reason the check above gives.
-              files=$(grep -oh '{{DOCS_PREFIX}}[^"]*' $page |
-                sed 's|^{{DOCS_PREFIX}}||' | sort -u || true)
-              trees=$(grep -oh '{{REPOSITORY}}/tree/main/[^"]*' $page |
+              pages="${./crates/metsuke-server/assets/details.html} ${./crates/metsuke-server/assets/analysis.html}"
+              # `|| true` for the same reason the check above gives. A link to
+              # a heading is checked as the file it is in, since whether that
+              # heading exists is not something this can see.
+              files=$(grep -oh '{{DOCS_PREFIX}}[^"]*' $pages |
+                sed 's|^{{DOCS_PREFIX}}||; s|#.*$||' | sort -u || true)
+              trees=$(grep -oh '{{REPOSITORY}}/tree/main/[^"]*' $pages |
                 sed 's|^{{REPOSITORY}}/tree/main/||' | sort -u || true)
-              [ -n "$files" ] || { echo "the details page links no documents"; exit 1; }
+              [ -n "$files" ] || { echo "no page links any document"; exit 1; }
               for path in $files; do
                 [ -f "$documents/$path" ] || {
-                  echo "the details page links $path, which is not a file in this repository"
+                  echo "a page links $path, which is not a file in this repository"
                   exit 1
                 }
               done
               for path in $trees; do
                 [ -d "$documents/$path" ] || {
-                  echo "the details page links $path as a directory, which it is not"
+                  echo "a page links $path as a directory, which it is not"
                   exit 1
                 }
               done

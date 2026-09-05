@@ -4,7 +4,14 @@
 //! stops there; the details page holds what the quickstart leaves out, and is
 //! the only one that has to be complete.
 //!
-//! Values in both are filled rather than written down, so that every one they
+//! The analysis page is a third, and its audience is the other direction: a
+//! developer reading the archive back rather than a pool sending to it. It is
+//! deliberately the shortest of them, because `docs/reading-the-archive.md` is
+//! the complete account and stays so. What a page can do that the document
+//! cannot is name this deployment, so the walkthrough is the part that has to
+//! be run against a particular server and nothing more.
+//!
+//! Values in each are filled rather than written down, so that every one they
 //! quote comes out of the file that owns it. That is the shipped configs and
 //! units whole, the agent version `build.rs` read, and the field list from the
 //! wire types. No edit here can document a default the agent does not ship.
@@ -28,6 +35,12 @@ pub const PATH: &str = "/";
 /// else.
 pub const DETAILS_PATH: &str = "/details";
 
+/// Where the archive's own onboarding is served. A third document because its
+/// audience is not the other two's: a pool operator sends telemetry, and this
+/// is for whoever reads it back. Linked from the details page's further
+/// reading, which is where a reader who wants the other side already is.
+pub const ANALYSIS_PATH: &str = "/analysis";
+
 pub const ICON: &str = include_str!("../assets/favicon.svg");
 pub const ICON_PATH: &str = "/favicon.svg";
 /// The path a client asks for on its own, whatever the page links. Served
@@ -41,8 +54,9 @@ pub const ICON_CONTENT_TYPE: &str = "image/svg+xml";
 /// not editing Rust, and a literal brace is a literal brace.
 const QUICKSTART: &str = include_str!("../assets/quickstart.html");
 const DETAILS: &str = include_str!("../assets/details.html");
+const ANALYSIS: &str = include_str!("../assets/analysis.html");
 
-/// Shared by both, so the two documents cannot drift apart visually.
+/// Shared by all three, so the documents cannot drift apart visually.
 const STYLE: &str = include_str!("../assets/style.css");
 
 /// The Leios wordmark, in each page's header. Inlined rather than served and
@@ -81,6 +95,13 @@ pub const PIPE_DROPIN: &str = include_str!("../../../contrib/node-pipe.conf");
 /// make one. Offered so a pool testing this does not write one first.
 pub const NODE_UNIT: &str = include_str!("../../../contrib/cardano-node.service");
 
+/// The two duckdb init files the analysis page's read step names. Served for
+/// the same reason the configs are: `duckdb -init` takes a path, and a
+/// consumer who has downloaded an archive should not have to clone the
+/// repository to get the file that reads it.
+pub const ANALYTICS_SQL: &str = include_str!("../../../docs/analytics.sql");
+pub const ARCHIVE_SQL: &str = include_str!("../../../docs/archive.sql");
+
 /// The node namespaces the trace step gives an explicit severity. These are the
 /// node's own namespaces, not the agent's selection prefixes: what a node emits
 /// and what the agent keeps are two settings in two files. Why each entry, and
@@ -100,7 +121,7 @@ pub const FILES_PREFIX: &str = "/files/";
 /// Every file the page offers, by the name it is served and linked under. On
 /// the way out a config is pointed at this deployment, and any file's
 /// references to the siblings below become links to them. Nothing else moves.
-pub const FILES: [(&str, &str); 8] = [
+pub const FILES: [(&str, &str); 10] = [
     ("config.pipe.toml", CONFIG_PIPE),
     ("config.journald.toml", CONFIG_JOURNALD),
     ("config.minimal.toml", CONFIG_MINIMAL),
@@ -109,6 +130,8 @@ pub const FILES: [(&str, &str); 8] = [
     ("metsuke-journald.service", UNIT_JOURNALD),
     ("node-pipe.conf", PIPE_DROPIN),
     ("cardano-node.service", NODE_UNIT),
+    ("analytics.sql", ANALYTICS_SQL),
+    ("archive.sql", ARCHIVE_SQL),
 ];
 
 /// The names the static agent builds are served and linked under. The flake's
@@ -117,6 +140,16 @@ pub const FILES: [(&str, &str); 8] = [
 pub const BINARIES: [&str; 2] = [
     "metsuke-static-x86_64-linux",
     "metsuke-static-aarch64-linux",
+];
+
+/// The same for the fetch tool, which the analysis page offers and neither
+/// other page mentions. Separate from `BINARIES` rather than appended to it,
+/// because that array is what the quickstart's install step indexes and what
+/// decides whether this deployment offers an agent at all: a deployment
+/// serving only the fetch builds still has no agent to hand a pool.
+pub const FETCH_BINARIES: [&str; 2] = [
+    "metsuke-fetch-static-x86_64-linux",
+    "metsuke-fetch-static-aarch64-linux",
 ];
 
 /// One static agent build this deployment offers, read at startup by the
@@ -156,6 +189,7 @@ pub fn pages(public_url: &url::Url, binaries: Vec<Binary>) -> Pages {
     Pages {
         quickstart: quickstart(UNIT_JOURNALD, public_url, &files),
         details: details(&pointed(CONFIG_EXAMPLE), public_url),
+        analysis: analysis(public_url, &files),
         files,
     }
 }
@@ -165,6 +199,7 @@ pub fn pages(public_url: &url::Url, binaries: Vec<Binary>) -> Pages {
 pub struct Pages {
     pub quickstart: String,
     pub details: String,
+    pub analysis: String,
     /// Everything served under `FILES_PREFIX`.
     pub files: Vec<File>,
 }
@@ -248,6 +283,11 @@ fn try_it(offered: &[File], files_url: &str) -> (String, String) {
 /// serves the same file. Driven off `FILES` rather than the `contrib/` prefix,
 /// so a name this server does not answer for keeps pointing at the repository
 /// instead of becoming a link that 404s.
+///
+/// `contrib/` and not also `docs/`, though the two init files are served from
+/// there: what those name is themselves, as the path `duckdb -init` loads them
+/// from, and `-init` takes a file rather than a URL. Rewriting it would turn a
+/// line that runs into one that cannot.
 fn siblings_linked(text: &str, public_url: &url::Url) -> String {
     let files = public_url
         .join(FILES_PREFIX)
@@ -368,6 +408,7 @@ pub fn details(config_example: &str, public_url: &url::Url) -> String {
             ("style", STYLE.trim_end().to_string()),
             ("logo", LOGO.trim_end().to_string()),
             ("PATH", PATH.to_string()),
+            ("ANALYSIS_PATH", ANALYSIS_PATH.to_string()),
             ("HEADER_VKEY", HEADER_VKEY.to_string()),
             ("HEADER_SIGNATURE", HEADER_SIGNATURE.to_string()),
             ("HEADER_POOL", HEADER_POOL.to_string()),
@@ -393,6 +434,62 @@ pub fn details(config_example: &str, public_url: &url::Url) -> String {
             // off the unit for the same reason the quickstart does: written
             // out here they are a second copy that goes stale silently.
             ("key_path", escape(&credential_source(UNIT))),
+        ],
+    )
+}
+
+/// How the analysis page hands over the fetch tool, on the branch the
+/// quickstart's install step already takes: a download where this deployment
+/// serves one, a build where it does not. Two values for the same reason
+/// `try_it` gives, and a downloaded file arrives without its execute bit.
+fn fetch_it(offered: &[File], files_url: &str) -> (String, String) {
+    let name = FETCH_BINARIES[0];
+    match offered.iter().any(|file| file.name == name) {
+        true => (
+            escape(&format!(
+                "curl -o metsuke-fetch {files_url}{name}\nchmod +x metsuke-fetch"
+            )),
+            "./metsuke-fetch".to_string(),
+        ),
+        false => (
+            escape(&format!("nix build {}#{name}", flake_ref())),
+            "./result/bin/metsuke-fetch".to_string(),
+        ),
+    }
+}
+
+/// The archive's own onboarding, for whoever reads the telemetry back rather
+/// than sends it. Takes what the deployment offers for the same reason the
+/// quickstart does: the tool is downloaded where this server serves a build
+/// and built where it does not.
+pub fn analysis(public_url: &url::Url, offered: &[File]) -> String {
+    let files = public_url
+        .join(FILES_PREFIX)
+        .expect("the files prefix joins onto an absolute URL");
+    let (fetch_install, fetch) = fetch_it(offered, files.as_str());
+    fill(
+        ANALYSIS,
+        &[
+            ("ICON_PATH", ICON_PATH.to_string()),
+            ("ICON_CONTENT_TYPE", ICON_CONTENT_TYPE.to_string()),
+            ("style", STYLE.trim_end().to_string()),
+            ("logo", LOGO.trim_end().to_string()),
+            ("PATH", PATH.to_string()),
+            ("DETAILS_PATH", DETAILS_PATH.to_string()),
+            ("FILES_PREFIX", FILES_PREFIX.to_string()),
+            ("DOCS_PREFIX", docs_prefix()),
+            ("REPOSITORY", env!("CARGO_PKG_REPOSITORY").to_string()),
+            ("flake", escape(&flake_ref())),
+            ("files_url", escape(files.as_str())),
+            ("fetch_install", fetch_install),
+            // What every later command in the walkthrough runs, so the build
+            // branch and the download branch read the same from here on.
+            ("fetch", escape(&fetch)),
+            // Absolute and this deployment's, because `--server` is the one
+            // flag a reader cannot guess and the whole reason this is a served
+            // page rather than the markdown it links.
+            ("server_url", escape(public_url.as_str())),
+            ("REALM", crate::developer::REALM.to_string()),
         ],
     )
 }

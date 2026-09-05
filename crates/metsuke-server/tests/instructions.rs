@@ -4,7 +4,8 @@
 //!
 //! Which page a test reads is part of what it asserts. The quickstart carries
 //! what an operator does; everything about what the agent sends and what the
-//! node has to be told is the details page's.
+//! node has to be told is the details page's; and the archive read back is the
+//! analysis page's, whose audience is the other direction entirely.
 
 use std::collections::BTreeMap;
 
@@ -46,6 +47,16 @@ const DETAILS_SECTIONS: [&str; 9] = [
     "Further reading",
 ];
 
+/// The archive onramp, in the order a consumer meets it: the account before
+/// the tool, because the tool is useless without one, and the read last.
+const ANALYSIS_SECTIONS: [&str; 5] = [
+    "1. Get an account",
+    "2. Get the tool",
+    "3. Sync the archive",
+    "4. Read it",
+    "Further reading",
+];
+
 /// Whether the documents the details page links are still in the repository
 /// is the flake's `instructions-documents` check: the Rust source is filtered
 /// to the crates and contrib, so nothing here can see one.
@@ -66,6 +77,7 @@ fn every_outline_section_is_present_and_in_order() {
     for (page, sections) in [
         (&pages.quickstart, &QUICKSTART_SECTIONS[..]),
         (&pages.details, &DETAILS_SECTIONS[..]),
+        (&pages.analysis, &ANALYSIS_SECTIONS[..]),
     ] {
         let mut cursor = 0;
         for section in sections {
@@ -155,6 +167,9 @@ fn the_example_node_unit_is_the_one_the_journald_setup_reads() {
 /// server instead. Only served names are rewritten: `contrib/server.example.toml`
 /// is the server operator's file and this page does not offer it, so it stays a
 /// repository path rather than becoming a link that 404s.
+///
+/// The two init files are exempt by living under `docs/`, which `siblings_linked`
+/// says why it leaves alone.
 #[test]
 fn a_served_file_reaches_the_siblings_it_names() {
     let pages = instructions::pages(&public_url(), support::test_binaries());
@@ -477,6 +492,83 @@ fn a_deployment_with_no_agent_build_offers_none() {
     );
 }
 
+/// The analysis page is reachable, and from the details page alone. The
+/// quickstart's audience is a pool operator, and putting a developer tool in
+/// front of one is what the third page exists to avoid.
+#[test]
+fn the_details_page_links_the_analysis_page_and_the_quickstart_does_not() {
+    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let link = format!(r#"href="{}"#, instructions::ANALYSIS_PATH);
+    assert!(
+        pages.details.contains(&link),
+        "the details page never links the analysis page"
+    );
+    assert!(
+        !pages.quickstart.contains(&link),
+        "the quickstart links the analysis page, which is not its audience's"
+    );
+}
+
+/// The same shape as the agent-build test above, for the tool this page hands
+/// over: where the deployment serves a fetch build the page offers it, and
+/// where it does not the page says to build one.
+#[test]
+fn the_analysis_page_offers_the_fetch_build_this_deployment_serves() {
+    let offered = instructions::pages(&public_url(), support::test_binaries()).analysis;
+    assert!(
+        offered.contains(&format!(
+            "{}{}",
+            instructions::FILES_PREFIX,
+            instructions::FETCH_BINARIES[0]
+        )),
+        "a deployment serving the fetch tool has a page that never offers it"
+    );
+
+    let none = instructions::pages(&public_url(), Vec::new()).analysis;
+    assert!(
+        !none.contains(&format!(
+            "curl -o metsuke-fetch {}",
+            instructions::FILES_PREFIX
+        )),
+        "the page offers a download of the fetch tool that nothing serves"
+    );
+    assert!(
+        none.contains("nix build"),
+        "the page offers no way to get the fetch tool at all"
+    );
+}
+
+/// The read step is the reason the two init files are served at all, so a page
+/// that names neither has lost the point of shipping them.
+#[test]
+fn the_read_step_offers_the_duckdb_init_files() {
+    let analysis = instructions::pages(&public_url(), support::test_binaries()).analysis;
+    for name in ["analytics.sql", "archive.sql"] {
+        assert!(
+            instructions::FILES
+                .iter()
+                .any(|(served, _)| *served == name),
+            "{name} is named on the page but not served"
+        );
+        assert!(
+            analysis.contains(&format!("{}{name}", instructions::FILES_PREFIX)),
+            "the analysis page never offers {name}"
+        );
+    }
+}
+
+/// Naming this deployment is the whole reason this is a served page rather
+/// than the markdown it links: `--server` is the one value a reader cannot get
+/// from the document.
+#[test]
+fn the_analysis_page_names_the_server_to_point_the_tool_at() {
+    let analysis = instructions::pages(&public_url(), support::test_binaries()).analysis;
+    assert!(
+        analysis.contains(support::PUBLIC_URL),
+        "the page never names the server a reader would point the tool at"
+    );
+}
+
 /// The headers an operator's proxy has to pass through are the same two the
 /// agent sends.
 #[test]
@@ -586,7 +678,7 @@ fn the_metrics_endpoint_comes_from_the_shipped_config() {
 fn every_file_the_pages_link_is_one_the_server_serves() {
     let pages = instructions::pages(&public_url(), support::test_binaries());
     let mut linked = 0;
-    for page in [&pages.quickstart, &pages.details] {
+    for page in [&pages.quickstart, &pages.details, &pages.analysis] {
         for after in page.split(instructions::FILES_PREFIX).skip(1) {
             // Both the relative hrefs and the absolute curl targets end at the
             // next quote or whitespace.
