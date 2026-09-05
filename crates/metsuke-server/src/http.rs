@@ -124,7 +124,7 @@ pub struct Pages {
 /// units are text an operator may read in a browser, and the agent builds are
 /// not.
 struct Served {
-    name: &'static str,
+    name: String,
     bytes: bytes::Bytes,
     content_type: &'static str,
 }

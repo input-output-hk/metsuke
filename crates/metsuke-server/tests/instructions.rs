@@ -367,7 +367,7 @@ fn every_shipped_config_is_served_pointing_at_this_server() {
         .collect();
     assert!(!configs.is_empty(), "no config is served at all");
     for file in configs {
-        let name = file.name;
+        let name = &file.name;
         let table: toml::Table = String::from_utf8_lossy(&file.bytes)
             .parse()
             .unwrap_or_else(|error| panic!("{name} is not TOML after substitution: {error}"));
@@ -385,13 +385,13 @@ fn every_shipped_config_is_served_pointing_at_this_server() {
 #[test]
 fn every_served_file_is_the_shipped_one() {
     let binaries = support::test_binaries();
-    let expected: Vec<(&str, Vec<u8>)> = instructions::FILES
+    let expected: Vec<(String, Vec<u8>)> = instructions::FILES
         .iter()
-        .map(|(name, shipped)| (*name, shipped.as_bytes().to_vec()))
+        .map(|(name, shipped)| (name.to_string(), shipped.as_bytes().to_vec()))
         .chain(
             binaries
                 .iter()
-                .map(|binary| (binary.name, binary.bytes.clone())),
+                .map(|binary| (binary.name.clone(), binary.bytes.clone())),
         )
         .collect();
     let files = instructions::pages(&public_url(), support::test_binaries()).files;

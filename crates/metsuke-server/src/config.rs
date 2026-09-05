@@ -36,14 +36,11 @@ pub struct ServerConfig {
     pub downloads: Option<DownloadsConfig>,
 }
 
-/// Where each architecture's static agent is on this host. Both, because the
-/// page names both and an operator on either should not have to build.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DownloadsConfig {
-    pub x86_64_linux: AbsolutePath,
-    pub aarch64_linux: AbsolutePath,
-}
+/// Every static build this deployment offers, by the name it is served and
+/// linked under, to the path it is at on this host. Keyed rather than a field
+/// per build: the two the page offers are the agent's architectures, and what
+/// a deployment hands out beyond those is its own to decide.
+pub type DownloadsConfig = std::collections::BTreeMap<String, AbsolutePath>;
 
 /// What the transport refuses, as against what the intake refuses. Every field
 /// bounds one way a client can hold a connection open without finishing with

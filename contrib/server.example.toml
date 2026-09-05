@@ -10,12 +10,17 @@ listen = "127.0.0.1:8080"
 # somewhere else.
 public_url = "https://metsuke.example.org"
 
-# Optional. The static agent builds this server offers for download, so an
-# operator needs no nix to get one. Leave the section out and the onboarding
-# page tells them to build it instead.
+# Optional. Static builds this server offers for download, keyed by the name
+# each is served and linked under, so an operator needs no nix to get one. The
+# onboarding page's install step offers a download when the x86_64 agent build
+# is among them, and tells them to build it otherwise; name the aarch64 one too
+# or an operator following the ARM note beside it has nothing to fetch. Anything
+# else here is served but not linked from that page, which is how a tool for a
+# different audience is handed out without putting it in front of a pool.
 # [downloads]
-# x86_64_linux = "/usr/local/lib/metsuke/metsuke-static-x86_64-linux"
-# aarch64_linux = "/usr/local/lib/metsuke/metsuke-static-aarch64-linux"
+# metsuke-static-x86_64-linux = "/usr/local/lib/metsuke/metsuke-static-x86_64-linux"
+# metsuke-static-aarch64-linux = "/usr/local/lib/metsuke/metsuke-static-aarch64-linux"
+# metsuke-fetch-static-x86_64-linux = "/usr/local/lib/metsuke/metsuke-fetch-static-x86_64-linux"
 
 # Generous, because a pool on a bad link still has to get its submission in.
 [http]

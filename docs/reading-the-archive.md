@@ -21,6 +21,19 @@ nix run github:input-output-hk/metsuke#duckdb
 nix run github:input-output-hk/metsuke#zstd
 ```
 
+`metsuke-fetch` itself is the same, and cross-builds to one static file for a
+host with no nix at all:
+
+```
+nix run github:input-output-hk/metsuke#metsuke-fetch
+nix build github:input-output-hk/metsuke#metsuke-fetch-static-x86_64-linux
+```
+
+A deployment may also serve that build under `/files/`, in which case `curl` it
+from the server you pull the archive from. It is named in the server's
+`[downloads]` but not linked from the onboarding pages, which are a pool
+operator's rather than a consumer's.
+
 A metrics scrape and a trace line share no fields, so a read of both leaves
 whichever it did not come from NULL. The kind is the last segment of every
 object's name, which reads them apart without a column:

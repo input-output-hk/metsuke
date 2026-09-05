@@ -258,16 +258,22 @@ in
           # own static packages: defaulting them would make every VM test build
           # two cross-compiled agents to stand up a server node.
           downloads = mkOption {
-            type = types.nullOr (
-              types.submodule {
-                options = {
-                  x86_64_linux = required types.path;
-                  aarch64_linux = required types.path;
-                };
-              }
-            );
+            type = types.nullOr (types.attrsOf types.path);
             default = null;
-            description = "Static agent builds this server offers for download.";
+            example = {
+              metsuke-static-x86_64-linux = "/usr/local/lib/metsuke/metsuke-static-x86_64-linux";
+            };
+            description = ''
+              Static builds this server offers for download, keyed by the name
+              each is served and linked under. The quickstart's install step
+              offers a download when `metsuke-static-x86_64-linux` is among
+              them, since that is the build its command names, and tells an
+              operator to build one otherwise; name the aarch64 build too, or
+              an operator following the ARM note beside it has nothing to
+              fetch. Anything else here is served but not linked from that
+              page, which is how a tool for another audience is handed out
+              without putting it in front of a pool.
+            '';
           };
 
           http = mkOption {

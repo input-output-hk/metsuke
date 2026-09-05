@@ -232,7 +232,7 @@ pub fn test_binaries() -> Vec<metsuke_server::instructions::Binary> {
         .iter()
         .enumerate()
         .map(|(at, name)| metsuke_server::instructions::Binary {
-            name,
+            name: name.to_string(),
             bytes: vec![at as u8; 8],
         })
         .collect()

@@ -268,13 +268,36 @@
           # NixOS. Cross rather than the native toolchain even for this
           # system's own architecture: musl is a different libc, so both
           # targets are the same code path.
-          staticAgent =
-            crossPkgs:
+          staticAgent = staticBinary agentArgs;
+
+          # The fetch tool's own tree: the server crate is here because cargo
+          # loads every workspace member's manifest and this crate dev-depends
+          # on it, the same reason the native build gives.
+          staticFetch = staticBinary (
+            binaryArgs
+            // {
+              src = pkgs.lib.fileset.toSource {
+                root = ./.;
+                fileset = pkgs.lib.fileset.unions [
+                  serverFileset
+                  (pkgs.lib.fileset.fromSource (crateSrc [ ./crates/metsuke-fetch ]))
+                ];
+              };
+              cargoExtraArgs = "--package metsuke-fetch";
+            }
+          );
+
+          # The same, for any crate whose args are given. `metsuke-fetch` is
+          # built this way for a developer pulling the archive on a host with
+          # no nix, which is a different audience from the agent's and is why
+          # the page does not link it.
+          staticBinary =
+            args: crossPkgs:
             let
               crossCrane = inputs.crane.mkLib crossPkgs;
               # This toolchain has to compile the dependencies again, so the
               # native artifacts come out.
-              staticArgs = removeAttrs agentArgs [ "cargoArtifacts" ] // {
+              staticArgs = removeAttrs args [ "cargoArtifacts" ] // {
                 # nixpkgs links its musl targets dynamically, so rustc's own
                 # musl default is turned off before it reaches here. Asking
                 # for it back is what leaves no interpreter in the binary.
@@ -466,15 +489,15 @@
           # whose libc is not ours: no interpreter to find and nothing to load.
           # readelf reads any architecture, so one derivation covers both.
           linksNothing =
-            agent:
-            pkgs.runCommand "${agent.name}-links-nothing"
+            binary: build:
+            pkgs.runCommand "${build.name}-links-nothing"
               {
                 nativeBuildInputs = [ pkgs.binutils ];
               }
               ''
-                readelf --program-headers --dynamic ${agent}/bin/metsuke > sections
+                readelf --program-headers --dynamic ${build}/bin/${binary} > sections
                 if grep -Eq 'INTERP|NEEDED' sections; then
-                  echo "${agent}/bin/metsuke is not static:"
+                  echo "${build}/bin/${binary} is not static:"
                   grep -E 'INTERP|NEEDED' sections
                   exit 1
                 fi
@@ -538,6 +561,9 @@
             );
             metsuke-static-x86_64-linux = staticAgent pkgs.pkgsCross.musl64;
             metsuke-static-aarch64-linux = staticAgent pkgs.pkgsCross.aarch64-multiplatform-musl;
+
+            metsuke-fetch-static-x86_64-linux = staticFetch pkgs.pkgsCross.musl64;
+            metsuke-fetch-static-aarch64-linux = staticFetch pkgs.pkgsCross.aarch64-multiplatform-musl;
             metsuke-server = craneLib.buildPackage (
               binaryArgs
               // {
@@ -571,8 +597,13 @@
               roster = config.packages.metsuke-roster;
             };
 
-            static-x86_64-linux = linksNothing config.packages.metsuke-static-x86_64-linux;
-            static-aarch64-linux = linksNothing config.packages.metsuke-static-aarch64-linux;
+            static-x86_64-linux = linksNothing "metsuke" config.packages.metsuke-static-x86_64-linux;
+            static-aarch64-linux = linksNothing "metsuke" config.packages.metsuke-static-aarch64-linux;
+
+            # The fetch tool is handed out the same way and so has to be static
+            # for the same reason: a developer's host is not ours either.
+            fetch-static-x86_64-linux = linksNothing "metsuke-fetch" config.packages.metsuke-fetch-static-x86_64-linux;
+            fetch-static-aarch64-linux = linksNothing "metsuke-fetch" config.packages.metsuke-fetch-static-aarch64-linux;
 
             # Two locks name the same Leios tag: this one is what
             # scripts/record-scrape-fixtures.sh records against, devnet's is

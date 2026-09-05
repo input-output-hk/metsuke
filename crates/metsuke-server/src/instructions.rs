@@ -123,7 +123,7 @@ pub const BINARIES: [&str; 2] = [
 /// caller: a path that cannot be read is a deployment mistake, and finding it
 /// at boot beats finding it when an operator follows the page.
 pub struct Binary {
-    pub name: &'static str,
+    pub name: String,
     pub bytes: Vec<u8>,
 }
 
@@ -135,7 +135,7 @@ pub fn pages(public_url: &url::Url, binaries: Vec<Binary>) -> Pages {
     let files = FILES
         .iter()
         .map(|(name, contents)| File {
-            name,
+            name: name.to_string(),
             content_type: "text/plain; charset=utf-8",
             bytes: {
                 // Only the configs name an upload_url; every shipped file
@@ -171,7 +171,7 @@ pub struct Pages {
 
 /// One file the pages link and the server answers for.
 pub struct File {
-    pub name: &'static str,
+    pub name: String,
     pub bytes: Vec<u8>,
     pub content_type: &'static str,
 }

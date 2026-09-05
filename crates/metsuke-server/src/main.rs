@@ -169,27 +169,26 @@ struct Serving {
     downloads: Option<DownloadsConfig>,
 }
 
-/// The static agent builds the page offers, read off disk. Empty where the
-/// deployment configures none, which the page then says.
+/// The static builds this deployment offers, read off disk. Empty where it
+/// configures none, which the page then says. Whether the two the quickstart
+/// links are among them is what `instructions` decides; everything here does
+/// is serve what the configuration named.
 fn agent_builds(config: Option<&DownloadsConfig>) -> Result<Vec<instructions::Binary>, Fatal> {
     let Some(config) = config else {
         return Ok(Vec::new());
     };
-    [
-        (instructions::BINARIES[0], &config.x86_64_linux),
-        (instructions::BINARIES[1], &config.aarch64_linux),
-    ]
-    .into_iter()
-    .map(|(name, path)| {
-        Ok(instructions::Binary {
-            name,
-            bytes: std::fs::read(path.as_path()).map_err(|source| Fatal::ReadDownload {
-                path: path.as_path().display().to_string(),
-                source,
-            })?,
+    config
+        .iter()
+        .map(|(name, path)| {
+            Ok(instructions::Binary {
+                name: name.clone(),
+                bytes: std::fs::read(path.as_path()).map_err(|source| Fatal::ReadDownload {
+                    path: path.as_path().display().to_string(),
+                    source,
+                })?,
+            })
         })
-    })
-    .collect()
+        .collect()
 }
 
 /// Run the named subcommand against one archive. `verify_archive` is the only
