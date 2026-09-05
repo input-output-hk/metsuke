@@ -17,6 +17,10 @@ metrics_url = "http://127.0.0.1:12798/metrics"
 # The server you report to.
 upload_url = "https://metsuke.example.org/v1/submit"
 
+# What each line says it came from, so a pool reporting from more than one host
+# can tell them apart. Unset, it is this host's hostname, folded to lowercase.
+# agent_id = "edge-1"
+
 # Where the spool goes. This is the state directory contrib/node-pipe.conf
 # creates, so leave it alone under systemd or in a container; running the pair
 # from a shell, set a path you can write.

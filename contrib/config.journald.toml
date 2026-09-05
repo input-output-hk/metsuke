@@ -19,6 +19,10 @@ metrics_url = "http://127.0.0.1:12798/metrics"
 # The server you report to.
 upload_url = "https://metsuke.example.org/v1/submit"
 
+# What each line says it came from, so a pool reporting from more than one host
+# can tell them apart. Unset, it is this host's hostname, folded to lowercase.
+# agent_id = "edge-1"
+
 [log]
 source = "journald"
 
