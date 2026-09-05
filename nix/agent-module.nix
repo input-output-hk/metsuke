@@ -1,3 +1,23 @@
+# The NixOS agent. `services.metsuke.settings` is the agent's config file, one
+# option per field of `crates/metsuke/src/config.rs`, and every default below
+# is read out of `contrib/config.example.toml` rather than restated here.
+#
+# To read what an option is for and what it defaults to, read that example. It
+# is annotated, it is plain text, and it is the same file an operator editing
+# by hand is given. A deployment also serves it at `/files/config.example.toml`.
+#
+# To read it as NixOS options instead, on a host that imports this module:
+#
+#   nixos-option services.metsuke.settings.scrape_interval_secs
+#
+# or every option and what it defaults to, from a flake that has one:
+#
+#   nix eval --raw \
+#     .#nixosConfigurations.<host>.options.services.metsuke.settings.type.getSubOptions \
+#     --apply 'o: builtins.concatStringsSep "\n" (builtins.attrValues (builtins.mapAttrs
+#        (k: v: k + " = " + (v.defaultText.text or
+#          (if v ? default then builtins.toJSON v.default else "(required)")))
+#        (builtins.removeAttrs (o []) ["_module"])))'
 {
   config,
   lib,
@@ -19,19 +39,46 @@ let
 
   inherit (lib) mkOption types;
 
-  # Neither carries a description: the option's name is the Rust field's name,
-  # and `settings` below points at the file that owns what it means.
+  # No description on either: the option's name is the Rust field's name, and
+  # `settings` below names the file that documents every one of them. What
+  # carries a description of its own is the handful where this module's
+  # behaviour is not the file's, because that is what no pointer can supply.
   required = type: mkOption { inherit type; };
 
-  # A defaulted field of `crates/metsuke/src/config.rs`. Null leaves it out of
-  # the rendered TOML, so the shipped default applies and its digits stay in
-  # the crate that ships them.
-  shipped =
-    type:
+  # Every default the annotated example documents, as `# key = value`. Read
+  # rather than restated, so `nixos-option` can show what a null leaves the
+  # agent doing without this file keeping its own copy of the digits. A key the
+  # example stops documenting throws on evaluation here, which is the whole
+  # guard: it cannot go quietly stale.
+  documented = lib.pipe (builtins.readFile ../contrib/config.example.toml) [
+    (lib.splitString "\n")
+    (map (line: builtins.match "# ([a-z_]+) = (.*)" line))
+    (builtins.filter (match: match != null))
+    (map (match: lib.nameValuePair (builtins.elemAt match 0) (builtins.elemAt match 1)))
+    builtins.listToAttrs
+  ];
+
+  # Those values are TOML literals, so a string arrives with its quotes. A nix
+  # reader wants what is inside them.
+  unquoted =
+    value:
+    let
+      quoted = builtins.match "\"(.*)\"" value;
+    in
+    if quoted == null then value else builtins.head quoted;
+
+  # Defaulted fields of `crates/metsuke/src/config.rs`, keyed by the name each
+  # has there. Null leaves one out of the rendered TOML, so the agent applies
+  # its own default and the digits stay in the crate that ships them; the
+  # example is where a reader is shown what that default is.
+  shippedOptions = builtins.mapAttrs (
+    key: type:
     mkOption {
       type = types.nullOr type;
       default = null;
-    };
+      defaultText = lib.literalMD (unquoted documented.${key});
+    }
+  );
 
   set = lib.filterAttrs (_: value: value != null);
 
@@ -80,6 +127,16 @@ in
         `crates/metsuke/src/config.rs` bar `signing_key`, which this module
         owns: the key arrives as a systemd credential. The first three have no
         default and are set here or evaluation fails naming them.
+
+        `contrib/config.example.toml` is the annotated reference and says what
+        each of these is for and what it defaults to, in the same words an
+        operator editing the file by hand reads. A deployment serves it at
+        `/files/config.example.toml`, so a checkout is not needed to read it.
+
+        An option left `null` is left out of the rendered file entirely, so the
+        agent applies its own default rather than receiving one from here. The
+        options below carrying a description are the ones where this module
+        behaves differently from that reference.
       '';
       type = types.submodule {
         options = {
@@ -87,22 +144,36 @@ in
           metrics_url = required types.str;
           upload_url = required types.str;
 
-          agent_id = shipped types.str;
-          scrape_interval_secs = shipped types.ints.positive;
-          upload_interval_secs = shipped types.ints.positive;
-          sntp_servers = shipped (types.listOf types.str);
-          sntp_timeout_secs = shipped types.ints.unsigned;
-          spool_path = shipped types.str;
-          spool_max_bytes = shipped types.ints.unsigned;
-          spool_busy_timeout_secs = shipped types.ints.unsigned;
-          scrape_timeout_secs = shipped types.ints.unsigned;
-          scrape_max_body_bytes = shipped types.ints.unsigned;
-          upload_timeout_secs = shipped types.ints.unsigned;
-          upload_jitter_max_secs = shipped types.ints.unsigned;
-          upload_backoff_max_secs = shipped types.ints.unsigned;
-          upload_batch_max_bytes = shipped types.ints.unsigned;
-          compression_level = shipped types.int;
-
+          # The one field whose default is computed rather than a value the
+          # reference can show, so `null` here reads as "unset" when it means
+          # something specific and machine-dependent.
+          agent_id = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            defaultText = lib.literalMD "this host's name, folded to lowercase";
+            description = ''
+              What to call this agent on every line it ships, so a pool
+              reporting from more than one can tell them apart. Unset, it is
+              this host's hostname folded to lowercase `a-z0-9` in
+              dash-separated runs, and a value set here is folded the same way.
+              Set it where the hostname is not the name you want, and in a
+              container, where the hostname is the runtime's rather than yours.
+            '';
+          };
+          # Bounded here in a way the reference is not: the unit this module
+          # renders may write one directory and nowhere else.
+          spool_path = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            defaultText = lib.literalMD (unquoted documented.spool_path);
+            description = ''
+              Where the SQLite spool goes. It has to be under `${writable}`,
+              which is the StateDirectory this module's unit creates and the
+              only path `ProtectSystem=strict` leaves it able to write. An
+              assertion refuses anything else rather than rendering a unit that
+              dies on its first open.
+            '';
+          };
           log = mkOption {
             description = ''
               Trace-line collection. Setting it opens the unit up by what
@@ -122,6 +193,15 @@ in
                   source = mkOption {
                     type = types.enum [ "journald" ];
                     default = "journald";
+                    description = ''
+                      Which stream the trace lines come from. Only `journald`
+                      here, unlike the reference, which also offers `pipe`: the
+                      unit this module renders runs the agent on its own with
+                      no node upstream, so a pipe would get `/dev/null`, read
+                      EOF at once, and `Restart=always` would loop it forever
+                      collecting nothing. Take the shipped drop-in instead if
+                      you want that source.
+                    '';
                   };
                   journal_unit = required types.str;
                   # Not `shipped`: which journalctl exists is this module's to
@@ -129,16 +209,41 @@ in
                   journalctl_path = mkOption {
                     type = types.str;
                     default = "${config.systemd.package}/bin/journalctl";
+                    defaultText = lib.literalMD "`journalctl` from `config.systemd.package`";
+                    description = ''
+                      Which journalctl to run. Defaulted here where the
+                      reference has no default for it, because this module
+                      knows which systemd the host is running and the hardened
+                      unit's `PATH` is not one to resolve a program on.
+                    '';
                   };
-                  namespace_roots = shipped (types.listOf types.str);
-                  namespaces = shipped (types.listOf types.str);
-                  log_max_bytes = shipped types.ints.unsigned;
-                  respawn_backoff_secs = shipped types.ints.unsigned;
-                  start_grace_secs = shipped types.ints.positive;
+                }
+                // shippedOptions {
+                  namespace_roots = types.listOf types.str;
+                  namespaces = types.listOf types.str;
+                  log_max_bytes = types.ints.unsigned;
+                  respawn_backoff_secs = types.ints.unsigned;
+                  start_grace_secs = types.ints.positive;
                 };
               }
             );
           };
+        }
+        // shippedOptions {
+          scrape_interval_secs = types.ints.positive;
+          upload_interval_secs = types.ints.positive;
+          upload_max_submissions = types.ints.positive;
+          sntp_servers = types.listOf types.str;
+          sntp_timeout_secs = types.ints.unsigned;
+          spool_max_bytes = types.ints.unsigned;
+          spool_busy_timeout_secs = types.ints.unsigned;
+          scrape_timeout_secs = types.ints.unsigned;
+          scrape_max_body_bytes = types.ints.unsigned;
+          upload_timeout_secs = types.ints.unsigned;
+          upload_jitter_max_secs = types.ints.unsigned;
+          upload_backoff_max_secs = types.ints.unsigned;
+          upload_batch_max_bytes = types.ints.unsigned;
+          compression_level = types.int;
         };
       };
     };
