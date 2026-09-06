@@ -669,6 +669,40 @@
               touch $out
             '';
 
+            # The example config is what a deployment that is not NixOS copies,
+            # and deploying.md tells a deployer to leave this field alone. So
+            # the path it names has to be the one the module's default puts the
+            # accounts at: the two spellings drifted once already, and a wrong
+            # one refuses every developer pull with the file simply absent.
+            # Evaluated rather than compared against a literal, because a
+            # literal here is a third place for the name to live.
+            server-example-credential =
+              let
+                host = inputs.nixpkgs.lib.nixosSystem {
+                  inherit system;
+                  modules = [
+                    self.nixosModules.metsuke-server
+                    {
+                      boot.loader.grub.enable = false;
+                      fileSystems."/".device = "none";
+                      system.stateVersion = lib.trivial.release;
+                    }
+                  ];
+                };
+                settings = host.options.services.metsuke-server.settings.type.getSubOptions [ ];
+                rendered = (settings.developer.type.getSubOptions [ ]).password_file.default;
+                written = (lib.importTOML ./contrib/server.example.toml).developer.password_file;
+              in
+              pkgs.runCommand "server-example-names-the-credential" { } ''
+                if [ ${lib.escapeShellArg written} != ${lib.escapeShellArg rendered} ]; then
+                  echo "contrib/server.example.toml names ${written}"
+                  echo "nix/server-module.nix defaults to ${rendered}"
+                  echo "a deployment copying the example reaches a file nothing writes"
+                  exit 1
+                fi
+                touch $out
+              '';
+
             contrib-unit = pkgs.runCommand "contrib-units-are-current" { } ''
               stale() {
                 echo "contrib/$1 is stale; its header says how"
