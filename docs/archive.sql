@@ -16,13 +16,22 @@
 -- Tables rather than views, so each glob is resolved once and repeated queries
 -- do not re-read the zstd. Re-run the file after a new sync.
 --
--- If you fetched only one kind, the other CREATE finds no files and errors.
--- That is harmless: the tables are built in order, so what did match is loaded
--- and usable.
+-- If you fetched only one kind, the CREATE for the other finds no files and
+-- says so. That is harmless, and `.bail off` below is what makes it harmless:
+-- duckdb otherwise stops reading an init file at the first error and exits,
+-- leaving no session at all. The tables are built in order, so what did match
+-- is loaded and usable, and the summary at the end reports each table
+-- separately rather than as one query that a missing table would take down.
 --
 -- docs/analytics.sql is the other half of this: views that answer particular
 -- questions about a cardano-node archive. This file answers none, and is the
 -- one to load when the question is not one of those.
+
+-- Keep going after a statement that fails, which an init file otherwise does
+-- not. It is what lets a tree holding one kind still load that kind. The cost
+-- is that a genuine mistake in this file is reported and stepped over rather
+-- than stopping it, so read what it prints.
+.bail off
 
 -- nullif, because getenv answers an unset variable with the empty string
 -- rather than NULL, and coalesce would take it and read the filesystem root.
@@ -64,11 +73,18 @@ from read_json(getvariable('archive') || '/**/*-logs.jsonl.zst',
 
 -- What loaded, so a glob that matched nothing says so at once rather than as
 -- an empty result three queries later.
+-- One statement each rather than one union: a table the tree held no files for
+-- was never created, and a union naming it reports nothing about the two that
+-- did load.
 select 'scrape' as "table", count(*) as rows,
        min(t) as first, max(t) as last,
        count(distinct pool) as pools, count(distinct agent) as agents
-from scrape
-union all
-select 'metric', count(*), min(t), max(t), count(distinct pool), count(distinct agent) from metric
-union all
-select 'trace',  count(*), min(t), max(t), count(distinct pool), count(distinct agent) from trace;
+from scrape;
+select 'metric' as "table", count(*) as rows,
+       min(t) as first, max(t) as last,
+       count(distinct pool) as pools, count(distinct agent) as agents
+from metric;
+select 'trace' as "table", count(*) as rows,
+       min(t) as first, max(t) as last,
+       count(distinct pool) as pools, count(distinct agent) as agents
+from trace;

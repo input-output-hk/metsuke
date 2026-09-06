@@ -293,9 +293,9 @@ scrape, stored with a `failure` and no metrics. So a window with no row is the
 only absence, and a gap against the cadence is what to look for:
 
 ```sql
-select metsuke.agent_id, min(scraped_at), max(scraped_at), count(*)
+select metsuke.pool_id, metsuke.agent_id, min(scraped_at), max(scraped_at), count(*)
 from read_json('downloads/v1/*/*-metrics.jsonl.zst', sample_size=-1)
-group by 1
+group by 1, 2
 ```
 
 Trace lines carry no field of metsuke's beyond the `metsuke` stamp. Their time
@@ -303,9 +303,9 @@ is the node's own `at`, which is when the node emitted the line rather than
 when the agent shipped it:
 
 ```sql
-select metsuke.agent_id, ns, min(at), max(at), count(*)
+select metsuke.pool_id, metsuke.agent_id, ns, min(at), max(at), count(*)
 from read_json('downloads/v1/*/*-logs.jsonl.zst', sample_size=-1)
-group by 1, 2
+group by 1, 2, 3
 ```
 
 Neither read is a count of what the archive should have held. The agent drops
