@@ -71,8 +71,11 @@ metsuke-allowlist generate applications.csv registrations.csv \
 ```
 
 The label and key are `METADATA_LABEL` and `METADATA_KEY` in
-`crates/metsuke-server/src/applications.rs`, and the quickstart's first step
-shows an operator the same pair. `--statement-timeout` is a duration, not
+`crates/metsuke-server/src/applications.rs`, and the details page's application
+code section shows an operator the same pair, rendered from those two. That is
+the cross-check worth making: the pair here and the pair a pool is told to put
+on chain have to agree, or every application lands in a metadata slot this
+query does not read. `--statement-timeout` is a duration, not
 milliseconds.
 
 `query` reads the chain half off a db-sync. `generate` is offline and pure, so
