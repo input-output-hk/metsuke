@@ -147,7 +147,7 @@ pub fn run(
     verification: Verification,
     mut landed: impl FnMut(&str),
 ) -> Result<Report, SyncError> {
-    let mut cursor = Cursor::read(destination.state, filters, verification.insist)?;
+    let mut cursor = Cursor::read(destination.state, filters, &verification)?;
     let mut report = Report::default();
     let resuming = filters.days.after(&cursor.after);
     for page in Pages::from(archive, filters.prefix, &resuming, filters.days) {

@@ -2,7 +2,7 @@
 
 use metsuke_fetch::cursor::{Cursor, CursorError};
 use metsuke_fetch::select::{Days, Filters, Selection};
-use metsuke_fetch::sync::Insist;
+use metsuke_fetch::sync::{Insist, Verification};
 use metsuke_wire::key::{KEY_PREFIX, Kind};
 
 /// A run's filters, owned so a test can point two reads at them.
@@ -34,6 +34,24 @@ fn everything() -> Asked {
     asked(KEY_PREFIX, Selection::default())
 }
 
+/// What `describe` renders for a run at the shipped size bound, built from the
+/// constant so a change to it cannot leave these strings behind.
+fn described(head: &str, bar: &str) -> String {
+    format!(
+        "{head}, max-object-bytes {}, {bar}",
+        metsuke_fetch::cli::DEFAULT_MAX_OBJECT_BYTES
+    )
+}
+
+/// A run at the shipped size bound, which is what every case here is
+/// about unless it says otherwise.
+fn verifying(insist: Insist) -> Verification {
+    Verification {
+        max_object_bytes: metsuke_fetch::cli::DEFAULT_MAX_OBJECT_BYTES,
+        insist,
+    }
+}
+
 #[test]
 fn a_state_file_that_does_not_exist_yet_is_the_archives_start() {
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -41,7 +59,7 @@ fn a_state_file_that_does_not_exist_yet_is_the_archives_start() {
     let cursor = Cursor::read(
         &dir.path().join("cursor.json"),
         &everything().filters(),
-        Insist::Nothing,
+        &verifying(Insist::Nothing),
     )
     .expect("an absent file reads");
 
@@ -64,12 +82,12 @@ fn a_state_file_without_a_bar_reads_as_the_lowest() {
     )
     .expect("the file writes");
 
-    let cursor = Cursor::read(&path, &everything().filters(), Insist::Nothing)
+    let cursor = Cursor::read(&path, &everything().filters(), &verifying(Insist::Nothing))
         .expect("the lowest bar matches");
     assert_eq!(cursor.insist, Insist::Nothing);
     assert_eq!(cursor.after, "v1/x");
 
-    let error = Cursor::read(&path, &everything().filters(), Insist::Attested)
+    let error = Cursor::read(&path, &everything().filters(), &verifying(Insist::Attested))
         .expect_err("a higher bar is another run");
     assert!(
         matches!(&error, CursorError::OtherFilters { asked, .. }
@@ -83,15 +101,15 @@ fn an_advanced_cursor_is_what_the_next_run_reads() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("state").join("cursor.json");
     let asked = everything();
-    let mut cursor =
-        Cursor::read(&path, &asked.filters(), Insist::Nothing).expect("an absent file reads");
+    let mut cursor = Cursor::read(&path, &asked.filters(), &verifying(Insist::Nothing))
+        .expect("an absent file reads");
 
     cursor
         .advance(&path, "v1/2026-08-27/object.jsonl.zst")
         .expect("the state file writes");
 
     assert_eq!(
-        Cursor::read(&path, &asked.filters(), Insist::Nothing).expect("it reads back"),
+        Cursor::read(&path, &asked.filters(), &verifying(Insist::Nothing)).expect("it reads back"),
         cursor
     );
 }
@@ -101,7 +119,10 @@ fn an_advanced_cursor_is_what_the_next_run_reads() {
 /// differing in that part alone.
 #[test]
 fn a_cursor_from_another_run_is_refused() {
-    const HELD: &str = "prefix \"v1/2026-08-01/\", kind metrics, --require-cold-signed";
+    let held_text = described(
+        "prefix \"v1/2026-08-01/\", kind metrics",
+        "--require-cold-signed",
+    );
     let dir = tempfile::tempdir().expect("a temp dir");
     let held = asked(
         "v1/2026-08-01/",
@@ -116,17 +137,23 @@ fn a_cursor_from_another_run_is_refused() {
         (
             everything(),
             Insist::ColdSigned,
-            "prefix \"v1/\", every pool, agent and kind, --require-cold-signed",
+            described(
+                "prefix \"v1/\", every pool, agent and kind",
+                "--require-cold-signed",
+            ),
         ),
         (
             asked("v1/2026-08-01/", Selection::default()),
             Insist::ColdSigned,
-            "prefix \"v1/2026-08-01/\", every pool, agent and kind, --require-cold-signed",
+            described(
+                "prefix \"v1/2026-08-01/\", every pool, agent and kind",
+                "--require-cold-signed",
+            ),
         ),
         (
             asked(KEY_PREFIX, held.selection.clone()),
             Insist::ColdSigned,
-            "prefix \"v1/\", kind metrics, --require-cold-signed",
+            described("prefix \"v1/\", kind metrics", "--require-cold-signed"),
         ),
         // The filters agree and the bar does not. The run that wrote this
         // cursor refused what it would not write and advanced past it anyway,
@@ -134,31 +161,34 @@ fn a_cursor_from_another_run_is_refused() {
         (
             asked("v1/2026-08-01/", held.selection.clone()),
             Insist::Attested,
-            "prefix \"v1/2026-08-01/\", kind metrics, --require-attested",
+            described(
+                "prefix \"v1/2026-08-01/\", kind metrics",
+                "--require-attested",
+            ),
         ),
     ]
     .into_iter()
     .enumerate()
     {
         let path = dir.path().join(format!("cursor-{index}.json"));
-        Cursor::read(&path, &held.filters(), Insist::ColdSigned)
+        Cursor::read(&path, &held.filters(), &verifying(Insist::ColdSigned))
             .expect("an absent file reads")
             .advance(&path, "v1/2026-08-01/object.jsonl.zst")
             .expect("the state file writes");
 
-        let error = Cursor::read(&path, &asking.filters(), insist)
+        let error = Cursor::read(&path, &asking.filters(), &verifying(insist))
             .expect_err("another run is another cursor");
 
         assert!(
             matches!(&error, CursorError::OtherFilters { held, asked, .. }
-                if held == HELD && asked == wanted),
+                if *held == held_text && *asked == wanted),
             "got: {error}"
         );
         // The two sit on their own lines at one indent, so the reader finds
         // the part that differs rather than diffing two long strings.
         let text = error.to_string();
         assert!(
-            text.contains(&format!("\n  holds: {HELD}\n"))
+            text.contains(&format!("\n  holds: {held_text}\n"))
                 && text.contains(&format!("\n  asked: {wanted}\n")),
             "got: {text}"
         );
@@ -183,7 +213,7 @@ fn the_first_day_binds_a_cursor_and_the_last_day_does_not() {
     };
 
     let path = dir.path().join("cursor.json");
-    Cursor::read(&path, &bounded.filters(), Insist::Nothing)
+    Cursor::read(&path, &bounded.filters(), &verifying(Insist::Nothing))
         .expect("an absent file reads")
         .advance(&path, "v1/2026-09-02/object.jsonl.zst")
         .expect("the state file writes");
@@ -196,7 +226,7 @@ fn the_first_day_binds_a_cursor_and_the_last_day_does_not() {
         },
         ..everything()
     };
-    let cursor = Cursor::read(&path, &carried.filters(), Insist::Nothing)
+    let cursor = Cursor::read(&path, &carried.filters(), &verifying(Insist::Nothing))
         .expect("the last day is not part of what a cursor is for");
     assert_eq!(cursor.after, "v1/2026-09-02/object.jsonl.zst");
 
@@ -205,7 +235,7 @@ fn the_first_day_binds_a_cursor_and_the_last_day_does_not() {
         days: Days::default(),
         ..everything()
     };
-    let error = Cursor::read(&path, &widened.filters(), Insist::Nothing)
+    let error = Cursor::read(&path, &widened.filters(), &verifying(Insist::Nothing))
         .expect_err("no first day is a wider window");
     assert!(
         matches!(&error, CursorError::OtherFilters { held, .. }
@@ -220,7 +250,7 @@ fn a_state_file_that_is_not_a_cursor_is_refused() {
     let path = dir.path().join("cursor.json");
     std::fs::write(&path, "v1/2026-08-27/object.jsonl.zst\n").expect("the file writes");
 
-    let error = Cursor::read(&path, &everything().filters(), Insist::Nothing)
+    let error = Cursor::read(&path, &everything().filters(), &verifying(Insist::Nothing))
         .expect_err("a bare key is not the state file");
 
     assert!(

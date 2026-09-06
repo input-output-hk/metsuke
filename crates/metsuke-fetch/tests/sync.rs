@@ -603,7 +603,7 @@ fn an_interrupted_sync_resumes_after_the_object_it_last_wrote() {
     let cursor = Cursor::read(
         &state_of(dir.path()),
         &everything().filters(),
-        Insist::Nothing,
+        &permissive(),
     )
     .expect("the cursor reads");
     assert_eq!(cursor.after, keys[1]);
@@ -738,7 +738,7 @@ fn a_filtered_sync_downloads_only_what_it_selected() {
     let cursor = Cursor::read(
         &state_of(synced.dir.path()),
         &asked.filters(),
-        Insist::Nothing,
+        &permissive(),
     )
     .expect("the cursor reads");
     assert_eq!(cursor.after, keys[2]);
@@ -788,7 +788,7 @@ fn an_object_this_build_cannot_name_is_counted_and_left() {
     let cursor = Cursor::read(
         &state_of(synced.dir.path()),
         &asked.filters(),
-        Insist::Nothing,
+        &permissive(),
     )
     .expect("the cursor reads");
     assert_eq!(cursor.after, foreign);
@@ -826,4 +826,82 @@ fn a_key_that_is_not_a_relative_path_names_no_file() {
         sync::destination(into, "v1/2026-08-27/object.jsonl.zst"),
         Some(into.join("v1/2026-08-27/object.jsonl.zst"))
     );
+}
+
+/// The scenario `pull::PullError::Oversized` tells an operator to fix: objects
+/// over the bound are refused, they raise `--max-object-bytes` as that message
+/// says, and re-run. It has to fetch what the lower bound passed over, which
+/// means the cursor cannot have been left past it.
+#[test]
+fn raising_the_size_bound_fetches_what_the_lower_one_refused() {
+    let server = Server::attesting(2, 100);
+    let keys = server.keys();
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let refused = sync_verifying(
+        &server,
+        &everything(),
+        dir,
+        Verification {
+            // Under every object, so this run writes none of them.
+            max_object_bytes: NonZeroU64::new(1).unwrap(),
+            ..permissive()
+        },
+    )
+    .unwrap_or_else(|(error, _, _)| panic!("the sync failed: {error}"));
+    assert_eq!(refused.report.rejected.len(), 2, "{:?}", refused.report);
+    for key in &keys {
+        assert!(!refused.path(key).is_file(), "{key} should not have landed");
+    }
+
+    // The remedy, on the same state file. The cursor is past objects this
+    // bound would have taken, so the run is refused rather than reporting a
+    // clean sync of nothing: an operator who raises the flag is told the state
+    // file is for another run and to name one of its own.
+    let (error, _dir, landed) = sync_verifying(&server, &everything(), refused.dir, permissive())
+        .expect_err("a raised bound against the same state file is another run");
+    assert!(landed.is_empty(), "{landed:?}");
+    let error = error.to_string();
+    assert!(
+        error.contains("max-object-bytes 1")
+            && error.contains(&format!("max-object-bytes {}", 1 << 20)),
+        "the refusal must name both bounds, got: {error}"
+    );
+}
+
+/// And the remedy works: a state file of its own fetches what the lower bound
+/// refused. Without this the case above would be satisfied by refusing every
+/// second run, which is not a fix.
+#[test]
+fn a_state_file_of_its_own_fetches_what_the_lower_bound_refused() {
+    let server = Server::attesting(2, 100);
+    let keys = server.keys();
+
+    let refused = sync_verifying(
+        &server,
+        &everything(),
+        tempfile::tempdir().expect("a temp dir"),
+        Verification {
+            max_object_bytes: NonZeroU64::new(1).unwrap(),
+            ..permissive()
+        },
+    )
+    .unwrap_or_else(|(error, _, _)| panic!("the sync failed: {error}"));
+    assert_eq!(refused.report.rejected.len(), 2, "{:?}", refused.report);
+
+    let raised = sync_verifying(
+        &server,
+        &everything(),
+        tempfile::tempdir().expect("a temp dir"),
+        permissive(),
+    )
+    .unwrap_or_else(|(error, _, _)| panic!("the second sync failed: {error}"));
+
+    for key in &keys {
+        assert!(
+            raised.path(key).is_file(),
+            "{key} did not land under a bound that takes it: {:?}",
+            raised.report
+        );
+    }
 }

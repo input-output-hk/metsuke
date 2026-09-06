@@ -7,13 +7,14 @@
 
 use std::fs;
 use std::io;
+use std::num::NonZeroU64;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::select::{Filters, Selection};
 use crate::staged;
-use crate::sync::Insist;
+use crate::sync::{Insist, Verification};
 
 /// The state file's whole content. What a run was asked for is in it because a
 /// cursor only means anything against that: a run advances past every key it
@@ -30,6 +31,19 @@ pub struct Cursor {
     /// `Nothing` and is refused for any run that asks for more.
     #[serde(default)]
     pub insist: Insist,
+    /// The size bound the run held objects to. Here for the same reason
+    /// `insist` is, and it was missed when that one was fixed: an object
+    /// refused for exceeding this advances the cursor like any other refusal,
+    /// so a cursor taken under one bound and read under a higher one resumes
+    /// past objects the first refused and the second would have taken. The
+    /// refusal's own message tells an operator to raise the flag and re-run,
+    /// which is exactly the sequence that lost them.
+    ///
+    /// Defaulted to the shipped bound, so a state file written before this
+    /// field reads as a run that never set the flag, and is refused for one
+    /// that did.
+    #[serde(default = "default_max_object_bytes")]
+    pub max_object_bytes: NonZeroU64,
     /// The first day the run was bounded to, as `select::Days` means it. Here
     /// because it relocates where the listing starts: a cursor taken from one
     /// day onward, read with no first day, would resume past everything
@@ -43,14 +57,29 @@ pub struct Cursor {
     pub after: String,
 }
 
+/// What a state file cannot say for itself: the bound a run that set no flag
+/// held objects to.
+fn default_max_object_bytes() -> NonZeroU64 {
+    crate::cli::DEFAULT_MAX_OBJECT_BYTES
+}
+
 /// What a state file is for, as one line. Built in one place so `held` and
 /// `asked` cannot describe two different shapes.
-fn describe(prefix: &str, selection: &Selection, insist: Insist, from: Option<&str>) -> String {
+fn describe(
+    prefix: &str,
+    selection: &Selection,
+    insist: Insist,
+    max_object_bytes: NonZeroU64,
+    from: Option<&str>,
+) -> String {
     let day = match from {
         Some(from) => format!(", from {from:?}"),
         None => String::new(),
     };
-    format!("prefix {prefix:?}, {selection}, {insist}{day}")
+    // Before the bar rather than after it, so the bar stays the last thing on
+    // the line where there is no day, which is what reads best and what
+    // `a_bar_a_state_file_predates_is_another_run` holds it to.
+    format!("prefix {prefix:?}, {selection}, max-object-bytes {max_object_bytes}, {insist}{day}")
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -86,9 +115,14 @@ pub enum CursorError {
 }
 
 impl Cursor {
-    /// The cursor `path` holds for `filters` at `insist`, or a fresh one when
-    /// there is no state file yet.
-    pub fn read(path: &Path, filters: &Filters<'_>, insist: Insist) -> Result<Cursor, CursorError> {
+    /// The cursor `path` holds for `filters` under `verification`, or a fresh
+    /// one when there is no state file yet.
+    pub fn read(
+        path: &Path,
+        filters: &Filters<'_>,
+        verification: &Verification,
+    ) -> Result<Cursor, CursorError> {
+        let (insist, max_object_bytes) = (verification.insist, verification.max_object_bytes);
         let text = match fs::read_to_string(path) {
             Ok(text) => text,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -96,6 +130,7 @@ impl Cursor {
                     prefix: filters.prefix.to_string(),
                     selection: filters.selection.clone(),
                     insist,
+                    max_object_bytes,
                     from: filters.days.from.clone(),
                     after: String::new(),
                 });
@@ -118,6 +153,7 @@ impl Cursor {
         match held.prefix == filters.prefix
             && held.selection == *filters.selection
             && held.insist == insist
+            && held.max_object_bytes == max_object_bytes
             && held.from == filters.days.from
         {
             true => Ok(held),
@@ -127,12 +163,14 @@ impl Cursor {
                     &held.prefix,
                     &held.selection,
                     held.insist,
+                    held.max_object_bytes,
                     held.from.as_deref(),
                 ),
                 asked: describe(
                     filters.prefix,
                     filters.selection,
                     insist,
+                    max_object_bytes,
                     filters.days.from.as_deref(),
                 ),
             }),

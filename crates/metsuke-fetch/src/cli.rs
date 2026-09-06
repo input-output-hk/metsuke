@@ -25,7 +25,7 @@ use crate::sync::{Insist, Verification};
 /// What one object may weigh before this run refuses to hold it to check it.
 /// Sixteen times the shipped `max_body_bytes`, so the ceiling is the tool's
 /// own safety net and never the thing an operator meets.
-const DEFAULT_MAX_OBJECT_BYTES: NonZeroU64 = NonZeroU64::new(16 * 1024 * 1024).unwrap();
+pub const DEFAULT_MAX_OBJECT_BYTES: NonZeroU64 = NonZeroU64::new(16 * 1024 * 1024).unwrap();
 
 /// The build, which every run names and `--version` answers with. What it
 /// promises across builds is in docs/releasing.md.
@@ -262,7 +262,15 @@ fn day(flag: &'static str, value: &str) -> Result<Date, ArgsError> {
 /// The shortest key prefix that sorts at `instant`. A uuidv7's first 48 bits
 /// are its millisecond, which is the first 13 characters of its text, so this
 /// sorts below every key of that millisecond and above every earlier one.
+///
+/// To UTC first, and the whole key depends on it. A day folder is named for
+/// the UTC date, while `date()` answers in whatever offset the value carries
+/// and `unix_timestamp_nanos` is absolute either way. Taken as parsed,
+/// `2026-09-01T08:47:23+09:00` built a key in the September 1 folder holding
+/// August 31's millisecond, which sorts at that folder's start and skips every
+/// object of the day the instant is actually in.
 fn at_key(instant: OffsetDateTime) -> String {
+    let instant = instant.to_offset(time::UtcOffset::UTC);
     let ms = instant.unix_timestamp_nanos().div_euclid(1_000_000);
     let hex = format!("{ms:012x}");
     format!(

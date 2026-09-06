@@ -513,3 +513,31 @@ fn every_variable_the_servers_analysis_page_exports_is_one_this_tool_reads() {
         );
     }
 }
+
+/// A day folder is named for the UTC date, so one instant written two ways is
+/// one bound. Written in an offset it is not: `date()` answers in whatever
+/// offset the value carries while the millisecond is absolute, which built a
+/// key in one day's folder holding another day's timestamp. That key sorts at
+/// its folder's start, so the run silently began after everything the instant
+/// was meant to include.
+#[test]
+fn an_instant_bound_is_the_same_key_in_any_offset() {
+    let utc = parsed_command("list", &["--from", "2026-08-31T23:47:23.635Z"])
+        .expect("a UTC instant parses");
+    // The same instant, nine hours east, so its local date is the next day.
+    let offset = parsed_command("list", &["--from", "2026-09-01T08:47:23.635+09:00"])
+        .expect("an offset instant parses");
+
+    assert_eq!(
+        utc.days.from, offset.days.from,
+        "the same instant in two offsets must bound the same run"
+    );
+    assert!(
+        utc.days
+            .from
+            .as_deref()
+            .is_some_and(|from| from.starts_with("v1/2026-08-31/")),
+        "the folder is the UTC day, got: {:?}",
+        utc.days.from
+    );
+}
