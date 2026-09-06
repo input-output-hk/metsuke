@@ -173,8 +173,34 @@ regardless of trace source; how the agent gets it is the choice below.</p>
 
 <p>In the pipe setup the node runs as <code>cardano-node run ... | {{binary}}
 --config {{config_path}}</code>. The agent reads the node's stdout on its own
-stdin, holds no group at all, and writes every line through to its own stdout
-unchanged, so whatever read the node's output before still reads it.</p>
+stdin, adds no group of its own, and writes every line through to its own
+stdout unchanged, so whatever read the node's output before still reads it.</p>
+
+<p><strong>What this setup costs, which is not nothing.</strong> The agent is a
+process of your node's unit rather than one of its own, and two things follow
+from that. It runs as your node's user under your node's sandbox, so it keeps
+none of the confinement
+<a href="{{FILES_PREFIX}}metsuke.service">metsuke.service</a> sets for it and
+inherits every group your node's unit already had. And the drop-in loads your
+signing key as a credential of that unit, so
+<code>$CREDENTIALS_DIRECTORY/signing-key</code> is readable by every process
+the unit runs, cardano-node among them.</p>
+
+<p>What that second one costs depends on the host. On a block producer signing
+with its Leios key it costs nothing new: your node already forges and votes
+with that key, so a credential it can read is a key it already holds. On a
+relay it is a real difference. The key is on that host only because the agent
+needs it, and under the journald setup only the agent's own unit can read it,
+so a cardano-node compromise there reaches no key of yours. Under the drop-in
+it reaches this one.</p>
+
+<p>So adding no group is a real saving over the journald setup, but it is not
+the same as costing nothing, and an operator picking the pipe <em>because</em>
+it grants no group is picking the less confined of the two. Use your
+<strong>Leios key</strong> either way. A cold key works and this server accepts
+it, but a cold key cannot be replaced: your pool id is its hash, so a
+compromised one is not rotated, it is the end of that pool and the start of an
+unrelated one your delegators have to find.</p>
 
 <p>It runs downstream of the node, so it needs no unit of its own. That makes
 this a change to the node's unit, and systemd has no pipelines, so the command

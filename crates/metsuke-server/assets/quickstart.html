@@ -74,12 +74,12 @@ whichever row you take; only the filenames change.</p>
 
 <table>
 <tr>
-  <th>Setup<th>Trace line source<th>Group required<th>Restarts
+  <th>Setup<th>Trace line source<th>What it costs in privilege<th>Restarts
   <th>Metsuke config<th>Systemd service<th>Systemd drop-in
 <tr>
   <td><strong>Its own unit</strong><br><span class="note">the usual one</span>
   <td>the node's journal
-  <td><code>systemd-journal</code>
+  <td>its own user, confined;<br>reads every unit's journal
   <td>on its own
   <td><a href="{{FILES_PREFIX}}config.journald.toml">config.journald.toml</a>
   <td><a href="{{FILES_PREFIX}}metsuke-journald.service">metsuke-journald.service</a>
@@ -87,7 +87,8 @@ whichever row you take; only the filenames change.</p>
 <tr>
   <td><strong>Your node's unit</strong><br><span class="note">a drop-in</span>
   <td>the node's stdout
-  <td>none
+  <td><strong>your node's user and sandbox;<br>your node can read your signing
+  key</strong>
   <td>with the node
   <td><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a>
   <td>your node's own
@@ -95,7 +96,7 @@ whichever row you take; only the filenames change.</p>
 <tr>
   <td><strong>A container</strong><br><span class="note">no systemd</span>
   <td>the node's stdout
-  <td>none
+  <td>whatever your entrypoint runs as
   <td>with the node
   <td><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a>
   <td><span class="note">your own entrypoint</span>
@@ -103,7 +104,7 @@ whichever row you take; only the filenames change.</p>
 <tr>
   <td><strong>Metrics only</strong><br><span class="note">fallback</span>
   <td>nothing
-  <td>none
+  <td>its own user, confined;<br>no group at all
   <td>on its own
   <td><a href="{{FILES_PREFIX}}config.minimal.toml">config.minimal.toml</a>
   <td><a href="{{FILES_PREFIX}}metsuke.service">metsuke.service</a>
@@ -111,17 +112,33 @@ whichever row you take; only the filenames change.</p>
 <tr>
   <td><strong>A shell</strong><br><span class="note">debugging</span>
   <td>the node's stdout
-  <td>none
+  <td>yours, unconfined
   <td>not at all
   <td><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a>
   <td>none
   <td>none
 </table>
 
-<p>The first row is what most pools want: the agent restarts without touching
-your node, and the group, which reads every unit's journal on the host, is the
-cost. The second gives up nothing in privilege but ties the agent's lifecycle to
-your node's, so restarting the agent restarts your node.</p>
+<p>The first row is what most pools want. The agent runs under a unit of its
+own, so it restarts without touching your node and keeps the confinement that
+unit sets, and the cost is one group: <code>systemd-journal</code> reads every
+unit's journal on the host, not only your node's.</p>
+
+<p>The second row costs more than it looks, and in a way worth reading before
+you take it. The drop-in runs the agent inside your node's unit, so it is your
+node's user that runs it and your node's sandbox that confines it, not the one
+<a href="{{FILES_PREFIX}}metsuke.service">metsuke.service</a> sets. The
+drop-in also loads your signing key as a credential of that unit, which makes
+it readable by <em>every process the unit runs</em>, cardano-node included. On
+a block producer signing with its Leios key that costs nothing new, since your
+node already holds that key; on a relay it is a key the node could not
+otherwise read. It also ties the agent's lifecycle to your node's, so
+restarting one restarts the other.
+<a href="{{DETAILS_PATH}}#pipe">The details page</a> has the whole of it.</p>
+
+<p>If you take that row, use your <strong>Leios key</strong> and not a cold
+key. Both work, but a cold key cannot be replaced: your pool id is its hash, so
+a compromised one is not rotated, it is the end of that pool.</p>
 
 <p>Both take a node that already runs as a systemd unit, the first also logging
 to the journal, which is where its trace lines are read from.

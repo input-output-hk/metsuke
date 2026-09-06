@@ -31,15 +31,18 @@ has no field to read. The data exists only in the node's trace stream.
 
 Two transports carry that stream. `journalctl --follow` on the node's unit is
 out of band. An agent that stalls or dies leaves the node untouched. Reading
-the node's stdout as a pipe needs no privilege at all, but puts metsuke inside
-the block producer's write path, where a stalled reader is the node's problem.
+the node's stdout as a pipe grants the agent no group of its own, but puts
+metsuke inside the block producer's write path, where a stalled reader is the
+node's problem, and inside the node's unit, where the consequence below is that
+it keeps the node's confinement rather than its own.
 
 ## Decision
 
 The agent reads the node's trace stream from the source `[log].source` names,
-selects lines by namespace prefix less namespace prefix, which is
-configuration, and ships every field of what it selects. The journal source follows `journalctl --follow`; the pipe
-source reads the node's own stdout and tees it through untouched.
+selects lines by a namespace prefix list less a namespace prefix list, which is
+configuration, and ships every field of what it selects. The journal source
+follows `journalctl --follow`; the pipe source reads the node's own stdout and
+tees it through untouched.
 It parses the line as a JSON object and reads `ns` off its top level and nothing
 else; a line the parse refuses declares no namespace, so no rule reaches it.
 
@@ -145,6 +148,26 @@ upstream of it.
   agent names its exclusions on the startup line beside its selection, which is
   where an operator asks the question; a consumer holding only the archive asks
   the deployment.
+- The pipe's cost is not the journal's, and it is not nothing. This ADR priced
+  the two sources by the group each needs and concluded the pipe "needs no
+  privilege at all", which is true of the agent in isolation and false of what
+  a deployment runs. Under the drop-in the agent is a process of the node's
+  unit, so it keeps that unit's user, sandbox and supplementary groups instead
+  of the ones `nix/unit.nix` writes for it, and the drop-in's `LoadCredential=`
+  is the node unit's, which puts the signing key in `$CREDENTIALS_DIRECTORY`
+  for every process that unit runs, cardano-node included. What that is worth
+  depends on the host, and the block producer is the case where it is worth
+  least: a node signing with its Leios key already holds that key, so a
+  credential it can read is nothing new. On a relay the key is present only
+  because the agent needs it, and the journald setup keeps it readable by the
+  agent's unit alone, so this is the setup under which a compromised
+  cardano-node reaches a key of the pool's. So the comparison is a group that
+  reads every unit's journal against a key the node can read, and an operator
+  who must not grant `systemd-journal` is choosing the less confined of the two
+  rather than the cheaper one. Both onboarding pages say so, and both name the
+  Leios key for this setup, because a cold key cannot be replaced. The Pool ID
+  is its hash (CONTEXT.md), so a compromised cold key is not rotated: that pool
+  ends and any successor is an unrelated one holding none of its delegation.
 - The grant is real and lasts as long as `[log]` is set. `systemd-journal`
   reads the whole system journal, not the node's unit. An agent compromised on
   a host that logs anything sensitive to the journal reads that too. The

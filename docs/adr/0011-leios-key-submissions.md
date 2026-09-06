@@ -6,11 +6,12 @@ Status: accepted (2026-08-31)
 
 [ADR 0001](0001-raw-ed25519-detached-signature.md) has one signer: the cold
 key, whose hash is the pool id, so a submission names its pool by derivation
-and nothing is looked up. The cost is
-that every machine running an agent holds the pool's cold key. Operators are
-told to copy an offline key onto live hosts, which is what decades of practice
-says not to do, and the cold key cannot be rotated without re-registering the
-pool.
+and nothing is looked up. The cost is that every machine running an agent holds
+the pool's cold key. Operators are told to copy an offline key onto live hosts,
+which key handling outside this chain had settled against decades before it
+existed, and a cold key cannot be replaced at all: the pool id is its hash, so
+one that leaks is not rotated. That pool ends, and any successor is an
+unrelated pool holding none of its delegation.
 
 Leios gives every pool a second registered key, a BLS12-381 key the node forges
 and votes with (`spsLeiosKey.leiosPubKey` in `cardano-cli query pool-state`).

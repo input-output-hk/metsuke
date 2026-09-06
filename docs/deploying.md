@@ -200,8 +200,15 @@ the agent downstream of the node on a shell pipeline, so it is the node's unit
 that changes and the agent has none of its own; a module that rendered it would
 give the agent `/dev/null` for stdin and respawn it forever on the EOF. Nothing
 here stops a NixOS host running that shape, but it is the node's unit to write,
-and `contrib/metsuke.service` has the line. It costs no group at all, which is
-why an operator who must not grant `systemd-journal` picks it.
+and `contrib/node-pipe.conf` has the line.
+
+It adds no group at all, which is why an operator who must not grant
+`systemd-journal` reaches for it. That is not the same as costing nothing. The
+agent becomes a process of the node's unit, so it runs under that unit's user,
+sandbox and groups rather than the ones `contrib/metsuke.service` sets. And the
+drop-in's `LoadCredential=` puts the signing key where every process of that
+unit can read it, cardano-node included. Tell such an operator to bring a Leios
+key.
 
 The agent's spool has to be under `/var/lib/metsuke`, which the module asserts.
 
