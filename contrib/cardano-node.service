@@ -23,10 +23,16 @@
 #   sudo install -D -m 0755 bin/mempool-monitor /usr/local/bin/mempool-monitor
 #   sudo install -D -m 0755 bin/tx-firehose /usr/local/bin/tx-firehose
 #
+#   # Use the pin-config from the same tag, and read it before running it.
 #   sudo mkdir -p /var/lib/cardano-node
 #   cd /var/lib/cardano-node
-#   sudo curl -LO https://raw.githubusercontent.com/$REPO/main/testnet/pin-config.sh
+#   sudo curl -fLO https://raw.githubusercontent.com/$REPO/$TAG/testnet/pin-config.sh
+#   less pin-config.sh
 #   sudo bash pin-config.sh
+#
+#   # The node runs as its own user, so it owns what it was given.
+#   sudo useradd --system --home-dir /var/lib/cardano-node --shell /usr/sbin/nologin cardano-node || true
+#   sudo chown -R cardano-node:cardano-node /var/lib/cardano-node
 #
 #   sudo cp <THIS_FILE> /etc/systemd/system/cardano-node.service
 #   sudo systemctl daemon-reload
@@ -40,6 +46,12 @@ After=network-online.target
 
 [Service]
 Type=simple
+# Not root. The node binds 0.0.0.0 and takes connections from strangers, and
+# under the pipe setup this unit also holds your signing key as a credential,
+# so root here is the whole host to anything that gets in. The install steps
+# above create this user and give it the state directory.
+User=cardano-node
+Group=cardano-node
 StateDirectory=cardano-node
 WorkingDirectory=/var/lib/cardano-node
 ExecStart=/usr/local/bin/cardano-node run \
@@ -57,6 +69,59 @@ KillSignal=SIGINT
 TimeoutStopSec=300
 LimitNOFILE=32768
 SyslogIdentifier=cardano-node
+
+# Confinement, deliberately tighter than a node has been shown to need. It is
+# the same set contrib/metsuke.service carries, which is what a hardened unit
+# for this project looks like, and the state directory stays writable through
+# ProtectSystem=strict.
+#
+# Take lines off until the node starts and stays up, and expect to. In rough
+# order of what fails first:
+#
+#   ProcSubset=pid            the RTS reads /proc beyond its own task
+#   MemoryDenyWriteExecute    if the runtime ever maps a page writable+executable
+#   SystemCallFilter          one syscall outside @system-service
+#   PrivateUsers              ownership of the state directory or the socket
+#   RestrictAddressFamilies   add AF_NETLINK: getaddrinfo enumerates interfaces
+#                             through it, so peer resolution goes first
+#   RestrictNamespaces, LockPersonality, RestrictRealtime  unlikely
+#
+# What not to take off is User=. Everything below is depth behind that line;
+# that line is the one that matters.
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+PrivateIPC=true
+PrivateUsers=true
+PrivateMounts=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RemoveIPC=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+KeyringMode=private
+DevicePolicy=closed
+UMask=0077
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallFilter=~@resources
+# The node's peers, and the local socket its own cli and the roster generator
+# reach it on. AF_NETLINK is the likely fourth entry; see the list above.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 [Install]
 WantedBy=multi-user.target
