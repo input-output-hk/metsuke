@@ -217,16 +217,29 @@ runs from. Against the MusashiNet node image:</p>
 docker run -d --name leios-relay --init \
   -p 3010:3010 \
   -v "$PWD:/data" \
-  -v "$PWD/config:/app/config:ro" \
   -v "$PWD/metsuke:{{binary}}:ro" \
   -v "$PWD/config.toml:{{config_path}}:ro" \
   -v "$PWD/bls.skey:{{key_path}}:ro" \
   -v metsuke-spool:/var/lib/metsuke \
   --entrypoint /bin/sh \
-  ghcr.io/input-output-hk/ouroboros-leios/cardano-node-testnet:THE-TAG-THE-TESTNET-DOCS-PIN \
+  ghcr.io/input-output-hk/ouroboros-leios/cardano-node-testnet:&lt;tag&gt; \
   -c '/app/run-node.sh | {{binary}} \
         --config {{config_path}} \
         --signing-key {{key_path}}'</pre>
+
+<p><code>&lt;tag&gt;</code> is the node image's version, which the
+<a href="https://leios.cardano-scaling.org/docs/testnet/getting-started/">testnet
+getting started guide</a> names. This page prints no tag of its own: the node
+and this agent are released apart, so one written here would be a second place
+for that version to live and the wrong one to trust when they disagree.</p>
+
+<p>Nothing of the node's is mounted in. That image ships the pinned MusashiNet
+configuration already, and it is one this agent reads unchanged: it serves
+Prometheus on loopback and writes its trace lines to stdout in the machine
+format, which are the two backends
+<a href="#metrics">the metrics endpoint</a> and
+<a href="#traces">the trace lines</a> above ask for. Mount your own over
+<code>/app/config</code> only if you have changed the node's tracing.</p>
 
 <p><code>/app/run-node.sh</code> is that image's own launcher, which is what it
 runs when you do not override the entrypoint. On any other image,
