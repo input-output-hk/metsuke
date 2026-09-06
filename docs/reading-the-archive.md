@@ -216,9 +216,24 @@ METSUKE_ARCHIVE=downloads duckdb -init docs/archive.sql downloads.duckdb
 
 `docs/analytics.sql` defines the views a consumer actually groups over. Being
 views, they follow the root: `set variable archive = 'edge-1'` from the prompt
-re-points them without reloading. Do not name a database file for this one. The
-views persist into it and the variable does not, so reopening it answers
-`read_json cannot take NULL list as parameter` until the variable is set again.
+re-points them without reloading.
+
+Do not name a database file for this one. The views persist into it and the
+variable does not, so reopening it answers `read_json cannot take NULL list as
+parameter` until the variable is set again.
+
+**Both files drop a submission the archive holds twice, and a `read_json` of
+your own does not.** A submission whose PUT succeeded with the response lost is
+resealed and uploaded again under a fresh key, and a replay inside the skew
+window is stored a second time. The server deduplicates neither, because what
+the bucket holds is what landed
+([ADR 0005](adr/0005-archive-raw-signed-bytes.md)). So the same scrape can be
+two objects, and counting the objects reads a pool with a flaky uplink as a
+more productive one. On one real archive that was 11 scrape rows in 1128 and 53
+trace lines in 3064880, each duplicate sitting in two distinct objects. A
+scrape is named by its pool, its agent and the agent's own `scraped_at`; a
+trace line carries no such field, so it is named by the node's `at`, its
+namespace and its payload together.
 
 `docs/archive.sql` is the same flattening with none of the views, as three
 tables over whatever directory you point it at. Its root has to arrive before

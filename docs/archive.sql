@@ -44,6 +44,18 @@ set variable archive =
 -- One row per scrape, failures included. A failed scrape carries no metrics at
 -- all, so it disappears from the flattened table below; this is where it still
 -- exists, and `where failure is not null` is how you find the gaps.
+--
+-- One row per scrape and not per stored copy of it. A submission whose PUT
+-- succeeded with the response lost is resealed and uploaded again under a
+-- fresh key, and a replay inside the skew window is stored a second time too,
+-- so the same scrape reaches the archive as two objects. Nothing on the server
+-- deduplicates that (ADR 0005 keeps what landed), and counting the copies
+-- reads a pool with a flaky uplink as a more productive one. Measured on a
+-- real archive: 11 of 1128 scrape rows, each in two distinct objects.
+--
+-- An agent reads the endpoint once per interval, so pool, agent and the
+-- agent's own scraped_at name the scrape rather than the upload. To count the
+-- copies instead, read the objects with filename=true and group by that.
 create or replace table scrape as
 select scraped_at::timestamptz as t,
        clock_offset_ms,
@@ -52,7 +64,8 @@ select scraped_at::timestamptz as t,
        metsuke.agent_id as agent,
        metrics
 from read_json(getvariable('archive') || '/**/*-metrics.jsonl.zst',
-               sample_size = -1, union_by_name = true);
+               sample_size = -1, union_by_name = true)
+qualify row_number() over (partition by pool, agent, t) = 1;
 
 -- One row per metric sample. The table to group over.
 create or replace table metric as
@@ -62,14 +75,19 @@ from scrape, unnest(metrics) as _(u);
 -- The nested copy is now redundant and is the bulk of `scrape`'s footprint.
 alter table scrape drop column metrics;
 
--- One row per trace line. `data` is map(varchar, json): data['ebHash'].
+-- One row per trace line, deduplicated for the reason `scrape` is. The whole
+-- line is the key here, because a trace line carries no field of the agent's
+-- to name it by: the node's own nanosecond `at`, its namespace and its payload
+-- together. Two distinct events agreeing on all three is not a thing a node
+-- does. Measured on the same archive: 53 of 3064880.
 create or replace table trace as
 select "at"::timestamptz as t,
        ns, sev, thread, host, data,
        metsuke.pool_id as pool,
        metsuke.agent_id as agent
 from read_json(getvariable('archive') || '/**/*-logs.jsonl.zst',
-               sample_size = -1, union_by_name = true);
+               sample_size = -1, union_by_name = true)
+qualify row_number() over (partition by pool, agent, t, ns, data::varchar) = 1;
 
 -- What loaded, so a glob that matched nothing says so at once rather than as
 -- an empty result three queries later.

@@ -10,6 +10,11 @@
 -- `select *` over the raw objects is not a useful read: a scrape holds its
 -- metrics as a nested list, and a trace line holds its payload as a map. The
 -- views below flatten both, so every question after this is one GROUP BY.
+--
+-- They also drop a submission the archive holds twice, which the two base
+-- views say why. These are views, so that runs on every query: measured over
+-- 3M trace lines it about doubles a full scan. docs/archive.sql pays it once
+-- into tables instead, which is what repeated questions want anyway.
 -- docs/reading-the-archive.md explains sample_size=-1 and the name globs.
 
 -- nullif, because getenv answers an unset variable with the empty string
@@ -17,7 +22,15 @@
 set variable archive =
   coalesce(getvariable('archive'), nullif(getenv('METSUKE_ARCHIVE'), ''), 'into');
 
--- One row per scrape, metrics still nested.
+-- One row per scrape, metrics still nested, and one row per scrape rather than
+-- per stored copy of it. A submission whose PUT succeeded with the response
+-- lost is resealed under a fresh key, and a replay inside the skew window is
+-- stored again, so the same scrape can reach the archive as two objects and
+-- nothing on the server deduplicates them (ADR 0005 keeps what landed). Every
+-- count below, and `coverage` in particular, would otherwise read a pool with
+-- a flaky uplink as a more productive one. An agent reads the endpoint once
+-- per interval, so pool, agent and the agent's own scraped_at name the scrape
+-- rather than the upload.
 create or replace view scrape as
 select scraped_at::timestamptz as t,
        clock_offset_ms,
@@ -25,7 +38,8 @@ select scraped_at::timestamptz as t,
        metsuke.pool_id as pool,
        metsuke.agent_id as agent,
        metrics
-from read_json(getvariable('archive') || '/v1/*/*-metrics.jsonl.zst', sample_size=-1);
+from read_json(getvariable('archive') || '/v1/*/*-metrics.jsonl.zst', sample_size=-1)
+qualify row_number() over (partition by pool, agent, t) = 1;
 
 -- One row per metric sample. This is the table to group over.
 create or replace view metric as
@@ -33,12 +47,16 @@ select t, pool, agent, u.name, u.labels, u.value, u.declared_type
 from scrape, unnest(metrics) as _(u);
 
 -- One row per trace line. `data` is map(varchar, json): data['ebHash'].
+-- Deduplicated for the reason `scrape` is, on the whole line: a trace line
+-- carries no field of the agent's to name it by, so the node's own nanosecond
+-- `at`, its namespace and its payload together are the key.
 create or replace view trace as
 select "at"::timestamptz as t,
        ns, sev, thread, host, data,
        metsuke.pool_id as pool,
        metsuke.agent_id as agent
-from read_json(getvariable('archive') || '/v1/*/*-logs.jsonl.zst', sample_size=-1);
+from read_json(getvariable('archive') || '/v1/*/*-logs.jsonl.zst', sample_size=-1)
+qualify row_number() over (partition by pool, agent, t, ns, data::varchar) = 1;
 
 -- Did the agent cover the window it claims to? A gap_s far off the configured
 -- scrape interval is a missed upload, not a slow node.
