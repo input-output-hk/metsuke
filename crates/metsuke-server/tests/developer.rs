@@ -163,8 +163,8 @@ fn a_secret_that_names_no_usable_account_is_refused() {
         ("dev = \"\"", "empty password"),
         ("\"dev user\" = \"password\"", "not a username"),
         ("\"dev:user\" = \"password\"", "not a username"),
-        ("dev = 12", "does not parse"),
-        ("[dev]\npassword = \"p\"", "does not parse"),
+        ("dev = 12", "is not one"),
+        ("[dev]\npassword = \"p\"", "is not one"),
     ] {
         let error = Accounts::parse(written).expect_err(written).to_string();
         assert!(
@@ -310,4 +310,35 @@ fn a_configured_row_bound_under_the_page_cap_is_kept() {
         developer.list_max_rows(),
         developer_config(dir.path()).list_max_rows
     );
+}
+
+/// The refusal reaches stderr, and every line of this file is a credential, so
+/// nothing the parser refused may travel in it. The upgrade case is the one
+/// that decides it: a deployment on the old format holds a bare password, and
+/// the first start after the change is what fails.
+#[test]
+fn a_refusal_never_carries_what_the_file_held() {
+    const SECRET: &str = "hunter2";
+    for written in [
+        // The old format, which every deployment predating per-person accounts
+        // has on disk.
+        format!("{SECRET}\n"),
+        // A password TOML cannot hold unquoted, and one named twice: both
+        // refusals point at a line that is entirely credential.
+        format!("dev = \"{SECRET}\" \"\n"),
+        format!("dev = \"{SECRET}\"\ndev = \"{SECRET}-two\"\n"),
+        // A value of the wrong type still quotes its line back in full.
+        format!("dev = [\"{SECRET}\"]\n"),
+    ] {
+        let error = Accounts::parse(&written).expect_err(&written).to_string();
+        assert!(
+            !error.contains(SECRET),
+            "the refusal for {written:?} carries the secret: {error}"
+        );
+        // Still worth reading: the operator has to find the line to fix.
+        assert!(
+            error.contains("line ") || error.contains("position unknown"),
+            "the refusal for {written:?} says nothing about where: {error}"
+        );
+    }
 }

@@ -1527,12 +1527,16 @@ fn a_connection_that_sends_no_request_is_closed_at_the_idle_timeout() {
 /// all.
 #[test]
 fn a_developer_secret_that_names_no_usable_account_stops_startup() {
-    for (written, reason) in [
-        (Some(""), "names no accounts"),
-        (Some("\n"), "names no accounts"),
-        (Some("metsuke-dev = \"\"\n"), "empty password"),
-        (Some("hunter2\n"), "does not parse"),
-        (None, "No such file"),
+    for (written, reason, secret) in [
+        (Some(""), "names no accounts", None),
+        (Some("\n"), "names no accounts", None),
+        // The user is named on purpose: an account name is not the secret, and
+        // the operator has to know which line to fix.
+        (Some("metsuke-dev = \"\"\n"), "empty password", None),
+        // The upgrade path off the old shared-password format, where the whole
+        // file is one credential.
+        (Some("hunter2\n"), "is not one", Some("hunter2")),
+        (None, "No such file", None),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let config = server_toml(dir.path(), &[pool_of(&test_key())]);
@@ -1551,6 +1555,16 @@ fn a_developer_secret_that_names_no_usable_account_stops_startup() {
             "{written:?}: the refusal must name the file, got {stderr}"
         );
         assert!(stderr.contains(reason), "{written:?}: {stderr}");
+        // End to end, because this is what a journal holds: the refusal is
+        // rendered by the real binary and read off its stderr, so a parser
+        // whose message quotes the line it failed on is caught here whatever
+        // the unit tests say.
+        if let Some(secret) = secret {
+            assert!(
+                !stderr.contains(secret),
+                "{written:?}: the refusal carries the password: {stderr}"
+            );
+        }
     }
 }
 

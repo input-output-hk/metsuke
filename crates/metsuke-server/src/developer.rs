@@ -107,8 +107,14 @@ impl std::fmt::Debug for Accounts {
 /// closed to everybody the operator meant to let in.
 #[derive(Debug, thiserror::Error)]
 pub enum AccountsError {
-    #[error("does not parse as a table of username to password: {0}")]
-    NotATable(#[from] toml::de::Error),
+    /// Carries the parser's reason and where it stopped, and never its text.
+    /// `toml::de::Error` renders the source line it failed on, and every line
+    /// of this file is a credential: a deployment upgrading from a bare
+    /// password would put that password in the journal on its first start,
+    /// where `systemd-journal` and anything shipping journals centrally read
+    /// it.
+    #[error("is not one `user = \"password\"` line per account: {reason} ({at})")]
+    NotATable { reason: String, at: String },
     #[error("names no accounts, so nothing could read the archive")]
     Empty,
     #[error("names an unusable account: {source}")]
@@ -124,7 +130,18 @@ impl Accounts {
     /// The secret as it is written: one `user = "password"` line each. A TOML
     /// string is exact, so nothing here trims what an operator quoted.
     pub fn parse(text: &str) -> Result<Accounts, AccountsError> {
-        let written: BTreeMap<String, String> = toml::from_str(text)?;
+        // Not `?`: the error's own rendering is what must not travel, so only
+        // its reason and its line reach the variant. Counting newlines rather
+        // than slicing by line, because a span start is a byte offset and a
+        // `get` that lands off a boundary answers None rather than panicking.
+        let written: BTreeMap<String, String> =
+            toml::from_str(text).map_err(|error| AccountsError::NotATable {
+                reason: error.message().to_string(),
+                at: match error.span().and_then(|span| text.get(..span.start)) {
+                    Some(before) => format!("line {}", before.matches('\n').count() + 1),
+                    None => "position unknown".to_string(),
+                },
+            })?;
         if written.is_empty() {
             return Err(AccountsError::Empty);
         }
