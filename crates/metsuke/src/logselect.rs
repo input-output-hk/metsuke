@@ -1,5 +1,11 @@
-//! Which of a node's trace lines the agent ships: a namespace prefix list,
-//! configuration, and nothing else. Why severity is not a second rule: ADR 0010.
+//! Which of a node's trace lines the agent ships: a namespace prefix list less
+//! a namespace prefix list, configuration, and nothing else. Why severity is
+//! not a third rule: ADR 0010.
+//!
+//! Two lists rather than one because the node puts a namespace nobody can
+//! query under a prefix that carries ones everybody needs, and narrowing the
+//! selection to dodge it gives up every namespace added under that prefix
+//! later.
 //!
 //! A line is parsed as a JSON object and only `ns` is read off it. That parse is
 //! what a selected line is from here on (`envelope::TraceLine`).
@@ -10,6 +16,7 @@ use metsuke_wire::envelope::{TraceLine, TraceLineError};
 #[derive(Debug)]
 pub struct SelectConfig {
     namespaces: Vec<String>,
+    excludes: Vec<String>,
 }
 
 /// A namespace rule the host's ceiling does not cover.
@@ -24,7 +31,16 @@ impl SelectConfig {
     /// The rules, checked against this host's ceiling: every namespace rule has
     /// to sit under a root, including one the server proposes later
     /// (metsuke-4zo.99).
-    pub fn new(roots: &[String], namespaces: Vec<String>) -> Result<SelectConfig, OutsideRoots> {
+    ///
+    /// `excludes` are not checked against the ceiling and cannot be: the roots
+    /// bound what a host may *ship*, and an exclusion only ever ships less. One
+    /// naming a namespace outside them selects nothing either way, so refusing
+    /// it would reject a rule that is merely redundant.
+    pub fn new(
+        roots: &[String],
+        namespaces: Vec<String>,
+        excludes: Vec<String>,
+    ) -> Result<SelectConfig, OutsideRoots> {
         for namespace in &namespaces {
             if !roots.iter().any(|root| is_under(namespace, root)) {
                 return Err(OutsideRoots {
@@ -33,7 +49,10 @@ impl SelectConfig {
                 });
             }
         }
-        Ok(SelectConfig { namespaces })
+        Ok(SelectConfig {
+            namespaces,
+            excludes,
+        })
     }
 }
 
@@ -81,11 +100,15 @@ pub fn select(config: &SelectConfig, line: &str) -> Selection {
         Err(TraceLineError::ReservedKey) => return Selection::ReservedKey,
         Err(TraceLineError::NotAnObject(_)) => return Selection::Skip,
     };
+    // An exclusion wins over the entry that selected the line, which is the
+    // only ordering that lets one name a namespace under a prefix the other
+    // keeps. The reverse would make an exclusion unreachable by construction.
     let kept = Fields::of(&line).namespace.is_some_and(|namespace| {
         config
             .namespaces
             .iter()
             .any(|rule| is_under(namespace, rule))
+            && !config.excludes.iter().any(|rule| is_under(namespace, rule))
     });
     match kept {
         true => Selection::Ship(line),

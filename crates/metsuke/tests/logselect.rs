@@ -92,6 +92,7 @@ fn a_listed_namespace_ships_at_any_severity() {
     let rules = SelectConfig::new(
         &["LeiosNotify".to_string()],
         vec!["LeiosNotify.Remote".to_string()],
+        Vec::new(),
     )
     .unwrap();
     let debug = line_with(
@@ -110,6 +111,7 @@ fn a_rule_stopping_mid_segment_selects_nothing() {
     let rules = SelectConfig::new(
         &shipped_log_config().namespace_roots,
         vec!["Consensus.Leios".to_string()],
+        Vec::new(),
     )
     .unwrap();
     let kernel = line_with(LEIOS_WINDOW, r#""ns":"Consensus.LeiosKernel.Certified""#);
@@ -129,6 +131,7 @@ fn a_namespace_outside_the_roots_is_refused() {
     let error = SelectConfig::new(
         &shipped_log_config().namespace_roots,
         vec!["Consensus.Leios".to_string(), "Reflection".to_string()],
+        Vec::new(),
     )
     .unwrap_err();
     assert!(
@@ -141,6 +144,7 @@ fn a_namespace_outside_the_roots_is_refused() {
         SelectConfig::new(
             &shipped_log_config().namespace_roots,
             vec!["ConsensusOther.Thing".to_string()],
+            Vec::new(),
         )
         .is_err()
     );
@@ -262,4 +266,92 @@ fn a_shipped_line_holds_every_field_the_node_wrote() {
         serde_json::from_str::<serde_json::Value>(&shipped.to_line()).unwrap(),
         serde_json::from_str::<serde_json::Value>(line).unwrap()
     );
+}
+
+/// The case the feature is for, against the recording rather than a synthetic
+/// line: `Consensus.LeiosPeer.Msg` is two thirds of what a node ships and
+/// nothing downstream can group by it, while `Consensus.LeiosPeer.Announcement`
+/// under the same prefix answers one of the distributions the program asked
+/// for. An exclusion keeps the prefix and drops the one namespace.
+#[test]
+fn an_exclusion_drops_a_namespace_under_a_prefix_that_is_kept() {
+    let log = shipped_log_config();
+    let rules = SelectConfig::new(
+        &log.namespace_roots,
+        log.namespaces.clone(),
+        vec!["Consensus.LeiosPeer.Msg".to_string()],
+    )
+    .unwrap();
+
+    let excluded = line_with(LEIOS_WINDOW, r#""ns":"Consensus.LeiosPeer.Msg""#);
+    assert_eq!(select(&rules, excluded), Selection::Skip);
+
+    // The sibling under the same prefix is untouched, which is the whole
+    // difference between this and narrowing `namespaces`.
+    let kept = line_with(LEIOS_WINDOW, r#""ns":"Consensus.LeiosKernel.Msg""#);
+    assert!(
+        matches!(select(&rules, kept), Selection::Ship(_)),
+        "an exclusion took a namespace it does not name"
+    );
+
+    // And with no exclusion the same line ships, so the test is about the rule
+    // rather than about the recording.
+    assert!(
+        matches!(select(&shipped_rules(), excluded), Selection::Ship(_)),
+        "the shipped rules already dropped this line, so nothing was excluded"
+    );
+}
+
+/// An exclusion is a prefix like any other rule, so it takes the namespaces
+/// under it and stops at a segment boundary rather than at shared letters.
+#[test]
+fn an_exclusion_matches_on_segment_boundaries() {
+    let log = shipped_log_config();
+    let whole_prefix = SelectConfig::new(
+        &log.namespace_roots,
+        log.namespaces.clone(),
+        vec!["Consensus.LeiosPeer".to_string()],
+    )
+    .unwrap();
+    for needle in [
+        r#""ns":"Consensus.LeiosPeer.Msg""#,
+        r#""ns":"Consensus.LeiosPeer.Announcement""#,
+    ] {
+        assert_eq!(
+            select(&whole_prefix, line_with(LEIOS_WINDOW, needle)),
+            Selection::Skip,
+            "{needle} survived an exclusion of its parent"
+        );
+    }
+
+    // Mid-segment, so it names nothing the node emits and excludes nothing.
+    let fragment = SelectConfig::new(
+        &log.namespace_roots,
+        log.namespaces.clone(),
+        vec!["Consensus.LeiosP".to_string()],
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            select(
+                &fragment,
+                line_with(LEIOS_WINDOW, r#""ns":"Consensus.LeiosPeer.Msg""#)
+            ),
+            Selection::Ship(_)
+        ),
+        "a rule stopping mid-segment excluded whatever shares its letters"
+    );
+}
+
+/// Exclusions are not held to the ceiling: they only ever ship less, so one
+/// naming a namespace no root covers is redundant rather than wrong.
+#[test]
+fn an_exclusion_outside_the_roots_is_allowed() {
+    let log = shipped_log_config();
+    SelectConfig::new(
+        &log.namespace_roots,
+        log.namespaces.clone(),
+        vec!["Reflection".to_string()],
+    )
+    .expect("an exclusion outside the roots narrows nothing and is not refused");
 }

@@ -188,7 +188,7 @@ pub fn shipped_log_config() -> LogConfig {
 /// hold rules at all.
 pub fn shipped_rules() -> SelectConfig {
     let log = shipped_log_config();
-    SelectConfig::new(&log.namespace_roots, log.namespaces).unwrap()
+    SelectConfig::new(&log.namespace_roots, log.namespaces, log.exclude_namespaces).unwrap()
 }
 
 /// One of the recorded node streams under tests/fixtures/recordings.

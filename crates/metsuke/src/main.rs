@@ -219,9 +219,23 @@ fn start_trace_collection(
         busy_timeout,
         provenance,
     })?;
-    let selection = SelectConfig::new(&log.namespace_roots, log.namespaces.clone())?;
+    let selection = SelectConfig::new(
+        &log.namespace_roots,
+        log.namespaces.clone(),
+        log.exclude_namespaces.clone(),
+    )?;
     let backoff = Duration::from_secs(log.respawn_backoff_secs);
-    let namespaces = log.namespaces.join(", ");
+    // The exclusions are named on the same line as the selection, because a
+    // namespace missing from the archive is otherwise indistinguishable from a
+    // node that never emitted it, and this line is where an operator looks.
+    let namespaces = match log.exclude_namespaces.is_empty() {
+        true => log.namespaces.join(", "),
+        false => format!(
+            "{} less {}",
+            log.namespaces.join(", "),
+            log.exclude_namespaces.join(", ")
+        ),
+    };
     match &log.source {
         LogSource::Journald(journal) => {
             eprintln!(

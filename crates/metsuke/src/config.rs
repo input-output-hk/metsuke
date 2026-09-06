@@ -123,6 +123,10 @@ pub struct LogConfig {
     pub namespace_roots: Vec<String>,
     /// Namespace prefixes to ship (semantics: `logselect::SelectConfig`).
     pub namespaces: Vec<String>,
+    /// Namespace prefixes to drop out of what `namespaces` selected. Empty by
+    /// default: a deployment that wants everything under its prefixes is the
+    /// ordinary one.
+    pub exclude_namespaces: Vec<String>,
     /// Trace-line spool cap (semantics: `spool::LogSpoolConfig`).
     pub log_max_bytes: u64,
     pub respawn_backoff_secs: u64,
@@ -144,6 +148,8 @@ struct LogToml {
     namespace_roots: Vec<String>,
     #[serde(default = "default_log_namespaces")]
     namespaces: Vec<String>,
+    #[serde(default)]
+    exclude_namespaces: Vec<String>,
     #[serde(default = "default_log_max_bytes")]
     log_max_bytes: u64,
     #[serde(default = "default_log_respawn_backoff_secs")]
@@ -209,6 +215,7 @@ impl TryFrom<LogToml> for LogConfig {
             source,
             namespace_roots: toml.namespace_roots,
             namespaces: toml.namespaces,
+            exclude_namespaces: toml.exclude_namespaces,
             log_max_bytes: toml.log_max_bytes,
             respawn_backoff_secs: toml.respawn_backoff_secs,
         })
@@ -347,6 +354,7 @@ impl Config {
                 let mut fields = serde_json::json!({
                     "namespace_roots": log.namespace_roots,
                     "namespaces": log.namespaces,
+                    "exclude_namespaces": log.exclude_namespaces,
                     "log_max_bytes": log.log_max_bytes,
                     "respawn_backoff_secs": log.respawn_backoff_secs,
                 });

@@ -180,6 +180,27 @@ null
 
 
 
+## services\.metsuke\.settings\.log\.exclude_namespaces
+
+
+
+Namespaces to drop back out of that selection\. Empty by default\.
+
+
+
+*Type:*
+null or (list of string)
+
+
+
+*Default:*
+\[]
+
+*Declared by:*
+ - [nix/agent-module\.nix](https://github.com/input-output-hk/metsuke/blob/main/nix/agent-module.nix)
+
+
+
 ## services\.metsuke\.settings\.log\.journal_unit
 
 

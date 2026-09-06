@@ -92,11 +92,17 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # reads no journal, so none of the journal keys may be set, and the NixOS module
 # does not render this source: the unit it writes has no node upstream of it.
 #
-# namespaces are prefixes and are the whole selection rule; namespace_roots is
-# this host's ceiling on them, and a namespaces entry outside it is refused at
-# startup. Both match on segment boundaries, so an entry names a namespace the
-# node emits or an ancestor of one, never a fragment of a name. Why severity is
-# not a second rule: docs/adr/0010.
+# namespaces are prefixes and are the selection rule, less whatever
+# exclude_namespaces names; namespace_roots is this host's ceiling on them, and
+# a namespaces entry outside it is refused at startup. All three match on
+# segment boundaries, so an entry names a namespace the node emits or an
+# ancestor of one, never a fragment of a name. Why severity is not a further
+# rule: docs/adr/0010.
+#
+# An exclusion is for a namespace the node puts under a prefix you otherwise
+# want whole. Narrowing namespaces instead would give up every namespace added
+# under that prefix later. Exclusions are not checked against namespace_roots,
+# because they only ever ship less.
 #
 # start_grace_secs is how long a just-started journalctl has to stay running
 # before the agent accepts it as following, so a unit that may not read the
@@ -114,6 +120,9 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # prefixes matched on segment boundaries.
 # namespace_roots = ["Consensus", "ChainDB", "Forge"]
 # namespaces = ["Consensus.LeiosKernel", "Consensus.LeiosPeer", "ChainDB.AddBlockEvent.AddedToCurrentChain", "Forge.Loop.AdoptedBlock"]
+#
+# Namespaces to drop back out of that selection. Empty by default.
+# exclude_namespaces = []
 #
 # The trace-line spool's cap, and how long a journalctl that died waits before
 # it is started again.

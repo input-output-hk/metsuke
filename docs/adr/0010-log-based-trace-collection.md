@@ -5,8 +5,9 @@ Status: accepted (2026-08-27). Supersedes
 Amended by metsuke-jfb.11, which moved where a line's stamp is applied, by
 metsuke-jfb.19, which dropped severity as a selection rule, by
 metsuke-4zo.98, which settled what the archive says about lost lines: nothing,
-by metsuke-4zo.107, which made a prefix match on segment boundaries, and by
-metsuke-4zo.116, which made a journalctl that never follows fail the start.
+by metsuke-4zo.107, which made a prefix match on segment boundaries, by
+metsuke-4zo.116, which made a journalctl that never follows fail the start, and
+by the exclusion rule below, which subtracts from what the prefixes select.
 
 ## Context
 
@@ -36,8 +37,8 @@ the block producer's write path, where a stalled reader is the node's problem.
 ## Decision
 
 The agent reads the node's trace stream from the source `[log].source` names,
-selects lines by namespace prefix, which is configuration, and ships every field
-of what it selects. The journal source follows `journalctl --follow`; the pipe
+selects lines by namespace prefix less namespace prefix, which is
+configuration, and ships every field of what it selects. The journal source follows `journalctl --follow`; the pipe
 source reads the node's own stdout and tees it through untouched.
 It parses the line as a JSON object and reads `ns` off its top level and nothing
 else; a line the parse refuses declares no namespace, so no rule reaches it.
@@ -48,6 +49,22 @@ stops mid-segment selects nothing rather than whatever shares its letters, so an
 entry names a namespace or an ancestor of one and never a fragment. The roots
 are spelled without a trailing dot, because the boundary is the rule's rather
 than the spelling's (metsuke-4zo.107).
+
+A second list subtracts. `exclude_namespaces` is prefixes read the same way,
+and a line under one is dropped however it was selected, so an exclusion can
+name a namespace beneath a prefix the selection keeps whole. Without it the
+only way to refuse one namespace is to stop selecting its parent, which also
+gives up every namespace the node adds under that parent later. That is not
+hypothetical: `Consensus.LeiosPeer.Msg` is two thirds of the payload bytes a
+node ships and carries a Haskell `Show` rendering nothing downstream can group
+by, while `Consensus.LeiosPeer.Announcement` beside it answers one of the
+distributions the program asked for.
+
+Exclusions are not checked against `namespace_roots`. The ceiling bounds what a
+host may ship, and an exclusion only ever ships less, so one naming a namespace
+no root covers is redundant rather than a rule to refuse. The subtraction wins
+over the selection, which is the only ordering under which an exclusion beneath
+a selected prefix can fire at all.
 
 Severity is not a rule. A namespace's severity is assigned by the node's own
 `TraceOptions`, so what a line carries in `sev` states what its operator
@@ -118,6 +135,16 @@ upstream of it.
   object would discard. The instructions page carries the step and
   [docs/research/cardano-node-11-tracing.md](../research/cardano-node-11-tracing.md)
   carries why, and what the published configs hold.
+- An excluded namespace is absent from the archive exactly as a namespace the
+  node never emitted is, and nothing in the data tells them apart. That is the
+  same silence metsuke-4zo.98 accepted for lost lines, and it holds here for the
+  same reason only because an exclusion is all-or-nothing: a consumer reading no
+  `Consensus.LeiosPeer.Msg` rows is reading a namespace that was not collected,
+  not a sample of one. A rule that dropped *some* lines of a namespace would
+  break that, because a count over what survived would look like a whole. The
+  agent names its exclusions on the startup line beside its selection, which is
+  where an operator asks the question; a consumer holding only the archive asks
+  the deployment.
 - The grant is real and lasts as long as `[log]` is set. `systemd-journal`
   reads the whole system journal, not the node's unit. An agent compromised on
   a host that logs anything sensitive to the journal reads that too. The

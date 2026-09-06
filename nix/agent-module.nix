@@ -300,6 +300,7 @@ in
                   // shippedOptions {
                     namespace_roots = types.listOf types.str;
                     namespaces = types.listOf types.str;
+                    exclude_namespaces = types.listOf types.str;
                     log_max_bytes = types.ints.unsigned;
                     respawn_backoff_secs = types.ints.unsigned;
                     start_grace_secs = types.ints.positive;
