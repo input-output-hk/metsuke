@@ -177,6 +177,33 @@ pub struct Binary {
     pub bytes: Vec<u8>,
 }
 
+/// What the install step tells an operator to check the download against.
+/// sha256, and deliberately not the blake2 the rest of this project hashes
+/// with: the reader here is an operator, `sha256sum` is what they already have
+/// and already trust, and a check that makes them look up a tool is a check
+/// they skip.
+///
+/// What it is worth, and what it is not. It travels inside the page, over the
+/// same TLS session as the command beside it, so it says nothing against a
+/// server that is itself lying. What it does catch is everything between: a
+/// truncated or partially written download, an object half-staged into the
+/// store this server reads, and the 404 body `curl` would otherwise leave
+/// where the binary was meant to be. Those are the ways this actually goes
+/// wrong, and none of them needs an attacker.
+fn digest(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    metsuke_wire::hex::encode(&Sha256::digest(bytes)[..])
+}
+
+/// The digest of the build served under `name`, where this deployment serves
+/// one.
+fn digest_of(offered: &[File], name: &str) -> Option<String> {
+    offered
+        .iter()
+        .find(|file| file.name == name)
+        .map(|file| digest(&file.bytes))
+}
+
 /// Both pages and every file they link, ready to serve. `binaries` is empty
 /// where the deployment ships none, and the install step then says to build
 /// one instead of offering it.
@@ -241,7 +268,16 @@ fn install(offered: &[File], files_url: &str, binary: &str) -> String {
     let lines = match offers_a_build(offered) {
         true => vec![
             "# Download the build for your architecture".to_string(),
-            format!("curl -o metsuke {files_url}{name}"),
+            // -f: without it curl writes a 404 body to the destination and
+            // exits zero, so a mistyped name becomes an HTML page that the
+            // install below makes executable.
+            format!("curl -fo metsuke {files_url}{name}"),
+            String::new(),
+            "# Check it is the build this page describes".to_string(),
+            format!(
+                "echo '{}  metsuke' | sha256sum -c",
+                digest_of(offered, name).unwrap_or_default()
+            ),
             String::new(),
             "# Install it where the unit will look for it".to_string(),
             // -D: the directory is standard, but a minimal image can be
@@ -279,7 +315,10 @@ fn try_it(offered: &[File], files_url: &str) -> (String, String) {
         // install step, the units and every later command name.
         true => (
             escape(&format!(
-                "curl -o metsuke {files_url}{name}\nchmod +x metsuke"
+                "curl -fo metsuke {files_url}{name}\n\
+                 echo '{}  metsuke' | sha256sum -c\n\
+                 chmod +x metsuke",
+                digest_of(offered, name).unwrap_or_default()
             )),
             "./metsuke".to_string(),
         ),
@@ -470,7 +509,10 @@ fn fetch_it(offered: &[File], files_url: &str) -> (String, String) {
     match offered.iter().any(|file| file.name == name) {
         true => (
             escape(&format!(
-                "curl -o metsuke-fetch {files_url}{name}\nchmod +x metsuke-fetch"
+                "curl -fo metsuke-fetch {files_url}{name}\n\
+                 echo '{}  metsuke-fetch' | sha256sum -c\n\
+                 chmod +x metsuke-fetch",
+                digest_of(offered, name).unwrap_or_default()
             )),
             "./metsuke-fetch".to_string(),
         ),

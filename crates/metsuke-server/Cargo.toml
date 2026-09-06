@@ -13,6 +13,11 @@ toml = "0.9.8"
 [dependencies]
 metsuke-wire = { path = "../metsuke-wire" }
 bytes = "1.11.0"
+# The digest the install steps print. sha256 and not the blake2 this project
+# hashes with everywhere else, because this one is read by an operator: they
+# check it with sha256sum, which they already know, and a verification step
+# using a tool they have to look up is a step they skip.
+sha2 = "0.11.0"
 # The HTTP surface. http1 and server only: the endpoint speaks HTTP/1.1 behind
 # a proxy, and a protocol nothing sends is a protocol nothing has to be safe
 # against.

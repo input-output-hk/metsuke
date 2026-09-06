@@ -31,7 +31,7 @@ until it is. <a href="{{DETAILS_PATH}}#code">What that means</a>.</p>
 <p>Nothing is installed, and it all stops when you press Ctrl-C.</p>
 
 <pre>{{try_fetch}}
-curl -O {{files_url}}config.pipe.toml
+curl -fO {{files_url}}config.pipe.toml
 
 # Set your pool id, and a spool_path you can write
 $EDITOR config.pipe.toml
@@ -175,13 +175,13 @@ sudo mkdir -p {{config_dir}}
 # Download one config file, and only one, from the preferred setup above
 
 # Its own unit
-sudo curl -o {{config_path}} {{files_url}}config.journald.toml
+sudo curl -fo {{config_path}} {{files_url}}config.journald.toml
 
 # Your node's unit, A container, or A shell
-sudo curl -o {{config_path}} {{files_url}}config.pipe.toml
+sudo curl -fo {{config_path}} {{files_url}}config.pipe.toml
 
 # Metrics only
-sudo curl -o {{config_path}} {{files_url}}config.minimal.toml
+sudo curl -fo {{config_path}} {{files_url}}config.minimal.toml
 
 # Set your pool id, and check the metrics URL. Two setups have more to set:
 #   Its own unit  your node's unit, and journalctl's absolute path
@@ -226,10 +226,10 @@ unit</strong> or <strong>Metrics only</strong>, the agent runs under a unit of
 its own, and you download one of the two:</p>
 
 <pre># Its own unit
-sudo curl -o /etc/systemd/system/metsuke.service {{files_url}}metsuke-journald.service
+sudo curl -fo /etc/systemd/system/metsuke.service {{files_url}}metsuke-journald.service
 
 # Metrics only
-sudo curl -o /etc/systemd/system/metsuke.service {{files_url}}metsuke.service
+sudo curl -fo /etc/systemd/system/metsuke.service {{files_url}}metsuke.service
 
 # Start it now, and on every boot
 sudo systemctl daemon-reload
@@ -243,7 +243,7 @@ same command piped through the agent.
 <pre># The directory is yours to make. The zzzz- name sorts the drop-in last, so
 # nothing host-wide can clear its credential after it
 sudo mkdir -p /etc/systemd/system/&lt;your-node&gt;.service.d
-sudo curl -o /etc/systemd/system/&lt;your-node&gt;.service.d/zzzz-metsuke.conf {{files_url}}node-pipe.conf
+sudo curl -fo /etc/systemd/system/&lt;your-node&gt;.service.d/zzzz-metsuke.conf {{files_url}}node-pipe.conf
 
 # Replace YOUR-NODE-COMMAND with what your node already runs, which
 # systemctl cat &lt;your-node&gt;.service prints

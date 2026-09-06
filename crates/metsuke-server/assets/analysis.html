@@ -103,8 +103,8 @@ usefully through <code>select *</code> though: a scrape holds its metrics as a
 nested list and a trace line holds its payload as a map, so both want
 flattening first. Two init files do that, and this server hands them out:</p>
 
-<pre>curl -O {{files_url}}analytics.sql
-curl -O {{files_url}}archive.sql</pre>
+<pre>curl -fO {{files_url}}analytics.sql
+curl -fO {{files_url}}archive.sql</pre>
 
 <p><a href="{{FILES_PREFIX}}analytics.sql">analytics.sql</a> is the one to
 start with. It defines the views a consumer actually groups over, coverage per

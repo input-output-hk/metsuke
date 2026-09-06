@@ -1103,3 +1103,51 @@ fn shipped_text_is_escaped_into_the_page() {
     assert!(page.contains("&lt;b&gt;a&amp;b&lt;/b&gt;"));
     assert!(!page.contains("<b>"));
 }
+
+/// The digest the install steps print is over the bytes this server actually
+/// serves, computed here from the served file rather than from anything the
+/// page said. A digest that does not match what is downloaded is worse than
+/// none: it teaches an operator that the check passing means something.
+#[test]
+fn every_offered_build_is_named_with_the_digest_of_what_is_served() {
+    use sha2::{Digest, Sha256};
+
+    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let mut checked = 0;
+    for name in instructions::BINARIES
+        .iter()
+        .chain(instructions::FETCH_BINARIES.iter())
+    {
+        let served = pages
+            .files
+            .iter()
+            .find(|file| file.name == *name)
+            .unwrap_or_else(|| panic!("{name} is offered but not served"));
+        let expected = metsuke_wire::hex::encode(&Sha256::digest(&served.bytes)[..]);
+
+        // Wherever that build is handed over. The quickstart offers the agent
+        // in two places, the analysis page the fetch tool in one, and a digest
+        // is only worth printing beside every one of them.
+        let pages = [&pages.quickstart, &pages.details, &pages.analysis];
+        let offered: usize = pages
+            .iter()
+            .map(|page| {
+                page.matches(&format!("{}{name}", instructions::FILES_PREFIX))
+                    .count()
+            })
+            .sum();
+        if offered == 0 {
+            continue;
+        }
+        let digested: usize = pages
+            .iter()
+            .map(|page| page.matches(&expected).count())
+            .sum();
+        assert!(
+            digested > 0,
+            "{name} is offered {offered} times and its digest {expected} appears nowhere"
+        );
+        checked += 1;
+    }
+    assert!(checked > 0, "no build was offered at all");
+}
