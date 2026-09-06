@@ -162,7 +162,7 @@ fn run() -> Result<(), Fatal> {
 /// it.
 struct Serving {
     listen: String,
-    public_url: url::Url,
+    public_url: metsuke_server::config::PublicUrl,
     http: HttpConfig,
     ingest: IngestConfig,
     developer: DeveloperConfig,
@@ -267,7 +267,7 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
     // reach an operator asking for it. The agent builds are the exception:
     // read here, because a path that cannot be read is the deployment's
     // mistake and this is where it should stop.
-    let pages = instructions::pages(&public_url, agent_builds(downloads.as_ref())?);
+    let pages = instructions::pages(public_url.as_url(), agent_builds(downloads.as_ref())?);
     let listener = serve::bind(&listen).map_err(|source| Fatal::Listen {
         listen: listen.clone(),
         reason: source.to_string(),

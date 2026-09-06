@@ -218,3 +218,44 @@ fn an_endpoint_that_is_not_a_url_is_refused_at_load() {
         .to_string();
     assert!(error.contains("not a url"), "got: {error}");
 }
+
+/// Every install command the pages print is built from `public_url`, so a
+/// plaintext one publishes a page telling every pool operator to fetch a
+/// binary in clear and install it as root. Refused at load, where the operator
+/// who set it is the one who reads the refusal, rather than served.
+#[test]
+fn a_public_url_that_is_not_https_is_refused() {
+    for value in [
+        "http://metsuke.example.org",
+        // A name that resolves to loopback is still a name: what it resolves
+        // to is not this server's to know.
+        "http://localhost:8080",
+        "ftp://metsuke.example.org",
+        // Cannot be a base, so joining the files prefix onto it would fail
+        // after the listener was already past this point.
+        "data:text/plain,nothing",
+    ] {
+        let error = ServerConfig::from_toml(&with("public_url", &format!("\"{value}\"")))
+            .expect_err(value)
+            .to_string();
+        assert!(
+            error.contains("public_url"),
+            "{value}: the refusal must name the field, got: {error}"
+        );
+    }
+}
+
+/// And what a deployment actually runs on is accepted: TLS anywhere, plain
+/// HTTP only where the address itself says it never leaves the host, which is
+/// what the VM tests and a single-host development server use.
+#[test]
+fn a_public_url_is_https_or_loopback_http() {
+    for value in [
+        "https://metsuke.example.org",
+        "https://metsuke.example.org:8443/",
+        "http://127.0.0.1:8080",
+        "http://[::1]:8080",
+    ] {
+        ServerConfig::from_toml(&with("public_url", &format!("\"{value}\""))).expect(value);
+    }
+}

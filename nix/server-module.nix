@@ -452,6 +452,19 @@ in
 
     assertions = [
       {
+        # The server refuses this at load too. Asserted here as well because
+        # the two failures cost differently: a deploy that never evaluates has
+        # changed nothing, where one that reaches the host leaves the unit
+        # failing on a value only the journal names.
+        assertion =
+          lib.hasPrefix "https://" cfg.settings.public_url
+          || lib.any (loopback: lib.hasPrefix "http://${loopback}" cfg.settings.public_url) [
+            "127."
+            "[::1]"
+          ];
+        message = "services.metsuke-server.settings.public_url is ${cfg.settings.public_url}, which is neither https nor http on a loopback address. Every install command the onboarding pages print is built from it, so a plaintext one tells every pool operator to fetch a binary in clear and install it as root.";
+      }
+      {
         assertion = !cfg.roster.enable || cfg.settings.ingest.leios_roster == rosterFile;
         message = "services.metsuke-server.settings.ingest.leios_roster has to be ${rosterFile} when roster.enable is set: that is the only path the timer writes, and a server pointed anywhere else reads a roster nothing refreshes.";
       }

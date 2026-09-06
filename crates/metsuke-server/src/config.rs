@@ -22,7 +22,7 @@ pub struct ServerConfig {
     /// proxy the bound address is not the one anyone types. The onboarding page
     /// hands out configs pointing at it, so an operator edits their pool id and
     /// nothing else.
-    pub public_url: Url,
+    pub public_url: PublicUrl,
     pub http: HttpConfig,
     pub archive: ArchiveConfig,
     pub ingest: IngestConfig,
@@ -162,6 +162,63 @@ pub struct S3Config {
 pub enum ConfigError {
     #[error("config does not parse: {0}")]
     Toml(#[from] toml::de::Error),
+}
+
+/// Where this deployment tells operators to reach it. Checked rather than
+/// taken, and checked the way the agent checks its own `upload_url`
+/// (`metsuke::endpoint::UploadUrl`): the two ends of the same deployment
+/// should not disagree about what counts as an address.
+///
+/// The reason is what the pages do with it. Every install command is built
+/// from this value, so under `http://` this server publishes a page telling
+/// every pool operator to fetch a binary in clear and `sudo install` it, which
+/// hands an on-path attacker the whole fleet through our own onboarding.
+/// Refusing plaintext also refuses a scheme that cannot be a base, which is
+/// what `join` would otherwise fail on after the listener is already past it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "Url")]
+pub struct PublicUrl(Url);
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "public_url {0} is not https, and only a loopback host may be plain http: \
+     every install command the pages print is built from it"
+)]
+pub struct NotAPublicUrl(Url);
+
+impl TryFrom<Url> for PublicUrl {
+    type Error = NotAPublicUrl;
+
+    fn try_from(url: Url) -> Result<PublicUrl, NotAPublicUrl> {
+        // Loopback http is what the VM tests and a single-host development
+        // deployment reach this server on; a name is not enough, for the
+        // reason `endpoint::is_loopback` gives.
+        // Brackets come off first: `Url` hands back an IPv6 host as it is
+        // written in the authority, and `[::1]` parses as no address at all.
+        let loopback = url.host_str().is_some_and(|host| {
+            host.trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+        });
+        match url.scheme() {
+            "https" => Ok(PublicUrl(url)),
+            "http" if loopback => Ok(PublicUrl(url)),
+            _ => Err(NotAPublicUrl(url)),
+        }
+    }
+}
+
+impl PublicUrl {
+    pub fn as_url(&self) -> &Url {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for PublicUrl {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
 }
 
 impl ServerConfig {
