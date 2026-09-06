@@ -49,6 +49,13 @@ shipped one and should not want to.
 The rule that decides the case: if updating the agent without also editing
 `/etc/metsuke/config.toml` leaves a working agent, it is not major.
 
+**1.0.0 is the exception to the paragraph above.** Going from `0.x` to `1.0.0`
+breaks nothing and requires nothing of an operator. It says the config fields
+and the module options are now a contract, which is what the three rules above
+already assume and what a `0.x` number tells an operator not to assume. Cut it
+when a release goes by without an operator-facing rename, not on a date. After
+it, a major means what this file says it means.
+
 For `metsuke-fetch`, read the same three against its two on-disk formats. A
 cursor file the new build cannot read, or a change to the tree layout under
 `--into` that breaks a duckdb read someone already wrote, is major.
