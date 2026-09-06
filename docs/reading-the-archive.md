@@ -85,6 +85,13 @@ rewinding the state file. What to do about one is not this tool's:
 stored bytes and metadata disagree, and removing one is a bucket-admin action,
 since the server holds no delete.
 
+**That exit code speaks for one run, and nothing remembers it.** The cursor is
+past the refused key, so the next run over the same state file does not reach
+it again, finds nothing wrong, and exits zero. Do not wrap this in a retry: a
+`sync || sync`, or a timer that runs it twice, turns a run that refused objects
+into a green one and the only record of them was the first run's stderr. Keep
+that output, or read the exit code of the run that produced it.
+
 All three are counted rather than refused, or a run against a filesystem
 archive would download nothing. Two flags raise the bar, and each writes only
 what it names:
