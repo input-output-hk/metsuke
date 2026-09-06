@@ -93,7 +93,18 @@ const REASON_MAX_CHARS: usize = 200;
 /// written once, at the front. The server puts what an agent says about itself
 /// through the same bound, for the same reason.
 pub fn one_line(body: String) -> String {
-    let collapsed = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Every control character, not only the whitespace `split_whitespace`
+    // knows: an escape is not whitespace, so ESC survived this and reached a
+    // terminal running `journalctl`, where it is the sender's to decide what
+    // the operator's screen does.
+    let printable: String = body
+        .chars()
+        .map(|character| match character.is_control() {
+            true => ' ',
+            false => character,
+        })
+        .collect();
+    let collapsed = printable.split_whitespace().collect::<Vec<_>>().join(" ");
     match collapsed.char_indices().nth(REASON_MAX_CHARS) {
         None => collapsed,
         // On a character boundary: a reason is whatever answered, so it is not

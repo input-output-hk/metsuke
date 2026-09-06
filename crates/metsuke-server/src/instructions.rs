@@ -290,7 +290,10 @@ fn install(offered: &[File], files_url: &str, binary: &str) -> String {
             format!("nix build {}#{name}", flake_ref()),
             String::new(),
             "# Install it where the unit will look for it".to_string(),
-            format!("sudo install -m 0755 result/bin/metsuke {binary}"),
+            // -D for the reason the branch above gives: it is the same
+            // directory, and a minimal image is as likely to be without it
+            // whichever way the binary was got.
+            format!("sudo install -D -m 0755 result/bin/metsuke {binary}"),
         ],
     };
     escape(&lines.join("\n"))
@@ -702,6 +705,14 @@ fn escape(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+        // Quotes too, so this is safe in an attribute and not only between
+        // tags. Nothing needs it today: every attribute a template writes is
+        // filled from a compile-time constant, and what a deployment supplies
+        // lands in a `pre` or a `code`. But `fill` is blind to where a value
+        // is going, so the only thing standing between a config value and an
+        // attribute is that nobody has written `href="{{files_url}}"` yet.
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 /// The node endpoint both step 4 and step 7 talk about, read once out of the

@@ -902,9 +902,14 @@ fn snippets(page: &str) -> Vec<String> {
         .skip(1)
         .filter_map(|rest| rest.split_once("</pre>"))
         .map(|(block, _)| {
+            // Every entity `escape` writes, which is what a browser decodes
+            // before an operator copies the block. `&amp;` last, or an escaped
+            // ampersand in the source would be decoded twice.
             block
                 .replace("&lt;", "<")
                 .replace("&gt;", ">")
+                .replace("&quot;", "\"")
+                .replace("&#39;", "'")
                 .replace("&amp;", "&")
         })
         .collect()

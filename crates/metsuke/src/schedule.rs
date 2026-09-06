@@ -29,7 +29,15 @@ pub fn nothing_sent_line(now: OffsetDateTime, wait: Duration) -> String {
 /// The instant, to the second: subsecond digits are the clock's rather than
 /// anything an operator set.
 fn at(now: OffsetDateTime, wait: Duration) -> String {
-    let at = now + wait;
+    // checked_add, because `+` on an OffsetDateTime panics past the end of
+    // representable time and the two lines below already answer a clock they
+    // cannot render. A wait long enough to reach it is a configured one.
+    let Some(at) = time::Duration::try_from(wait)
+        .ok()
+        .and_then(|wait| now.checked_add(wait))
+    else {
+        return "a time this clock cannot render".to_string();
+    };
     at.replace_nanosecond(0)
         .unwrap_or(at)
         .format(&Rfc3339)
