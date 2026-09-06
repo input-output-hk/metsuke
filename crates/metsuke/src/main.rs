@@ -99,7 +99,7 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         .or(config.signing_key.as_deref());
     eprintln!(
         "{INFO}config: {}",
-        config.resolved(&agent_id, signing_key_path)
+        config.resolved(&agent_id, signing_key_path, &key)
     );
     // Resolved once and handed to both spool writers: it is what stamps every
     // line and what a submission's header names, so one value or they could
@@ -115,9 +115,19 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         busy_timeout,
         provenance: provenance.clone(),
     })?;
+    // Which key signs is on this line and not only in the config dump above,
+    // because the dump runs to nine hundred characters and this is the line an
+    // operator reads. A cold key and a Leios key load identically from the
+    // same path, and which one it is decides whether this pool is settled by
+    // the key or believed against the roster (ADR 0011).
     eprintln!(
-        "{INFO}metsuke on {agent_id} scraping {} for {}",
-        config.metrics_url, config.pool_id,
+        "{INFO}metsuke on {agent_id} scraping {} for {}, signing with its {} key",
+        config.metrics_url,
+        config.pool_id,
+        match key.attributes() {
+            Some(_) => "cold",
+            None => "Leios",
+        },
     );
     let mut agent = Agent::new(
         ScraperConfig {

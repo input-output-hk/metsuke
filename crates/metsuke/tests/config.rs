@@ -7,10 +7,11 @@ use std::time::Duration;
 
 use metsuke::config::{Config, LogConfig, LogSource};
 use metsuke::logsource::JournalConfig;
-use metsuke_wire::envelope::AgentId;
+use metsuke_wire::envelope::{AgentId, SubmissionKey};
+use metsuke_wire::leios::LeiosSigningKey;
 
 mod support;
-use support::test_pool_id;
+use support::{test_pool_id, test_submission_key};
 
 fn journal(log: &LogConfig) -> &JournalConfig {
     match &log.source {
@@ -256,7 +257,11 @@ fn the_example_log_section_documents_the_real_defaults() {
 fn the_startup_dump_names_every_setting_the_example_documents() {
     let config = Config::from_toml(&uncomment(EXAMPLE)).unwrap();
     let agent_id = AgentId::parse("relay-1").expect("a fixed name is a slug");
-    let dump = config.resolved(&agent_id, Some(Path::new("/run/credentials/signing-key")));
+    let dump = config.resolved(
+        &agent_id,
+        Some(Path::new("/run/credentials/signing-key")),
+        &test_submission_key(),
+    );
 
     let mut checked = 0;
     for key in uncomment(EXAMPLE)
@@ -448,4 +453,49 @@ fn unknown_field_fails_loudly() {
         err.to_string().contains("upload_intervall_secs"),
         "error must name the unknown field, got: {err}"
     );
+}
+
+/// The two schemes load from the same path and produce a config that reads the
+/// same, so the dump has to say which one is signing. What it decides is not
+/// cosmetic: a cold key settles the pool by derivation, a Leios key is believed
+/// only where the roster lists it (ADR 0011), and an operator who copied the
+/// wrong file has no other signal until this server refuses them an upload
+/// interval later.
+#[test]
+fn the_startup_dump_says_which_key_is_signing() {
+    let config = Config::from_toml(&uncomment(EXAMPLE)).unwrap();
+    let agent_id = AgentId::parse("relay-1").expect("a fixed name is a slug");
+    let path = Some(Path::new("/run/credentials/signing-key"));
+
+    let cold = SubmissionKey::ColdKey(support::test_key());
+    let leios = SubmissionKey::LeiosKey(
+        LeiosSigningKey::from_bytes(&[3u8; 32]).expect("a fixed seed is a scalar"),
+    );
+
+    let dumped = |key: &SubmissionKey| config.resolved(&agent_id, path, key);
+    assert!(
+        dumped(&cold).contains("\"signing_key_scheme\":\"cold\""),
+        "got: {}",
+        dumped(&cold)
+    );
+    assert!(
+        dumped(&leios).contains("\"signing_key_scheme\":\"leios\""),
+        "got: {}",
+        dumped(&leios)
+    );
+    // The same path, so nothing else in the line tells them apart.
+    assert_ne!(dumped(&cold), dumped(&leios));
+
+    // The public half is there too, and it is the key's rather than the
+    // configured pool's: that is what a reader compares against the roster.
+    for key in [&cold, &leios] {
+        assert!(
+            dumped(key).contains(&format!(
+                "\"signing_key_public\":\"{}\"",
+                key.public_key_hex()
+            )),
+            "got: {}",
+            dumped(key)
+        );
+    }
 }

@@ -12,7 +12,7 @@ use serde::Deserialize;
 use crate::endpoint::{MetricsUrl, UploadUrl};
 use crate::logsource::{JournalConfig, PipeConfig};
 use crate::sntp;
-use metsuke_wire::envelope::{AgentId, PoolId};
+use metsuke_wire::envelope::{AgentId, PoolId, SubmissionKey};
 
 #[derive(Debug, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -331,6 +331,16 @@ pub enum ConfigError {
     Toml(#[from] toml::de::Error),
 }
 
+/// Which scheme a loaded key is, in CONTEXT.md's words rather than the
+/// algorithm's: what an operator needs from this line is whether their pool is
+/// settled by the key or looked up in the roster.
+fn scheme(key: &SubmissionKey) -> &'static str {
+    match key {
+        SubmissionKey::ColdKey(_) => "cold",
+        SubmissionKey::LeiosKey(_) => "leios",
+    }
+}
+
 impl Config {
     pub fn from_toml(text: &str) -> Result<Config, ConfigError> {
         Ok(toml::from_str(text)?)
@@ -347,7 +357,12 @@ impl Config {
     /// `signing_key` is absent under systemd because the unit passes the
     /// credential on the command line. Both arrive here already resolved.
     /// `tests/config.rs` holds this to naming every key the example documents.
-    pub fn resolved(&self, agent_id: &AgentId, signing_key: Option<&Path>) -> String {
+    pub fn resolved(
+        &self,
+        agent_id: &AgentId,
+        signing_key: Option<&Path>,
+        key: &SubmissionKey,
+    ) -> String {
         let log = match &self.log {
             None => serde_json::Value::Null,
             Some(log) => {
@@ -384,6 +399,16 @@ impl Config {
             "metrics_url": self.metrics_url.as_str(),
             "upload_url": self.upload_url.as_str(),
             "signing_key": signing_key,
+            // Which scheme was loaded, and the public half of it. Both are
+            // public data, and the path alone does not say either: the unit
+            // hands the key over as `signing-key` whatever it is, so an
+            // operator who copied bls.skey where they meant pool.skey has a
+            // config that reads exactly like the one they intended. What
+            // actually changed is how their pool is established, from settled
+            // by the key to believed against a roster (ADR 0011), and nothing
+            // else in this line says so.
+            "signing_key_scheme": scheme(key),
+            "signing_key_public": key.public_key_hex(),
             "scrape_interval_secs": self.scrape_interval_secs.get(),
             "upload_interval_secs": self.upload_interval_secs.get(),
             "upload_max_submissions": self.upload_max_submissions.get(),
