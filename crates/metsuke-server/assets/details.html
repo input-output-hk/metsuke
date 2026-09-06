@@ -251,7 +251,7 @@ docker run -d --name leios-relay --init \
   -p 3010:3010 \
   -v "$PWD:/data" \
   -v "$PWD/metsuke:{{binary}}:ro" \
-  -v "$PWD/config.toml:{{config_path}}:ro" \
+  -v "$PWD/config.pipe.toml:{{config_path}}:ro" \
   -v "$PWD/bls.skey:{{key_path}}:ro" \
   -v metsuke-spool:/var/lib/metsuke \
   --entrypoint /bin/sh \

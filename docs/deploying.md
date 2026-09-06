@@ -253,10 +253,10 @@ It fetches every stored object and re-verifies its signature.
 From a developer machine, pull it back:
 
 ```
-metsuke-fetch list --server https://<server> --user metsuke-dev \
+metsuke-fetch list --server https://<server> --user <your account> \
   --password-file <path> --timeout-ms 30000
 
-metsuke-fetch sync --server https://<server> --user metsuke-dev \
+metsuke-fetch sync --server https://<server> --user <your account> \
   --password-file <path> --timeout-ms 30000 \
   --state ./metsuke.state --into ./downloads
 ```
