@@ -429,6 +429,32 @@ pkgs.testers.runNixOSTest {
         )
         piping.fail("journalctl -u node-stand-in.service | grep -q 'trace lines not collected'")
 
+    with subtest("a node that dies under the drop-in is restarted"):
+        # The failure this catches is silent. A pipeline's exit status is the
+        # last command's, and the agent exits 0 when the node's output ends, so
+        # however the node dies systemd sees success: a node unit's own
+        # Restart=on-failure never fires and the pool is off the network until
+        # somebody notices. Only the drop-in's Restart=always brings it back.
+        #
+        # The node half alone is killed, not the unit, because killing the unit
+        # would restart it under either setting and prove nothing.
+        before = piping.succeed(
+            "systemctl show -p InvocationID --value node-stand-in.service"
+        ).strip()
+        # By arguments, not by name: the stand-in execs an absolute store path,
+        # so its comm is the first fifteen characters of that path.
+        piping.succeed("pkill -f 'sleep infinity'")
+        piping.wait_until_succeeds(
+            "test \"$(systemctl show -p InvocationID --value node-stand-in.service)\""
+            f" != {before}"
+        )
+        piping.wait_for_unit("node-stand-in.service")
+        # And collection resumes rather than the unit merely being up again.
+        piping.wait_until_succeeds(
+            "test 0 -lt \"$(sqlite3 -readonly /var/lib/metsuke/spool.sqlite"
+            " 'select count(*) from log_lines')\""
+        )
+
         # Every line went through to the agent's own stdout, which under this
         # unit is the node's, so a consumer downstream still reads the node.
         piping.wait_until_succeeds(
