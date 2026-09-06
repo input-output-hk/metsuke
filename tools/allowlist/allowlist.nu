@@ -9,9 +9,21 @@ const CODE = '^[A-Za-z0-9._-]+$'
 const POOL_ID_COLUMN = "pool_id"
 const CODE_COLUMN = "application_code"
 
-# An earlier update's code is one the operator has already replaced, so only the
-# current registration counts. DISTINCT because one transaction may carry
-# several registration certificates for a pool.
+# The code an operator declared most recently, which is the latest registration
+# that carries one rather than the code on the latest registration. An earlier
+# update's code is replaced only by a later update that states one: changing
+# relays, pledge, margin or the reward account submits a new registration
+# certificate, and nothing asks the operator to re-attach the metadata. Reading
+# the newest certificate alone dropped every compliant pool that changed a
+# relay, and a pool off this list is refused before any cryptography runs, on
+# its side silently.
+#
+# Retirement is judged against the newest certificate and not that one, because
+# a pool that retired and re-registered is active while its code is still the
+# last one it declared.
+#
+# DISTINCT because one transaction may carry several registration certificates
+# for a pool.
 const REGISTERED_CODES = "
 SELECT DISTINCT ph.view AS pool_id,
        tm.json ->> :'code_key' AS application_code
@@ -21,12 +33,20 @@ JOIN tx_metadata tm ON tm.tx_id = pu.registered_tx_id
 WHERE tm.key = :label
   AND tm.json ? :'code_key'
   AND pu.registered_tx_id = (
-        SELECT MAX(registered_tx_id) FROM pool_update WHERE hash_id = ph.id)
+        SELECT MAX(pu2.registered_tx_id)
+        FROM pool_update pu2
+        JOIN tx_metadata tm2 ON tm2.tx_id = pu2.registered_tx_id
+        WHERE pu2.hash_id = ph.id
+          AND tm2.key = :label
+          AND tm2.json ? :'code_key')
   AND NOT EXISTS (
         SELECT 1
         FROM pool_retire pr
         WHERE pr.hash_id = ph.id
-          AND pr.announced_tx_id > pu.registered_tx_id)
+          AND pr.announced_tx_id > (
+                SELECT MAX(registered_tx_id)
+                FROM pool_update
+                WHERE hash_id = ph.id))
 "
 
 def demand [value: any, name: string] {

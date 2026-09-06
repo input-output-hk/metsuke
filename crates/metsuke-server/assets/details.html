@@ -33,6 +33,13 @@ submissions regardless of what key signs them. This is program registration
 rather than agent setup, so it is normally done before you reach the
 quickstart.</p>
 
+<p><strong>Keep it on every registration you submit afterwards.</strong>
+Changing your relays, pledge, margin or reward account submits a new
+registration certificate, and one that carries no metadata is read as a
+registration with no code. Attaching the same code again is what keeps your
+pool on the list; the code itself does not change unless the program says
+so.</p>
+
 <h2 id="wire">What leaves your machine</h2>
 
 <p>One submission is a plain JSON header, then your scrapes zstd compressed, one
