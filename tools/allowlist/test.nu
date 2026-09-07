@@ -140,6 +140,22 @@ def an-allowlist-nobody-is-on-is-refused [] {
   rm $empty
 }
 
+# The one guard on a query running against a production db-sync, so a duration
+# it cannot express is refused rather than truncated to the 0 postgres reads as
+# no timeout at all. Refused before psql is reached, which is what lets this
+# run with no database.
+def a-statement-timeout-under-a-millisecond-is-refused [] {
+  let run = [
+    $GENERATOR "query"
+    "--socket-dir" "/nonexistent" "--dbname" "d" "--role" "r"
+    "--metadata-label" "674" "--metadata-key" "k"
+    "--statement-timeout" "500us"
+  ]
+  let answer = ^$nu.current-exe ...$run | complete
+  assert not ($answer.exit_code == 0)
+  assert str contains $answer.stderr "no timeout"
+}
+
 def main [] {
   three-columns-flatten-to-one-row-per-pool
   a-pasted-pool-id-keeps-none-of-its-whitespace
@@ -154,5 +170,6 @@ def main [] {
   the-emitted-block-is-the-allowlist-the-server-config-reads
   the-command-emits-what-the-library-does
   an-allowlist-nobody-is-on-is-refused
+  a-statement-timeout-under-a-millisecond-is-refused
   print "allowlist tests passed"
 }

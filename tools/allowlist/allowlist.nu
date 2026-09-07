@@ -24,13 +24,19 @@ const CODE_COLUMN = "application_code"
 #
 # DISTINCT because one transaction may carry several registration certificates
 # for a pool.
+#
+# Every psql variable is quoted, `:'label'` as much as `:'code_key'`. Plain
+# `:label` is textual substitution into the statement, and what makes that safe
+# today is an `int` annotation three call frames away rather than anything
+# here. postgres reads the quoted form as an unknown literal and compares it to
+# the numeric column as one, so the query answers the same.
 const REGISTERED_CODES = "
 SELECT DISTINCT ph.view AS pool_id,
        tm.json ->> :'code_key' AS application_code
 FROM pool_hash ph
 JOIN pool_update pu ON pu.hash_id = ph.id
 JOIN tx_metadata tm ON tm.tx_id = pu.registered_tx_id
-WHERE tm.key = :label
+WHERE tm.key = :'label'
   AND tm.json ? :'code_key'
   AND pu.registered_tx_id = (
         SELECT MAX(pu2.registered_tx_id)
@@ -215,7 +221,14 @@ def "main query" [
   --metadata-key: string
   --statement-timeout: duration
 ]: nothing -> string {
+  # postgres reads statement_timeout=0 as no timeout at all, and `into int`
+  # truncates, so anything under a millisecond asks for the opposite of what it
+  # says. This is the only guard on a query that runs against a production
+  # db-sync, so a value it cannot express is refused rather than rounded.
   let timeout_ms = ((demand $statement_timeout "--statement-timeout") / 1ms) | into int
+  if $timeout_ms < 1 {
+    error make {msg: $"--statement-timeout ($statement_timeout) is under 1ms, which postgres reads as no timeout"}
+  }
   let arguments = [
     "--host" (demand $socket_dir "--socket-dir")
     "--dbname" (demand $dbname "--dbname")
