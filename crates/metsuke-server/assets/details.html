@@ -220,7 +220,11 @@ had: <a href="{{FILES_PREFIX}}node-pipe.conf">node-pipe.conf</a>, with
 <code>StandardOutput=append:</code> with logrotate over it, needs nothing
 different. The drop-in replaces the command and leaves that directive alone,
 and the agent writes every line it reads straight back to its own stdout, so
-the same file receives the same content and rotation is unaffected.</p>
+the same file receives the same content. Rotation works exactly as it did
+before the agent was there: systemd still opens the file and hands the
+descriptor down, so whatever your rotation does about that descriptor it does
+unchanged. <a href="#container">Redirecting the pipeline yourself</a> is the
+case where that is not true.</p>
 
 <p>One thing to know if you redirect stdout to a file.
 <code>StandardError=</code> follows <code>StandardOutput=</code> unless you set
@@ -233,11 +237,28 @@ takes a redirect of its own:
 <code>… | metsuke --config … 2&gt;&gt;/var/log/metsuke.log</code>.</p>
 
 <p id="container">Wherever your node's command lives rather than in a unit, the
-pipeline goes there instead. A shell or a terminal writes it as it stands.
-Written around the command that starts a container it only works while that
-command stays attached, since a detached one prints an id rather than the
-node's output, so in a container the pipeline has to go inside, as the
+pipeline goes there instead: a wrapper script, a runit or s6 run file, a
+supervisord program, or a container entrypoint. A shell or a terminal writes it
+as it stands. Written around the command that starts a container it only works
+while that command stays attached, since a detached one prints an id rather
+than the node's output, so in a container the pipeline has to go inside, as the
 entrypoint.</p>
+
+<p><strong>If you redirect that pipeline to a file yourself, rotation is
+yours to get right.</strong> Writing
+<code>cardano-node run ... | {{binary}} --config {{config_path}} &gt;&gt;
+/var/log/node.log</code> puts the descriptor on that file in the agent's hands
+rather than your node's, and the agent installs no signal handler, so it never
+reopens. logrotate's default <code>create</code> renames the file and leaves
+the agent writing to the renamed one: the new file stays empty and the old one
+grows. Use <code>copytruncate</code>, which keeps the same file and so needs no
+reopen. A <code>postrotate</code> that signals your node to reopen does nothing
+here either, because your node is no longer what holds that descriptor.</p>
+
+<p>And nothing restarts either half. Under a unit that is the drop-in's
+<code>Restart=always</code>; here it is your supervisor's, and it has to treat
+the pipeline as one thing. If the agent exits, your node's next write to the
+pipe fails, and what your node does about that is your node's to decide.</p>
 
 <p>The agent is a static binary, which is what makes that cheap: it needs no
 image of its own and nothing in the node's image has to match it. Mount it in

@@ -147,6 +147,14 @@ example to adapt where yours has no unit yet. It serves either row: the journald
 setup reads the journal it writes to, and the drop-in setup replaces the command
 it runs.</p>
 
+<p><strong>A container</strong> is the row for anything that starts your node
+without systemd: a container entrypoint, but equally a wrapper script, a runit
+or s6 run file, or a supervisord program. The pipeline goes wherever that
+command lives.
+<a href="{{DETAILS_PATH}}#container">The details page</a> has the two things
+that setup has to get right itself, which the systemd rows get for free:
+rotating a log file the agent now holds open, and restarting the pipeline.</p>
+
 <p>The last two are fallbacks rather than places to stay. Metrics only collects
 no trace lines, which the program wants, and is where to drop back to if
 collection is giving you trouble. A shell is the try-it above: nothing starts it
