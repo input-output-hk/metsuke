@@ -324,6 +324,59 @@ fn a_range_that_holds_no_day_is_refused() {
     );
 }
 
+/// The end of time, which a west-of-UTC offset carries over the edge:
+/// converting to UTC leaves the years this tool can name, and that conversion
+/// is what every key is built from. Refused as a flag value, because the
+/// alternative is the process aborting on an argument.
+#[test]
+fn an_instant_an_offset_carries_out_of_range_is_refused() {
+    let value = "9999-12-31T23:59:59-01:00";
+
+    let error = parsed_command("list", &["--from", value]).expect_err("out of range");
+
+    assert!(
+        matches!(&error, ArgsError::NotInUtcRange { flag: "--from", .. }),
+        "{value:?}: {error}"
+    );
+}
+
+/// The check is symmetric, and only one edge is in reach: the earliest instant
+/// this format spells is year 0000 and the largest offset it takes is under a
+/// day, while a date reaches back to year -9999. So the earliest bound an
+/// offset can shift still names a day, and it is a day before the one written.
+/// A floor that rose to year 0000 would refuse this instead.
+#[test]
+fn the_earliest_instant_an_offset_can_shift_still_names_a_day() {
+    let args = parsed_command("list", &["--from", "0000-01-01T00:00:00+23:59"])
+        .expect("the earliest instant this format spells is in range under any offset it takes");
+
+    let from = args.days.from.expect("a first bound is a key");
+    assert!(
+        from.starts_with("v1/-0001-12-31/"),
+        "the bound was not shifted into the day before: {from}"
+    );
+}
+
+/// The last millisecond of representable time has nothing after it, and an
+/// inclusive last bound is served by one millisecond on. No exclusive end is
+/// what the walk already takes for the whole of the rest of time.
+#[test]
+fn a_last_bound_at_the_end_of_time_walks_to_the_end() {
+    let args = parsed_command("list", &["--to", "9999-12-31T23:59:59.999Z"])
+        .expect("the last instant in UTC parses");
+
+    assert_eq!(args.days.until, None);
+    // The day form has answered this way all along, which is what says the
+    // walk reads it as no bound rather than as an empty range.
+    assert_eq!(
+        parsed_command("list", &["--to", "9999-12-31"])
+            .expect("the last day parses")
+            .days
+            .until,
+        None
+    );
+}
+
 #[test]
 fn a_bound_that_is_neither_a_day_nor_an_instant_is_refused() {
     for value in [

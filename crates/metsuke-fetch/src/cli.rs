@@ -219,6 +219,12 @@ pub enum ArgsError {
         "{flag} takes a day as YYYY-MM-DD or an instant as YYYY-MM-DDThh:mm:ssZ, not {value:?}"
     )]
     NotABound { flag: &'static str, value: String },
+    /// The format is right and the instant is not: an offset west of UTC
+    /// carries the end of time past the years this tool can name. Separate
+    /// from `NotABound`, whose message would tell an operator to write the
+    /// format they had written.
+    #[error("{flag} {value:?} is outside the years a UTC key can name")]
+    NotInUtcRange { flag: &'static str, value: String },
     /// Refused rather than run: it selects nothing, and a run that reported a
     /// clean sync of nothing is worse than one that would not start.
     #[error("--from {from} is after --to {to}, so no day is in range")]
@@ -230,17 +236,32 @@ pub enum ArgsError {
 /// here.
 enum Bound {
     Day(Date),
+    /// In UTC, converted where it was parsed. A day folder is named for the
+    /// UTC date while `date()` answers in whatever offset the value carried,
+    /// so an instant left as written builds a key in the wrong folder.
     At(OffsetDateTime),
 }
 
 fn bound(flag: &'static str, value: &str) -> Result<Bound, ArgsError> {
     match value.contains('T') {
-        true => OffsetDateTime::parse(value, &Rfc3339)
-            .map(Bound::At)
-            .map_err(|_| ArgsError::NotABound {
-                flag,
-                value: value.to_string(),
-            }),
+        true => {
+            let instant =
+                OffsetDateTime::parse(value, &Rfc3339).map_err(|_| ArgsError::NotABound {
+                    flag,
+                    value: value.to_string(),
+                })?;
+            // Converted here and nowhere else, because `to_offset` panics on a
+            // result outside the representable years: an offset west of UTC
+            // pushes the last instant of time over that edge, and a flag value
+            // is a thing to refuse rather than to abort on.
+            instant
+                .checked_to_offset(time::UtcOffset::UTC)
+                .map(Bound::At)
+                .ok_or_else(|| ArgsError::NotInUtcRange {
+                    flag,
+                    value: value.to_string(),
+                })
+        }
         false => day(flag, value).map(Bound::Day),
     }
 }
@@ -281,14 +302,13 @@ fn day(flag: &'static str, value: &str) -> Result<Date, ArgsError> {
 /// are its millisecond, which is the first 13 characters of its text, so this
 /// sorts below every key of that millisecond and above every earlier one.
 ///
-/// To UTC first, and the whole key depends on it. A day folder is named for
-/// the UTC date, while `date()` answers in whatever offset the value carries
-/// and `unix_timestamp_nanos` is absolute either way. Taken as parsed,
-/// `2026-09-01T08:47:23+09:00` built a key in the September 1 folder holding
-/// August 31's millisecond, which sorts at that folder's start and skips every
-/// object of the day the instant is actually in.
+/// In UTC already, which the whole key depends on: `date()` answers in
+/// whatever offset the value carries while `unix_timestamp_nanos` is absolute
+/// either way, so `2026-09-01T08:47:23+09:00` unconverted builds a key in the
+/// September 1 folder holding August 31's millisecond, sorting at that
+/// folder's start and skipping every object of the day it is actually in.
+/// `Bound::At` is where that conversion is guaranteed.
 fn at_key(instant: OffsetDateTime) -> String {
-    let instant = instant.to_offset(time::UtcOffset::UTC);
     let ms = instant.unix_timestamp_nanos().div_euclid(1_000_000);
     let hex = format!("{ms:012x}");
     format!(
@@ -317,7 +337,9 @@ impl Bound {
         match self {
             Bound::Day(day) => day.next_day().map(|next| format!("{KEY_PREFIX}{next}")),
             // One millisecond on, which is a uuidv7's whole resolution.
-            Bound::At(instant) => Some(at_key(*instant + Duration::milliseconds(1))),
+            // Checked for the reason `next_day` is: the last millisecond of
+            // representable time has nothing after it to be exclusive of.
+            Bound::At(instant) => instant.checked_add(Duration::milliseconds(1)).map(at_key),
         }
     }
 }
