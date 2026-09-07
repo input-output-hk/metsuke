@@ -17,7 +17,7 @@
     # Source only, never evaluated as a flake: scripts/record-scrape-fixtures.sh
     # records scrape fixtures from it, and the VM test will run it.
     cardano-node-leios = {
-      url = "github:input-output-hk/ouroboros-leios?ref=refs/tags/prototype-2026w32";
+      url = "github:input-output-hk/ouroboros-leios?ref=refs/tags/prototype-2026w35";
       flake = false;
     };
     advisory-db = {

@@ -19,16 +19,16 @@
     "cardano-node-leios": {
       "flake": false,
       "locked": {
-        "lastModified": 1786342374,
-        "narHash": "sha256-6ioSN5qxvL6b67UKPY2iVytiOoZlTnCgG3ep+kJiPxg=",
+        "lastModified": 1788041145,
+        "narHash": "sha256-nTSpAenigGKGw9bONa4ko4E3V//ISteNncJVAv1P9sQ=",
         "owner": "input-output-hk",
         "repo": "ouroboros-leios",
-        "rev": "3534e7065419c906b35d3be7c976aeace8cf2085",
+        "rev": "e8594e1355c0c6d36ebb9886c8c8c47fa946046b",
         "type": "github"
       },
       "original": {
         "owner": "input-output-hk",
-        "ref": "refs/tags/prototype-2026w32",
+        "ref": "refs/tags/prototype-2026w35",
         "repo": "ouroboros-leios",
         "type": "github"
       }
