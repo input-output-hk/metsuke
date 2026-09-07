@@ -124,6 +124,13 @@ pub enum SyncError {
     NotAKey { key: String },
     #[error("the listing did not advance past {after:?}, so the server is not reading the cursor")]
     Stuck { after: String },
+    /// The run's and not the object's: whatever rewrote a header rewrote it for
+    /// the path, so stepping over the key would step over every key.
+    #[error(
+        "the answer for {key} carried a key and signature that did not decode, \
+         so what is between you and the archive is what to look at: {reason}"
+    )]
+    Malformed { key: String, reason: String },
     #[error("cannot write {path}: {source}")]
     Write {
         path: PathBuf,
@@ -183,7 +190,10 @@ pub fn run(
                         }
                         // Not handed to `landed`: that is the run's list of
                         // what a reader will find on disk, and this is not on
-                        // it.
+                        // it. Every one of these is named in the report, and
+                        // a rejection is one object's news by construction:
+                        // what would be the path's stops the run instead
+                        // (`pull::PullError::is_one_objects_problem`).
                         Landed::Rejected(reason) => report.rejected.push(Rejected {
                             key: key.clone(),
                             reason,
@@ -331,21 +341,26 @@ fn download(
     })?;
     let object = match archive.object(key, verification.max_object_bytes) {
         Ok(object) => object,
-        // An object that would answer the same way next run is the run's to
-        // report and not to stop for, the same as one that does not verify:
-        // the operator raises the flag or leaves it, and the rest of the
-        // archive still syncs. Over the size bound is one of these; so is a
-        // key the route refuses outright, which the cursor would otherwise sit
-        // behind for every run there is
-        // (`pull::PullError::answers_the_same_way_twice`).
-        Err(error) if error.answers_the_same_way_twice() => {
+        // An object that is not there to be had is the run's to report and not
+        // to stop for, the same as one that does not verify: the rest of the
+        // archive still syncs, and the cursor does not sit behind one key for
+        // every run there is. Narrowly that and nothing else
+        // (`pull::PullError::is_one_objects_problem`), because what a status
+        // says about the path it says about every object under it.
+        Err(error) if error.is_one_objects_problem() => {
             return Ok(Landed::Rejected(error.to_string()));
         }
         Err(error) => return Err(SyncError::Pull(error)),
     };
     let landed = match checked(key, &object, verification.insist) {
-        Err(reason) => return Ok(Landed::Rejected(reason)),
         Ok(landed) => landed,
+        Err(Unchecked::Rejected(reason)) => return Ok(Landed::Rejected(reason)),
+        Err(Unchecked::Malformed(reason)) => {
+            return Err(SyncError::Malformed {
+                key: key.to_string(),
+                reason,
+            });
+        }
     };
     // Written only once it is decided: an object nobody may trust never
     // reaches the download directory, so a reader globbing the tree cannot
@@ -366,41 +381,51 @@ fn download(
 /// accepted, which this tool does not keep and cannot reconstruct (ADR 0011).
 /// Such an object lands with its signature checked and its filing taken on the
 /// server's word, which is what `LeiosSigned` says as against `Unattested`.
-fn checked(key: &str, object: &Object, insist: Insist) -> Result<fn(u64) -> Landed, String> {
+/// Why `checked` would not have these bytes: this object's own problem, or the
+/// path's.
+enum Unchecked {
+    /// One object, reported and stepped over.
+    Rejected(String),
+    /// A pair arrived and did not decode. Whatever rewrote a header rewrote it
+    /// for the path, so this is every object's and ends the run.
+    Malformed(String),
+}
+
+fn checked(key: &str, object: &Object, insist: Insist) -> Result<fn(u64) -> Landed, Unchecked> {
     let attestation = match &object.attestation {
         Attested::Pair(attestation) => attestation.as_ref(),
         Attested::None => {
             return match insist {
                 Insist::Nothing => Ok(Landed::Unattested),
-                _ => Err("unattested: no key and signature to check it with".to_string()),
+                _ => Err(Unchecked::Rejected(
+                    "unattested: no key and signature to check it with".to_string(),
+                )),
             };
         }
-        // Refused whatever `insist` says, and never written down as
-        // unattested. A pair did arrive, so calling this object unchecked
-        // would file a claim about the archive against something between here
-        // and it, and the remedy named would be the wrong one.
-        Attested::Malformed(error) => {
-            return Err(format!(
-                "a key and signature were sent and did not decode, \
-                 so what is between you and the archive is what to look at: {error}"
-            ));
-        }
+        // Whatever rewrote a header rewrote it for the path, so this arrives
+        // for every object and is the run's rather than this key's
+        // (`download` hands it up as a `SyncError`).
+        Attested::Malformed(error) => return Err(Unchecked::Malformed(error.to_string())),
     };
     if !attestation.verifies(&object.bytes) {
-        return Err("the signature does not stand over the bytes as downloaded".to_string());
+        return Err(Unchecked::Rejected(
+            "the signature does not stand over the bytes as downloaded".to_string(),
+        ));
     }
-    let name = ObjectName::parse(key).map_err(|error| error.to_string())?;
+    let name = ObjectName::parse(key).map_err(|error| Unchecked::Rejected(error.to_string()))?;
     let Some(signer) = attestation.attributes() else {
         return match insist {
-            Insist::ColdSigned => Err("Leios signature verified, not cold-signed".to_string()),
+            Insist::ColdSigned => Err(Unchecked::Rejected(
+                "Leios signature verified, not cold-signed".to_string(),
+            )),
             _ => Ok(Landed::LeiosSigned),
         };
     };
     if signer != name.pool_id {
-        return Err(format!(
+        return Err(Unchecked::Rejected(format!(
             "signed by {signer}, and filed under {}",
             name.pool_id
-        ));
+        )));
     }
     Ok(Landed::ColdSigned)
 }

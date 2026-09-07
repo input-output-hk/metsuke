@@ -77,13 +77,22 @@ prefix never returned is counted nowhere.
 - **Leios-signed** — signature checked, pool on the server's word.
 - **unattested** — nothing checked, because nothing came with it.
 
-An object that fails is named on stderr, is not written, and makes the run exit
-nonzero. The cursor still advances past it, because the archive is append-only
-and the same bytes will fail the same way tomorrow; syncing it again means
-rewinding the state file. What to do about one is not this tool's:
+An object that fails its own check is named on stderr, is not written, and makes
+the run exit nonzero. The cursor still advances past it, because the archive is
+append-only and the same bytes will fail the same way tomorrow; syncing it again
+means rewinding the state file. What to do about one is not this tool's:
 `metsuke-server verify-archive` walks the bucket and names every object whose
 stored bytes and metadata disagree, and removing one is a bucket-admin action,
-since the server holds no delete.
+since the server holds no delete. A key the archive answers `404` or `410` for
+is stepped over the same way, and so is one over `--max-object-bytes`.
+
+**Everything else stops the run with the cursor where it was.** A `401` or
+`403` is your credential, a `500` is the server, a truncated body is the link,
+and a key and signature that arrive but do not decode are whatever sits between
+you and the archive: none of those is one object's news, so a run that stepped
+over them would refuse the whole archive one key at a time and leave the next
+run nothing to fetch. Fix the cause and run again — the objects are still
+there, and the cursor never moved.
 
 **That exit code speaks for one run, and nothing remembers it.** The cursor is
 past the refused key, so the next run over the same state file does not reach

@@ -906,18 +906,21 @@ fn a_state_file_of_its_own_fetches_what_the_lower_bound_refused() {
     }
 }
 
-/// A pair that arrived and did not decode is refused and named for what it is,
-/// rather than landing as an object nobody could check. Both are "no usable
-/// attestation", and reporting them the same way sent a reader looking at the
-/// archive when what to look at is between them and it.
+/// A pair that arrived and did not decode ends the run, and neither lands as
+/// an object nobody could check nor is stepped over as one bad key.
+///
+/// Landing it as `unattested` would claim something false about its
+/// provenance. Rejecting it per object would be worse: whatever rewrote a
+/// header rewrote it for the path, so every key is refused in turn and the
+/// cursor ends up past the whole archive.
 #[test]
-fn a_mangled_attestation_is_refused_and_not_called_unattested() {
+fn a_mangled_attestation_stops_the_run_and_leaves_the_cursor_where_it_was() {
     // A key the shipped server produced, so what this test is about is the
     // headers rather than a name `ObjectName::parse` would pass over.
     let seeded = Server::with_objects(1, 100);
     let key = &seeded.keys()[0];
     let archive = support::stub_archive(
-        key,
+        &[key.as_str()],
         support::Downloads::ManglingTheAttestation(b"whatever the bytes are".to_vec()),
     );
     let dir = tempfile::tempdir().expect("a temp dir");
@@ -925,7 +928,7 @@ fn a_mangled_attestation_is_refused_and_not_called_unattested() {
     let state = state_of(dir.path());
     let mut landed = Vec::new();
 
-    let report = sync::run(
+    let error = sync::run(
         &archive,
         &everything().filters(),
         &Destination {
@@ -937,19 +940,17 @@ fn a_mangled_attestation_is_refused_and_not_called_unattested() {
         permissive(),
         |key| landed.push(key.to_string()),
     )
-    .expect("a mangled pair is one object's problem, not the run's");
+    .expect_err("a mangled pair is the path's problem, so it ends the run");
 
     assert!(landed.is_empty(), "it was written down: {landed:?}");
-    assert_eq!(report.unattested, 0, "it was counted as unchecked");
-    assert_eq!(report.rejected.len(), 1, "{report:?}");
-    let reason = &report.rejected[0].reason;
     assert!(
-        reason.contains("did not decode"),
-        "the reason has to say a pair arrived: {reason}"
+        matches!(&error, SyncError::Malformed { .. }),
+        "got: {error}"
     );
-    // And the run got past it, so one mangled answer is not a wall.
-    let cursor = Cursor::read(&state, &everything().filters(), &permissive()).expect("it reads");
-    assert_eq!(&cursor.after, key);
+    assert!(error.to_string().contains("did not decode"), "{error}");
+    // And the cursor never moved, so fixing whatever mangled the header and
+    // running again fetches the object rather than skipping it for good.
+    assert!(!state.exists(), "the cursor advanced: {state:?}");
 }
 
 /// An object the route refuses outright does not stand in front of the rest of
@@ -960,7 +961,7 @@ fn a_mangled_attestation_is_refused_and_not_called_unattested() {
 fn an_object_the_route_refuses_is_reported_and_the_run_goes_on() {
     let seeded = Server::with_objects(1, 100);
     let key = &seeded.keys()[0];
-    let archive = support::stub_archive(key, support::Downloads::Refusing);
+    let archive = support::stub_archive(&[key.as_str()], support::Downloads::Refusing);
     let dir = tempfile::tempdir().expect("a temp dir");
     let into = dir.path().join("objects");
     let state = state_of(dir.path());
@@ -1077,4 +1078,253 @@ fn two_state_files_at_one_bar_share_a_directory() {
 
     assert_eq!(first.cold_signed, 2);
     assert!(second.objects > 0, "{second:?}");
+}
+
+/// A 401 is the credential, not the object, and it arrives for every key after
+/// the one that met it. Stepping over each in turn would leave the cursor past
+/// the whole archive, so the run after the credential is fixed has nothing left
+/// to fetch.
+#[test]
+fn a_refusal_that_is_not_about_the_object_stops_the_run() {
+    let seeded = Server::with_objects(1, 100);
+    let key = &seeded.keys()[0];
+    for status in [400, 401, 403] {
+        let archive =
+            support::stub_archive(&[key.as_str()], support::Downloads::RefusingWith(status));
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let into = dir.path().join("objects");
+        let state = state_of(dir.path());
+
+        let error = sync::run(
+            &archive,
+            &everything().filters(),
+            &Destination {
+                into: &into,
+                state: &state,
+            },
+            permissive(),
+            |_| {},
+        )
+        .expect_err("a status that is not one object's has to end the run");
+
+        assert!(matches!(&error, SyncError::Pull(_)), "{status}: {error}");
+        assert!(
+            !state.exists(),
+            "{status} advanced the cursor past an object it never saw"
+        );
+    }
+}
+
+/// A whole listing of gone objects syncs to completion, naming every one.
+///
+/// This is the choice, not an accident of counting: an object that is not there
+/// is not there for anybody, so the run reports each and moves past it. There
+/// is no cap on how many of those a run tolerates, because a cap would stall a
+/// bucket whose old objects have been expired and give an operator nothing to
+/// do about it.
+///
+/// What keeps that safe is the classification and nothing else: a status that
+/// would be the path's rather than one key's stops the run instead
+/// (`a_refusal_that_is_not_about_the_object_stops_the_run`).
+#[test]
+fn a_listing_of_gone_objects_is_reported_in_full_and_not_stalled() {
+    let seeded = Server::with_objects(4, 100);
+    let keys = seeded.keys();
+    let listed: Vec<&str> = keys.iter().map(String::as_str).collect();
+    let archive = support::stub_archive(&listed, support::Downloads::Refusing);
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let into = dir.path().join("objects");
+    let state = state_of(dir.path());
+
+    let report = sync::run(
+        &archive,
+        &everything().filters(),
+        &Destination {
+            into: &into,
+            state: &state,
+        },
+        permissive(),
+        |_| {},
+    )
+    .expect("objects that are gone are the run's to report, not to stop for");
+
+    assert_eq!(report.objects, 0, "{report:?}");
+    assert_eq!(report.rejected.len(), keys.len(), "{report:?}");
+    // Named, every one: a key nobody can fetch is not a number.
+    for key in &keys {
+        assert!(
+            report.rejected.iter().any(|refused| refused.key == *key),
+            "{key} was stepped over and not reported: {report:?}"
+        );
+    }
+    let cursor = Cursor::read(&state, &everything().filters(), &permissive()).expect("it reads");
+    assert_eq!(&cursor.after, keys.last().expect("four keys"));
+}
+
+/// Every way a pull can fail, with whether it is one key's or the path's.
+///
+/// A table rather than a spot check, because the cost of getting one wrong is
+/// asymmetric: a fault of the path admitted here is reported per object, and
+/// every rejection advances the cursor, so the run walks to the end of the
+/// archive and the next one has nothing left to ask for. The match in
+/// `is_one_objects_problem` has no wildcard, so a new variant fails to compile
+/// until it is classified; this is what makes that classification reviewable
+/// rather than merely forced.
+#[test]
+fn every_pull_failure_is_classified_as_one_key_or_the_path() {
+    use metsuke_fetch::pull::PullError;
+
+    let url = "https://archive.example.org/v1/object?key=k".to_string();
+    let key = "v1/2026-08-27/k.jsonl.zst".to_string();
+    let refused = |status| PullError::Refused {
+        url: url.clone(),
+        status,
+        reason: "refused".to_string(),
+    };
+    // (the failure, whether it is one key's, why)
+    let table: Vec<(PullError, bool, &str)> = vec![
+        (refused(404), true, "the key is not there to be had"),
+        (refused(410), true, "the same, said permanently"),
+        (
+            PullError::Oversized {
+                key: key.clone(),
+                length: 1 << 30,
+                max: 1 << 24,
+            },
+            true,
+            "this object is over the bound the operator set",
+        ),
+        (
+            refused(400),
+            false,
+            "the request this build makes, so every object's",
+        ),
+        (refused(401), false, "the credential, so every object's"),
+        (
+            refused(403),
+            false,
+            "the same, and a WAF answers it per route",
+        ),
+        (
+            refused(429),
+            false,
+            "the window rolls, so asking again differs",
+        ),
+        (
+            refused(500),
+            false,
+            "the server, and it may answer differently",
+        ),
+        (refused(503), false, "the same"),
+        (
+            PullError::NoLength { key: key.clone() },
+            false,
+            "how a proxy that re-frames answers looks, so every object's",
+        ),
+        (
+            PullError::Short {
+                key: key.clone(),
+                read: 10,
+                length: 20,
+            },
+            false,
+            "a flaky link, and the next run may read it whole",
+        ),
+        (
+            PullError::Unread {
+                key: key.clone(),
+                source: std::io::Error::from(std::io::ErrorKind::ConnectionReset),
+            },
+            false,
+            "the same",
+        ),
+        (
+            PullError::Unreachable {
+                url: url.clone(),
+                reason: "connection refused".to_string(),
+            },
+            false,
+            "the archive, not an object in it",
+        ),
+        (
+            PullError::UnreadableListing {
+                url: url.clone(),
+                reason: "not json".to_string(),
+            },
+            false,
+            "the listing route, so no object was ever named",
+        ),
+    ];
+
+    for (failure, one_key, why) in &table {
+        assert_eq!(
+            failure.is_one_objects_problem(),
+            *one_key,
+            "{failure} should be {}: {why}",
+            match one_key {
+                true => "one key's, reported and stepped over",
+                false => "the path's, ending the run",
+            }
+        );
+    }
+    // The statuses that may be stepped over, stated once here and once in the
+    // source, so widening one without the other fails. Sorted, because the
+    // assertion is about the set and not about where a row sits in the table.
+    let mut steppable = table
+        .iter()
+        .filter_map(|(failure, _, _)| match failure {
+            PullError::Refused { status, .. } if failure.is_one_objects_problem() => Some(*status),
+            _ => None,
+        })
+        .collect::<Vec<u16>>();
+    steppable.sort_unstable();
+    assert_eq!(steppable, vec![404, 410]);
+}
+
+/// A `--require-*` flag filters, so a run of consecutive objects below the bar
+/// is ordinary and syncs to completion.
+///
+/// Objects are keyed by uuidv7 and so arrive in order, and a pool signing with
+/// its Leios key produces long unbroken runs of them, which is the shape the
+/// pipe setup asks for. Anything that gave up after a few refusals in a row
+/// would make `--require-cold-signed` unusable against exactly the archive
+/// this program is built for.
+#[test]
+fn require_cold_signed_filters_a_whole_run_of_leios_objects() {
+    let server = Server::attesting(4, 100);
+    let keys = server.keys();
+    for key in &keys {
+        server.leios_sign(key);
+    }
+
+    let synced = sync_verifying(
+        &server,
+        &everything(),
+        tempfile::tempdir().expect("a temp dir"),
+        Verification {
+            insist: Insist::ColdSigned,
+            ..permissive()
+        },
+    )
+    .unwrap_or_else(|(error, _, _)| panic!("filtering is not a failure: {error}"));
+
+    assert_eq!(synced.report.objects, 0, "{:?}", synced.report);
+    assert_eq!(
+        synced.report.rejected.len(),
+        keys.len(),
+        "{:?}",
+        synced.report
+    );
+    // And the cursor is past all of them, so the next run does not re-fetch
+    // objects this bar will refuse again.
+    let cursor = Cursor::read(
+        &state_of(synced.dir.path()),
+        &everything().filters(),
+        &Verification {
+            insist: Insist::ColdSigned,
+            ..permissive()
+        },
+    )
+    .expect("the cursor reads");
+    assert_eq!(&cursor.after, keys.last().expect("four keys"));
 }

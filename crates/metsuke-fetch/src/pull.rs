@@ -72,10 +72,6 @@ pub enum PullError {
         url: String,
         status: u16,
         reason: String,
-        /// `metsuke_wire::http::classify`'s reading of the status: whether
-        /// asking again may answer differently. Carried rather than recomputed,
-        /// so the one rule decides it here as it does for an agent's upload.
-        retryable: bool,
     },
     #[error("the listing from {url} does not parse: {reason}")]
     UnreadableListing { url: String, reason: String },
@@ -100,28 +96,44 @@ pub enum PullError {
     },
 }
 
+/// The two statuses that are about the object and not about the path to it.
+///
+/// 404 and 410 both say this key is not there to be had, which is what a
+/// lifecycle rule expiring an object mid-page leaves behind. Everything else a
+/// 4xx can be is the run's problem wearing one object's clothes: 401 and 403
+/// are the credential, 400 is the request this build makes, and each of them
+/// answers the same way for every object after this one.
+const GONE: [u16; 2] = [404, 410];
+
 impl PullError {
-    /// Whether asking for this object again would answer the same way.
+    /// Whether this is one object's problem, as against this archive being out
+    /// of reach.
     ///
-    /// Where it would, the object is the run's to report and step over, the
-    /// same as one over the size bound or one this build cannot name: the
-    /// cursor advances, and one object nobody can fetch does not stand in
-    /// front of every object after it for good. Where it would not, the run
-    /// stops with the cursor where it was, so the next one asks again.
+    /// One object's is the run's to report and step over, the same as one this
+    /// build cannot name: the cursor advances, and a single key nobody can
+    /// fetch does not stand in front of every key after it for good. Two
+    /// shapes qualify, and only two — the archive says the key is not there,
+    /// or the object is there and over the bound this run holds objects to.
+    /// Everything else stops the run with the cursor where it was, so the next
+    /// one asks again.
     ///
-    /// The reading of a status is `metsuke_wire::http::classify`'s: a 4xx
-    /// other than 429 is a credential, a route or a key, and none of those
-    /// changes by being asked twice. A download that arrived short or would
-    /// not read is deliberately not here: those are how a flaky link looks,
-    /// and stepping over one would drop an object that was never faulty.
-    pub fn answers_the_same_way_twice(&self) -> bool {
+    /// **Keep this narrow.** Every rejection advances the cursor, so anything
+    /// admitted here that is really the path's — a credential, a proxy, the
+    /// request this build makes — rejects the whole archive one key at a time
+    /// and leaves the next run nothing to ask for. A status says only ever "not
+    /// here" about one object; what it says about authorisation or framing it
+    /// says about all of them. `classify`'s retryable rule is the wrong test
+    /// for that: it answers "may this be retried", not "is this one key's".
+    pub fn is_one_objects_problem(&self) -> bool {
         match self {
-            PullError::Refused { retryable, .. } => !retryable,
-            // The download route states a length on every answer, so an
-            // answer without one is not this archive's and will not grow one.
-            PullError::NoLength { .. } => true,
+            PullError::Refused { status, .. } => GONE.contains(status),
+            // The operator's own bound, and the message says to raise it.
             PullError::Oversized { .. } => true,
-            PullError::Unreachable { .. }
+            // Not here either, and for the reason above. A body with no length
+            // is how a proxy that re-frames answers looks, so it arrives for
+            // every object rather than for one.
+            PullError::NoLength { .. }
+            | PullError::Unreachable { .. }
             | PullError::UnreadableListing { .. }
             | PullError::Short { .. }
             | PullError::Unread { .. } => false,
@@ -233,7 +245,6 @@ impl Archive {
                 url: url.to_string(),
                 status: refusal.status,
                 reason: refusal.reason,
-                retryable: refusal.retryable,
             }),
         }
     }

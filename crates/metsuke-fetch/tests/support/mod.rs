@@ -368,14 +368,18 @@ pub enum Downloads {
     /// produce this either: its listing reads the same archive the download
     /// does, so an object it lists is an object it has.
     Refusing,
+    /// A status of the caller's choosing on the download route, for the ones
+    /// that are the path's rather than one object's: 401 after a credential
+    /// rotates mid-run, 403 from a WAF that refuses only that route.
+    RefusingWith(u16),
 }
 
 /// An archive listing exactly `key` and answering the download of it as
 /// `answers` says. Hand-written for the same reason `fixed_listing` is: what
 /// these tests are about is an answer the shipped server does not give.
-pub fn stub_archive(key: &str, answers: Downloads) -> Archive {
+pub fn stub_archive(keys: &[&str], answers: Downloads) -> Archive {
     let listing = serde_json::to_string(&metsuke_wire::http::Listing {
-        keys: vec![key.to_string()],
+        keys: keys.iter().map(|key| key.to_string()).collect(),
         truncated: false,
     })
     .expect("a listing serializes");
@@ -418,11 +422,15 @@ pub fn stub_archive(key: &str, answers: Downloads) -> Archive {
                     .expect("the head writes");
                     stream.write_all(bytes).expect("the body writes");
                 }
-                Downloads::Refusing => {
-                    let body = "no such object";
+                Downloads::Refusing | Downloads::RefusingWith(_) => {
+                    let status = match &answers {
+                        Downloads::RefusingWith(status) => *status,
+                        _ => 404,
+                    };
+                    let body = "refused";
                     write!(
                         stream,
-                        "HTTP/1.1 404 Not Found\r\ncontent-type: text/plain\r\n\
+                        "HTTP/1.1 {status} Refused\r\ncontent-type: text/plain\r\n\
                          content-length: {}\r\nconnection: close\r\n\r\n{body}",
                         body.len()
                     )
