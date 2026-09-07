@@ -6,6 +6,23 @@
 {
   restartSecs = 30;
 
+  # The pipe drop-in's own pacing, which is the node's rather than the agent's:
+  # the drop-in supervises the node's unit. The three together are what makes
+  # the outcome the drop-in's instead of whichever unit it lands on. Left unset,
+  # a node with systemd's 100ms default reaches the default burst and stays in
+  # `failed`, and one pacing itself in seconds retries for ever.
+  #
+  # These are contrib/cardano-node.service's own values, so the drop-in changes
+  # nothing when it lands there, and
+  # `the_pipe_dropin_paces_restarts_as_the_node_unit_does` holds the two files
+  # to agreeing. That unit says why the burst is worth reaching: it is the state
+  # a monitor can see. Only a pipeline that fails at once gets there, which is
+  # the failure retrying cannot fix; five slow failures span far more than the
+  # interval, so those keep retrying.
+  nodeRestartSecs = 5;
+  nodeStartLimitIntervalSecs = 60;
+  nodeStartLimitBurst = 5;
+
   # What an operator replaces in the shipped pipe drop-in with their node's own
   # command. Unmistakable on purpose: a plausible-looking command is one
   # somebody installs as it stands, and this one cannot start a node.

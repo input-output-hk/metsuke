@@ -477,9 +477,8 @@
             # The empty ExecStart= is what clears that command before this one
             # replaces it, and the shell is because systemd has no pipelines.
             #
-            # Read that output for three directives before you use this, because
-            # the shell is now what systemd supervises rather than your node,
-            # and each of them then means something else:
+            # Read that output for four directives before you use this, because
+            # the shell is now what systemd supervises rather than your node:
             #
             #   Type=notify      nothing sends readiness, so the start times
             #                    out and systemd kills the node. Type=exec is
@@ -489,6 +488,9 @@
             #                    still has a process of its own to watch.
             #   ExecReload=      $MAINPID is the shell, so a reload signals
             #                    that and not your node.
+            #   Restart=         replaced, and so are RestartSec= and the start
+            #                    limit in [Unit]: a pipeline exiting 0 whatever
+            #                    happened needs its own, below.
             #
             # And two things about the command itself: it goes inside single
             # quotes below, so one containing `'` needs requoting, and systemd
@@ -530,9 +532,38 @@
             # non-interactive shell, so there the node would not start at all,
             # which is worse than the restart policy being wider than the
             # operator chose.
+            #
+            # The pacing and the start limit below come with it, because
+            # Restart=always on its own leaves the outcome to whichever unit
+            # this lands on: at systemd's 100ms default a failing pipeline
+            # reaches the default burst of 5 in 10s and the unit stays in
+            # `failed`, and a unit pacing itself in seconds never reaches it
+            # and retries for ever. These are contrib/cardano-node.service's
+            # own values, so this changes nothing when it lands there. Reaching
+            # the burst is worth it: `failed` is the state a monitor can see,
+            # and only a pipeline that fails at once gets there, which is the
+            # failure a retry cannot fix. Five failures of a node that fails
+            # after a replay span far more than the interval, so those keep
+            # retrying.
+            #
+            # None of that reaches the agent dying while the node lives. The
+            # unit's process is the shell, which goes on waiting, so there is
+            # no exit for Restart= to act on, and what happens next is the
+            # node's to decide rather than this file's: one that writes again
+            # into the closed pipe may die on it, taking the unit down and
+            # bringing both back, while a quiet one leaves the unit active and
+            # collecting nothing. So under this source the agent's liveness
+            # is yours to watch: its startup line in
+            # `journalctl -u <your-node>` is the signal, and supervising it
+            # is what metsuke.service does for you under every other source.
+
+            [Unit]
+            StartLimitIntervalSec=${toString unit.nodeStartLimitIntervalSecs}
+            StartLimitBurst=${toString unit.nodeStartLimitBurst}
 
             [Service]
             Restart=always
+            RestartSec=${toString unit.nodeRestartSecs}
             ${credential}
             StateDirectory=metsuke
             ExecStart=

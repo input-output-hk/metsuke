@@ -162,6 +162,35 @@ fn the_example_node_unit_is_the_one_the_journald_setup_reads() {
     }
 }
 
+/// The drop-in overrides the node unit's restart pacing and start limit, so
+/// the two files have to state the same three values: the point of setting
+/// them there is that the outcome is the drop-in's rather than the unit's it
+/// lands on, and the claim that it changes nothing on the shipped unit is only
+/// true while they agree. A directive the drop-in sets and the unit does not
+/// is the same drift, because then the unit alone paces differently.
+#[test]
+fn the_pipe_dropin_paces_restarts_as_the_node_unit_does() {
+    let setting = |file: &str, name: &str| {
+        file.lines()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .find_map(|line| line.strip_prefix(&format!("{name}=")))
+            .map(|value| value.trim().to_string())
+    };
+
+    for name in ["RestartSec", "StartLimitIntervalSec", "StartLimitBurst"] {
+        let dropped_in = setting(instructions::PIPE_DROPIN, name);
+        assert!(
+            dropped_in.is_some(),
+            "the drop-in leaves {name} to whichever unit it lands on"
+        );
+        assert_eq!(
+            dropped_in,
+            setting(instructions::NODE_UNIT, name),
+            "{name} differs, so the drop-in repaces the unit it was written for"
+        );
+    }
+}
+
 /// A shipped file names its siblings, and an operator holding a download has no
 /// checkout for `contrib/` to resolve against, so what they receive names this
 /// server instead. Only served names are rewritten: `contrib/server.example.toml`

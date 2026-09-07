@@ -462,12 +462,50 @@ pkgs.testers.runNixOSTest {
             " | grep -q '\"ns\":\"Consensus.LeiosKernel.Certified\"'"
         )
 
+        # The pacing the drop-in sets, as systemd resolved it: a service.d
+        # drop-in carries a [Unit] section like any other unit file, which is
+        # where StartLimit* live and so the only place they can be set from.
+        # Against the resolved values rather than the file, because the file
+        # having the directive is what the drop-in's own tests cover, and this
+        # is whether it reached the unit. A USec property comes back as a
+        # timespan, so 60 reads as 1min.
+        for name, applied in [
+            ("RestartUSec", "5s"),
+            ("StartLimitIntervalUSec", "1min"),
+            ("StartLimitBurst", "5"),
+        ]:
+            piping.succeed(
+                f"test {applied} ="
+                f" \"$(systemctl show -p {name} --value node-stand-in.service)\""
+            )
+
         # The key arrived as a credential here too, which is what lets the
         # agent run as the node's user without the key being readable by it.
         piping.succeed("test 400 -eq \"$(stat -c %a /etc/metsuke/signing-key)\"")
         # And the drop-in grants no group, which is what the pipe buys over
         # the journal. ADR 0010 weighs the two.
         piping.fail("grep -q SupplementaryGroups /etc/metsuke/node-pipe.conf")
+
+    with subtest("an agent that dies under the drop-in is not restarted"):
+        # The other half of the pipeline, and the half no restart policy on
+        # this unit reaches: its process is the shell, which goes on waiting
+        # while the node runs, so there is no exit for Restart= to act on.
+        # Pinned rather than fixed, because the drop-in cannot fix it: the
+        # header says the agent's liveness is the operator's to watch.
+        #
+        # The node is quiet by now, which is the case where nothing notices at
+        # all. One still writing may die on the closed pipe instead, and that
+        # is the node's behaviour rather than this unit's.
+        started = piping.succeed(
+            "systemctl show -p InvocationID --value node-stand-in.service"
+        ).strip()
+        piping.succeed("pkill -x metsuke")
+        piping.wait_until_fails("pgrep -x metsuke")
+
+        piping.succeed("systemctl is-active node-stand-in.service")
+        assert started == piping.succeed(
+            "systemctl show -p InvocationID --value node-stand-in.service"
+        ).strip(), "the unit restarted, so the pipeline did exit and this holds nothing"
 
     with subtest("the server starts on the configuration its module rendered"):
         hub.wait_for_unit("metsuke-server.service")
