@@ -25,12 +25,16 @@ const CODE_COLUMN = "application_code"
 # DISTINCT because one transaction may carry several registration certificates
 # for a pool.
 #
-# Every psql variable is quoted, `:'label'` as much as `:'code_key'`. Plain
-# `:label` is textual substitution into the statement, and what makes that safe
-# today is an `int` annotation three call frames away rather than anything
-# here. postgres reads the quoted form as an unknown literal and compares it to
-# the numeric column as one, so the query answers the same.
-const REGISTERED_CODES = "
+# Every psql variable here is quoted. The unquoted form is textual
+# substitution into the statement, so what keeps it safe is whatever type the
+# caller happened to annotate rather than anything at the site itself.
+# postgres reads a quoted variable as an unknown literal and compares it to the
+# numeric column as one, so the query answers the same either way.
+#
+# Exported so `test.nu` can hold the whole string to that, which is the guard:
+# a comment is not one, and the site easiest to miss is inside a correlated
+# subquery.
+export const REGISTERED_CODES = "
 SELECT DISTINCT ph.view AS pool_id,
        tm.json ->> :'code_key' AS application_code
 FROM pool_hash ph
@@ -43,7 +47,7 @@ WHERE tm.key = :'label'
         FROM pool_update pu2
         JOIN tx_metadata tm2 ON tm2.tx_id = pu2.registered_tx_id
         WHERE pu2.hash_id = ph.id
-          AND tm2.key = :label
+          AND tm2.key = :'label'
           AND tm2.json ? :'code_key')
   AND NOT EXISTS (
         SELECT 1

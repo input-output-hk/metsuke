@@ -171,5 +171,21 @@ def main [] {
   the-command-emits-what-the-library-does
   an-allowlist-nobody-is-on-is-refused
   a-statement-timeout-under-a-millisecond-is-refused
+  every-psql-variable-in-the-query-is-quoted
   print "allowlist tests passed"
+}
+
+# The query runs against a production db-sync and nothing here has a database
+# to run it on, so what is checkable without one is checked without one: every
+# psql variable in it is the quoted form. The unquoted form is textual
+# substitution into the statement, and it needs no database to spot.
+def every-psql-variable-in-the-query-is-quoted [] {
+  # Either case: psql variable names are case sensitive and uppercase ones are
+  # ordinary, which this tool's own ON_ERROR_STOP is.
+  assert not ($REGISTERED_CODES =~ ":[A-Za-z_]")
+  # And the quoted ones are still there, so this cannot pass on a query that
+  # stopped taking variables at all.
+  for name in ["label" "code_key"] {
+    assert ($REGISTERED_CODES =~ $":'($name)'")
+  }
 }
