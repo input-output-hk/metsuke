@@ -170,3 +170,60 @@ fn a_roster_key_that_is_not_a_key_is_refused_at_load() {
 
     assert!(error.contains(&pool.to_bech32()), "got: {error}");
 }
+
+/// Two hex spellings of one pool cannot both be the chain's answer, and taking
+/// the last one silently drops a pool's keys: it can no longer submit, and
+/// nothing said so. `hex::decode` takes upper and lower case alike, so a
+/// `HashMap` keyed by the text cannot rule this out.
+#[test]
+fn a_roster_naming_one_pool_twice_is_refused_at_load() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("roster.json");
+    let pool = pool_of(&test_key());
+    let lower = hex::encode(pool.as_hash());
+    let upper = lower.to_uppercase();
+    assert_ne!(lower, upper, "the fixture pool id has hex letters in it");
+    let text = format!(
+        r#"{{"epoch": 1, "slot": 2, "pools": {{
+             "{lower}": ["{first}"],
+             "{upper}": ["{second}"]
+           }}}}"#,
+        first = test_leios_key(1).public_key_hex(),
+        second = test_leios_key(2).public_key_hex(),
+    );
+    std::fs::write(&path, text).unwrap();
+
+    let error = Roster::load(&path).unwrap_err().to_string();
+
+    assert!(error.contains(&pool.to_bech32()), "got: {error}");
+    assert!(error.contains("twice"), "got: {error}");
+    // Both spellings, because which two entries collided is what the writer's
+    // author has to look at.
+    assert!(error.contains(&upper), "got: {error}");
+}
+
+/// A roster that goes missing keeps answering from the one already loaded, for
+/// the reason a half-written one does: emptying it would refuse every pool.
+/// Every lookup still re-reads, because a roster that comes back has to be
+/// picked up; what is held back is the line, not the attempt, and
+/// `an_unreadable_roster_is_reported_once_and_not_once_per_request` counts the
+/// lines against a running server.
+#[test]
+fn a_roster_that_goes_missing_keeps_answering_from_the_one_loaded() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("roster.json");
+    let pool = pool_of(&test_key());
+    write_roster(&path, pool, &[&test_leios_key(1)]);
+    let roster = Roster::load(&path).unwrap();
+    let key = public_key(&test_leios_key(1));
+
+    std::fs::remove_file(&path).expect("the roster is removed under the server");
+
+    for _ in 0..100 {
+        assert!(
+            roster.registers(pool, &key),
+            "the loaded roster is still the answer"
+        );
+    }
+    assert_eq!(roster.position(), (42, 907200));
+}
