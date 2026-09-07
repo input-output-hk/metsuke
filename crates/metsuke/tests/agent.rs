@@ -6,7 +6,7 @@
 use std::num::NonZeroUsize;
 use std::time::Duration;
 
-use metsuke::agent::{Agent, Uploaded};
+use metsuke::agent::{Agent, UploadTick, Uploaded};
 use metsuke::delivery::Delivery;
 use metsuke::scrape::ScrapeConfig;
 use metsuke::scraper::ScraperConfig;
@@ -46,6 +46,19 @@ fn test_log_spool(dir: &tempfile::TempDir) -> LogSpool {
         provenance: test_provenance(),
     })
     .unwrap()
+}
+
+/// What a tick sent, where it was expected to finish. Asserted rather than
+/// ignored: a failure leaves the submissions it did send in `sent`, so a test
+/// reading that field alone would read a tick that broke as a tick that had
+/// less to send.
+fn finished(tick: UploadTick) -> Vec<Uploaded> {
+    assert!(
+        tick.failed.is_none(),
+        "the tick did not finish: {:?}",
+        tick.failed
+    );
+    tick.sent
 }
 
 /// An agent scraping the given metrics server and uploading to the given
@@ -129,8 +142,8 @@ async fn scraped_metrics_upload_as_a_verified_submission_and_ack_drains_the_spoo
 
     let (first, second) = tokio::task::spawn_blocking(move || {
         agent.scrape_once().unwrap();
-        let first = agent.upload_once().unwrap();
-        let second = agent.upload_once().unwrap();
+        let first = finished(agent.upload_once());
+        let second = finished(agent.upload_once());
         (first, second)
     })
     .await
@@ -188,8 +201,8 @@ async fn one_tick_uploads_both_the_scrapes_and_the_trace_lines() {
 
     let (first, second) = tokio::task::spawn_blocking(move || {
         agent.scrape_once().unwrap();
-        let first = agent.upload_once().unwrap();
-        let second = agent.upload_once().unwrap();
+        let first = finished(agent.upload_once());
+        let second = finished(agent.upload_once());
         (first, second)
     })
     .await
@@ -263,8 +276,8 @@ async fn failed_upload_keeps_the_rows_for_the_next_attempt() {
 
     let (first, second) = tokio::task::spawn_blocking(move || {
         agent.scrape_once().unwrap();
-        let first = agent.upload_once().unwrap();
-        let second = agent.upload_once().unwrap();
+        let first = finished(agent.upload_once());
+        let second = finished(agent.upload_once());
         (first, second)
     })
     .await
@@ -348,8 +361,8 @@ async fn one_tick_drains_a_stream_that_outgrew_a_single_submission() {
     }
 
     let (first, second) = tokio::task::spawn_blocking(move || {
-        let first = agent.upload_once().unwrap();
-        let second = agent.upload_once().unwrap();
+        let first = finished(agent.upload_once());
+        let second = finished(agent.upload_once());
         (first, second)
     })
     .await
@@ -412,7 +425,7 @@ async fn a_tick_does_not_chase_lines_that_arrive_while_it_runs() {
             .unwrap();
     }
 
-    let sent = tokio::task::spawn_blocking(move || agent.upload_once().unwrap())
+    let sent = tokio::task::spawn_blocking(move || finished(agent.upload_once()))
         .await
         .unwrap();
 
@@ -445,9 +458,118 @@ async fn a_tick_sends_no_more_than_its_allowance() {
         spool.push(&trace_line(line)).unwrap();
     }
 
-    let sent = tokio::task::spawn_blocking(move || agent.upload_once().unwrap())
+    let sent = tokio::task::spawn_blocking(move || finished(agent.upload_once()))
         .await
         .unwrap();
 
     assert_eq!(sent.len(), 3, "the allowance bounds the tick, got {sent:?}");
+}
+
+// A tick that sends several and then fails still says what it sent. The
+// submissions are already objects in the archive, and the rows behind them
+// stay spooled to be sent again, so a tick reporting only its failure leaves
+// an operator with neither fact. Before this, the whole `sent` vector went
+// with the error and the caller printed "nothing to send".
+#[tokio::test]
+async fn a_tick_that_failed_after_sending_still_reports_what_it_sent() {
+    let metrics = metrics_server().await;
+    let uploads = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/submit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "latest_version": "0.1.0"
+        })))
+        .mount(&uploads)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = test_agent(&dir, &metrics, &uploads);
+    let path = spool_path(&dir);
+
+    let tick = tokio::task::spawn_blocking(move || {
+        agent.scrape_once().unwrap();
+        // The trace-line stream is the tick's second, so taking from it fails
+        // after the scrape submission has been sent and acked. Which failure
+        // it is does not matter here; that one happened after a send does.
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute("DROP TABLE log_lines", [])
+            .unwrap();
+        agent.upload_once()
+    })
+    .await
+    .unwrap();
+
+    let failed = tick.failed.expect("the second stream cannot be read");
+    assert!(
+        failed.to_string().contains("upload not attempted"),
+        "{failed}"
+    );
+    assert_eq!(
+        tick.sent.len(),
+        1,
+        "the scrape submission this tick sent is missing from its report"
+    );
+    assert!(
+        matches!(tick.sent[0].outcome, UploadOutcome::Acked(_)),
+        "{:?}",
+        tick.sent[0].outcome
+    );
+}
+
+// The named case: the server took the submission and the local ack failed
+// after it. The object is in the archive, so the line naming it is the only
+// record an operator has, and it was the one thing the old error path
+// discarded. A trigger refusing the delete is what fails the ack alone, after
+// the take and the POST have both succeeded.
+#[tokio::test]
+async fn a_submission_the_server_took_is_reported_even_if_the_ack_fails() {
+    let metrics = metrics_server().await;
+    let uploads = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/submit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "latest_version": "0.1.0"
+        })))
+        .mount(&uploads)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = test_agent(&dir, &metrics, &uploads);
+    let path = spool_path(&dir);
+
+    let tick = tokio::task::spawn_blocking(move || {
+        agent.scrape_once().unwrap();
+        rusqlite::Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER refuse_ack BEFORE DELETE ON scrapes
+                 BEGIN SELECT RAISE(ABORT, 'the spool will not release this row'); END;",
+            )
+            .unwrap();
+        agent.upload_once()
+    })
+    .await
+    .unwrap();
+
+    let failed = tick.failed.expect("the ack cannot delete the row");
+    // The distinction the error type exists for: these rows will be sent
+    // again, and the operator has to know that rather than read a lost upload.
+    assert!(
+        failed.to_string().contains("accepted by the server"),
+        "{failed}"
+    );
+    assert!(
+        matches!(
+            tick.sent.as_slice(),
+            [Uploaded {
+                outcome: UploadOutcome::Acked(_),
+                carried: "scrape",
+                ..
+            }]
+        ),
+        "the submission the server accepted is missing from the report: {:?}",
+        tick.sent
+    );
+    // And it did reach the server, so the report is not claiming something
+    // that never happened.
+    assert_eq!(uploads.received_requests().await.unwrap().len(), 1);
 }

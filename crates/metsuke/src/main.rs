@@ -4,7 +4,7 @@
 
 use std::time::{Duration, Instant};
 
-use metsuke::agent::{Agent, Uploaded};
+use metsuke::agent::{Agent, UploadTick, Uploaded};
 use metsuke::cli::{Args, ArgsError, USAGE, VERSION};
 use metsuke::config::{Config, ConfigError, LogConfig, LogSource};
 use metsuke::delivery::Delivery;
@@ -341,14 +341,19 @@ fn upload_tick(
         );
         wait
     };
-    let sent = match attempted {
-        Ok(sent) => sent,
-        Err(error) => {
+    let UploadTick { sent, failed } = attempted;
+    // After the submissions the tick did send, below, so a failure is read
+    // beside what landed rather than in place of it. A tick that sent two and
+    // then could not ack the third has three objects in the archive, and this
+    // line is the only thing that says the rows behind them will be sent
+    // again.
+    let report_failure = || {
+        if let Some(error) = &failed {
             eprintln!("{ERR}{error}");
-            return nothing_sent(config.upload_interval);
         }
     };
     let Some(last) = sent.last() else {
+        report_failure();
         return nothing_sent(config.upload_interval);
     };
     // Every submission of the tick, because which one a line is about is what
@@ -392,7 +397,12 @@ fn upload_tick(
             }
         }
     }
+    report_failure();
     let now = time::OffsetDateTime::now_utc();
+    // On the last submission's own outcome, failure or not. A tick that failed
+    // failed after an accepted submission (`agent::UploadTick`), so what this
+    // schedules is the ordinary interval, which is what the server's answer
+    // asked for.
     let wait = schedule.after(&last.outcome, config, now.unix_timestamp_nanos() as u64);
     // Only where the tick had something to send: a line saying when the next
     // one is, after a round that said nothing, is a line about nothing.
