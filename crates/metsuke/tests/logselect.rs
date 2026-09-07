@@ -43,7 +43,11 @@ fn the_shipped_rules_ship_what_was_asked_for() {
         r#""ns":"Consensus.LeiosKernel.BlockAcquired""#,
         r#""ns":"Consensus.LeiosKernel.BlockTxsAcquired""#,
         r#""ns":"Consensus.LeiosKernel.Certified""#,
-        r#""ns":"Consensus.LeiosKernel.NotVoted""#,
+        // The vote path as a round that went well leaves it. Its counterpart
+        // `NotVoted` is a node declining to vote, which a devnet where nothing
+        // goes wrong never emits, so a recording is not the place to ask for
+        // one.
+        r#""ns":"Consensus.LeiosKernel.Voted""#,
         r#""ns":"ChainDB.AddBlockEvent.AddedToCurrentChain""#,
         r#""ns":"Forge.Loop.AdoptedBlock""#,
     ] {
@@ -62,9 +66,12 @@ fn the_shipped_rules_ship_what_was_asked_for() {
 fn the_shipped_rules_drop_the_wire_level_chatter() {
     let rules = shipped_rules();
     for needle in [
+        // Outside the roots, under a selected root beside a namespace that is
+        // wanted, and under one on a branch of its own: the three ways a line
+        // reaches these rules without being asked for.
         r#""ns":"LeiosNotify.Remote.Send.RequestNext""#,
-        r#""ns":"Forge.Loop.Call""#,
-        r#""ns":"ChainDB.LedgerEvent.Flavor.V2.LedgerTablesHandleCreate""#,
+        r#""ns":"Forge.Loop.StartLeadershipCheck""#,
+        r#""ns":"Forge.StateInfo.StateInfo""#,
     ] {
         assert_eq!(
             select(&rules, line_with(LEIOS_WINDOW, needle)),
