@@ -97,32 +97,49 @@ let
       exampleLines
     ).out;
 
-  # The first paragraph of a key's block. The later ones in the long blocks are
-  # about the group, and would repeat for every key in it. A leading separator
-  # is skipped so a block that opens with one still counts.
-  described =
+  # A key's block, split on the separator lines inside it. Empty paragraphs are
+  # dropped, so a block that opens or closes with a separator still counts.
+  paragraphs =
     key:
     let
-      taken =
+      folded =
         builtins.foldl'
           (
             acc: line:
-            if line == "#" && acc.out == [ ] then
+            if line == "#" then
               acc
-            else if line == "#" then
-              acc // { done = true; }
-            else if acc.done then
-              acc
+              // {
+                out = acc.out ++ (if acc.current == [ ] then [ ] else [ acc.current ]);
+                current = [ ];
+              }
             else
-              acc // { out = acc.out ++ [ line ]; }
+              acc // { current = acc.current ++ [ line ]; }
           )
           {
-            done = false;
             out = [ ];
+            current = [ ];
           }
           annotated.${key}.prose;
     in
-    lib.concatStringsSep " " (map (line: lib.removePrefix "# " line) taken.out);
+    folded.out ++ (if folded.current == [ ] then [ ] else [ folded.current ]);
+
+  # The paragraph that names the key, and the block's first where none does.
+  #
+  # A long block opens with what its whole group has in common and then says
+  # what each key in it does. Taking the first for every key gave the five
+  # upload options one paragraph about jitter, and left the paragraph about
+  # raising upload_batch_max_bytes past the server's ceiling, which earns a 413
+  # that resends identically until the spool cap drops the rows, reaching
+  # nobody. That is the one a deployer raising it has to read.
+  described =
+    key:
+    let
+      blocks = paragraphs key;
+      text = block: lib.concatStringsSep " " (map (line: lib.removePrefix "# " line) block);
+      named = builtins.filter (block: lib.hasInfix key (text block)) blocks;
+      chosen = if named != [ ] then builtins.head named else builtins.head blocks;
+    in
+    if blocks == [ ] then "" else text chosen;
 
   # TOML string literals arrive quoted; a nix reader wants what is inside them.
   unquoted =

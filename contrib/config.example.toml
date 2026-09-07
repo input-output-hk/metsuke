@@ -112,8 +112,12 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # Which stream the lines come from, "journald" or "pipe". Never guessed.
 # source = "journald"
 #
-# Your node's unit, and journalctl's absolute path. Neither has a default.
+# Your node's unit. No default: which service the node runs as is not
+# something this agent can guess.
 # journal_unit = "cardano-node"
+#
+# journalctl's absolute path. No default either, because a hardened unit's
+# PATH is not one to resolve a program on.
 # journalctl_path = "/usr/bin/journalctl"
 #
 # The ceiling on what may be selected, and the selection itself. Both are

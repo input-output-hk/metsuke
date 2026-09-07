@@ -205,7 +205,7 @@ null or (list of string)
 
 
 
-Your node’s unit, and journalctl’s absolute path\. Neither has a default\.
+Your node’s unit\. No default: which service the node runs as is not something this agent can guess\.
 
 
 
@@ -626,7 +626,7 @@ null or (unsigned integer, meaning >=0)
 
 
 
-Upload limits: request deadline, the spread that places this agent within the upload interval, and the clamp on the rejection backoff\. The first accepted submission picks a point in upload_jitter_max_secs and every upload after it keeps that point, so agents installed together do not all upload in the same second while yours still lands on a cadence you can watch for\. It is a ceiling: a spread wider than the interval places nobody better than one exactly as wide, so a shorter upload_interval_secs bounds it instead\.
+upload_batch_max_bytes counts the header frame and the payload before compression; the server’s own ceiling is \[ingest]\.max_body_bytes on the compressed bytes (contrib/server\.example\.toml), and nothing checks the two against each other\. Raising this past what your server allows earns a 413 on every attempt, and the same rows reseal to the same size, so they stay spooled until the cap drops them\. Why the two count a line the same way: docs/adr/0010\.
 
 
 
@@ -689,7 +689,7 @@ null or (unsigned integer, meaning >=0)
 
 
 
-Upload limits: request deadline, the spread that places this agent within the upload interval, and the clamp on the rejection backoff\. The first accepted submission picks a point in upload_jitter_max_secs and every upload after it keeps that point, so agents installed together do not all upload in the same second while yours still lands on a cadence you can watch for\. It is a ceiling: a spread wider than the interval places nobody better than one exactly as wide, so a shorter upload_interval_secs bounds it instead\.
+upload_max_submissions is how many submissions one upload tick may send\. A node emits more trace lines between ticks than one submission carries, so at one per tick the remainder is spooled until the cap drops it\. Raise it if your node still gains spool between uploads; the ceiling on it is whatever the server allows per pool per window\.
 
 
 
