@@ -17,12 +17,12 @@ recordings="$repo/crates/metsuke/tests/fixtures/recordings"
 # the recording needs a mempool larger than one RB. These are the shape of that
 # overflow, not properties of the protocol: enough near-maximum-size
 # transactions to overrun maxBlockBodySize several times over.
-FLOOD_TXS="${FLOOD_TXS:-60}"
+FLOOD_TXS="${FLOOD_TXS:-120}"
 FLOOD_FEE="${FLOOD_FEE:-2000000}"
 FLOOD_METADATA_STRINGS="${FLOOD_METADATA_STRINGS:-200}"
 # Seconds before the flood, and the capture window after it.
 WARMUP_SECONDS="${WARMUP_SECONDS:-30}"
-CAPTURE_SECONDS="${CAPTURE_SECONDS:-300}"
+CAPTURE_SECONDS="${CAPTURE_SECONDS:-600}"
 
 need() {
   for cmd in "$@"; do
@@ -73,17 +73,32 @@ for i in 1 2 3; do
   dir="$workdir/node$i"
   mkdir -p "$dir"
 
-  # The demo config with stdout as the only backend: this fixture is the line
-  # stream, and PrometheusSimple would only open a port nothing here reads.
-  # Converted to JSON (cardano-node's YAML parser reads JSON) so plain jq can
-  # address the empty-string TraceOptions key.
+  # The demo config, with the deployed environment's tracing in place of its
+  # own: what a recording is for is the line stream a pool's node produces, and
+  # the severity each namespace is emitted at is the network's setting rather
+  # than the demo's. The same overlay nix/e2e-test.nix applies, from the same
+  # recorded file, so the two cannot disagree about what a node emits.
+  #
+  # Stdout as the only backend: this fixture is the line stream, and
+  # PrometheusSimple would only open a port nothing here reads. Converted to
+  # JSON (cardano-node's YAML parser reads JSON) so plain jq can address the
+  # empty-string TraceOptions key.
   nix shell nixpkgs#yq-go --command yq -o=json . "$config/config.yaml" |
-    jq --arg n "node$i" \
-      '.TraceOptionNodeName = $n | .TraceOptions."".backends = ["Stdout MachineFormat"]' \
+    jq -s --arg n "node$i" \
+      '.[0] as $devnet
+       | .[1] as $deployed
+       | ($deployed | with_entries(select(.key | startswith("TraceOption")))) as $tracing
+       | ($devnet | with_entries(select(.key | startswith("TraceOption") | not)))
+       + $tracing
+       + { TraceOptionNodeName: $n }
+       | .TraceOptions."".backends = ["Stdout MachineFormat"]' \
+      - "$repo/nix/fixtures/leios-preprod-node-config.json" \
       >"$dir/config.json"
 
   access_points=$(for j in 1 2 3; do
-    [ "$i" -ne "$j" ] && echo "{\"port\": 300$j, \"address\": \"127.2.0.$j\"}"
+    if [ "$i" -ne "$j" ]; then
+      echo "{\"port\": 300$j, \"address\": \"127.2.0.$j\"}"
+    fi
   done | jq -s '.')
   jq --argjson accessPoints "$access_points" \
     '.localRoots[0].accessPoints = $accessPoints' \
@@ -176,11 +191,12 @@ wait || true
 # path only shows both ends on a node that took both. Whether that is node1,
 # node2 or node3 is up to three VRFs.
 capture=$(for i in 1 2 3; do
-  kinds=$(grep -o '"ns":"Consensus.Leios[^"]*"' "$workdir/node$i.stdout" | sort -u | wc -l)
-  echo "$kinds $workdir/node$i.stdout"
+  out="$workdir/node$i.stdout"
+  grep -q '"ns":"Consensus.LeiosKernel.BlockForged"' "$out" || continue
+  grep -q '"ns":"Consensus.LeiosPeer.Announcement"' "$out" || continue
+  echo "$(grep -o '"ns":"Consensus.Leios[^"]*"' "$out" | sort -u | wc -l) $out"
 done | sort -rn | head -1 | cut -d' ' -f2)
-grep -q '"ns":"Consensus.LeiosKernel.BlockForged"' "$capture" &&
-  grep -q '"ns":"Consensus.LeiosPeer.Announcement"' "$capture" || {
+[ -n "$capture" ] || {
   echo "error: no node both forged and received an EB, see $workdir/node*.stdout" >&2
   exit 1
 }
