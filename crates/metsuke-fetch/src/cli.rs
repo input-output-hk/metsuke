@@ -66,6 +66,14 @@ sync:
                           16777216 by default
   --require-attested      write only cold-signed and Leios-signed objects
   --require-cold-signed   write only cold-signed objects
+  --forget-unverified     drop the keys this state file remembers as
+                          unverified, then sync
+
+  A key whose bytes did not verify is remembered in the state file and named
+  by every later run, which exits nonzero while any are held. The cursor moves
+  past such a key like any other, so without that the only record of one is the
+  stderr of the run that found it. Deal with them, then clear them with the
+  flag above.
 
   One state file per set of filters. They may share one --into as long as
   they ask for the same --require and --max-object-bytes: a directory records
@@ -136,7 +144,14 @@ pub enum Command {
     /// Print them and download nothing.
     List,
     /// Download the ones after the cursor, advancing it in `state`.
-    Sync { state: PathBuf, into: PathBuf },
+    Sync {
+        state: PathBuf,
+        into: PathBuf,
+        /// Drop the keys the state file remembers as unverified before
+        /// syncing, which is the operator saying they have been dealt with
+        /// (`cursor::Cursor::unverified`).
+        forget_unverified: bool,
+    },
 }
 
 impl Command {
@@ -339,6 +354,10 @@ impl Invocation {
                 given.insist = given.insist.max(insist);
                 continue;
             }
+            if argument == "--forget-unverified" {
+                given.forget_unverified = true;
+                continue;
+            }
             let (flag, value) = match argument.as_str() {
                 "--server" => ("--server", &mut given.server),
                 "--user" => ("--user", &mut given.user),
@@ -383,6 +402,7 @@ struct Given {
     from: Option<String>,
     to: Option<String>,
     insist: Insist,
+    forget_unverified: bool,
 }
 
 impl Given {
@@ -407,6 +427,7 @@ impl Given {
             "sync" => Command::Sync {
                 state: PathBuf::from(required(&self.state, "sync", "--state")?),
                 into: PathBuf::from(required(&self.into, "sync", "--into")?),
+                forget_unverified: self.forget_unverified,
             },
             _ => {
                 return Err(ArgsError::UnknownCommand {

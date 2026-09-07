@@ -29,8 +29,17 @@ enum Fatal {
     Sync(#[from] SyncError),
     /// Not a failure to sync: the run did what it could and the objects it
     /// refused are named above this. The code is what a script reads.
-    #[error("{count} object(s) were not written, each named above")]
-    NotWritten { count: usize },
+    ///
+    /// `unverified` is what the state file holds rather than what this run
+    /// found, so it is nonzero on a run that fetched nothing and refused
+    /// nothing. Clearing it is `--forget-unverified`.
+    /// Two scopes rather than a sum: the same object can be in both, so the
+    /// message says which each number is about.
+    #[error(
+        "this run did not write {count} object(s); \
+         {unverified} key(s) in this state file are unverified. Each is named above"
+    )]
+    NotWritten { count: usize, unverified: usize },
 }
 
 fn main() -> std::process::ExitCode {
@@ -92,11 +101,21 @@ fn fetch(args: Args) -> Result<(), Fatal> {
             None,
             None,
         ),
-        Command::Sync { state, into } => {
+        Command::Sync {
+            state,
+            into,
+            forget_unverified,
+        } => {
             let destination = Destination {
                 into: &into,
                 state: &state,
             };
+            // Before the sync, so the run that clears them still reports
+            // whatever it finds for itself.
+            if forget_unverified {
+                let forgotten = sync::forget_unverified(&destination, &filters, verification)?;
+                eprintln!("forgot {forgotten} keys this state file held as unverified");
+            }
             let report = sync::run(&archive, &filters, &destination, verification, |key| {
                 println!("{key}")
             })?;
@@ -144,13 +163,24 @@ fn fetch(args: Args) -> Result<(), Fatal> {
     if let Some(read) = read {
         eprintln!("read them with: duckdb -c \"select * from {read}\"");
     }
+    // Held by the state file rather than found by this run, so a second run
+    // over the same corpus still names them: the cursor is past every one, and
+    // this list is what keeps the news from ending with the run that had it.
+    for key in &report.unverified {
+        eprintln!("unverified, from this run or an earlier one: {key}");
+    }
     // The objects that did land are on disk and the cursor is past every key
     // this run saw, so the exit code is the only thing left to say that what a
     // reader will find is short of what was listed.
-    match report.rejected.is_empty() {
-        true => Ok(()),
-        false => Err(Fatal::NotWritten {
+    match (report.rejected.is_empty(), report.unverified.is_empty()) {
+        (true, true) => Ok(()),
+        // Whichever is non-empty, and the carried list decides it even for a
+        // run that fetched nothing at all: an exit code that went green
+        // because this run happened to see no bad object is what
+        // `--forget-unverified` exists to be asked for instead.
+        _ => Err(Fatal::NotWritten {
             count: report.rejected.len(),
+            unverified: report.unverified.len(),
         }),
     }
 }

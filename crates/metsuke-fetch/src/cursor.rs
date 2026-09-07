@@ -5,6 +5,7 @@
 //! Replaced whole rather than edited, so a run killed mid-write leaves either
 //! the old cursor or the new one.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::io;
 use std::num::NonZeroU64;
@@ -55,6 +56,27 @@ pub struct Cursor {
     /// The last key seen. Empty is the archive's start, which is also what a
     /// state file that does not exist yet means.
     pub after: String,
+    /// Keys whose bytes did not verify, kept across runs.
+    ///
+    /// The cursor advances past a refusal like any other key, so without this
+    /// the only record of one is the stderr of the run that found it: a second
+    /// run over the same state file reaches none of them, finds nothing wrong
+    /// and exits zero, which is what makes `sync || sync` or a timer that runs
+    /// twice report a clean archive over objects nobody may trust.
+    ///
+    /// Only `sync::Fault::Verdict` keys. A key that is gone, one over the size
+    /// bound, and one below the bar a `--require` flag set are all the run
+    /// working as asked, and a list that filled up with those is one an
+    /// operator learns to ignore.
+    ///
+    /// Cleared only when asked (`cli::Args::forget_unverified`): the remedy is
+    /// outside this tool, so nothing here can see that it happened.
+    ///
+    /// A set, so recording one is not a scan of the ones already held. It
+    /// serialises as the array it reads back from, sorted rather than in the
+    /// order they were found, which is the order a listing walks anyway.
+    #[serde(default)]
+    pub unverified: BTreeSet<String>,
 }
 
 /// What a state file cannot say for itself: the bound a run that set no flag
@@ -133,6 +155,7 @@ impl Cursor {
                     max_object_bytes,
                     from: filters.days.from.clone(),
                     after: String::new(),
+                    unverified: BTreeSet::new(),
                 });
             }
             Err(source) => {
@@ -150,6 +173,11 @@ impl Cursor {
         // Any difference and not just a lower bar: raising it leaves objects on
         // disk the new bar would never have written, so the directory stops
         // matching what the flags say it holds either way.
+        //
+        // What the run was asked for, and only that. `after` moves and
+        // `unverified` grows as a run goes, so comparing either would refuse
+        // every run after the first, and for `unverified` refuse exactly the
+        // state files that have something to report.
         match held.prefix == filters.prefix
             && held.selection == *filters.selection
             && held.insist == insist
@@ -181,6 +209,24 @@ impl Cursor {
     pub fn advance(&mut self, path: &Path, key: &str) -> Result<(), CursorError> {
         self.after = key.to_string();
         self.write(path)
+    }
+
+    /// Record a key whose bytes did not verify, and advance past it. One write,
+    /// so a run killed between the two cannot leave the cursor past a key this
+    /// list does not name.
+    pub fn advance_unverified(&mut self, path: &Path, key: &str) -> Result<(), CursorError> {
+        self.unverified.insert(key.to_string());
+        self.advance(path, key)
+    }
+
+    /// Forget the recorded keys, which is the operator saying they have been
+    /// dealt with. Written even when there were none, so the flag is
+    /// idempotent.
+    pub fn forget_unverified(&mut self, path: &Path) -> Result<usize, CursorError> {
+        let forgotten = self.unverified.len();
+        self.unverified.clear();
+        self.write(path)?;
+        Ok(forgotten)
     }
 
     fn write(&self, path: &Path) -> Result<(), CursorError> {

@@ -168,6 +168,7 @@ fn a_downloaded_object_is_the_archived_bytes_and_still_verifies() {
             leios_signed: 0,
             unattested: 1,
             rejected: Vec::new(),
+            unverified: Vec::new(),
         }
     );
 }
@@ -1327,4 +1328,139 @@ fn require_cold_signed_filters_a_whole_run_of_leios_objects() {
     )
     .expect("the cursor reads");
     assert_eq!(&cursor.after, keys.last().expect("four keys"));
+}
+
+/// The second run over the same state file still says the archive holds an
+/// object nobody may trust.
+///
+/// The cursor is past that key, so run 2 reaches none of them: without a
+/// record it finds nothing wrong and exits zero, and `sync || sync` or a timer
+/// that runs twice turns a refusal into a green result.
+#[test]
+fn a_key_whose_bytes_did_not_verify_is_still_named_by_the_next_run() {
+    let server = Server::attesting(2, 100);
+    let bad = server.keys()[0].clone();
+    server.tamper(&bad);
+    let dir = tempfile::tempdir().expect("a temp dir");
+
+    let first = sync_into(&server, &everything(), dir)
+        .unwrap_or_else(|(error, _, _)| panic!("the sync failed: {error}"));
+
+    assert_eq!(first.report.rejected.len(), 1, "{:?}", first.report);
+    assert_eq!(first.report.unverified, vec![bad.clone()]);
+
+    // The same flags, the same state file, and nothing new to fetch.
+    let second = sync_into(&server, &everything(), first.dir)
+        .unwrap_or_else(|(error, _, _)| panic!("the second sync failed: {error}"));
+
+    assert!(second.landed.is_empty(), "{:?}", second.landed);
+    assert!(second.report.rejected.is_empty(), "{:?}", second.report);
+    assert_eq!(
+        second.report.unverified,
+        vec![bad],
+        "the second run forgot what the first found"
+    );
+}
+
+/// What a `--require` flag filters is not remembered, nor is a key that is
+/// gone. Both are the run working as asked, and a list an operator has to
+/// clear after every ordinary run is one they learn to clear without reading.
+#[test]
+fn a_filtered_or_absent_object_is_not_remembered_across_runs() {
+    let server = Server::attesting(2, 100);
+    let leios = server.keys()[0].clone();
+    server.leios_sign(&leios);
+    let dir = tempfile::tempdir().expect("a temp dir");
+
+    let synced = sync_verifying(
+        &server,
+        &everything(),
+        dir,
+        Verification {
+            insist: Insist::ColdSigned,
+            ..permissive()
+        },
+    )
+    .unwrap_or_else(|(error, _, _)| panic!("filtering is not a failure: {error}"));
+
+    assert_eq!(synced.report.rejected.len(), 1, "{:?}", synced.report);
+    assert!(
+        synced.report.unverified.is_empty(),
+        "a filtered object was remembered: {:?}",
+        synced.report.unverified
+    );
+}
+
+/// And the operator can say it has been dealt with, which is the only thing
+/// that clears the record: the remedy is outside this tool, so nothing here
+/// can see that it happened.
+#[test]
+fn forgetting_clears_the_record_and_the_next_run_is_clean() {
+    let server = Server::attesting(2, 100);
+    let bad = server.keys()[0].clone();
+    server.tamper(&bad);
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let first = sync_into(&server, &everything(), dir)
+        .unwrap_or_else(|(error, _, _)| panic!("the sync failed: {error}"));
+    assert_eq!(first.report.unverified.len(), 1);
+
+    let into = first.dir.path().join("objects");
+    let state = state_of(first.dir.path());
+    let forgotten = sync::forget_unverified(
+        &Destination {
+            into: &into,
+            state: &state,
+        },
+        &everything().filters(),
+        permissive(),
+    )
+    .expect("the state file is this run's");
+
+    assert_eq!(forgotten, 1);
+    let after = sync_into(&server, &everything(), first.dir)
+        .unwrap_or_else(|(error, _, _)| panic!("the sync failed: {error}"));
+    assert!(
+        after.report.unverified.is_empty(),
+        "{:?}",
+        after.report.unverified
+    );
+    // And the cursor did not rewind, so forgetting is not a re-download.
+    assert!(after.landed.is_empty(), "{:?}", after.landed);
+}
+
+/// Forgetting checks what a sync checks before it clears anything. Clearing
+/// first and refusing second would lose the record to a mistyped `--into` and
+/// sync nothing.
+#[test]
+fn forgetting_against_a_directory_filled_under_another_bar_clears_nothing() {
+    let server = Server::attesting(2, 100);
+    let bad = server.keys()[0].clone();
+    server.tamper(&bad);
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let first = sync_into(&server, &everything(), dir)
+        .unwrap_or_else(|(error, _, _)| panic!("the sync failed: {error}"));
+    assert_eq!(first.report.unverified.len(), 1);
+    let into = first.dir.path().join("objects");
+    let state = state_of(first.dir.path());
+
+    // The directory was filled with no --require flag, so a stricter run is
+    // another run as far as it is concerned.
+    let error = sync::forget_unverified(
+        &Destination {
+            into: &into,
+            state: &state,
+        },
+        &everything().filters(),
+        Verification {
+            insist: Insist::ColdSigned,
+            ..permissive()
+        },
+    )
+    .expect_err("another bar against this directory is refused");
+
+    assert!(matches!(&error, SyncError::Provenance(_)), "got: {error}");
+    // And the record survived the refusal.
+    let after = sync_into(&server, &everything(), first.dir)
+        .unwrap_or_else(|(error, _, _)| panic!("the sync failed: {error}"));
+    assert_eq!(after.report.unverified, vec![bad]);
 }

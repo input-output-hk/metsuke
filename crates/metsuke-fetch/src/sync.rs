@@ -46,6 +46,10 @@ pub struct Report {
     /// Named rather than counted: an object nobody may trust is not a number,
     /// it is a key somebody has to look at. Each of these was not written.
     pub rejected: Vec<Rejected>,
+    /// Keys whose bytes did not verify on this run or any earlier one, as the
+    /// state file holds them (`cursor::Cursor::unverified`). What makes the
+    /// news outlive the run that found it.
+    pub unverified: Vec<String>,
 }
 
 impl Report {
@@ -67,6 +71,31 @@ impl Report {
 pub struct Rejected {
     pub key: String,
     pub reason: String,
+    pub fault: Fault,
+}
+
+/// What a refusal says about the archive, which is what decides whether it
+/// outlives the run that found it (`cursor::Cursor::unverified`).
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Fault {
+    /// The object was there and its bytes are not what they claim: the
+    /// signature does not stand over them, or the key that signed them is not
+    /// the pool they are filed under. A fact about the archive, as true
+    /// tomorrow, and somebody has to look at it.
+    Verdict,
+    /// The object was not taken, and its bytes are not what says so: the key
+    /// is not there to be had, the object is larger than this run holds
+    /// objects to, or it is below the bar this run asked for — and a
+    /// `--require` flag filters, so that last one is the flag working.
+    ///
+    /// Not kept across runs, because a list an operator has to clear after an
+    /// ordinary run is one they clear without reading. That is a trade rather
+    /// than a certainty: a key the listing named and the download route then
+    /// refuses means the two disagree, which a lifecycle rule expiring an
+    /// object mid-page explains and a proxy lying about the object route also
+    /// explains, and a status cannot tell them apart. Such a run says so on
+    /// stderr and exits nonzero; the run after it does not.
+    NotTaken,
 }
 
 /// What this run will hold and what it insists on.
@@ -167,6 +196,7 @@ pub fn run(
     let resuming = filters.days.after(&cursor.after);
     for page in Pages::from(archive, filters.prefix, &resuming, filters.days) {
         for key in page? {
+            let mut verdict = false;
             match filters.selection.selects(&key) {
                 Selected::Yes => {
                     match download(archive, destination.into, &key, verification)? {
@@ -194,10 +224,14 @@ pub fn run(
                         // a rejection is one object's news by construction:
                         // what would be the path's stops the run instead
                         // (`pull::PullError::is_one_objects_problem`).
-                        Landed::Rejected(reason) => report.rejected.push(Rejected {
-                            key: key.clone(),
-                            reason,
-                        }),
+                        Landed::Rejected(reason, fault) => {
+                            report.rejected.push(Rejected {
+                                key: key.clone(),
+                                reason,
+                                fault,
+                            });
+                            verdict = fault == Fault::Verdict;
+                        }
                     }
                 }
                 Selected::No => report.passed += 1,
@@ -207,10 +241,35 @@ pub fn run(
             // them for good. A key the selection passed over is behind the
             // cursor too. It was listed, and re-listing it would download
             // nothing.
-            cursor.advance(destination.state, &key)?;
+            //
+            // A key whose bytes did not verify is written into the state file
+            // as it is passed, in the same write, so the record cannot be
+            // behind the cursor that stepped over it.
+            match verdict {
+                true => cursor.advance_unverified(destination.state, &key)?,
+                false => cursor.advance(destination.state, &key)?,
+            }
         }
     }
+    report.unverified = cursor.unverified.into_iter().collect();
     Ok(report)
+}
+
+/// Drop what the state file remembers as unverified, answering how many there
+/// were.
+///
+/// Checks the directory and the state file exactly as `run` does before
+/// clearing anything, so a command the sync would refuse refuses here too.
+/// Clearing first and refusing second would lose the record to a mistyped
+/// `--into` and sync nothing.
+pub fn forget_unverified(
+    destination: &Destination<'_>,
+    filters: &Filters<'_>,
+    verification: Verification,
+) -> Result<usize, SyncError> {
+    provenance::claim(destination.into, &verification)?;
+    let mut cursor = Cursor::read(destination.state, filters, &verification)?;
+    Ok(cursor.forget_unverified(destination.state)?)
 }
 
 /// The keys the filters select, reported as the listing produces them and
@@ -327,7 +386,7 @@ enum Landed {
     ColdSigned(u64),
     LeiosSigned(u64),
     Unattested(u64),
-    Rejected(String),
+    Rejected(String, Fault),
 }
 
 fn download(
@@ -348,13 +407,13 @@ fn download(
         // (`pull::PullError::is_one_objects_problem`), because what a status
         // says about the path it says about every object under it.
         Err(error) if error.is_one_objects_problem() => {
-            return Ok(Landed::Rejected(error.to_string()));
+            return Ok(Landed::Rejected(error.to_string(), Fault::NotTaken));
         }
         Err(error) => return Err(SyncError::Pull(error)),
     };
     let landed = match checked(key, &object, verification.insist) {
         Ok(landed) => landed,
-        Err(Unchecked::Rejected(reason)) => return Ok(Landed::Rejected(reason)),
+        Err(Unchecked::Rejected(reason, fault)) => return Ok(Landed::Rejected(reason, fault)),
         Err(Unchecked::Malformed(reason)) => {
             return Err(SyncError::Malformed {
                 key: key.to_string(),
@@ -384,8 +443,9 @@ fn download(
 /// Why `checked` would not have these bytes: this object's own problem, or the
 /// path's.
 enum Unchecked {
-    /// One object, reported and stepped over.
-    Rejected(String),
+    /// One object, reported and stepped over, with what the refusal says about
+    /// the archive (`Fault`).
+    Rejected(String, Fault),
     /// A pair arrived and did not decode. Whatever rewrote a header rewrote it
     /// for the path, so this is every object's and ends the run.
     Malformed(String),
@@ -397,8 +457,11 @@ fn checked(key: &str, object: &Object, insist: Insist) -> Result<fn(u64) -> Land
         Attested::None => {
             return match insist {
                 Insist::Nothing => Ok(Landed::Unattested),
+                // The bar this run asked for, met by no object in an archive
+                // that stores no pairs at all.
                 _ => Err(Unchecked::Rejected(
                     "unattested: no key and signature to check it with".to_string(),
+                    Fault::NotTaken,
                 )),
             };
         }
@@ -410,22 +473,27 @@ fn checked(key: &str, object: &Object, insist: Insist) -> Result<fn(u64) -> Land
     if !attestation.verifies(&object.bytes) {
         return Err(Unchecked::Rejected(
             "the signature does not stand over the bytes as downloaded".to_string(),
+            Fault::Verdict,
         ));
     }
-    let name = ObjectName::parse(key).map_err(|error| Unchecked::Rejected(error.to_string()))?;
+    let name = ObjectName::parse(key)
+        .map_err(|error| Unchecked::Rejected(error.to_string(), Fault::NotTaken))?;
     let Some(signer) = attestation.attributes() else {
         return match insist {
+            // The bar again: the signature stood, and only a cold key proves
+            // the pool as well.
             Insist::ColdSigned => Err(Unchecked::Rejected(
                 "Leios signature verified, not cold-signed".to_string(),
+                Fault::NotTaken,
             )),
             _ => Ok(Landed::LeiosSigned),
         };
     };
     if signer != name.pool_id {
-        return Err(Unchecked::Rejected(format!(
-            "signed by {signer}, and filed under {}",
-            name.pool_id
-        )));
+        return Err(Unchecked::Rejected(
+            format!("signed by {signer}, and filed under {}", name.pool_id),
+            Fault::Verdict,
+        ));
     }
     Ok(Landed::ColdSigned)
 }

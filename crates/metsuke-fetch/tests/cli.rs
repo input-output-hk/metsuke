@@ -87,6 +87,7 @@ fn a_sync_names_its_state_file_and_its_download_directory() {
         Command::Sync {
             state: PathBuf::from("/var/lib/fetch/cursor.json"),
             into: PathBuf::from("/srv/archive"),
+            forget_unverified: false,
         }
     );
     assert_eq!(args.access.server, "http://archive.example:8080");

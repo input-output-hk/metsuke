@@ -94,12 +94,31 @@ over them would refuse the whole archive one key at a time and leave the next
 run nothing to fetch. Fix the cause and run again — the objects are still
 there, and the cursor never moved.
 
-**That exit code speaks for one run, and nothing remembers it.** The cursor is
-past the refused key, so the next run over the same state file does not reach
-it again, finds nothing wrong, and exits zero. Do not wrap this in a retry: a
-`sync || sync`, or a timer that runs it twice, turns a run that refused objects
-into a green one and the only record of them was the first run's stderr. Keep
-that output, or read the exit code of the run that produced it.
+**A key whose bytes did not verify is remembered, and every later run says
+so.** The cursor moves past it like any other key, so the next run reaches none
+of them; the state file holds the list instead, names it, and exits nonzero
+while anything is on it. That is what keeps a `sync || sync`, or a timer that
+runs twice, from turning a refusal into a green result.
+
+Only that class is kept. A key the archive no longer has, an object over
+`--max-object-bytes`, and one below the bar a `--require` flag set are the run
+working as asked, and a list filling up with those is one you would learn to
+clear without reading.
+
+**Those are stderr-only, so keep the output of the run that produced them.**
+The exit code is nonzero for them on that run and zero on the next, which is
+the one place a retry still hides something: a whole listing refused because
+the object route was answering for nothing is reported once. Read the output
+of the run that did the work, not of a second one wrapped around it.
+
+Clearing is yours to say, because the remedy is outside this tool:
+
+```
+metsuke-fetch sync --forget-unverified --state cursor.json --into archive
+```
+
+It drops the list and syncs, so the run that clears it still reports whatever
+it finds for itself.
 
 All three are counted rather than refused, or a run against a filesystem
 archive would download nothing. Two flags raise the bar, and each writes only
