@@ -164,6 +164,23 @@ metsuke-fetch sync --kind metrics --state metrics.json --into ~/archive
 metsuke-fetch sync --kind logs    --state logs.json    --into ~/archive
 ```
 
+The one thing they have to agree on is the bar. A directory records the
+`--require` and `--max-object-bytes` it was filled under, and a run asking for
+another is refused before it downloads anything:
+
+```
+metsuke-fetch stopped: archive/.metsuke-verification.json records another bar
+  holds: max-object-bytes 16777216, --require-cold-signed
+  asked: max-object-bytes 16777216, no --require flag
+  name a directory of its own for this one, or ask for what it holds
+```
+
+Two state files are two cursors, so without that a second one could add
+objects at a lower bar to a directory filled at a higher one, and what is in
+it would no longer be knowable from anything. With it, everything under one
+directory was held to one bar, which is what makes the bar worth asking for at
+all.
+
 `--to` is the one bound that is not part of that set, and deliberately. Every
 other constraint lets keys be seen and passed over, so the cursor advances past
 them and changing it strands objects. `--to` only stops the walk, in the same

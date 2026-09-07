@@ -67,7 +67,10 @@ sync:
   --require-attested      write only cold-signed and Leios-signed objects
   --require-cold-signed   write only cold-signed objects
 
-  One state file per set of filters. They may share one --into.
+  One state file per set of filters. They may share one --into as long as
+  they ask for the same --require and --max-object-bytes: a directory records
+  what it was filled under, and a run asking for another is refused, so what
+  is in one was held to one bar.
 
 filters, which default to the whole archive:
   --prefix <key prefix>   only keys starting with this

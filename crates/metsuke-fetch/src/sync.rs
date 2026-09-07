@@ -11,6 +11,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::cursor::{Cursor, CursorError};
+use crate::provenance::{self, ProvenanceError};
 use crate::pull::{Archive, Object, PullError};
 use crate::select::{Days, Filters, Selected};
 use crate::staged;
@@ -113,6 +114,8 @@ pub enum SyncError {
     Pull(#[from] PullError),
     #[error(transparent)]
     Cursor(#[from] CursorError),
+    #[error(transparent)]
+    Provenance(#[from] ProvenanceError),
     /// The keys are the server's, and this is what keeps one of them from
     /// naming a path outside the directory the operator pointed at.
     #[error(
@@ -148,6 +151,10 @@ pub fn run(
     verification: Verification,
     mut landed: impl FnMut(&str),
 ) -> Result<Report, SyncError> {
+    // Before the cursor and before any download: what the directory was
+    // filled under is the directory's to record, and the state file is a
+    // narrower thing than the directory (`provenance`).
+    provenance::claim(destination.into, &verification)?;
     let mut cursor = Cursor::read(destination.state, filters, &verification)?;
     let mut report = Report::default();
     let resuming = filters.days.after(&cursor.after);

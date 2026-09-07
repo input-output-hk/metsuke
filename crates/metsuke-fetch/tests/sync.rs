@@ -87,7 +87,7 @@ fn sync_into(
     server: &Server,
     asked: &Asked,
     dir: tempfile::TempDir,
-) -> Result<Synced, (SyncError, tempfile::TempDir, Vec<String>)> {
+) -> Result<Synced, (Box<SyncError>, tempfile::TempDir, Vec<String>)> {
     sync_verifying(server, asked, dir, permissive())
 }
 
@@ -96,7 +96,7 @@ fn sync_verifying(
     asked: &Asked,
     dir: tempfile::TempDir,
     verification: Verification,
-) -> Result<Synced, (SyncError, tempfile::TempDir, Vec<String>)> {
+) -> Result<Synced, (Box<SyncError>, tempfile::TempDir, Vec<String>)> {
     let into = dir.path().join("objects");
     let state = state_of(dir.path());
     let mut landed = Vec::new();
@@ -117,7 +117,7 @@ fn sync_verifying(
             landed,
             report,
         }),
-        Err(error) => Err((error, dir, landed)),
+        Err(error) => Err((Box::new(error), dir, landed)),
     }
 }
 
@@ -642,7 +642,7 @@ fn a_staged_file_does_not_survive_a_download_that_failed() {
         .expect_err("an unreadable object stops the sync");
 
     assert!(
-        matches!(&error, SyncError::Pull(pull) if pull.to_string().contains("503")),
+        matches!(&*error, SyncError::Pull(pull) if pull.to_string().contains("503")),
         "got: {error}"
     );
     let staged = dir.path().join("objects").join(format!("{key}.staged"));
@@ -764,7 +764,7 @@ fn a_cursor_taken_under_other_filters_is_refused() {
 
     assert!(landed.is_empty(), "downloaded before refusing: {landed:?}");
     assert!(
-        matches!(&error, SyncError::Cursor(cursor) if cursor.to_string().contains("kind logs")),
+        matches!(&*error, SyncError::Cursor(cursor) if cursor.to_string().contains("kind logs")),
         "got: {error}"
     );
 }
@@ -1009,4 +1009,72 @@ fn an_archive_that_cannot_be_reached_stops_the_run_where_it_was() {
 
     assert!(matches!(&error, SyncError::Pull(_)), "got: {error}");
     assert!(!state.exists(), "nothing advanced: {state:?}");
+}
+
+/// Two state files may share one `--into`, and that is what left a directory
+/// holding proven and assumed objects with nothing to tell them apart: the
+/// cursor's bar check is per state file, and a second state file is a second
+/// cursor. The directory records its own bar, so the second run is refused.
+#[test]
+fn a_second_state_file_cannot_fill_one_directory_under_another_bar() {
+    let server = Server::attesting(2, 100);
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let into = dir.path().join("objects");
+    let strict = Verification {
+        insist: Insist::ColdSigned,
+        ..permissive()
+    };
+    let sync_with = |state: &Path, verification| {
+        sync::run(
+            &server.pulling(),
+            &everything().filters(),
+            &Destination { into: &into, state },
+            verification,
+            |_| {},
+        )
+    };
+
+    sync_with(&dir.path().join("cold.json"), strict).expect("the first run fills it");
+    let error = sync_with(&dir.path().join("loose.json"), permissive())
+        .expect_err("a second bar into one directory is refused");
+
+    assert!(matches!(&error, SyncError::Provenance(_)), "got: {error}");
+    // Both bars are named, because the operator has to decide which one the
+    // directory is for.
+    let said = error.to_string();
+    assert!(said.contains("--require-cold-signed"), "{said}");
+    assert!(said.contains("no --require flag"), "{said}");
+}
+
+/// And the same bar is fine, which is what the usage text offers: two filter
+/// sets, two state files, one directory.
+#[test]
+fn two_state_files_at_one_bar_share_a_directory() {
+    let server = Server::attesting(2, 100);
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let into = dir.path().join("objects");
+    let sync_with = |state: &Path, asked: &Asked| {
+        sync::run(
+            &server.pulling(),
+            &asked.filters(),
+            &Destination { into: &into, state },
+            permissive(),
+            |_| {},
+        )
+    };
+
+    let first = sync_with(&dir.path().join("one.json"), &everything()).expect("the first run");
+    // A second set of filters, so it is a second state file by design rather
+    // than a re-run of the first.
+    let second = sync_with(
+        &dir.path().join("two.json"),
+        &only(Selection {
+            kind: Some(Kind::Metrics),
+            ..Selection::default()
+        }),
+    )
+    .expect("a second state file at the same bar shares the directory");
+
+    assert_eq!(first.cold_signed, 2);
+    assert!(second.objects > 0, "{second:?}");
 }
