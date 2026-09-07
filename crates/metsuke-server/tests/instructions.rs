@@ -518,6 +518,93 @@ fn a_download_named_after_a_generated_checksum_is_refused() {
     assert_eq!(refused.name, checksum);
 }
 
+/// Every download a page prints refuses an error page rather than saving one.
+/// Without `-f` curl writes a 404 body where the file was meant to go and
+/// exits zero, so a name that moved becomes a config the next step edits or a
+/// file the install step makes executable.
+///
+/// Only the ones that write a file. The metrics probe prints to a terminal,
+/// where a body is the answer being read rather than something left behind.
+///
+/// And only what the pages print, not what the server serves. A served file
+/// carries its own instructions: `contrib/cardano-node.service` installs
+/// somebody else's build, and its downloads answer for themselves with a
+/// `sha256sum -c` rather than with this flag. A page that embedded one would
+/// bring those lines under this assertion, where leaving them is the answer
+/// and editing that file is not.
+#[test]
+fn every_download_the_pages_print_refuses_an_error_page() {
+    let pages = support::test_pages();
+    let mut checked = 0;
+    for page in [&pages.quickstart, &pages.details, &pages.analysis] {
+        for line in page.lines() {
+            let Some((_, after)) = line.split_once("curl ") else {
+                continue;
+            };
+            let flags: Vec<&str> = after
+                .split_whitespace()
+                .take_while(|word| word.starts_with('-'))
+                .collect();
+            if !flags.iter().any(|flag| flag.contains(['o', 'O'])) {
+                continue;
+            }
+            assert!(
+                flags.iter().any(|flag| flag.contains('f')),
+                "this download keeps whatever it is answered: {}",
+                line.trim()
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "no page printed a download at all");
+}
+
+/// Both ways of getting the agent install it the same way, and `-D` is what
+/// makes the directory: it is standard, but a minimal image can be without it,
+/// and an operator meets that as a failed install rather than as a path that
+/// was never there. Only one branch renders at a time, so both are read.
+#[test]
+fn both_ways_of_installing_the_agent_make_the_directory() {
+    for (named, quickstart) in [
+        (
+            "a deployment serving builds",
+            support::test_pages().quickstart,
+        ),
+        ("one serving none", support::pages_of(Vec::new()).quickstart),
+    ] {
+        assert_eq!(
+            quickstart.matches("install -D -m 0755 ").count(),
+            1,
+            "{named} installs the agent by some other means"
+        );
+    }
+}
+
+/// The blocks hand over a build as a stem and a variable, which is only the
+/// same file the arrays name while the two agree. Nothing in the module can
+/// build those names at compile time, so this is what holds them together: an
+/// architecture added to one and not the other, or a package renamed, leaves a
+/// block offering a name the server never serves.
+#[test]
+fn each_build_is_its_stem_and_an_architecture() {
+    for (built, stem) in [
+        (instructions::BINARIES, instructions::AGENT_STEM),
+        (instructions::FETCH_BINARIES, instructions::FETCH_STEM),
+    ] {
+        assert_eq!(built.len(), instructions::ARCHITECTURES.len());
+        for (name, arch) in built.iter().zip(instructions::ARCHITECTURES) {
+            assert_eq!(*name, format!("{stem}{arch}"));
+        }
+    }
+}
+
+/// A page as the operator runs it, with the architecture they set filled in.
+/// A block hands over either build through that variable, so a test reading a
+/// command out of a page reads it the way the shell would.
+fn as_run(page: &str, arch: &str) -> String {
+    page.replace(instructions::ARCH_VARIABLE, arch)
+}
+
 /// Where a page's link to a served file points, which is what a page offering
 /// a download holds: the pages interpolate the absolute URL, so a needle
 /// spelled as the path alone matches nothing, and one spelled with the command
@@ -549,7 +636,10 @@ fn unlinked(text: &str) -> String {
 /// last to know, which is the shape of mistake this catches.
 #[test]
 fn a_deployment_that_ships_agent_builds_offers_them_everywhere() {
-    let quickstart = support::test_pages().quickstart;
+    let quickstart = as_run(
+        &support::test_pages().quickstart,
+        instructions::ARCHITECTURES[0],
+    );
     let downloads = quickstart
         .matches(&format!(
             "{}{}",
@@ -788,7 +878,10 @@ fn main_of(page: &str) -> &str {
 /// where it does not the page says to build one.
 #[test]
 fn the_analysis_page_offers_the_fetch_build_this_deployment_serves() {
-    let offered = support::test_pages().analysis;
+    let offered = as_run(
+        &support::test_pages().analysis,
+        instructions::ARCHITECTURES[0],
+    );
     assert!(
         offered.contains(&format!(
             "{}{}",
@@ -951,7 +1044,18 @@ fn the_metrics_endpoint_comes_from_the_shipped_config() {
 fn every_file_the_pages_link_is_one_the_server_serves() {
     let pages = support::test_pages();
     let mut linked = 0;
-    for page in [&pages.quickstart, &pages.details, &pages.analysis] {
+    // Every architecture, not the one the block pre-fills: a link an operator
+    // completes by setting the variable has to name a served file under each
+    // value they could set it to.
+    let read: Vec<String> = [&pages.quickstart, &pages.details, &pages.analysis]
+        .iter()
+        .flat_map(|page| {
+            instructions::ARCHITECTURES
+                .into_iter()
+                .map(|arch| as_run(page, arch))
+        })
+        .collect();
+    for page in &read {
         for after in page.split(instructions::FILES_PREFIX).skip(1) {
             // Both the relative hrefs and the absolute curl targets end at the
             // next quote or whitespace.
@@ -1229,27 +1333,50 @@ fn every_offered_build_is_named_with_the_digest_of_what_is_served() {
             .unwrap_or_else(|| panic!("{name} is offered but not served"));
         let expected = metsuke_wire::hex::encode(&Sha256::digest(&served.bytes)[..]);
 
-        // Wherever that build is handed over. The quickstart offers the agent
-        // in two places, the analysis page the fetch tool in one, and a digest
-        // is only worth printing beside every one of them.
-        let pages = [&pages.quickstart, &pages.details, &pages.analysis];
-        let offered: usize = pages
+        // As an operator reads them: a block hands over either architecture
+        // through a variable they set, so the page has to be read with it set
+        // the way the build under test needs.
+        let arch = instructions::ARCHITECTURES
+            .into_iter()
+            .find(|arch| name.ends_with(arch))
+            .unwrap_or_else(|| panic!("{name} is not named for an architecture"));
+        let run: Vec<String> = [&pages.quickstart, &pages.details, &pages.analysis]
+            .iter()
+            .map(|page| page.replace(instructions::ARCH_VARIABLE, arch))
+            .collect();
+
+        // Every served build, with no way to skip one: a build offered nowhere
+        // is one an operator on that machine cannot get, and reading past it
+        // is what left both ARM builds served and linked from no page at all.
+        let offered: usize = run
             .iter()
             .map(|page| {
                 page.matches(&format!("{}{name}", instructions::FILES_PREFIX))
                     .count()
             })
             .sum();
-        if offered == 0 {
-            continue;
-        }
-        let digested: usize = pages
-            .iter()
-            .map(|page| page.matches(&expected).count())
-            .sum();
+        assert!(offered > 0, "{name} is served and offered nowhere");
+
+        // Wherever that build is handed over, something checks the bytes. The
+        // digest inline where a block renames the download, and `sha256sum -c`
+        // over the served checksum where it keeps the name; one or the other,
+        // never neither. And the checksum has to be fetched as well as named:
+        // `sha256sum -c` over a file the block never downloaded fails in front
+        // of the operator, which is a check that reads like one and is not.
+        let fetches = format!(
+            "curl -fO {}{}",
+            served_url(name),
+            instructions::CHECKSUM_SUFFIX
+        );
+        let checks = format!("sha256sum -c {name}{}", instructions::CHECKSUM_SUFFIX);
+        let checkable = run.iter().any(|page| {
+            page.contains(&expected) || (page.contains(&fetches) && page.contains(&checks))
+        });
         assert!(
-            digested > 0,
-            "{name} is offered {offered} times and its digest {expected} appears nowhere"
+            checkable,
+            "{name} is offered {offered} times with neither its digest {expected} \
+             nor a downloaded {name}{} and a check of it",
+            instructions::CHECKSUM_SUFFIX
         );
         checked += 1;
     }

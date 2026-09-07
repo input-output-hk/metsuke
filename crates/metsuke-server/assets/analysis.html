@@ -55,7 +55,7 @@ binary with nothing to link against, the same as the agent:</p>
 
 <pre>{{fetch_install}}</pre>
 
-<p>On ARM it is <code>metsuke-fetch-static-aarch64-linux</code>. Either can be
+<p>The block above fetches the build for your machine. Either can be
 built rather than downloaded, with
 <code>nix build {{flake}}#metsuke-fetch-static-$ARCH</code>, and
 <code>nix run {{flake}}#metsuke-fetch</code> runs it without installing

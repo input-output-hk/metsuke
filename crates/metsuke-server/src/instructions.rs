@@ -169,6 +169,66 @@ pub const FETCH_BINARIES: [&str; 2] = [
     "metsuke-fetch-static-aarch64-linux",
 ];
 
+/// What an operator sets to say which machine they are on, and what the shell
+/// variable the command blocks read is called. Both build sets are one name
+/// with this in it, so one block hands over either architecture and the ARM
+/// reader runs the same commands rather than a paragraph describing them.
+///
+/// First one first: it is what the blocks pre-fill, and the other is what the
+/// comment beside it names.
+pub const ARCHITECTURES: [&str; 2] = ["x86_64-linux", "aarch64-linux"];
+
+/// The variable itself, spelled once so the blocks and the substitution a test
+/// makes to read them cannot disagree about it.
+pub const ARCH_VARIABLE: &str = "$ARCH";
+
+/// What is left of a build's name once the architecture is taken out of it.
+/// `each_build_is_its_stem_and_an_architecture` is what holds these to the
+/// arrays above, since nothing here can build those names at compile time.
+pub const AGENT_STEM: &str = "metsuke-static-";
+pub const FETCH_STEM: &str = "metsuke-fetch-static-";
+
+/// The architectures this deployment serves a build of, in `ARCHITECTURES`
+/// order. Which decides how a block hands one over: both, and it reads the
+/// variable; one, and it names that build outright, because a variable
+/// offering an architecture nobody serves is a command that 404s.
+fn served_architectures(offered: &[File], stem: &str) -> Vec<&'static str> {
+    ARCHITECTURES
+        .into_iter()
+        .filter(|arch| {
+            offered
+                .iter()
+                .any(|file| file.name == format!("{stem}{arch}"))
+        })
+        .collect()
+}
+
+/// How the blocks below spell a build: the name outright where one
+/// architecture is served, and the variable where both are.
+fn build_named(served: &[&'static str], stem: &str) -> String {
+    match served {
+        [only] => format!("{stem}{only}"),
+        _ => format!("{stem}{ARCH_VARIABLE}"),
+    }
+}
+
+/// The line that sets the variable, where a block needs one. Nothing where the
+/// name is outright, so a block that offers one architecture stays the three
+/// commands it was.
+fn choose_architecture(served: &[&'static str]) -> Vec<String> {
+    match served {
+        [_, ..] if served.len() > 1 => vec![
+            format!(
+                "ARCH={}            # or {}",
+                served[0],
+                served[1..].join(", ")
+            ),
+            String::new(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 /// One static agent build this deployment offers, read at startup by the
 /// caller: a path that cannot be read is a deployment mistake, and finding it
 /// at boot beats finding it when an operator follows the page.
@@ -215,9 +275,19 @@ pub const CHECKSUM_SUFFIX: &str = ".sha256";
 /// name. Where a snippet renames the build as it lands, the digest goes inline
 /// there instead (`try_it`).
 ///
-/// Only the builds have one. Every other file served here is text an operator
-/// reads, and a truncated one of those fails to parse in front of them; a
-/// truncated build is a file the install step makes executable.
+/// Only the builds have one, and what decides that is where a file's bytes
+/// come from rather than what is in them. A build is read off the host at
+/// startup (`agent_builds`), so its bytes and this server's can differ, and a
+/// truncated one is a file the install step makes executable. Everything else
+/// here is `include_str!`, compiled into the same binary as the page that
+/// would print the digest, so nothing short of replacing the server moves one
+/// without the other.
+///
+/// The two `.sql` files are where that reads least like an answer, since
+/// `duckdb -init` runs them rather than anyone reading them, and it runs each
+/// statement as it reads it. They still have none for the reason above, and a
+/// partial one costs a run that says so and the tables it builds absent, which
+/// are derived from the objects on disk: the remedy is the same command again.
 fn checksum_for(build: &File) -> File {
     File {
         name: format!("{}{CHECKSUM_SUFFIX}", build.name),
@@ -314,43 +384,54 @@ pub struct File {
 /// The nix line is kept either way, because a build from source is the answer
 /// for an architecture this server has no binary for.
 fn install(offered: &[File], files_url: &str, binary: &str) -> String {
-    // One architecture, not both: an operator has one. The other is named in
-    // the prose beside this block, which reads the same either way.
-    let name = BINARIES[0];
+    // Both architectures through one block, because the commands differ by a
+    // name and an operator on the other one would otherwise be reading a
+    // paragraph where this reader has a paste.
+    let served = served_architectures(offered, AGENT_STEM);
+    let name = build_named(&served, AGENT_STEM);
     let lines = match offers_a_build(offered) {
-        true => vec![
-            "# Download the build for your architecture, and its checksum".to_string(),
-            // -f: without it curl writes a 404 body to the destination and
-            // exits zero, so a mistyped name becomes an HTML page that the
-            // install below makes executable.
-            //
-            // -O and not -o: the build keeps its own name, which is the name
-            // inside the checksum file, so the check below is one command
-            // over two files it already has.
-            format!("curl -fO {files_url}{name}"),
-            format!("curl -fO {files_url}{name}{CHECKSUM_SUFFIX}"),
-            String::new(),
-            "# Check it is the build this page describes".to_string(),
-            format!("sha256sum -c {name}{CHECKSUM_SUFFIX}"),
-            String::new(),
-            "# Install it where the unit will look for it".to_string(),
-            // -D: the directory is standard, but a minimal image can be
-            // without it, and the operator meets that as a failed install
-            // rather than as a missing path. The rename to `metsuke` happens
-            // here, once the bytes have been checked under the name they were
-            // checked as.
-            format!("sudo install -D -m 0755 {name} {binary}"),
-        ],
-        false => vec![
-            "# Build the static agent".to_string(),
-            format!("nix build {}#{name}", flake_ref()),
-            String::new(),
-            "# Install it where the unit will look for it".to_string(),
-            // -D for the reason the branch above gives: it is the same
-            // directory, and a minimal image is as likely to be without it
-            // whichever way the binary was got.
-            format!("sudo install -D -m 0755 result/bin/metsuke {binary}"),
-        ],
+        true => choose_architecture(&served)
+            .into_iter()
+            .chain([
+                "# Download the build for your architecture, and its checksum".to_string(),
+                // -f: without it curl writes a 404 body to the destination and
+                // exits zero, so a mistyped name becomes an HTML page that the
+                // install below makes executable.
+                //
+                // -O and not -o: the build keeps its own name, which is the name
+                // inside the checksum file, so the check below is one command
+                // over two files it already has.
+                format!("curl -fO {files_url}{name}"),
+                format!("curl -fO {files_url}{name}{CHECKSUM_SUFFIX}"),
+                String::new(),
+                "# Check it is the build this page describes".to_string(),
+                format!("sha256sum -c {name}{CHECKSUM_SUFFIX}"),
+                String::new(),
+                "# Install it where the unit will look for it".to_string(),
+                // -D: the directory is standard, but a minimal image can be
+                // without it, and the operator meets that as a failed install
+                // rather than as a missing path. The rename to `metsuke` happens
+                // here, once the bytes have been checked under the name they were
+                // checked as.
+                format!("sudo install -D -m 0755 {name} {binary}"),
+            ])
+            .collect(),
+        // Every architecture, whatever this deployment serves: the flake
+        // builds both, so this branch reads the variable even where the
+        // download branch would have named one build outright.
+        false => choose_architecture(&ARCHITECTURES)
+            .into_iter()
+            .chain([
+                "# Build the static agent".to_string(),
+                format!("nix build {}#{AGENT_STEM}{ARCH_VARIABLE}", flake_ref()),
+                String::new(),
+                "# Install it where the unit will look for it".to_string(),
+                // -D for the reason the branch above gives: it is the same
+                // directory, and a minimal image is as likely to be without it
+                // whichever way the binary was got.
+                format!("sudo install -D -m 0755 result/bin/metsuke {binary}"),
+            ])
+            .collect::<Vec<String>>(),
     };
     escape(&lines.join("\n"))
 }
@@ -371,12 +452,19 @@ fn try_it(offered: &[File], files_url: &str) -> (String, String) {
     let name = BINARIES[0];
     match offers_a_build(offered) {
         // Renamed as it lands, so the try-it runs the same `metsuke` that the
-        // install step, the units and every later command name.
+        // install step, the units and every later command name. Which is what
+        // keeps this one architecture: the digest goes inline because the
+        // rename comes first, and an inline digest is one build's. The comment
+        // is the whole of what the other machine gets here, on purpose. Three
+        // lines is what this section is for, and step 1 hands over either.
         true => (
             escape(&format!(
-                "curl -fo metsuke {files_url}{name}\n\
+                "# {}. On {}, step 1 installs either build.\n\
+                 curl -fo metsuke {files_url}{name}\n\
                  echo '{}  metsuke' | sha256sum -c\n\
                  chmod +x metsuke",
+                ARCHITECTURES[0],
+                ARCHITECTURES[1..].join(" and "),
                 digest_of(offered, name).unwrap_or_default()
             )),
             "./metsuke".to_string(),
@@ -564,19 +652,39 @@ pub fn details(config_example: &str, public_url: &url::Url) -> String {
 /// serves one, a build where it does not. Two values for the same reason
 /// `try_it` gives, and a downloaded file arrives without its execute bit.
 fn fetch_it(offered: &[File], files_url: &str) -> (String, String) {
-    let name = FETCH_BINARIES[0];
-    match offered.iter().any(|file| file.name == name) {
-        true => (
-            escape(&format!(
-                "curl -fo metsuke-fetch {files_url}{name}\n\
-                 echo '{}  metsuke-fetch' | sha256sum -c\n\
-                 chmod +x metsuke-fetch",
-                digest_of(offered, name).unwrap_or_default()
-            )),
+    let served = served_architectures(offered, FETCH_STEM);
+    let name = build_named(&served, FETCH_STEM);
+    match served.is_empty() {
+        false => (
+            // Downloaded under its own name and renamed after the check, not
+            // before it: an inline digest is one architecture's, and this
+            // block hands over either. The name inside the checksum file is
+            // the build's, so the rename has to come second.
+            //
+            // Which costs the one thing an inline digest had: it travelled in
+            // the page, so it did not share an origin with the bytes it
+            // described, and a served checksum does. The machine that had no
+            // check at all is what buys it.
+            escape(
+                &choose_architecture(&served)
+                    .into_iter()
+                    .chain([
+                        format!("curl -fO {files_url}{name}"),
+                        format!("curl -fO {files_url}{name}{CHECKSUM_SUFFIX}"),
+                        format!("sha256sum -c {name}{CHECKSUM_SUFFIX}"),
+                        format!("mv {name} metsuke-fetch"),
+                        "chmod +x metsuke-fetch".to_string(),
+                    ])
+                    .collect::<Vec<String>>()
+                    .join("\n"),
+            ),
             "./metsuke-fetch".to_string(),
         ),
-        false => (
-            escape(&format!("nix build {}#{name}", flake_ref())),
+        true => (
+            escape(&format!(
+                "nix build {}#{FETCH_STEM}{ARCH_VARIABLE}",
+                flake_ref()
+            )),
             "./result/bin/metsuke-fetch".to_string(),
         ),
     }
