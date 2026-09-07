@@ -43,6 +43,13 @@
 Description=cardano-node (Musashi)
 Wants=network-online.target
 After=network-online.target
+# Wide enough that RestartSec= below can reach the burst. systemd's defaults
+# are 5 starts in 10s, and a node restarting every 5s only ever fits two of
+# them in that window, so the limit never trips and a node that cannot start
+# retries for ever. Reaching it puts the unit in `failed`, which is the state
+# a monitor can see.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -76,12 +83,20 @@ SyslogIdentifier=cardano-node
 # DevicePolicy on top; the state directory stays writable through
 # ProtectSystem=strict.
 #
-# Take lines off until the node starts and stays up, and expect to. In rough
-# order of what fails first:
+# Every directive in this block runs in this project's end-to-end test, on a
+# node that forges real blocks with real KES, VRF and BLS keys, so none of them
+# is a guess. The sections above it are not part of that, and what the run does
+# not cover is a long one: a path first taken hours in could still meet
+# MemoryDenyWriteExecute or the syscall filter, and your node is a different
+# build on a different distribution's systemd.
 #
-#   ProcSubset=pid            the RTS reads /proc beyond its own task
+# So if it will not start or will not stay up, take lines off, in this order:
+#
 #   MemoryDenyWriteExecute    if the runtime ever maps a page writable+executable
-#   SystemCallFilter          one syscall outside @system-service
+#   SystemCallFilter          one syscall outside @system-service. Note the
+#                             default action is SIGSYS, so this arrives as a
+#                             kill rather than as an error the node reports
+#   ProcSubset=pid            the RTS reads /proc beyond its own task
 #   PrivateUsers              ownership of the state directory or the socket,
 #                             and it maps every other uid to 65534, so a
 #                             SupplementaryGroups= added here buys nothing

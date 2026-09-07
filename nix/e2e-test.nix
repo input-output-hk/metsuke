@@ -112,6 +112,85 @@ let
   # this test is its own deployment, so it makes the group itself.
   socketGroup = "cardano-node";
 
+  # The confinement contrib/cardano-node.service ships, read out of that file
+  # and applied to a node that forges. An example unit nothing executes is a
+  # list of directives somebody else discovers the cost of, and this is the one
+  # place with a real node, real keys and a real chain to discover it here
+  # instead.
+  #
+  # Read rather than restated, so a directive added to that file is executed by
+  # this test without anybody remembering to copy it.
+  hardening =
+    let
+      lines = pkgs.lib.splitString "\n" (builtins.readFile ../contrib/cardano-node.service);
+      # The confinement block is the tail of the file: everything after the
+      # comment that introduces it, up to [Install]. The node's own directives
+      # sit above it and are this test's to set for itself.
+      confinement =
+        (builtins.foldl'
+          (
+            acc: line:
+            if builtins.match "# Confinement,.*" line != null then
+              acc // { inside = true; }
+            else if pkgs.lib.hasPrefix "[Install]" line then
+              acc // { inside = false; }
+            else if acc.inside && builtins.match "[A-Za-z]+=.*" line != null then
+              acc // { out = acc.out ++ [ line ]; }
+            else
+              acc
+          )
+          {
+            inside = false;
+            out = [ ];
+          }
+          lines
+        ).out;
+      pair = line: builtins.match "([A-Za-z]+)=(.*)" line;
+      keys = pkgs.lib.unique (map (line: builtins.head (pair line)) confinement);
+      valuesOf =
+        key:
+        map (line: builtins.elemAt (pair line) 1) (
+          builtins.filter (line: builtins.head (pair line) == key) confinement
+        );
+      directives = builtins.listToAttrs (
+        map (key: {
+          name = key;
+          # A directive given once is a string, and one given more than once is
+          # the list systemd reads as repetition.
+          value =
+            let
+              values = valuesOf key;
+            in
+            if builtins.length values == 1 then builtins.head values else values;
+        }) keys
+      );
+      # The comment this keys off is load-bearing: reworded, the parse finds
+      # nothing, the node runs unconfined, and the assertion in the test
+      # iterates an empty list and passes. So the directives whose absence
+      # would mean exactly that are named here, and a parse without them is an
+      # evaluation failure rather than a green run.
+      #
+      # Removing one from the shipped file is a decision, and it belongs in
+      # this list as well as there.
+      loadBearing = [
+        "MemoryDenyWriteExecute"
+        "PrivateUsers"
+        "ProcSubset"
+        "ProtectSystem"
+        "SystemCallFilter"
+        "UMask"
+      ];
+      missing = builtins.filter (key: !(directives ? ${key})) loadBearing;
+    in
+    if missing != [ ] then
+      throw ''
+        contrib/cardano-node.service's confinement block is missing ${builtins.concatStringsSep ", " missing}.
+        Either those directives were taken out of the file, or the "# Confinement,"
+        comment this parse finds the block by has been reworded.
+      ''
+    else
+      directives;
+
   # The guest's hostname is its node name below, and the agent is given no
   # agent_id, so this is the slug it stamps every line with.
   agentId = "e2e";
@@ -391,12 +470,15 @@ let
             # A named user and not a dynamic one, which is what a host running a
             # node has: the socket has to be reachable by the roster generator,
             # and DynamicUser allocates its own group rather than joining one
-            # that already exists. The umask leaves group write on what the node
-            # creates, because connecting to a unix socket needs it.
+            # that already exists.
             User = socketGroup;
             Group = socketGroup;
-            UMask = "0007";
-          };
+          }
+          // hardening;
+          # The umask comes with `hardening`, from the shipped file, and the
+          # roster subtest below reaches the node's socket: at 0077 that socket
+          # is 0700 and the generator cannot connect, so the value in
+          # contrib/cardano-node.service is executed here rather than only read.
         };
 
         services.garage = {
@@ -542,8 +624,24 @@ let
             )
             e2e.succeed("garage bucket allow --read --write ${bucket} --key ${keyName}")
 
-        with subtest("the node serves its own loopback Prometheus endpoint"):
+        with subtest("the node forges under the confinement contrib ships"):
             e2e.wait_for_unit("cardano-node.service")
+            # Read off the rendered unit, because a directive this test dropped
+            # silently would leave everything below passing while proving
+            # nothing about the file operators copy. Every one of them, so a
+            # line added to contrib/cardano-node.service and not applied here
+            # fails rather than going untested.
+            rendered = e2e.succeed("systemctl cat cardano-node.service")
+            for directive in ${
+              builtins.toJSON (
+                builtins.concatLists (
+                  pkgs.lib.mapAttrsToList (
+                    name: value: map (one: "${name}=${one}") (if builtins.isList value then value else [ value ])
+                  ) hardening
+                )
+              )
+            }:
+                assert directive in rendered, f"{directive} is not on the node's unit"
             e2e.wait_for_open_port(${toString metricsPort}, addr = "127.0.0.1")
 
         with subtest("the timer queries the node for the roster the server reads"):
