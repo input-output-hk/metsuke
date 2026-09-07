@@ -216,6 +216,15 @@ is wrapped in a shell. This drop-in is that change, and the empty
 had: <a href="{{FILES_PREFIX}}node-pipe.conf">node-pipe.conf</a>, with
 <a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a> beside it.</p>
 
+<p><strong>Read your node's unit before you use it.</strong> The shell is what
+systemd supervises once the drop-in is in place, not your node, so three
+directives change meaning: <code>Type=notify</code> times the start out and
+your node is killed, <code>WatchdogSec=</code> kills it every interval, and
+<code>ExecReload=</code> signals the shell instead of it. Two more about the
+command itself: it sits inside single quotes, and systemd expands <code>%</code>
+in it. The drop-in's own header lists what to do about each. None of this
+applies to the journald setup, which leaves your node's unit alone.</p>
+
 <p>A node whose output goes to a file rather than the journal, by
 <code>StandardOutput=append:</code> with logrotate over it, needs nothing
 different. The drop-in replaces the command and leaves that directive alone,
