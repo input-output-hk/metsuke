@@ -70,9 +70,10 @@ TimeoutStopSec=300
 LimitNOFILE=32768
 SyslogIdentifier=cardano-node
 
-# Confinement, deliberately tighter than a node has been shown to need. It is
-# the same set contrib/metsuke.service carries, which is what a hardened unit
-# for this project looks like, and the state directory stays writable through
+# Confinement, deliberately tighter than a node has been shown to need. It
+# starts from what contrib/metsuke.service carries and goes further, adding
+# PrivateUsers, PrivateIPC, PrivateMounts, RemoveIPC, KeyringMode and
+# DevicePolicy on top; the state directory stays writable through
 # ProtectSystem=strict.
 #
 # Take lines off until the node starts and stays up, and expect to. In rough
@@ -81,9 +82,9 @@ SyslogIdentifier=cardano-node
 #   ProcSubset=pid            the RTS reads /proc beyond its own task
 #   MemoryDenyWriteExecute    if the runtime ever maps a page writable+executable
 #   SystemCallFilter          one syscall outside @system-service
-#   PrivateUsers              ownership of the state directory or the socket
-#   RestrictAddressFamilies   add AF_NETLINK: getaddrinfo enumerates interfaces
-#                             through it, so peer resolution goes first
+#   PrivateUsers              ownership of the state directory or the socket,
+#                             and it maps every other uid to 65534, so a
+#                             SupplementaryGroups= added here buys nothing
 #   RestrictNamespaces, LockPersonality, RestrictRealtime  unlikely
 #
 # What not to take off is User=. Everything below is depth behind that line;
@@ -114,14 +115,30 @@ LockPersonality=true
 MemoryDenyWriteExecute=true
 KeyringMode=private
 DevicePolicy=closed
-UMask=0077
+# 0007 and not 0077: connecting to a unix socket needs write permission on it,
+# and the socket is created 0777 less this mask. At 0077 it lands 0700, so
+# nothing but the node itself and root can reach it and your own cardano-cli
+# is locked out however its group is set. Group write is the grant, which is
+# why User=/Group= name a real group rather than using DynamicUser: put
+# yourself in that group and the cli reaches the node.
+#
+# It costs more than the socket. A umask cannot tell a socket from a file and
+# no directive sets a socket's own mode, so group write lands on everything the
+# node creates, the chain database included. Keep that group to the node and
+# whoever has to reach its socket.
+UMask=0007
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged
 SystemCallFilter=~@resources
-# The node's peers, and the local socket its own cli and the roster generator
-# reach it on. AF_NETLINK is the likely fourth entry; see the list above.
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+# The node's peers, and the local socket cardano-cli reaches it on.
+# AF_NETLINK grants no reachability: glibc asks the kernel which
+# addresses this host has before it resolves a name, so without it
+# getaddrinfo loses AI_ADDRCONFIG filtering and starts answering with AAAA
+# records on a host that has no IPv6 route. Relay names out of topology.json
+# are what that costs, and under the pipe drop-in the agent inherits this list
+# and has its own upload_url to resolve.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 
 [Install]
 WantedBy=multi-user.target
