@@ -1,5 +1,7 @@
 //! The state file: what a resumed run reads, and what it refuses to read.
 
+use std::num::NonZeroU64;
+
 use metsuke_fetch::cursor::{Cursor, CursorError};
 use metsuke_fetch::select::{Days, Filters, Selection};
 use metsuke_fetch::sync::{Insist, Verification};
@@ -69,16 +71,65 @@ fn a_state_file_that_does_not_exist_yet_is_the_archives_start() {
     assert_eq!(cursor.insist, Insist::Nothing);
 }
 
-/// A state file written before the bar was recorded reads as the lowest one,
+/// A state file written before the bound was recorded is refused, and for any
+/// run: what it holds cannot be compared, and reading it as the shipped bound
+/// would read it as the *highest* one, so a run that dropped a lower flag
+/// would take that cursor as its own and resume past every object the low run
+/// refused. That is the loss the bound is in the file to prevent, arriving by
+/// the upgrade instead.
+#[test]
+fn a_state_file_without_a_size_bound_is_refused() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("cursor.json");
+    std::fs::write(
+        &path,
+        r#"{"prefix":"v1/","selection":{"pool":null,"agent":null,"kind":null},"after":"v1/x"}"#,
+    )
+    .expect("the file writes");
+
+    // The shipped bound, which is what the absent field used to read as, and a
+    // lower one: neither resumes it, so there is no bound to guess.
+    for bound in [
+        metsuke_fetch::cli::DEFAULT_MAX_OBJECT_BYTES,
+        NonZeroU64::new(1 << 20).expect("a megabyte is not zero"),
+    ] {
+        let error = Cursor::read(
+            &path,
+            &everything().filters(),
+            &Verification {
+                max_object_bytes: bound,
+                insist: Insist::Nothing,
+            },
+        )
+        .expect_err("a state file with no bound has none to compare");
+
+        assert!(
+            matches!(&error, CursorError::NoSizeBound { asked, .. }
+                if asked.contains(&format!("max-object-bytes {bound}"))),
+            "{bound}: got {error}"
+        );
+    }
+}
+
+/// A state file written before the *bar* was recorded reads as the lowest one,
 /// so the first run that asks for more is refused rather than resuming past
 /// objects that run would have wanted.
+///
+/// This shape is a test's rather than any build's: the bound below entered the
+/// file after the bar, so a real file without a bar has no bound either and is
+/// refused by the case above. That subsumption is what leaves the bar's plain
+/// default safe, and `a_state_file_holds_the_fields_the_comparison_reads` is
+/// what makes a fourth field face the question rather than inherit the answer.
 #[test]
 fn a_state_file_without_a_bar_reads_as_the_lowest() {
     let dir = tempfile::tempdir().expect("a temp dir");
     let path = dir.path().join("cursor.json");
     std::fs::write(
         &path,
-        r#"{"prefix":"v1/","selection":{"pool":null,"agent":null,"kind":null},"after":"v1/x"}"#,
+        format!(
+            r#"{{"prefix":"v1/","selection":{{"pool":null,"agent":null,"kind":null}},"after":"v1/x","max_object_bytes":{}}}"#,
+            metsuke_fetch::cli::DEFAULT_MAX_OBJECT_BYTES
+        ),
     )
     .expect("the file writes");
 
@@ -93,6 +144,48 @@ fn a_state_file_without_a_bar_reads_as_the_lowest() {
         matches!(&error, CursorError::OtherFilters { asked, .. }
             if asked.ends_with("--require-attested")),
         "got: {error}"
+    );
+}
+
+/// Every key a state file holds, so a field the comparison reads cannot be
+/// added without changing this test. Which is the point: a field with a plain
+/// default reads as that default on a file written before it, and where the
+/// default describes a *wider* run than the one that wrote the file, the
+/// cursor resumes past objects that run never fetched. `max_object_bytes` is
+/// that case, which is why it is an `Option` that refuses; `insist` and `from`
+/// are safe for reasons of their own, stated where they are declared. A fifth
+/// field needs one of those two answers before it ships.
+#[test]
+fn a_state_file_holds_the_fields_the_comparison_reads() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let path = dir.path().join("cursor.json");
+    Cursor::read(&path, &everything().filters(), &verifying(Insist::Nothing))
+        .expect("an absent file reads")
+        .advance(&path, "v1/x")
+        .expect("the state file writes");
+
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).expect("it reads back"))
+            .expect("a state file is JSON");
+
+    let mut held: Vec<&str> = written
+        .as_object()
+        .expect("a state file is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    held.sort_unstable();
+    assert_eq!(
+        held,
+        [
+            "after",
+            "from",
+            "insist",
+            "max_object_bytes",
+            "prefix",
+            "selection",
+            "unverified"
+        ]
     );
 }
 

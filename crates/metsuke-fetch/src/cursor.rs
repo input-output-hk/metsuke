@@ -30,6 +30,11 @@ pub struct Cursor {
     /// read under a lower one resumes past objects that bar refused and this
     /// one wants. Defaulted, so a state file written before this field reads as
     /// `Nothing` and is refused for any run that asks for more.
+    ///
+    /// A run that asks for *less* is the lossy direction, and this default
+    /// cannot reach it: `max_object_bytes` below entered the file after this
+    /// field, so anything written without a bar was written without a bound
+    /// too, and the bound refuses it whatever the bar compares to.
     #[serde(default)]
     pub insist: Insist,
     /// The size bound the run held objects to. Here for the same reason
@@ -40,17 +45,23 @@ pub struct Cursor {
     /// refusal's own message tells an operator to raise the flag and re-run,
     /// which is exactly the sequence that lost them.
     ///
-    /// Defaulted to the shipped bound, so a state file written before this
-    /// field reads as a run that never set the flag, and is refused for one
-    /// that did.
-    #[serde(default = "default_max_object_bytes")]
-    pub max_object_bytes: NonZeroU64,
+    /// `None` is a state file written before this field, and no bound resumes
+    /// it: absent, it cannot be compared, and the shipped default is the
+    /// *highest* bound, so reading it as that would take a low-bound run's
+    /// cursor as its own and resume past everything that run refused. That is
+    /// the loss above, surviving the upgrade for exactly the runs that hit it.
+    #[serde(default)]
+    pub max_object_bytes: Option<NonZeroU64>,
     /// The first day the run was bounded to, as `select::Days` means it. Here
     /// because it relocates where the listing starts: a cursor taken from one
     /// day onward, read with no first day, would resume past everything
     /// before it. The last day is not here, and must not be: it only stops
     /// the walk, in the same direction the cursor moves, so nothing is ever
     /// passed over by it.
+    ///
+    /// Defaulted, and safe as one: `None` is a run bounded by no day, and this
+    /// field and `--from` arrived together, so no run could have been bounded
+    /// by one without recording it.
     #[serde(default)]
     pub from: Option<String>,
     /// The last key seen. Empty is the archive's start, which is also what a
@@ -77,12 +88,6 @@ pub struct Cursor {
     /// order they were found, which is the order a listing walks anyway.
     #[serde(default)]
     pub unverified: BTreeSet<String>,
-}
-
-/// What a state file cannot say for itself: the bound a run that set no flag
-/// held objects to.
-fn default_max_object_bytes() -> NonZeroU64 {
-    crate::cli::DEFAULT_MAX_OBJECT_BYTES
 }
 
 /// What a state file is for, as one line. Built in one place so `held` and
@@ -117,6 +122,17 @@ pub enum CursorError {
     },
     #[error("the state file {path} does not parse: {reason}")]
     Unreadable { path: PathBuf, reason: String },
+    /// Its own refusal rather than `OtherFilters`: the run may well be the
+    /// same one, nothing can be shown under `holds:` because the absence is
+    /// the whole finding, and a new state file is the only way on rather than
+    /// one of several.
+    #[error(
+        "the state file {path} predates this build recording the size bound, \
+         so what it skipped is not in it\n  \
+         asked: {asked}\n  \
+         sync into a new state file: no bound resumes this one"
+    )]
+    NoSizeBound { path: PathBuf, asked: String },
     /// Refused rather than reset: a cursor taken under `v1/2026-08-01/`, under
     /// one pool, or under a higher bar, read under anything wider would skip
     /// everything before it and report a whole sync.
@@ -155,7 +171,9 @@ impl Cursor {
                     prefix: filters.prefix.to_string(),
                     selection: filters.selection.clone(),
                     insist,
-                    max_object_bytes,
+                    // Always written, so only a file from before the field is
+                    // ever `None`.
+                    max_object_bytes: Some(max_object_bytes),
                     from: filters.days.from.clone(),
                     after: String::new(),
                     unverified: BTreeSet::new(),
@@ -173,6 +191,23 @@ impl Cursor {
                 path: path.to_path_buf(),
                 reason: error.to_string(),
             })?;
+        let asked = || {
+            describe(
+                filters.prefix,
+                filters.selection,
+                insist,
+                max_object_bytes,
+                filters.days.from.as_deref(),
+            )
+        };
+        // Before the comparison, so the refusal is about the absence rather
+        // than about two lines that differ by a word.
+        let Some(bound) = held.max_object_bytes else {
+            return Err(CursorError::NoSizeBound {
+                path: path.to_path_buf(),
+                asked: asked(),
+            });
+        };
         // Any difference and not just a lower bar: raising it leaves objects on
         // disk the new bar would never have written, so the directory stops
         // matching what the flags say it holds either way.
@@ -184,7 +219,7 @@ impl Cursor {
         match held.prefix == filters.prefix
             && held.selection == *filters.selection
             && held.insist == insist
-            && held.max_object_bytes == max_object_bytes
+            && bound == max_object_bytes
             && held.from == filters.days.from
         {
             true => Ok(held),
@@ -194,16 +229,10 @@ impl Cursor {
                     &held.prefix,
                     &held.selection,
                     held.insist,
-                    held.max_object_bytes,
+                    bound,
                     held.from.as_deref(),
                 ),
-                asked: describe(
-                    filters.prefix,
-                    filters.selection,
-                    insist,
-                    max_object_bytes,
-                    filters.days.from.as_deref(),
-                ),
+                asked: asked(),
             }),
         }
     }
