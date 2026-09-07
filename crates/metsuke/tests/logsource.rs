@@ -291,6 +291,47 @@ fn a_read_that_fails_is_not_the_node_exiting() {
     );
 }
 
+/// A stdin interrupted by a signal between two lines, which is what a process
+/// handling one looks like to the read underneath it.
+struct InterruptedBetweenLines(u8);
+
+impl std::io::Read for InterruptedBetweenLines {
+    fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+        unreachable!("the tee reads through fill_buf")
+    }
+}
+
+impl std::io::BufRead for InterruptedBetweenLines {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        self.0 += 1;
+        match self.0 {
+            1 => Ok(b"first\n"),
+            2 => Err(std::io::Error::from(std::io::ErrorKind::Interrupted)),
+            3 => Ok(b"second\n"),
+            _ => Ok(b""),
+        }
+    }
+
+    fn consume(&mut self, _: usize) {}
+}
+
+/// An interruption is not the node closing its output, and the tee reads on
+/// through it. What it costs to get this wrong is the pipe, not the journal:
+/// the tee thread stops draining stdin, which blocks the node's writes, and
+/// the drop-in's restart policy then takes the node down with it.
+#[test]
+fn a_read_a_signal_interrupted_is_not_the_node_exiting() {
+    let mut source = PipeSource::tee(InterruptedBetweenLines(0), Vec::new(), &queue_of(64));
+
+    assert_eq!(source.next_line().unwrap(), Some("first".to_string()));
+    assert_eq!(source.next_line().unwrap(), Some("second".to_string()));
+    assert_eq!(
+        source.next_line().unwrap(),
+        None,
+        "the stream ended by reading zero bytes, which is the only end there is"
+    );
+}
+
 fn log_section(section: &str) -> Result<LogSource, String> {
     let toml = format!(
         r#"

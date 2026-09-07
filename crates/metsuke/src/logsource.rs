@@ -65,7 +65,17 @@ fn read_bounded(
     let room = max.saturating_add(2);
     let mut bytes = 0u64;
     loop {
-        let available = input.fill_buf()?;
+        let available = match input.fill_buf() {
+            Ok(available) => available,
+            // A signal arriving mid-read is not the stream ending, and this
+            // is the one caller that cannot treat it as one: on the pipe the
+            // read failing stops the tee, and a process that stops reading a
+            // pipe is what fills the node's write buffer and blocks it.
+            // `BufRead::read_line` retries for the same reason, and reading
+            // by hand is what gave that up.
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
         if available.is_empty() {
             break;
         }
