@@ -100,7 +100,10 @@ fn describe(
     };
     // Before the bar rather than after it, so the bar stays the last thing on
     // the line where there is no day, which is what reads best and what
-    // `a_bar_a_state_file_predates_is_another_run` holds it to.
+    // `a_state_file_without_a_bar_reads_as_the_lowest` matches the end of the
+    // line against. `described` in that file builds the whole line, and
+    // `raising_the_size_bound_against_the_same_state_file_is_another_run` in
+    // tests/sync.rs reads the bound out of it with the comma below.
     format!("prefix {prefix:?}, {selection}, max-object-bytes {max_object_bytes}, {insist}{day}")
 }
 

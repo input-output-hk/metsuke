@@ -831,10 +831,17 @@ fn a_key_that_is_not_a_relative_path_names_no_file() {
 
 /// The scenario `pull::PullError::Oversized` tells an operator to fix: objects
 /// over the bound are refused, they raise `--max-object-bytes` as that message
-/// says, and re-run. It has to fetch what the lower bound passed over, which
-/// means the cursor cannot have been left past it.
+/// says, and re-run. The cursor is past what the lower bound refused, so the
+/// state file has to say so rather than let the run report a clean sync of
+/// nothing.
+///
+/// The second run is given a directory of its own and the same state file, so
+/// the directory's record is satisfied and the cursor is the only thing left
+/// to refuse it. Sharing the directory as well would be refused by
+/// `provenance`, which renders the same two bounds, and this test would pass
+/// without the cursor carrying the bound at all.
 #[test]
-fn raising_the_size_bound_fetches_what_the_lower_one_refused() {
+fn raising_the_size_bound_against_the_same_state_file_is_another_run() {
     let server = Server::attesting(2, 100);
     let keys = server.keys();
 
@@ -855,19 +862,39 @@ fn raising_the_size_bound_fetches_what_the_lower_one_refused() {
         assert!(!refused.path(key).is_file(), "{key} should not have landed");
     }
 
-    // The remedy, on the same state file. The cursor is past objects this
-    // bound would have taken, so the run is refused rather than reporting a
-    // clean sync of nothing: an operator who raises the flag is told the state
-    // file is for another run and to name one of its own.
-    let (error, _dir, landed) = sync_verifying(&server, &everything(), refused.dir, permissive())
-        .expect_err("a raised bound against the same state file is another run");
+    // The remedy as an operator would reach for it, less the state file: a
+    // fresh directory, the raised bound, and the cursor they already have.
+    let state = state_of(refused.dir.path());
+    let elsewhere = tempfile::tempdir().expect("a temp dir");
+    let into = elsewhere.path().join("objects");
+    let mut landed = Vec::new();
+
+    let error = sync::run(
+        &server.pulling(),
+        &everything().filters(),
+        &Destination {
+            into: &into,
+            state: &state,
+        },
+        permissive(),
+        |key| landed.push(key.to_string()),
+    )
+    .expect_err("a raised bound against the same state file is another run");
+
     assert!(landed.is_empty(), "{landed:?}");
+    // The cursor and not the directory, which this run is the first to claim.
+    assert!(matches!(&error, SyncError::Cursor(_)), "got: {error}");
     let error = error.to_string();
-    assert!(
-        error.contains("max-object-bytes 1")
-            && error.contains(&format!("max-object-bytes {}", 1 << 20)),
-        "the refusal must name both bounds, got: {error}"
-    );
+    // Each with the comma `cursor::describe` puts after it, because the held
+    // bound's digits are a prefix of the asked bound's: a bare
+    // "max-object-bytes 1" is satisfied by "max-object-bytes 1048576" alone,
+    // and the assertion would hold with the held bound rendered nowhere.
+    for bound in [1, 1 << 20] {
+        assert!(
+            error.contains(&format!("max-object-bytes {bound},")),
+            "the refusal must name the {bound} byte bound, got: {error}"
+        );
+    }
 }
 
 /// And the remedy works: a state file of its own fetches what the lower bound
