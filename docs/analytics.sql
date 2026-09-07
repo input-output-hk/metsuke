@@ -55,8 +55,10 @@ from scrape, unnest(metrics) as _(u);
 -- Through JSON the reads below hold on any archive: `data->>'$.ebHash'` for a
 -- value, `json_exists(data, '$.ebHash')` for whether it is there at all.
 -- Deduplicated for the reason `scrape` is, on the whole line: a trace line
--- carries no field of the agent's to name it by, so the node's own nanosecond
--- `at`, its namespace and its payload together are the key.
+-- carries no field of the agent's to name it by, so the node's `at`, its
+-- namespace and its payload together are the key. `timestamptz` holds that
+-- `at` to the microsecond and not the nanosecond the node wrote, so the
+-- window is that wide.
 create or replace view trace as
 select "at"::timestamptz as t,
        ns, sev, thread, host, data::json as data,

@@ -90,9 +90,11 @@ alter table scrape drop column metrics;
 
 -- One row per trace line, deduplicated for the reason `scrape` is. The whole
 -- line is the key here, because a trace line carries no field of the agent's
--- to name it by: the node's own nanosecond `at`, its namespace and its payload
--- together. Two distinct events agreeing on all three is not a thing a node
--- does. Measured on the same archive: 53 of 3064880.
+-- to name it by: the node's `at`, its namespace and its payload together. That
+-- `at` is compared to the microsecond, which is all `timestamptz` holds of the
+-- nanoseconds the node wrote, so the window is that wide. Two distinct events
+-- inside one microsecond agreeing on namespace and payload is still not a
+-- thing a node does. Measured on the same archive: 53 of 3064880.
 -- `data` as JSON and not as read_json inferred it, for the reason
 -- docs/analytics.sql gives at its own `trace`: inference gives a struct of
 -- whichever fields the objects in front of it carried, so reading a field that
