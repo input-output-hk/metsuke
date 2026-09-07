@@ -1652,6 +1652,13 @@ fn a_developer_secret_that_names_no_usable_account_stops_startup() {
         // The upgrade path off the old shared-password format, where the whole
         // file is one credential.
         (Some("hunter2\n"), "is not one", Some("hunter2")),
+        // A password written unquoted. A word cannot hold this on its own: it
+        // is a scalar that the parser's message renders back.
+        (
+            Some("metsuke-dev = 8675309\n"),
+            "is not one",
+            Some("8675309"),
+        ),
         (None, "No such file", None),
     ] {
         let dir = tempfile::tempdir().unwrap();

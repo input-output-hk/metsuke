@@ -316,6 +316,10 @@ fn a_configured_row_bound_under_the_page_cap_is_kept() {
 /// nothing the parser refused may travel in it. The upgrade case is the one
 /// that decides it: a deployment on the old format holds a bare password, and
 /// the first start after the change is what fails.
+///
+/// A shape whose secret is a word is not enough to hold this: the message for
+/// one is content-free anyway. It takes a secret a TOML scalar can be, since
+/// those are the messages that render the value.
 #[test]
 fn a_refusal_never_carries_what_the_file_held() {
     const SECRET: &str = "hunter2";
@@ -339,6 +343,29 @@ fn a_refusal_never_carries_what_the_file_held() {
         assert!(
             error.contains("line ") || error.contains("position unknown"),
             "the refusal for {written:?} says nothing about where: {error}"
+        );
+    }
+    // A password written unquoted, which is what a scalar in this file is. Each
+    // secret below is the whole of what the refusal must not say, and both
+    // routes to a refusal are here: serde reports a type it cannot use as a
+    // password, and the parser reports a number it cannot hold at all.
+    for (written, secret) in [
+        ("dev = 8675309\n", "8675309"),
+        ("dev = -8675309\n", "-8675309"),
+        ("dev = 86.75309\n", "86.75309"),
+        ("dev = true\n", "true"),
+        // Hex, which the message renders in decimal: the same secret, so a
+        // refusal quoting it says the password just as plainly.
+        ("dev = 0x8675309\n", "140989193"),
+        // Past i128, so this one never reaches serde.
+        ("dev = 99999999999999999999\n", "99999999999999999999"),
+        // The old format again, where the bare password holds a `=`.
+        ("hunter=8675309\n", "8675309"),
+    ] {
+        let error = Accounts::parse(written).expect_err(written).to_string();
+        assert!(
+            !error.contains(secret),
+            "the refusal for {written:?} carries the secret: {error}"
         );
     }
 }
