@@ -262,6 +262,27 @@ null or (unsigned integer, meaning >=0)
 
 
 
+## services\.metsuke\.settings\.log\.max_line_bytes
+
+
+
+The most of one line the agent keeps\. A longer one is read whole, so the stream stays in sync, written through unchanged in pipe mode, and then dropped and counted\. The default is 64 KiB, more than ten times the longest line a node has been seen to write, and it is here so that what the node writes cannot decide how much the agent allocates\. In pipe mode the product with pipe_queue_capacity is what a queue full of lines at this length costs\.
+
+
+
+*Type:*
+null or (positive integer, meaning >0)
+
+
+
+*Default:*
+65536
+
+*Declared by:*
+ - [nix/agent-module\.nix](https://github.com/input-output-hk/metsuke/blob/main/nix/agent-module.nix)
+
+
+
 ## services\.metsuke\.settings\.log\.namespace_roots
 
 

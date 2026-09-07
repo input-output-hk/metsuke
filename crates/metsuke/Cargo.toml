@@ -22,8 +22,10 @@ ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
 
 [features]
 # `test-support`: `logsource::Spawned::unconfirmed`, which only a stand-in
-# needs and a shipped binary must not be able to call. Only a dev-dependency
-# names it, and resolver 2 keeps dev-dependency features out of a normal build.
+# needs and a shipped binary must not be able to call, and
+# `logsource::reported_head`, which is what an oversized line is named by in
+# the journal. Only a dev-dependency names the feature, and resolver 2 keeps
+# dev-dependency features out of a normal build.
 test-support = []
 
 [dev-dependencies]

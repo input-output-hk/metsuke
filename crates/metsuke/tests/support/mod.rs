@@ -122,11 +122,21 @@ pub fn replaying_journalctl(dir: &tempfile::TempDir, recording: &Path) -> PathBu
 /// goes through here, so the retry is stated once; one the agent binary spawns
 /// for itself does not.
 pub fn spawning(journalctl_path: PathBuf) -> Spawned {
+    spawning_bounded(journalctl_path, TEST_MAX_LINE_BYTES)
+}
+
+/// The same, under a bound a test can reach without writing 64 KiB of one
+/// line.
+pub fn spawning_bounded(
+    journalctl_path: PathBuf,
+    max_line_bytes: std::num::NonZeroUsize,
+) -> Spawned {
     for _ in 0..RETRIES_ON_BUSY {
         match JournalSource::spawn(&JournalConfig {
             journal_unit: TEST_UNIT.to_string(),
             journalctl_path: journalctl_path.clone(),
             start_grace: TEST_START_GRACE,
+            max_line_bytes,
         }) {
             Ok(spawned) => return spawned,
             Err(error) if is_text_file_busy(&error) => {
@@ -143,9 +153,21 @@ pub fn replaying(journalctl_path: PathBuf) -> JournalSource {
     spawning(journalctl_path).unconfirmed()
 }
 
+pub fn replaying_bounded(
+    journalctl_path: PathBuf,
+    max_line_bytes: std::num::NonZeroUsize,
+) -> JournalSource {
+    spawning_bounded(journalctl_path, max_line_bytes).unconfirmed()
+}
+
 /// Long enough for a stand-in that exits at once to have exited. Only a test
 /// that confirms a start pays it.
 pub const TEST_START_GRACE: std::time::Duration = std::time::Duration::from_millis(200);
+
+/// The shipped default, so no test here is reading lines under a bound the
+/// agent does not have. A test about the bound states its own.
+pub const TEST_MAX_LINE_BYTES: std::num::NonZeroUsize =
+    std::num::NonZeroUsize::new(64 * 1024).expect("65536 is not zero");
 
 /// The unit every test in the suite follows. Which unit it is decides nothing:
 /// the stand-in answers whatever arguments it is given.

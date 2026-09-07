@@ -129,6 +129,14 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # log_max_bytes = 268435456
 # respawn_backoff_secs = 30
 #
+# The most of one line the agent keeps. A longer one is read whole, so the
+# stream stays in sync, written through unchanged in pipe mode, and then
+# dropped and counted. The default is 64 KiB, more than ten times the longest
+# line a node has been seen to write, and it is here so that what the node
+# writes cannot decide how much the agent allocates. In pipe mode the product
+# with pipe_queue_capacity is what a queue full of lines at this length costs.
+# max_line_bytes = 65536
+#
 # How long a just-started journalctl has to stay running before the agent
 # accepts it as following.
 # start_grace_secs = 1

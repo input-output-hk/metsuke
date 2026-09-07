@@ -304,6 +304,7 @@ in
                     log_max_bytes = types.ints.unsigned;
                     respawn_backoff_secs = types.ints.unsigned;
                     start_grace_secs = types.ints.positive;
+                    max_line_bytes = types.ints.positive;
                   };
                 }
               );

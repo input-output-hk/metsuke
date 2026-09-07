@@ -15,11 +15,16 @@ use metsuke::logsource::{
 
 mod support;
 use support::{
-    TEST_START_GRACE, recording, replaying, replaying_journalctl, sh_stand_in, spawning,
+    TEST_START_GRACE, recording, replaying, replaying_bounded, replaying_journalctl, sh_stand_in,
+    spawning,
 };
 
 const STARTUP_RECORDING: &str = "leios-node-traces-startup.log";
 const STARTUP_WINDOW: &str = include_str!("fixtures/recordings/leios-node-traces-startup.log");
+
+/// A running node's stream rather than a starting one's, so every line in it
+/// is a trace line.
+const TRACE_WINDOW: &str = include_str!("fixtures/recordings/leios-node-traces.log");
 
 #[test]
 fn every_line_arrives_in_order_and_the_stream_ends() {
@@ -110,6 +115,7 @@ fn a_journalctl_that_is_not_there_fails_loudly() {
         journal_unit: "cardano-node".to_string(),
         journalctl_path: dir.path().join("no-such-journalctl"),
         start_grace: TEST_START_GRACE,
+        max_line_bytes: support::TEST_MAX_LINE_BYTES,
     });
     let Err(error) = spawned else {
         panic!("spawning a journalctl that is not there has to fail");
@@ -128,7 +134,13 @@ struct Downstream(Arc<Mutex<Vec<u8>>>);
 
 impl Downstream {
     fn written(&self) -> String {
-        String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        String::from_utf8(self.bytes()).unwrap()
+    }
+
+    /// For the one case where what the node wrote is not text: the tee's whole
+    /// contract is that it writes those bytes through unchanged.
+    fn bytes(&self) -> Vec<u8> {
+        self.0.lock().unwrap().clone()
     }
 }
 
@@ -159,6 +171,16 @@ impl Write for Closed {
 fn queue_of(capacity: usize) -> PipeConfig {
     PipeConfig {
         queue_capacity: NonZeroUsize::new(capacity).unwrap(),
+        max_line_bytes: support::TEST_MAX_LINE_BYTES,
+    }
+}
+
+/// The same tee with a bound a test can reach, so what it asserts about an
+/// oversized line does not depend on writing 64 KiB of one.
+fn bounded_queue(capacity: usize, max_line_bytes: usize) -> PipeConfig {
+    PipeConfig {
+        max_line_bytes: NonZeroUsize::new(max_line_bytes).unwrap(),
+        ..queue_of(capacity)
     }
 }
 
@@ -329,4 +351,149 @@ fn a_start_grace_of_zero_fails_loudly() {
 fn a_queue_capacity_of_zero_fails_loudly() {
     let error = log_section("source = \"pipe\"\npipe_queue_capacity = 0").unwrap_err();
     assert!(error.contains("pipe_queue_capacity"), "{error}");
+}
+
+/// The bound is on what this process keeps, never on what the node's reader
+/// gets: a line too long to ship is still written through byte for byte, and
+/// the lines around it are unaffected.
+#[test]
+fn an_oversized_line_is_written_through_and_not_offered() {
+    let long = "x".repeat(64);
+    let output = format!("short\n{long}\nafter\n");
+    let downstream = Downstream::default();
+    let mut source = PipeSource::tee(
+        std::io::Cursor::new(output.clone()),
+        downstream.clone(),
+        &bounded_queue(64, 16),
+    );
+
+    let mut read = Vec::new();
+    while let Some(line) = source.next_line().unwrap() {
+        read.push(line);
+    }
+
+    // The line after it is the point: reading the oversized line whole is what
+    // keeps the stream in sync, so its tail is not read as the next line.
+    assert_eq!(read, ["short", "after"]);
+    assert_eq!(downstream.written(), output);
+}
+
+/// The bound is the line's own bytes, terminator excluded, so a line exactly
+/// that long is inside it.
+#[test]
+fn a_line_the_length_of_the_bound_is_kept() {
+    let exact = "x".repeat(16);
+    let over = "x".repeat(17);
+    let mut source = PipeSource::tee(
+        std::io::Cursor::new(format!("{exact}\n{over}\n")),
+        Downstream::default(),
+        &bounded_queue(64, 16),
+    );
+
+    let mut read = Vec::new();
+    while let Some(line) = source.next_line().unwrap() {
+        read.push(line);
+    }
+
+    assert_eq!(read, [exact]);
+}
+
+/// A line ending `\r\n` is measured after the terminator comes off, not
+/// refused for carrying one.
+#[test]
+fn a_carriage_return_is_not_counted_against_the_bound() {
+    let exact = "x".repeat(16);
+    let mut source = PipeSource::tee(
+        std::io::Cursor::new(format!("{exact}\r\n")),
+        Downstream::default(),
+        &bounded_queue(64, 16),
+    );
+
+    assert_eq!(source.next_line().unwrap(), Some(exact));
+}
+
+/// One line the node did not write as UTF-8 costs that line and nothing else.
+/// Read into a `String` it was a read failure, which stops the tee reading
+/// stdin at all, and a tee that stops reading is what blocks the node.
+#[test]
+fn a_line_that_is_not_utf8_does_not_stop_the_tee() {
+    let mut output = b"first\n".to_vec();
+    output.extend_from_slice(&[0xff, 0xfe, b'\n']);
+    output.extend_from_slice(b"third\n");
+    let downstream = Downstream::default();
+    let mut source = PipeSource::tee(
+        std::io::Cursor::new(output.clone()),
+        downstream.clone(),
+        &queue_of(64),
+    );
+
+    let mut read = Vec::new();
+    while let Some(line) = source.next_line().unwrap() {
+        read.push(line);
+    }
+
+    // Nothing is dropped and nothing is elided: the two bytes are each one
+    // replacement character, and the lines either side are untouched. Such a
+    // line is not valid JSON either way, so what it costs is the substitution
+    // and not the line.
+    assert_eq!(read, ["first", "\u{fffd}\u{fffd}", "third"]);
+    // And the node's reader still gets the bytes it wrote, not the
+    // replacement characters.
+    assert_eq!(downstream.bytes(), output);
+}
+
+/// The journal source drops an oversized line the same way, and reading it
+/// whole is what leaves the following line intact. A stand-in writes the three
+/// lines, so what is exercised is the reading rather than the flags.
+#[test]
+fn the_journal_source_skips_an_oversized_line_and_reads_the_next() {
+    let dir = tempfile::tempdir().unwrap();
+    let long = "x".repeat(64);
+    let stand_in = sh_stand_in(
+        &dir,
+        "long-line-journalctl",
+        &format!("printf 'short\\n{long}\\nafter\\n'"),
+    );
+    let mut source = replaying_bounded(stand_in, NonZeroUsize::new(16).unwrap());
+
+    let mut read = Vec::new();
+    while let Some(line) = source.next_line().unwrap() {
+        read.push(line);
+    }
+
+    assert_eq!(read, ["short", "after"]);
+}
+
+/// What the report has to carry, because it is what the remedy needs: an
+/// operator meeting this line either raises the bound or excludes the
+/// namespace, and cannot do the second without its name.
+///
+/// Against the longest recorded line that is a trace envelope, rather than the
+/// longest recorded line: that one is the node's plain-text configuration
+/// dump, which has no namespace to report and is why the message promises a
+/// head rather than a namespace.
+#[test]
+fn an_oversized_line_is_reported_by_the_namespace_it_came_from() {
+    let longest = TRACE_WINDOW
+        .lines()
+        .filter(|line| metsuke_wire::envelope::TraceLine::parse(line).is_ok())
+        .max_by_key(|line| line.len())
+        .expect("the recording has trace lines");
+    let namespace = metsuke_wire::envelope::TraceLine::parse(longest)
+        .ok()
+        .and_then(|line| {
+            metsuke::logselect::Fields::of(&line)
+                .namespace
+                .map(str::to_string)
+        })
+        .expect("a recorded line carries a namespace");
+
+    let head = metsuke::logsource::reported_head(longest);
+
+    assert!(
+        head.contains(&namespace),
+        "the report names {namespace} nowhere: {head}"
+    );
+    // Bounded, so one line cannot become a screenful in the journal.
+    assert!(head.len() < longest.len(), "{} bytes", head.len());
 }

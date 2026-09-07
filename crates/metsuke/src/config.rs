@@ -144,6 +144,10 @@ struct LogToml {
     /// agent starting with the check silently off.
     start_grace_secs: Option<NonZeroU64>,
     pipe_queue_capacity: Option<NonZeroUsize>,
+    /// Both sources read lines, so this one is not a source's own field and
+    /// neither source refuses it.
+    #[serde(default = "default_log_max_line_bytes")]
+    max_line_bytes: NonZeroUsize,
     #[serde(default = "default_log_namespace_roots")]
     namespace_roots: Vec<String>,
     #[serde(default = "default_log_namespaces")]
@@ -192,6 +196,7 @@ impl TryFrom<LogToml> for LogConfig {
                             .unwrap_or_else(default_log_start_grace_secs)
                             .get(),
                     ),
+                    max_line_bytes: toml.max_line_bytes,
                 })
             }
             LogSourceKind::Pipe => {
@@ -208,6 +213,7 @@ impl TryFrom<LogToml> for LogConfig {
                     queue_capacity: toml
                         .pipe_queue_capacity
                         .unwrap_or_else(default_pipe_queue_capacity),
+                    max_line_bytes: toml.max_line_bytes,
                 })
             }
         };
@@ -288,6 +294,16 @@ fn default_log_namespaces() -> Vec<String> {
 /// `logsource::PipeConfig`).
 fn default_pipe_queue_capacity() -> NonZeroUsize {
     NonZeroUsize::new(4096).expect("4096 is not zero")
+}
+
+/// 64 KiB, which is thirteen times the longest line any recorded node output
+/// holds: 4,909 bytes, and a startup line rather than a trace
+/// (`tests/fixtures/recordings`). Wide enough that no line a node writes to
+/// say something meets it, and narrow enough that what the node writes cannot
+/// decide how much this process allocates. In pipe mode the product with
+/// `pipe_queue_capacity` is what a queue full of lines at the bound costs.
+fn default_log_max_line_bytes() -> NonZeroUsize {
+    NonZeroUsize::new(64 * 1024).expect("65536 is not zero")
 }
 
 fn default_log_max_bytes() -> u64 {
@@ -379,10 +395,12 @@ impl Config {
                         "journal_unit": journal.journal_unit,
                         "journalctl_path": journal.journalctl_path,
                         "start_grace_secs": journal.start_grace.as_secs(),
+                        "max_line_bytes": journal.max_line_bytes.get(),
                     }),
                     LogSource::Pipe(pipe) => serde_json::json!({
                         "source": "pipe",
                         "pipe_queue_capacity": pipe.queue_capacity.get(),
+                        "max_line_bytes": pipe.max_line_bytes.get(),
                     }),
                 };
                 let (Some(fields), Some(source)) = (fields.as_object_mut(), source.as_object())
