@@ -23,12 +23,15 @@
 #   sudo install -D -m 0755 bin/mempool-monitor /usr/local/bin/mempool-monitor
 #   sudo install -D -m 0755 bin/tx-firehose /usr/local/bin/tx-firehose
 #
-#   # Use the pin-config from the same tag, and read it before running it.
-#   sudo mkdir -p /var/lib/cardano-node
-#   cd /var/lib/cardano-node
-#   sudo curl -fLO https://raw.githubusercontent.com/$REPO/$TAG/testnet/pin-config.sh
+#   # The config, from the same tag. The script writes a config/ beside
+#   # itself and needs no privilege, so run it as yourself, in a
+#   # directory of its own so what you install is what it wrote.
+#   cd "$(mktemp -d)"
+#   curl -fLO https://raw.githubusercontent.com/$REPO/$TAG/testnet/pin-config.sh
 #   less pin-config.sh
-#   sudo bash pin-config.sh
+#   bash pin-config.sh
+#   sudo mkdir -p /var/lib/cardano-node
+#   sudo cp -r config /var/lib/cardano-node/
 #
 #   # The node runs as its own user, so it owns what it was given.
 #   sudo useradd --system --home-dir /var/lib/cardano-node --shell /usr/sbin/nologin cardano-node || true
