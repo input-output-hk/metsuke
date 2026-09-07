@@ -195,7 +195,8 @@ impl Server {
                 http_config(),
                 intake,
                 developer,
-                instructions::pages(&public_url, Vec::new()),
+                instructions::pages(&public_url, Vec::new())
+                    .expect("the shipped files share no name"),
             ) {
                 Ok(never) => match never {},
                 Err(error) => panic!("the test server stopped accepting: {error}"),

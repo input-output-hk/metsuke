@@ -62,7 +62,7 @@ const ANALYSIS_SECTIONS: [&str; 5] = [
 /// to the crates and contrib, so nothing here can see one.
 #[test]
 fn the_details_page_links_documents_under_the_repository_prefix() {
-    let details = instructions::pages(&public_url(), support::test_binaries()).details;
+    let details = support::test_pages().details;
     let repository = env!("CARGO_PKG_REPOSITORY");
 
     assert!(
@@ -73,7 +73,7 @@ fn the_details_page_links_documents_under_the_repository_prefix() {
 
 #[test]
 fn every_outline_section_is_present_and_in_order() {
-    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let pages = support::test_pages();
     for (page, sections) in [
         (&pages.quickstart, &QUICKSTART_SECTIONS[..]),
         (&pages.details, &DETAILS_SECTIONS[..]),
@@ -98,7 +98,7 @@ fn every_outline_section_is_present_and_in_order() {
 /// moves them would otherwise leave the step creating the old one.
 #[test]
 fn the_configure_step_makes_the_directory_its_files_go_in() {
-    let quickstart = instructions::pages(&public_url(), support::test_binaries()).quickstart;
+    let quickstart = support::test_pages().quickstart;
     let made = quickstart
         .lines()
         .find_map(|line| line.strip_prefix("sudo mkdir -p "))
@@ -172,7 +172,7 @@ fn the_example_node_unit_is_the_one_the_journald_setup_reads() {
 /// says why it leaves alone.
 #[test]
 fn a_served_file_reaches_the_siblings_it_names() {
-    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let pages = support::test_pages();
     let mut linked = 0;
     for file in pages
         .files
@@ -200,7 +200,7 @@ fn a_served_file_reaches_the_siblings_it_names() {
 /// how it begins, so a rename in the agent would quietly restore the wall.
 #[test]
 fn the_page_shows_no_more_of_the_config_dump_than_its_shape() {
-    let quickstart = instructions::pages(&public_url(), support::test_binaries()).quickstart;
+    let quickstart = support::test_pages().quickstart;
     // Found by length rather than by prefix, so this test does not agree with
     // the page about the spelling and then pass on both being wrong.
     let dumped = instructions::JOURNAL
@@ -222,7 +222,7 @@ fn the_page_shows_no_more_of_the_config_dump_than_its_shape() {
 #[test]
 fn the_quickstart_links_the_details_page() {
     assert!(
-        instructions::pages(&public_url(), support::test_binaries())
+        support::test_pages()
             .quickstart
             .contains(&format!(r#"href="{}"#, instructions::DETAILS_PATH)),
         "the quickstart never links the details page"
@@ -233,7 +233,7 @@ fn the_quickstart_links_the_details_page() {
 /// landing at the top of a long document instead of the paragraph it promised.
 #[test]
 fn every_section_the_quickstart_links_exists() {
-    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let pages = support::test_pages();
     let needle = format!(r#"href="{}#"#, instructions::DETAILS_PATH);
     let mut linked = 0;
     for after in pages.quickstart.split(&needle).skip(1) {
@@ -260,7 +260,7 @@ fn every_section_the_quickstart_links_exists() {
 fn every_v1_field_appears_on_the_page() {
     // The prose, not the page: the embedded example is rendered from these same
     // types, so a field would appear in it with nothing written about it.
-    let prose = prose(&instructions::pages(&public_url(), support::test_binaries()).details);
+    let prose = prose(&support::test_pages().details);
     let row = serde_json::to_value(Scrape {
         scraped_at: OffsetDateTime::UNIX_EPOCH,
         clock_offset_ms: Some(0),
@@ -304,7 +304,7 @@ fn every_v1_field_appears_on_the_page() {
 /// one UNNEST reaches a metric and nothing is packed inside a string.
 #[test]
 fn the_page_renders_rows_whose_metrics_are_a_nested_list() {
-    let rows = rendered_rows(&instructions::pages(&public_url(), support::test_binaries()).details);
+    let rows = rendered_rows(&support::test_pages().details);
     for row in &rows {
         let mut keys: Vec<&str> = row
             .as_object()
@@ -375,7 +375,7 @@ fn every_shipped_config_is_served_pointing_at_this_server() {
     let ours = public_url()
         .join(metsuke_server::http::SUBMIT_PATH)
         .expect("the submission path joins");
-    let files = instructions::pages(&public_url(), support::test_binaries()).files;
+    let files = support::test_pages().files;
     let configs: Vec<&instructions::File> = files
         .iter()
         .filter(|file| file.name.ends_with(".toml"))
@@ -409,7 +409,7 @@ fn every_served_file_is_the_shipped_one() {
                 .map(|binary| (binary.name.clone(), binary.bytes.clone())),
         )
         .collect();
-    let files = instructions::pages(&public_url(), support::test_binaries()).files;
+    let files = support::test_pages().files;
     // Plus one checksum file per build, which
     // `every_build_is_served_with_a_checksum_file_sha256sum_reads` is about.
     assert_eq!(files.len(), expected.len() + binaries.len());
@@ -434,6 +434,74 @@ fn every_served_file_is_the_shipped_one() {
     }
 }
 
+/// How `pages` refuses a set holding one name twice. A `match` rather than
+/// `expect_err`, so nothing has to render a whole page set to report it.
+fn refusal_for(binaries: Vec<instructions::Binary>) -> instructions::Shadowed {
+    match instructions::pages(&public_url(), binaries) {
+        Ok(_) => panic!("a name served twice has to be refused"),
+        Err(refused) => refused,
+    }
+}
+
+/// A deployment's downloads are served beside the shipped files, and a name
+/// held twice is what publishes a digest for bytes the server hands nobody: a
+/// lookup answers with the first match, and the checksums are derived from the
+/// builds. Refused where the set is assembled rather than resolved there,
+/// because neither file is the one an operator asking for that name wants.
+#[test]
+fn a_download_named_after_a_shipped_file_is_refused() {
+    let (shipped, _) = instructions::FILES[0];
+    let shadowing = vec![instructions::Binary {
+        name: shipped.to_string(),
+        bytes: b"not what this deployment ships".to_vec(),
+    }];
+
+    let refused = refusal_for(shadowing);
+
+    assert_eq!(refused.name, shipped);
+    assert!(
+        refused.to_string().contains("[downloads]"),
+        "the refusal names no section to fix: {refused}"
+    );
+}
+
+/// The same collision one step along: a download named after the checksum
+/// generated for another one. The builds precede the checksums in the set, so
+/// this is the case where the configured file would be served where the digest
+/// belongs, and `sha256sum -c` reads whatever that file happens to hold.
+#[test]
+fn a_download_named_after_a_generated_checksum_is_refused() {
+    let build = instructions::BINARIES[0];
+    let checksum = format!("{build}{}", instructions::CHECKSUM_SUFFIX);
+    let shadowing = vec![
+        instructions::Binary {
+            name: build.to_string(),
+            bytes: vec![1u8; 8],
+        },
+        instructions::Binary {
+            name: checksum.clone(),
+            bytes: b"a digest of something else\n".to_vec(),
+        },
+    ];
+
+    let refused = refusal_for(shadowing);
+
+    assert_eq!(refused.name, checksum);
+}
+
+/// Where a page's link to a served file points, which is what a page offering
+/// a download holds: the pages interpolate the absolute URL, so a needle
+/// spelled as the path alone matches nothing, and one spelled with the command
+/// in front of it is a needle about `curl`'s flags.
+fn served_url(name: &str) -> String {
+    format!(
+        "{}{name}",
+        public_url()
+            .join(instructions::FILES_PREFIX)
+            .expect("the files prefix joins onto an absolute URL")
+    )
+}
+
 /// The reverse of the server's sibling linking, so the compare above can hold
 /// every shipped file to being otherwise untouched.
 fn unlinked(text: &str) -> String {
@@ -452,7 +520,7 @@ fn unlinked(text: &str) -> String {
 /// last to know, which is the shape of mistake this catches.
 #[test]
 fn a_deployment_that_ships_agent_builds_offers_them_everywhere() {
-    let quickstart = instructions::pages(&public_url(), support::test_binaries()).quickstart;
+    let quickstart = support::test_pages().quickstart;
     let downloads = quickstart
         .matches(&format!(
             "{}{}",
@@ -478,13 +546,14 @@ fn a_deployment_that_ships_agent_builds_offers_them_everywhere() {
 /// offer one: the install step tells an operator to build instead.
 #[test]
 fn a_deployment_with_no_agent_build_offers_none() {
-    let pages = instructions::pages(&public_url(), Vec::new());
+    let pages = support::pages_of(Vec::new());
     assert_eq!(pages.files.len(), instructions::FILES.len());
+    // The link, not the build's name: this page names the build to `nix build`
+    // in the same breath, so a needle of the name alone refuses the page for
+    // saying the right thing.
     for name in instructions::BINARIES {
         assert!(
-            !pages
-                .quickstart
-                .contains(&format!("curl -O {}", instructions::FILES_PREFIX)),
+            !pages.quickstart.contains(&served_url(name)),
             "the page offers a download of {name} that nothing serves"
         );
     }
@@ -522,7 +591,7 @@ fn the_nav_names_every_page_and_only_pages() {
 /// Every page carries the nav, with its own entry marked and no other.
 #[test]
 fn every_page_carries_the_nav_marking_itself() {
-    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let pages = support::test_pages();
     for (page, path) in [
         (&pages.quickstart, instructions::PATH),
         (&pages.details, instructions::DETAILS_PATH),
@@ -567,7 +636,7 @@ fn the_nav_keeps_the_analysis_page_out_of_the_operator_group() {
         "the two pages an operator follows are in different groups"
     );
 
-    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let pages = support::test_pages();
     let link = format!(r#"href="{}"#, instructions::ANALYSIS_PATH);
     assert!(
         !main_of(&pages.quickstart).contains(&link),
@@ -584,7 +653,7 @@ fn the_nav_keeps_the_analysis_page_out_of_the_operator_group() {
 /// contents is generated rather than written into the template.
 #[test]
 fn every_page_lists_its_own_sections_in_order() {
-    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let pages = support::test_pages();
     for (page, name) in [
         (&pages.quickstart, "quickstart"),
         (&pages.details, "details"),
@@ -621,7 +690,7 @@ fn every_page_lists_its_own_sections_in_order() {
 /// disagreed with the rail would be a reading order written down twice.
 #[test]
 fn each_page_offers_the_pages_either_side_of_it() {
-    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let pages = support::test_pages();
     let order: Vec<&str> = instructions::NAV
         .iter()
         .flat_map(|(_, listed)| listed.iter().map(|(path, _)| *path))
@@ -690,7 +759,7 @@ fn main_of(page: &str) -> &str {
 /// where it does not the page says to build one.
 #[test]
 fn the_analysis_page_offers_the_fetch_build_this_deployment_serves() {
-    let offered = instructions::pages(&public_url(), support::test_binaries()).analysis;
+    let offered = support::test_pages().analysis;
     assert!(
         offered.contains(&format!(
             "{}{}",
@@ -700,14 +769,13 @@ fn the_analysis_page_offers_the_fetch_build_this_deployment_serves() {
         "a deployment serving the fetch tool has a page that never offers it"
     );
 
-    let none = instructions::pages(&public_url(), Vec::new()).analysis;
-    assert!(
-        !none.contains(&format!(
-            "curl -o metsuke-fetch {}",
-            instructions::FILES_PREFIX
-        )),
-        "the page offers a download of the fetch tool that nothing serves"
-    );
+    let none = support::pages_of(Vec::new()).analysis;
+    for name in instructions::FETCH_BINARIES {
+        assert!(
+            !none.contains(&served_url(name)),
+            "the page offers a download of {name} that nothing serves"
+        );
+    }
     assert!(
         none.contains("nix build"),
         "the page offers no way to get the fetch tool at all"
@@ -718,7 +786,7 @@ fn the_analysis_page_offers_the_fetch_build_this_deployment_serves() {
 /// that names neither has lost the point of shipping them.
 #[test]
 fn the_read_step_offers_the_duckdb_init_files() {
-    let analysis = instructions::pages(&public_url(), support::test_binaries()).analysis;
+    let analysis = support::test_pages().analysis;
     for name in ["analytics.sql", "archive.sql"] {
         assert!(
             instructions::FILES
@@ -738,7 +806,7 @@ fn the_read_step_offers_the_duckdb_init_files() {
 /// from the document.
 #[test]
 fn the_analysis_page_names_the_server_to_point_the_tool_at() {
-    let analysis = instructions::pages(&public_url(), support::test_binaries()).analysis;
+    let analysis = support::test_pages().analysis;
     assert!(
         analysis.contains(support::PUBLIC_URL),
         "the page never names the server a reader would point the tool at"
@@ -749,7 +817,7 @@ fn the_analysis_page_names_the_server_to_point_the_tool_at() {
 /// agent sends.
 #[test]
 fn the_page_names_the_submission_headers() {
-    let page = instructions::pages(&public_url(), support::test_binaries()).details;
+    let page = support::test_pages().details;
     for header in [HEADER_VKEY, HEADER_SIGNATURE] {
         assert!(page.contains(header), "the page never names {header}");
     }
@@ -760,7 +828,7 @@ fn the_page_names_the_submission_headers() {
 /// opens.
 #[test]
 fn the_page_links_the_icon_route() {
-    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let pages = support::test_pages();
     let link = format!(
         r#"<link rel="icon" href="{}" type="{}">"#,
         instructions::ICON_PATH,
@@ -775,7 +843,7 @@ fn the_page_links_the_icon_route() {
 /// there is nothing to keep in step with it.
 #[test]
 fn the_shipped_config_and_unit_are_carried_whole() {
-    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let pages = support::test_pages();
     // Against the snippets, not the markup: node-pipe.conf names <your-node>,
     // which reaches the page as entities. This is also the stronger claim, that
     // the file is a block to copy rather than text somewhere on the page.
@@ -823,7 +891,7 @@ fn the_shipped_config_and_unit_are_carried_whole() {
 #[test]
 fn the_page_nudges_towards_the_agent_version_this_server_was_built_with() {
     assert!(
-        instructions::pages(&public_url(), support::test_binaries())
+        support::test_pages()
             .quickstart
             .contains(metsuke_server::CLIENT_VERSION)
     );
@@ -852,7 +920,7 @@ fn the_metrics_endpoint_comes_from_the_shipped_config() {
 /// and the page is the only place those names are written down.
 #[test]
 fn every_file_the_pages_link_is_one_the_server_serves() {
-    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let pages = support::test_pages();
     let mut linked = 0;
     for page in [&pages.quickstart, &pages.details, &pages.analysis] {
         for after in page.split(instructions::FILES_PREFIX).skip(1) {
@@ -1119,7 +1187,7 @@ fn shipped_text_is_escaped_into_the_page() {
 fn every_offered_build_is_named_with_the_digest_of_what_is_served() {
     use sha2::{Digest, Sha256};
 
-    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let pages = support::test_pages();
     let mut checked = 0;
     for name in instructions::BINARIES
         .iter()
@@ -1166,7 +1234,7 @@ fn every_offered_build_is_named_with_the_digest_of_what_is_served() {
 /// problem rather than as the decision it is.
 #[test]
 fn no_page_carries_a_script_or_reaches_across_the_network_for_an_asset() {
-    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let pages = support::test_pages();
     for (page, name) in [
         (&pages.quickstart, "quickstart"),
         (&pages.details, "details"),
@@ -1189,7 +1257,7 @@ fn no_page_carries_a_script_or_reaches_across_the_network_for_an_asset() {
 /// coreutils refuses.
 #[test]
 fn every_build_is_served_with_a_checksum_file_sha256sum_reads() {
-    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let pages = support::test_pages();
     let dir = tempfile::tempdir().expect("a temp dir");
     let mut checked = 0;
     for name in instructions::BINARIES

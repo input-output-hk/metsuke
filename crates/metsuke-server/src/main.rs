@@ -38,6 +38,8 @@ enum Fatal {
         source: std::io::Error,
     },
     #[error(transparent)]
+    Downloads(#[from] instructions::Shadowed),
+    #[error(transparent)]
     Config(#[from] ConfigError),
     #[error("cannot read the developer accounts {path}: {source}")]
     DeveloperAccounts {
@@ -265,9 +267,10 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
         .transpose()?;
     // Built from files compiled in, so a broken one is a build that must not
     // reach an operator asking for it. The agent builds are the exception:
-    // read here, because a path that cannot be read is the deployment's
-    // mistake and this is where it should stop.
-    let pages = instructions::pages(public_url.as_url(), agent_builds(downloads.as_ref())?);
+    // read here, because a path that cannot be read, or one named after a file
+    // this server already offers, is the deployment's mistake and this is
+    // where it should stop.
+    let pages = instructions::pages(public_url.as_url(), agent_builds(downloads.as_ref())?)?;
     let listener = serve::bind(&listen).map_err(|source| Fatal::Listen {
         listen: listen.clone(),
         reason: source.to_string(),

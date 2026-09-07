@@ -763,7 +763,7 @@ fn the_instructions_page_is_served_without_credentials() {
     // and its page offers a build rather than a download because of it.
     assert_eq!(
         String::from_utf8_lossy(&body),
-        metsuke_server::instructions::pages(&support::public_url(), Vec::new()).quickstart
+        support::pages_of(Vec::new()).quickstart
     );
     let content_type = headers
         .iter()
@@ -1689,6 +1689,30 @@ fn a_developer_secret_that_names_no_usable_account_stops_startup() {
             );
         }
     }
+}
+
+/// A download under a name this server already serves stops startup, rather
+/// than serving one file and publishing the other's digest beside it. Run
+/// against the real binary because the refusal has to be what the config path
+/// reaches: `pages` is where the collision is found, and startup is the only
+/// caller that can be handed one.
+#[test]
+fn a_download_shadowing_a_shipped_file_stops_startup() {
+    let (shipped, _) = metsuke_server::instructions::FILES[0];
+    let dir = tempfile::tempdir().unwrap();
+    let offered = dir.path().join("theirs.toml");
+    std::fs::write(&offered, "mine = true\n").unwrap();
+    let mut config = server_toml(dir.path(), &[pool_of(&test_key())]);
+    config.downloads = Some(support::downloads_toml(&[(shipped, offered.as_path())]));
+    let path = config.write(dir.path());
+
+    let (exit, stderr) = refuses_to_start(&path);
+
+    assert!(!exit.success(), "a shadowed name must not start");
+    assert!(
+        stderr.contains(shipped) && stderr.contains("[downloads]"),
+        "the refusal says nothing to fix: {stderr}"
+    );
 }
 
 /// Spawn the server expecting it not to reach its listener, and hand back how

@@ -442,6 +442,7 @@ fn every_flag_the_servers_analysis_page_shows_is_one_this_tool_takes() {
             .expect("a fixed URL parses"),
         Vec::new(),
     )
+    .expect("the shipped files share no name")
     .analysis;
 
     // The command blocks and the code spans, which is everywhere the page
@@ -492,6 +493,7 @@ fn every_variable_the_servers_analysis_page_exports_is_one_this_tool_reads() {
             .expect("a fixed URL parses"),
         Vec::new(),
     )
+    .expect("the shipped files share no name")
     .analysis;
 
     let exported: Vec<&str> = page

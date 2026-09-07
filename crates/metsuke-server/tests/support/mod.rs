@@ -16,6 +16,7 @@ use metsuke_server::archive::{
 use metsuke_server::authority::{Attributed, Signed};
 use metsuke_server::config::{AbsolutePath, DeveloperConfig, HttpConfig, IngestConfig};
 use metsuke_server::developer::{Accounts, percent_decoded};
+use metsuke_server::instructions::Pages;
 use metsuke_wire::envelope::{
     self, AgentId, Attestation, Envelope, Payload, PayloadLine, PoolId, Provenance, Scrape,
     SigningKey, SubmissionKey, TraceLine,
@@ -214,6 +215,10 @@ pub struct ServerToml {
     pub archive: String,
     pub ingest: String,
     pub developer: String,
+    /// `[downloads]` as the file holds it, and `None` where the deployment
+    /// offers no build, which is the section's own default and what the rest
+    /// of the suite runs on.
+    pub downloads: Option<String>,
 }
 
 /// What the suite's configs advertise as this server's address. One value, so a
@@ -243,6 +248,20 @@ pub fn test_binaries() -> Vec<metsuke_server::instructions::Binary> {
         .collect()
 }
 
+/// The pages over the builds a test offers. Only a name served twice refuses,
+/// and none of these sets holds one, so unwrapping is the whole of what a test
+/// has to say about it. `a_download_named_after_a_shipped_file_is_refused` is
+/// where the refusal itself is asserted.
+pub fn pages_of(binaries: Vec<metsuke_server::instructions::Binary>) -> Pages {
+    metsuke_server::instructions::pages(&public_url(), binaries)
+        .expect("the shipped files and a test's builds share no name")
+}
+
+/// The pages a test server serves: this suite's public URL and both build sets.
+pub fn test_pages() -> Pages {
+    pages_of(test_binaries())
+}
+
 /// A whole config over an archive under `dir`, on a kernel-chosen port, with
 /// every limit wide enough that only the check under test can fire.
 pub fn server_toml(dir: &Path, allowed: &[PoolId]) -> ServerToml {
@@ -253,7 +272,18 @@ pub fn server_toml(dir: &Path, allowed: &[PoolId]) -> ServerToml {
         archive: filesystem_archive(&dir.join("archive")),
         ingest: ingest_toml(&permissive_config(allowed)),
         developer: developer_toml(dir),
+        downloads: None,
     }
+}
+
+/// `[downloads]` as the file holds it: the name a build is served under, to
+/// the path it is at on this host.
+pub fn downloads_toml(offered: &[(&str, &Path)]) -> String {
+    let lines: Vec<String> = offered
+        .iter()
+        .map(|(name, path)| format!("\"{name}\" = \"{}\"", path.display()))
+        .collect();
+    format!("[downloads]\n{}\n", lines.join("\n"))
 }
 
 /// Transport limits wide enough that only the check under test can fire. The
@@ -298,6 +328,9 @@ impl ServerToml {
             self.ingest.clone(),
             self.developer.clone(),
         ]
+        .into_iter()
+        .chain(self.downloads.clone())
+        .collect::<Vec<String>>()
         .join("\n")
     }
 

@@ -228,10 +228,19 @@ fn checksum_for(build: &File) -> File {
     }
 }
 
+/// Why a served set could not be assembled: two files under one name. Only a
+/// deployment's `[downloads]` can name one, because every other entry is this
+/// module's own constant.
+#[derive(Debug, thiserror::Error)]
+#[error("{name} would be served twice: rename or drop the [downloads] entry naming it")]
+pub struct Shadowed {
+    pub name: String,
+}
+
 /// Both pages and every file they link, ready to serve. `binaries` is empty
 /// where the deployment ships none, and the install step then says to build
 /// one instead of offering it.
-pub fn pages(public_url: &url::Url, binaries: Vec<Binary>) -> Pages {
+pub fn pages(public_url: &url::Url, binaries: Vec<Binary>) -> Result<Pages, Shadowed> {
     let pointed = |config: &str| pointed_at(config, public_url);
     let files = FILES
         .iter()
@@ -260,17 +269,25 @@ pub fn pages(public_url: &url::Url, binaries: Vec<Binary>) -> Pages {
     // Derived from the builds rather than from the bytes that made them, so a
     // checksum cannot name a build this deployment does not serve.
     let checksums = builds.iter().map(checksum_for).collect::<Vec<File>>();
-    let files = files
-        .into_iter()
-        .chain(builds)
-        .chain(checksums)
-        .collect::<Vec<File>>();
-    Pages {
+    // One file per name, and a second one under a name already held is refused
+    // rather than resolved. A lookup answers with the first match while the
+    // checksums are derived from the builds, so a name held twice publishes the
+    // digest of bytes it does not serve, which is worse than publishing none:
+    // it teaches an operator that `sha256sum -c` passing means something.
+    let mut served: Vec<File> = Vec::new();
+    for file in files.into_iter().chain(builds).chain(checksums) {
+        if served.iter().any(|held| held.name == file.name) {
+            return Err(Shadowed { name: file.name });
+        }
+        served.push(file);
+    }
+    let files = served;
+    Ok(Pages {
         quickstart: quickstart(UNIT_JOURNALD, public_url, &files),
         details: details(&pointed(CONFIG_EXAMPLE), public_url),
         analysis: analysis(public_url, &files),
         files,
-    }
+    })
 }
 
 /// What this module renders, held together so a caller cannot serve one and

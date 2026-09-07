@@ -273,6 +273,10 @@ in
               fetch. Anything else here is served but not linked from that
               page, which is how a tool for another audience is handed out
               without putting it in front of a pool.
+
+              A name the server already serves cannot be reused here: one of
+              the two files would be published under the other's checksum, so
+              the server refuses to start instead.
             '';
           };
 
