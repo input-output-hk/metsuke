@@ -23,6 +23,10 @@
 -- is loaded and usable, and the summary at the end reports each table
 -- separately rather than as one query that a missing table would take down.
 --
+-- A table that failed to build is absent rather than left over from the run
+-- before, so the summary is short a line instead of naming rows that are not
+-- this run's. Read what it prints either way: the errors are above it.
+--
 -- docs/analytics.sql is the other half of this: views that answer particular
 -- questions about a cardano-node archive. This file answers none, and is the
 -- one to load when the question is not one of those.
@@ -56,6 +60,14 @@ set variable archive =
 -- An agent reads the endpoint once per interval, so pool, agent and the
 -- agent's own scraped_at name the scrape rather than the upload. To count the
 -- copies instead, read the objects with filename=true and group by that.
+-- Dropped before it is built, and `create or replace` is not enough on its
+-- own: the replace happens only if the select succeeds, so over a database
+-- from an earlier run a create that fails leaves the earlier table sitting
+-- there and the summary below reports its rows as this run's. Re-running the
+-- file after a new sync is the documented steady state, so that is the
+-- ordinary path, not a corner. Dropped first, a failed build leaves no table
+-- and the summary says so.
+drop table if exists scrape;
 create or replace table scrape as
 select scraped_at::timestamptz as t,
        clock_offset_ms,
@@ -68,6 +80,7 @@ from read_json(getvariable('archive') || '/**/*-metrics.jsonl.zst',
 qualify row_number() over (partition by pool, agent, t) = 1;
 
 -- One row per metric sample. The table to group over.
+drop table if exists metric;
 create or replace table metric as
 select t, pool, agent, u.name, u.labels, u.value, u.declared_type
 from scrape, unnest(metrics) as _(u);
@@ -85,6 +98,7 @@ alter table scrape drop column metrics;
 -- whichever fields the objects in front of it carried, so reading a field that
 -- is absent is an error rather than a null. `data->>'$.ebHash'` for a value,
 -- `json_exists(data, '$.ebHash')` for whether it is there.
+drop table if exists trace;
 create or replace table trace as
 select "at"::timestamptz as t,
        ns, sev, thread, host, data::json as data,

@@ -177,12 +177,8 @@ fn archive_sql_builds_all_three_tables_over_a_synced_archive() {
 #[test]
 fn archive_sql_counts_a_resealed_submission_once() {
     let (dir, archive) = synced_archive(2);
-    let one = std::fs::read_dir(archive.join("v1"))
-        .expect("the tree has a day folder")
-        .filter_map(Result::ok)
-        .flat_map(|day| std::fs::read_dir(day.path()).expect("a day holds objects"))
-        .filter_map(Result::ok)
-        .map(|object| object.path())
+    let one = walk(&archive)
+        .into_iter()
         .find(|path| path.to_string_lossy().contains("-metrics.jsonl.zst"))
         .expect("the archive holds a metrics object");
 
@@ -241,4 +237,98 @@ fn analytics_sql_answers_over_a_synced_archive() {
         let query = format!("select count(*) from {name}");
         assert_eq!(view(&archive, &query).0, 3, "{name}");
     }
+}
+
+/// Whether a table exists in a database the init file has been over, as the
+/// summary's own three statements ask it.
+///
+/// The status is asserted, not just the answer: every use of this is a
+/// negative assertion, so a duckdb that ran and failed would leave stdout
+/// empty, read as absent, and pass.
+fn exists(database: &Path, table: &str) -> bool {
+    let answered = Command::new("duckdb")
+        .args(["-noheader", "-list"])
+        .arg(database)
+        .args([
+            "-c",
+            &format!("select count(*) from duckdb_tables() where table_name = '{table}'"),
+        ])
+        .output()
+        .expect("duckdb runs");
+    assert!(
+        answered.status.success(),
+        "{table}: {}",
+        String::from_utf8_lossy(&answered.stderr)
+    );
+    let answer = String::from_utf8_lossy(&answered.stdout).trim().to_string();
+    assert!(
+        answer == "0" || answer == "1",
+        "{table}: duckdb answered {answer:?}"
+    );
+    answer == "1"
+}
+
+/// A re-run whose archive has nothing in it leaves no table, rather than the
+/// one the run before built.
+///
+/// Naming a database file and re-running after a new sync is what the file
+/// tells a reader to do, so this is the ordinary path. `.bail off` steps over
+/// a failed create, and a `create or replace` whose select failed never
+/// replaced anything — so without the drop the previous run's rows sit there
+/// and the summary reports them with this run's timestamps, which is a
+/// developer grouping over yesterday's rows believing they are today's.
+#[test]
+fn a_reload_that_finds_nothing_leaves_no_table_to_read_as_fresh() {
+    let (dir, archive) = synced_archive(6);
+    let database = dir.path().join("archive.duckdb");
+    load(&archive, &database);
+    assert_eq!(count(&database, "select count(*) from scrape"), 3);
+
+    // The same database, an archive with no objects under it: a directory the
+    // operator pointed somewhere new, or a sync that wrote nothing.
+    let empty = dir.path().join("empty");
+    std::fs::create_dir_all(empty.join("v1")).expect("the empty tree is made");
+    let said = load(&empty, &database);
+
+    assert!(said.contains("No files found"), "{said}");
+    for table in ["scrape", "metric", "trace"] {
+        assert!(
+            !exists(&database, table),
+            "{table} survived a reload that read nothing, so the summary reports it as this run's"
+        );
+    }
+}
+
+/// And the case `.bail off` is there for still works: an archive holding one
+/// kind loads that kind, and only the other table is absent.
+#[test]
+fn an_archive_of_one_kind_loads_that_kind() {
+    let (dir, archive) = synced_archive(6);
+    let database = dir.path().join("archive.duckdb");
+    for object in walk(&archive) {
+        if object.to_string_lossy().contains("-logs.jsonl.zst") {
+            std::fs::remove_file(&object).expect("the logs objects are removed");
+        }
+    }
+
+    let said = load(&archive, &database);
+
+    assert!(said.contains("No files found"), "{said}");
+    assert_eq!(count(&database, "select count(*) from scrape"), 3);
+    assert_eq!(count(&database, "select count(*) from metric"), 3);
+    assert!(
+        !exists(&database, "trace"),
+        "an archive with no logs objects has no trace table"
+    );
+}
+
+/// Every object in a synced tree.
+fn walk(archive: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(archive.join("v1"))
+        .expect("the tree has a day folder")
+        .filter_map(Result::ok)
+        .flat_map(|day| std::fs::read_dir(day.path()).expect("a day holds objects"))
+        .filter_map(Result::ok)
+        .map(|object| object.path())
+        .collect()
 }
