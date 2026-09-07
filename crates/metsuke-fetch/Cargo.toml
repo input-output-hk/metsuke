@@ -26,3 +26,8 @@ metsuke-wire = { path = "../metsuke-wire", features = ["fixtures"] }
 # tests/support/mod.rs says what the server is doing here.
 metsuke-server = { path = "../metsuke-server" }
 tempfile = "3.27.0"
+# `formatting` for the suite alone: the trace fixture writes an `at` for the
+# duckdb init files to read as a timestamp. Named here rather than added above,
+# so the shipped binary keeps the one feature the note there is about, and
+# resolver 2 is what holds that.
+time = { version = "0.3.55", features = ["formatting"] }

@@ -469,9 +469,23 @@ fn seeded(root: &Path, index: usize) -> Object {
         Kind::Metrics => Payload::scrapes(vec![
             PayloadLine::scrape(&scrape(stamped), &provenance).expect("a scrape stamps"),
         ]),
+        // The envelope a node writes, with the fields docs/archive.sql and
+        // docs/analytics.sql read off it: a line carrying only `ns` would
+        // leave the trace table failing to build and every test over it
+        // asserting nothing.
         Kind::Logs => Payload::trace_lines(vec![PayloadLine::spooled(
-            serde_json::json!({"ns": "Test", "metsuke": {"pool_id": pool_id, "agent_id": agent_id}})
-                .to_string(),
+            serde_json::json!({
+                "at": stamped
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .expect("a fixed instant formats"),
+                "ns": "Consensus.LeiosKernel.BlockForged",
+                "sev": "Info",
+                "thread": "42",
+                "host": agent_id.to_string(),
+                "data": {"kind": "TraceLeiosBlockForged", "slot": 1 + index},
+                "metsuke": {"pool_id": pool_id, "agent_id": agent_id},
+            })
+            .to_string(),
         )]),
     };
     let envelope = Envelope::new(

@@ -80,9 +80,14 @@ alter table scrape drop column metrics;
 -- to name it by: the node's own nanosecond `at`, its namespace and its payload
 -- together. Two distinct events agreeing on all three is not a thing a node
 -- does. Measured on the same archive: 53 of 3064880.
+-- `data` as JSON and not as read_json inferred it, for the reason
+-- docs/analytics.sql gives at its own `trace`: inference gives a struct of
+-- whichever fields the objects in front of it carried, so reading a field that
+-- is absent is an error rather than a null. `data->>'$.ebHash'` for a value,
+-- `json_exists(data, '$.ebHash')` for whether it is there.
 create or replace table trace as
 select "at"::timestamptz as t,
-       ns, sev, thread, host, data,
+       ns, sev, thread, host, data::json as data,
        metsuke.pool_id as pool,
        metsuke.agent_id as agent
 from read_json(getvariable('archive') || '/**/*-logs.jsonl.zst',

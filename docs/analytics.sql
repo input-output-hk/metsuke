@@ -46,13 +46,20 @@ create or replace view metric as
 select t, pool, agent, u.name, u.labels, u.value, u.declared_type
 from scrape, unnest(metrics) as _(u);
 
--- One row per trace line. `data` is map(varchar, json): data['ebHash'].
+-- One row per trace line.
+--
+-- `data` is cast to JSON rather than left as read_json inferred it. Inference
+-- gives a struct of whichever fields the objects in front of it happened to
+-- carry, so a field name is a column that exists on one archive and not on
+-- the next, and reading one that is absent is an error rather than a null.
+-- Through JSON the reads below hold on any archive: `data->>'$.ebHash'` for a
+-- value, `json_exists(data, '$.ebHash')` for whether it is there at all.
 -- Deduplicated for the reason `scrape` is, on the whole line: a trace line
 -- carries no field of the agent's to name it by, so the node's own nanosecond
 -- `at`, its namespace and its payload together are the key.
 create or replace view trace as
 select "at"::timestamptz as t,
-       ns, sev, thread, host, data,
+       ns, sev, thread, host, data::json as data,
        metsuke.pool_id as pool,
        metsuke.agent_id as agent
 from read_json(getvariable('archive') || '/v1/*/*-logs.jsonl.zst', sample_size=-1)
@@ -128,27 +135,28 @@ from pivoted window w as (partition by pool, agent order by t);
 -- announced_at is null but forged_at is not is an EB that never left.
 create or replace view eb_lifecycle as
 with ev as (
-  select coalesce(data['ebHash'], data['hash'])::varchar as eb, ns, t, pool, agent, data
-  from trace where map_contains(data, 'ebHash') or ns like 'Consensus.LeiosKernel.Block%')
+  select coalesce(data->>'$.ebHash', data->>'$.hash') as eb, ns, t, pool, agent, data
+  from trace
+  where json_exists(data, '$.ebHash') or ns like 'Consensus.LeiosKernel.Block%')
 select eb, pool, agent,
   min(t) filter (where ns = 'Consensus.LeiosKernel.BlockForged')          as forged_at,
   min(t) filter (where ns = 'Consensus.LeiosKernel.BlockAnnounced')       as announced_at,
   min(t) filter (where ns = 'Consensus.LeiosKernel.AnnouncementAccepted') as accepted_at,
   min(t) filter (where ns = 'Consensus.LeiosKernel.BlockAcquired')        as acquired_at,
   min(t) filter (where ns = 'Consensus.LeiosKernel.BlockCertified')       as certified_at,
-  any_value(data['reason']) filter (where ns = 'Consensus.LeiosKernel.NotVoted') as not_voted_reason,
+  any_value(data->>'$.reason') filter (where ns = 'Consensus.LeiosKernel.NotVoted') as not_voted_reason,
   bool_or(ns = 'Consensus.LeiosKernel.BlockPointMissing')                 as point_missing,
-  any_value(data['announcementAgeSeconds']::double)
+  any_value((data->>'$.announcementAgeSeconds')::double)
     filter (where ns = 'Consensus.LeiosKernel.AnnouncementAccepted')      as announcement_age_s,
-  any_value(data['ebBodySize']::bigint)
+  any_value((data->>'$.ebBodySize')::bigint)
     filter (where ns = 'Consensus.LeiosKernel.AnnouncementAccepted')      as eb_body_size
 from ev group by 1, 2, 3;
 
 -- What each upstream peer delivered, by connection.
 create or replace view peer_activity as
-select pool, agent, data['peer']->>'$.connectionId' as connection_id,
+select pool, agent, data->>'$.peer.connectionId' as connection_id,
        count(*) as announcements,
-       count(distinct data['ebHash']::varchar) as distinct_ebs,
+       count(distinct data->>'$.ebHash') as distinct_ebs,
        min(t) as first_seen, max(t) as last_seen
 from trace where ns = 'Consensus.LeiosPeer.Announcement'
 group by 1, 2, 3;
