@@ -12,6 +12,7 @@
 //! are not the same size and a trace stream's rate is not the scrape tick's; a
 //! row count bounds neither the file nor the memory a submission costs.
 
+use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -77,6 +78,15 @@ pub enum SpoolError {
         "its directory {path} is not there and cannot be created: {source}; set spool_path somewhere this user can write"
     )]
     Directory {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    /// Refused rather than warned about: the file is open by the time this can
+    /// fail, so carrying on would leave submissions accumulating in a spool
+    /// this agent has already found it cannot set the mode of.
+    #[error("its mode cannot be set on {path}: {source}; the spool holds signed submissions")]
+    Mode {
         path: String,
         #[source]
         source: std::io::Error,
@@ -154,16 +164,46 @@ fn open_spool(path: &PathBuf, busy_timeout: Duration) -> Result<Connection, Spoo
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
     {
-        std::fs::create_dir_all(directory).map_err(|source| SpoolError::Directory {
-            path: directory.display().to_string(),
-            source,
-        })?;
+        // 0700 at creation, rather than 0755 less whatever umask happens to be
+        // in force. A spool holds signed submissions and the pool ids they are
+        // for, and there is no shape of this where another user on the host
+        // has business reading it. Only the directories this creates: one
+        // named under a directory the operator already has is theirs, and
+        // tightening what they set is not this agent's to do.
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(directory)
+            .map_err(|source| SpoolError::Directory {
+                path: directory.display().to_string(),
+                source,
+            })?;
     }
     let conn = Connection::open(path)?;
+    // Before WAL, because sqlite gives the -wal and -shm files the mode the
+    // database has when it creates them: after the pragma there would be two
+    // more files at whatever the umask allowed, holding the same rows.
+    restrict(path)?;
     conn.busy_timeout(busy_timeout)?;
     conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
     metsuke_wire::sqlite::migrate(&conn, MIGRATIONS)?;
     Ok(conn)
+}
+
+/// 0600 on the spool itself, whatever the umask the agent inherited. The
+/// systemd shapes set `UMask=0077` and would have got there anyway; a shell
+/// or a container run is the path this does not depend on, and it is the one
+/// the pipe setup put in front of operators.
+///
+/// Applied on every open rather than only on the one that created the file, so
+/// a spool that already exists at 0644 is tightened rather than reported.
+fn restrict(path: &PathBuf) -> Result<(), SpoolError> {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|source| {
+        SpoolError::Mode {
+            path: path.display().to_string(),
+            source,
+        }
+    })
 }
 
 /// What a stream currently holds, as `stream_bytes` records it. Kept in the

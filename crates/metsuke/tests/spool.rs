@@ -95,6 +95,38 @@ fn a_spool_directory_that_is_not_there_yet_is_created() {
     );
 }
 
+// A spool holds signed submissions, so no other user on the host reads one.
+// The systemd shapes set UMask=0077 and would arrive here anyway; a shell or a
+// container run is the path this does not depend on, and the -wal and -shm
+// files are checked because sqlite creates those itself, from the mode the
+// database has at the time.
+#[test]
+fn a_spool_and_its_sidecars_are_readable_only_by_the_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("metsuke").join("state");
+    let config = SpoolConfig {
+        path: nested.join("spool.sqlite"),
+        ..temp_config(&dir, WHOLE_SPOOL)
+    };
+
+    let mut spool = Spool::open(&config).unwrap();
+    spool.push(&scrape_at(1)).unwrap();
+
+    let mode = |path: &std::path::Path| {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(path)
+            .unwrap_or_else(|error| panic!("{path:?}: {error}"))
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode(&nested), 0o700, "the directory the agent created");
+    assert_eq!(mode(&config.path), 0o600, "the spool");
+    for sidecar in ["spool.sqlite-wal", "spool.sqlite-shm"] {
+        assert_eq!(mode(&nested.join(sidecar)), 0o600, "{sidecar}");
+    }
+}
+
 // And where it cannot be created, the refusal names the directory and the
 // setting, because the default path is one most operators cannot write.
 #[test]
