@@ -47,11 +47,12 @@ bob = "..."
 ```
 
 Each developer takes their own line's value and puts it in a local file for
-`metsuke-fetch`. A username is letters, digits, `-` and `_`, which is a TOML
-bare key's alphabet, so no name has to be quoted; it is matched exactly, so
-case counts. Adding or revoking one person is an edit to one line of one
-encrypted file, and the server names the account in the log on every pull and
-every refusal.
+`metsuke-fetch`, created 0600 before the password is written into it, which is
+what the analysis page hands them. A username is letters, digits, `-` and `_`,
+which is a TOML bare key's alphabet, so no name has to be quoted; it is matched
+exactly, so case counts. Adding or revoking one person is an edit to one line
+of one encrypted file, and the server names the account in the log on every
+pull and every refusal.
 
 The usernames are the secret's, not the config's, so auditing who has access is
 a decrypt rather than a look at the published config.

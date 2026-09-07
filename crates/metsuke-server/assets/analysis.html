@@ -33,8 +33,15 @@ server, which is a username and a password held in the
 issues one. Ask them, and put the password in a file of its own:</p>
 
 <pre>mkdir -p ~/.config/metsuke
-$EDITOR ~/.config/metsuke/password
-chmod 0600 ~/.config/metsuke/password</pre>
+install -m 0600 /dev/null ~/.config/metsuke/password
+$EDITOR ~/.config/metsuke/password</pre>
+
+<p>The empty file is created with its mode before anything is written to it,
+rather than fixed with <code>chmod</code> afterwards: between the two your
+editor has already saved the password at whatever your umask allows, and on a
+shared machine that is long enough. Note that the first command truncates the
+file, so it is the one to skip when you come back to change a password rather
+than set one.</p>
 
 <p>A file rather than a flag or a variable holding the secret itself: an
 argument is visible in the process table, and an environment variable reaches
