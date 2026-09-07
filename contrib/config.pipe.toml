@@ -2,8 +2,16 @@
 # /etc/metsuke/config.toml, set your pool id, check the three lines under it,
 # and start the pair with contrib/node-pipe.conf.
 #
-# This source reads no journal and needs no group. Your node has to emit the
-# trace namespaces first; the server's details page has that snippet.
+# This source reads no journal and adds no group, which is not the same as
+# holding none: under contrib/node-pipe.conf the agent runs as a process of
+# your node's unit, so it keeps that unit's user, sandbox and groups, and the
+# node's own processes can read the signing key that drop-in loads. Sign with
+# a Leios key here rather than a cold key: your pool id is a cold key's hash,
+# so a compromised one ends that pool rather than rotating. That file has the
+# whole of it.
+#
+# Your node has to emit the trace namespaces first; the server's details page
+# has that snippet.
 #
 # Everything else takes its shipped default, including which namespaces are
 # selected. contrib/config.example.toml documents all of them.

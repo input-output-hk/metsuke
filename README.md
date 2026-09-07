@@ -119,8 +119,8 @@ What the `[log]` section costs in privilege, and why that made the feature
 opt-in, is [ADR 0010](docs/adr/0010-log-based-trace-collection.md). Its two
 sources do not cost the same: `journald` needs the
 `systemd-journal` group, which reads every unit's journal, and `pipe` reads the
-node's stdout on the agent's stdin and needs no group at all. `CLAUDE.md`
-states the invariant.
+node's stdout on the agent's stdin and adds no group, which is not the same as
+holding none: it runs under the node unit's. `CLAUDE.md` states the invariant.
 
 Report a vulnerability to the maintainers privately rather than opening a public
 issue.

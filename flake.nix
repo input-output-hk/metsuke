@@ -448,7 +448,9 @@
               ${bringTheseFiles}
               #
               # Take contrib/config.journald.toml as the configuration.
-              # contrib/node-pipe.conf is the source that costs no group.'';
+              # contrib/node-pipe.conf adds no group instead, which is not
+              # the same as costing nothing: it runs the agent inside your
+              # node's unit. That file prices it.'';
           };
 
           # The pipe setup is a change to the node's unit and not the agent's,
