@@ -1,7 +1,7 @@
 [package]
 name = "metsuke-fetch"
 description = "Delta-sync of the signed telemetry archive to local files a developer reads directly"
-version = "0.1.0"
+version = "0.2.0"
 publish = false
 edition.workspace = true
 license.workspace = true

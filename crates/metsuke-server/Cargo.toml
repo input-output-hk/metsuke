@@ -1,7 +1,7 @@
 [package]
 name = "metsuke-server"
 description = "Ingest server verifying and storing signed telemetry submissions"
-version = "0.1.0"
+version = "0.2.0"
 publish = false
 edition.workspace = true
 license.workspace = true
