@@ -8,7 +8,7 @@ use std::num::NonZeroU64;
 use std::time::Duration;
 
 use base64::Engine as _;
-use metsuke_wire::envelope::{Attestation, HEADER_SIGNATURE, HEADER_VKEY};
+use metsuke_wire::envelope::{Attestation, Attested, HEADER_SIGNATURE, HEADER_VKEY};
 use metsuke_wire::http::{
     self, AFTER_FIELD, KEY_FIELD, Listing, OBJECT_PATH, PREFIX_FIELD, SUBMISSIONS_PATH,
 };
@@ -22,21 +22,32 @@ use metsuke_wire::http::{
 /// `--max-object-bytes`.
 const PREALLOCATED_MAX: u64 = 1024 * 1024;
 
-/// One object as it came back: the bytes to write, and the pair that says
-/// whose they are where the archive held it. `None` is not a fault of the
-/// download. A filesystem archive discards the pair at ingest
+/// One object as it came back: the bytes to write, and what the answer said
+/// about whose they are where the archive held it.
+///
+/// `Attested::None` is not a fault of the download. A filesystem archive
+/// discards the pair at ingest
 /// (`metsuke_server::archive::FilesystemArchive`), so an object stored through
 /// one can never be checked by anybody, and an object written by something
-/// other than metsuke-server carries none either.
+/// other than metsuke-server carries none either. `Attested::Malformed` is a
+/// fault, and of neither the object nor the archive.
 pub struct Object {
     pub bytes: Vec<u8>,
-    pub attestation: Option<Attestation>,
+    pub attestation: Attested,
 }
 
 /// The two headers off an answer's head. What an object carrying none means is
-/// `sync`'s to say; `Attestation::from_headers` says when there is one.
-fn attestation(response: &ureq::http::Response<ureq::Body>) -> Option<Attestation> {
-    let text = |header: &str| -> Option<&str> { response.headers().get(header)?.to_str().ok() };
+/// `sync`'s to say; `Attestation::from_headers` tells the three apart.
+fn attestation(response: &ureq::http::Response<ureq::Body>) -> Attested {
+    // A header whose bytes are not text is present and undecodable, not
+    // absent, and the empty string is how that reaches `from_headers` as the
+    // malformed pair it is.
+    let text = |header: &str| -> Option<&str> {
+        response
+            .headers()
+            .get(header)
+            .map(|value| value.to_str().unwrap_or_default())
+    };
     Attestation::from_headers(text(HEADER_VKEY), text(HEADER_SIGNATURE))
 }
 
@@ -61,6 +72,10 @@ pub enum PullError {
         url: String,
         status: u16,
         reason: String,
+        /// `metsuke_wire::http::classify`'s reading of the status: whether
+        /// asking again may answer differently. Carried rather than recomputed,
+        /// so the one rule decides it here as it does for an agent's upload.
+        retryable: bool,
     },
     #[error("the listing from {url} does not parse: {reason}")]
     UnreadableListing { url: String, reason: String },
@@ -83,6 +98,35 @@ pub enum PullError {
         #[source]
         source: io::Error,
     },
+}
+
+impl PullError {
+    /// Whether asking for this object again would answer the same way.
+    ///
+    /// Where it would, the object is the run's to report and step over, the
+    /// same as one over the size bound or one this build cannot name: the
+    /// cursor advances, and one object nobody can fetch does not stand in
+    /// front of every object after it for good. Where it would not, the run
+    /// stops with the cursor where it was, so the next one asks again.
+    ///
+    /// The reading of a status is `metsuke_wire::http::classify`'s: a 4xx
+    /// other than 429 is a credential, a route or a key, and none of those
+    /// changes by being asked twice. A download that arrived short or would
+    /// not read is deliberately not here: those are how a flaky link looks,
+    /// and stepping over one would drop an object that was never faulty.
+    pub fn answers_the_same_way_twice(&self) -> bool {
+        match self {
+            PullError::Refused { retryable, .. } => !retryable,
+            // The download route states a length on every answer, so an
+            // answer without one is not this archive's and will not grow one.
+            PullError::NoLength { .. } => true,
+            PullError::Oversized { .. } => true,
+            PullError::Unreachable { .. }
+            | PullError::UnreadableListing { .. }
+            | PullError::Short { .. }
+            | PullError::Unread { .. } => false,
+        }
+    }
 }
 
 impl Archive {
@@ -189,6 +233,7 @@ impl Archive {
                 url: url.to_string(),
                 status: refusal.status,
                 reason: refusal.reason,
+                retryable: refusal.retryable,
             }),
         }
     }

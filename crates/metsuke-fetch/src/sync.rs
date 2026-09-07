@@ -14,6 +14,7 @@ use crate::cursor::{Cursor, CursorError};
 use crate::pull::{Archive, Object, PullError};
 use crate::select::{Days, Filters, Selected};
 use crate::staged;
+use metsuke_wire::envelope::Attested;
 use metsuke_wire::key::ObjectName;
 
 /// What one run moved, and what it did not. `passed` and `unnameable` are
@@ -323,11 +324,15 @@ fn download(
     })?;
     let object = match archive.object(key, verification.max_object_bytes) {
         Ok(object) => object,
-        // An object over the bound is the run's to report and not to stop for,
-        // the same as one that does not verify: the operator raises the flag
-        // or leaves it, and the rest of the archive still syncs.
-        Err(oversized @ PullError::Oversized { .. }) => {
-            return Ok(Landed::Rejected(oversized.to_string()));
+        // An object that would answer the same way next run is the run's to
+        // report and not to stop for, the same as one that does not verify:
+        // the operator raises the flag or leaves it, and the rest of the
+        // archive still syncs. Over the size bound is one of these; so is a
+        // key the route refuses outright, which the cursor would otherwise sit
+        // behind for every run there is
+        // (`pull::PullError::answers_the_same_way_twice`).
+        Err(error) if error.answers_the_same_way_twice() => {
+            return Ok(Landed::Rejected(error.to_string()));
         }
         Err(error) => return Err(SyncError::Pull(error)),
     };
@@ -355,11 +360,24 @@ fn download(
 /// Such an object lands with its signature checked and its filing taken on the
 /// server's word, which is what `LeiosSigned` says as against `Unattested`.
 fn checked(key: &str, object: &Object, insist: Insist) -> Result<fn(u64) -> Landed, String> {
-    let Some(attestation) = &object.attestation else {
-        return match insist {
-            Insist::Nothing => Ok(Landed::Unattested),
-            _ => Err("unattested: no key and signature to check it with".to_string()),
-        };
+    let attestation = match &object.attestation {
+        Attested::Pair(attestation) => attestation.as_ref(),
+        Attested::None => {
+            return match insist {
+                Insist::Nothing => Ok(Landed::Unattested),
+                _ => Err("unattested: no key and signature to check it with".to_string()),
+            };
+        }
+        // Refused whatever `insist` says, and never written down as
+        // unattested. A pair did arrive, so calling this object unchecked
+        // would file a claim about the archive against something between here
+        // and it, and the remedy named would be the wrong one.
+        Attested::Malformed(error) => {
+            return Err(format!(
+                "a key and signature were sent and did not decode, \
+                 so what is between you and the archive is what to look at: {error}"
+            ));
+        }
     };
     if !attestation.verifies(&object.bytes) {
         return Err("the signature does not stand over the bytes as downloaded".to_string());

@@ -905,3 +905,108 @@ fn a_state_file_of_its_own_fetches_what_the_lower_bound_refused() {
         );
     }
 }
+
+/// A pair that arrived and did not decode is refused and named for what it is,
+/// rather than landing as an object nobody could check. Both are "no usable
+/// attestation", and reporting them the same way sent a reader looking at the
+/// archive when what to look at is between them and it.
+#[test]
+fn a_mangled_attestation_is_refused_and_not_called_unattested() {
+    // A key the shipped server produced, so what this test is about is the
+    // headers rather than a name `ObjectName::parse` would pass over.
+    let seeded = Server::with_objects(1, 100);
+    let key = &seeded.keys()[0];
+    let archive = support::stub_archive(
+        key,
+        support::Downloads::ManglingTheAttestation(b"whatever the bytes are".to_vec()),
+    );
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let into = dir.path().join("objects");
+    let state = state_of(dir.path());
+    let mut landed = Vec::new();
+
+    let report = sync::run(
+        &archive,
+        &everything().filters(),
+        &Destination {
+            into: &into,
+            state: &state,
+        },
+        // Nothing insisted on, which is where an object with no pair does
+        // land: this one must not, even here.
+        permissive(),
+        |key| landed.push(key.to_string()),
+    )
+    .expect("a mangled pair is one object's problem, not the run's");
+
+    assert!(landed.is_empty(), "it was written down: {landed:?}");
+    assert_eq!(report.unattested, 0, "it was counted as unchecked");
+    assert_eq!(report.rejected.len(), 1, "{report:?}");
+    let reason = &report.rejected[0].reason;
+    assert!(
+        reason.contains("did not decode"),
+        "the reason has to say a pair arrived: {reason}"
+    );
+    // And the run got past it, so one mangled answer is not a wall.
+    let cursor = Cursor::read(&state, &everything().filters(), &permissive()).expect("it reads");
+    assert_eq!(&cursor.after, key);
+}
+
+/// An object the route refuses outright does not stand in front of the rest of
+/// the archive for ever. Asking again next run gets the same 404, so a cursor
+/// parked behind it never reaches another object again, and there is no flag
+/// to step over one by hand.
+#[test]
+fn an_object_the_route_refuses_is_reported_and_the_run_goes_on() {
+    let seeded = Server::with_objects(1, 100);
+    let key = &seeded.keys()[0];
+    let archive = support::stub_archive(key, support::Downloads::Refusing);
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let into = dir.path().join("objects");
+    let state = state_of(dir.path());
+
+    let report = sync::run(
+        &archive,
+        &everything().filters(),
+        &Destination {
+            into: &into,
+            state: &state,
+        },
+        permissive(),
+        |_| {},
+    )
+    .expect("a refused key is one object's problem, not the run's");
+
+    assert_eq!(report.objects, 0, "{report:?}");
+    assert_eq!(report.rejected.len(), 1, "{report:?}");
+    assert_eq!(&report.rejected[0].key, key);
+    assert!(report.rejected[0].reason.contains("404"), "{report:?}");
+    // The point of the whole change: the next run starts after it.
+    let cursor = Cursor::read(&state, &everything().filters(), &permissive()).expect("it reads");
+    assert_eq!(&cursor.after, key);
+}
+
+/// And the other half of that split: a run whose archive cannot be reached
+/// stops with the cursor where it was, rather than marking everything left
+/// rejected and racing to the end of the listing.
+#[test]
+fn an_archive_that_cannot_be_reached_stops_the_run_where_it_was() {
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let into = dir.path().join("objects");
+    let state = state_of(dir.path());
+
+    let error = sync::run(
+        &support::unreachable_archive(),
+        &everything().filters(),
+        &Destination {
+            into: &into,
+            state: &state,
+        },
+        permissive(),
+        |_| {},
+    )
+    .expect_err("an archive that answers nothing is the run's failure");
+
+    assert!(matches!(&error, SyncError::Pull(_)), "got: {error}");
+    assert!(!state.exists(), "nothing advanced: {state:?}");
+}

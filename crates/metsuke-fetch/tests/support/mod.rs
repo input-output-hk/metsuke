@@ -315,6 +315,16 @@ impl Server {
     }
 }
 
+/// An archive at an address nothing is listening on. A bound port is taken
+/// and dropped, so the number is one this host is not serving rather than one
+/// guessed at.
+pub fn unreachable_archive() -> Archive {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a kernel-chosen port binds");
+    let address = listener.local_addr().expect("a bound address");
+    drop(listener);
+    Archive::new(&format!("http://{address}"), USER, PASSWORD, TIMEOUT)
+}
+
 /// A listing route answering `listing` to every request, whatever it asked
 /// for. Hand-written rather than the shipped server, because what
 /// `SyncError::Stuck` guards is a page the server does not produce. The body is
@@ -341,6 +351,84 @@ pub fn fixed_listing(listing: &metsuke_wire::http::Listing) -> Archive {
                 body.len()
             )
             .expect("the answer writes");
+        }
+    });
+    Archive::new(&url, USER, PASSWORD, TIMEOUT)
+}
+
+/// How the stub below answers the download route.
+pub enum Downloads {
+    /// 200, with a key and signature that do not decode, which is what
+    /// something between a reader and the server rewriting a header looks
+    /// like. The shipped server encodes the pair from typed values and cannot
+    /// produce this.
+    ManglingTheAttestation(Vec<u8>),
+    /// 404 on a key the listing just handed back, which is what a lifecycle
+    /// rule expiring an object mid-page leaves. The shipped server cannot
+    /// produce this either: its listing reads the same archive the download
+    /// does, so an object it lists is an object it has.
+    Refusing,
+}
+
+/// An archive listing exactly `key` and answering the download of it as
+/// `answers` says. Hand-written for the same reason `fixed_listing` is: what
+/// these tests are about is an answer the shipped server does not give.
+pub fn stub_archive(key: &str, answers: Downloads) -> Archive {
+    let listing = serde_json::to_string(&metsuke_wire::http::Listing {
+        keys: vec![key.to_string()],
+        truncated: false,
+    })
+    .expect("a listing serializes");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a kernel-chosen port binds");
+    let url = format!("http://{}", listener.local_addr().expect("a bound address"));
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.expect("an accepted connection");
+            let mut head = std::io::BufReader::new(stream.try_clone().expect("the stream clones"));
+            let mut request = String::new();
+            let mut line = String::new();
+            while head.read_line(&mut line).expect("the request head reads") > 2 {
+                request.push_str(&line);
+                line.clear();
+            }
+            if request.contains(metsuke_wire::http::SUBMISSIONS_PATH) {
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{listing}",
+                    listing.len()
+                )
+                .expect("the listing writes");
+                continue;
+            }
+            match &answers {
+                // Hex of the right length and not a key, so what fails is the
+                // decode and not the length check that precedes it.
+                Downloads::ManglingTheAttestation(bytes) => {
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\n\
+                         {}: {}\r\n{}: {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        metsuke_wire::envelope::HEADER_VKEY,
+                        "zz".repeat(32),
+                        metsuke_wire::envelope::HEADER_SIGNATURE,
+                        "00".repeat(64),
+                        bytes.len(),
+                    )
+                    .expect("the head writes");
+                    stream.write_all(bytes).expect("the body writes");
+                }
+                Downloads::Refusing => {
+                    let body = "no such object";
+                    write!(
+                        stream,
+                        "HTTP/1.1 404 Not Found\r\ncontent-type: text/plain\r\n\
+                         content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .expect("the refusal writes");
+                }
+            }
         }
     });
     Archive::new(&url, USER, PASSWORD, TIMEOUT)
