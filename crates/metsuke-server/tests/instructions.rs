@@ -1156,3 +1156,26 @@ fn every_offered_build_is_named_with_the_digest_of_what_is_served() {
     }
     assert!(checked > 0, "no build was offered at all");
 }
+
+/// What the response policy asserts about these pages, asserted here too. The
+/// served policy is `default-src 'none'` with no `script-src` at all
+/// (`serve::POLICY_HEADERS`), which is free only while this holds: a page that
+/// grew a script would render with it blocked, and be debugged as a header
+/// problem rather than as the decision it is.
+#[test]
+fn no_page_carries_a_script_or_reaches_across_the_network_for_an_asset() {
+    let pages = instructions::pages(&public_url(), support::test_binaries());
+    for (page, name) in [
+        (&pages.quickstart, "quickstart"),
+        (&pages.details, "details"),
+        (&pages.analysis, "analysis"),
+    ] {
+        assert!(!page.contains("<script"), "{name} carries a script");
+        // A stylesheet, a font or an image from another origin. `<a href>` is
+        // not one of these: a link a reader follows is not an asset the page
+        // loads, and both pages link upstream documentation deliberately.
+        for tag in ["<link rel=\"stylesheet\"", "<iframe", "<img", "<object"] {
+            assert!(!page.contains(tag), "{name} carries {tag}");
+        }
+    }
+}

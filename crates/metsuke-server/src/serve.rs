@@ -208,6 +208,11 @@ async fn handle<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
     let (parts, body) = request.into_parts();
     let method = match parts.method {
         hyper::Method::GET => Method::Get,
+        // Answered as its GET, and hyper writes the head alone: the encoder
+        // knows the request method and drops the body, so `Content-Length` is
+        // the length a GET would have sent rather than the zero an empty body
+        // built here would report.
+        hyper::Method::HEAD => Method::Head,
         hyper::Method::POST => Method::Post,
         _ => Method::Other,
     };
@@ -345,6 +350,32 @@ async fn bounded(mut body: Incoming, max: u64, signer: Option<PoolId>) -> Result
 
 type ResponseBody = BoxBody<Bytes, io::Error>;
 
+/// What every answer says about how it may be used, whatever the route.
+///
+/// Here rather than per route, because this server states what it refuses on
+/// its own and refuses it with nothing in front of it
+/// (`metsuke_wire::http`): a proxy is not what supplies these, and a route
+/// added later cannot leave them off.
+///
+/// The pages carry no `<script>` at all and load nothing across the network,
+/// so `default-src 'none'` costs this deployment nothing and holds even if an
+/// edit reintroduces one. What is left is what they do have: their own
+/// favicon, and the stylesheet inlined into each page rather than fetched
+/// (`instructions::STYLE`). `frame-ancestors` is what `X-Frame-Options` used
+/// to say. On a download or a listing a policy for a document is inert, which
+/// is cheaper than a rule deciding which answers get one.
+const POLICY_HEADERS: &[(&str, &str)] = &[
+    (
+        "content-security-policy",
+        "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; \
+         base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    ),
+    // What a content type this server chose is worth: without it a browser may
+    // decide a served config or unit is markup and run it as one.
+    ("x-content-type-options", "nosniff"),
+    ("referrer-policy", "no-referrer"),
+];
+
 fn respond(answer: Answer) -> hyper::Response<ResponseBody> {
     let Answer {
         status,
@@ -357,6 +388,9 @@ fn respond(answer: Answer) -> hyper::Response<ResponseBody> {
         .header(hyper::header::CONTENT_TYPE, content_type);
     for (field, value) in &headers {
         response = response.header(*field, value);
+    }
+    for (field, value) in POLICY_HEADERS {
+        response = response.header(*field, *value);
     }
     let body = match body {
         // No Content-Length set here: a body already in hand reports its own

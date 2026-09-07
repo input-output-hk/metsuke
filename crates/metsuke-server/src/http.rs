@@ -32,11 +32,17 @@ pub const SUBMIT_PATH: &str = "/v1/submit";
 /// (`metsuke_wire::http`), re-exported so a route reads off one name here.
 pub use metsuke_wire::http::{KEY_FIELD, OBJECT_PATH, SUBMISSIONS_PATH};
 
-/// The two methods every route takes. Anything else is one value: a refusal
-/// names the method the route accepts, never the one that was tried.
+/// The methods a route takes. Anything else is one value: a refusal names the
+/// method the route accepts, never the one that was tried.
+///
+/// `Head` reaches only the routes that answer from bytes already in hand. It
+/// is the method a link checker, an uptime monitor and `curl -I` use, and the
+/// download is deliberately not among them: a HEAD there would cost the
+/// archive read its answer then throws away.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Method {
     Get,
+    Head,
     Post,
     Other,
 }
@@ -170,11 +176,11 @@ pub fn answer<A: Store + Bytes + List>(
         // analysis page too, which is where a developer is told an account is
         // needed and who issues one.
         instructions::PATH => match request.method {
-            Method::Get => html(pages.quickstart.clone()),
+            Method::Get | Method::Head => html(pages.quickstart.clone()),
             _ => refuse(None, 405, format!("{} takes GET", instructions::PATH)),
         },
         instructions::DETAILS_PATH => match request.method {
-            Method::Get => html(pages.details.clone()),
+            Method::Get | Method::Head => html(pages.details.clone()),
             _ => refuse(
                 None,
                 405,
@@ -182,7 +188,7 @@ pub fn answer<A: Store + Bytes + List>(
             ),
         },
         instructions::ANALYSIS_PATH => match request.method {
-            Method::Get => html(pages.analysis.clone()),
+            Method::Get | Method::Head => html(pages.analysis.clone()),
             _ => refuse(
                 None,
                 405,
@@ -193,15 +199,17 @@ pub fn answer<A: Store + Bytes + List>(
         // outside the shipped set is a 404 naming none of them: what is served
         // here is a fixed table, not a path an operator's request selects.
         served if served.starts_with(instructions::FILES_PREFIX) => match request.method {
-            Method::Get => match pages.file(&served[instructions::FILES_PREFIX.len()..]) {
-                Some(file) => Answer {
-                    status: 200,
-                    content_type: file.content_type,
-                    body: AnswerBody::Bytes(file.bytes.clone()),
-                    headers: Vec::new(),
-                },
-                None => refuse(None, 404, "no such file".to_string()),
-            },
+            Method::Get | Method::Head => {
+                match pages.file(&served[instructions::FILES_PREFIX.len()..]) {
+                    Some(file) => Answer {
+                        status: 200,
+                        content_type: file.content_type,
+                        body: AnswerBody::Bytes(file.bytes.clone()),
+                        headers: Vec::new(),
+                    },
+                    None => refuse(None, 404, "no such file".to_string()),
+                }
+            }
             _ => refuse(
                 None,
                 405,
@@ -209,7 +217,7 @@ pub fn answer<A: Store + Bytes + List>(
             ),
         },
         instructions::ICON_PATH | instructions::ICON_LEGACY_PATH => match request.method {
-            Method::Get => Answer {
+            Method::Get | Method::Head => Answer {
                 status: 200,
                 content_type: instructions::ICON_CONTENT_TYPE,
                 body: AnswerBody::Bytes(bytes::Bytes::from_static(instructions::ICON.as_bytes())),

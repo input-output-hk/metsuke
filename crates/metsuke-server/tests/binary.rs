@@ -780,6 +780,93 @@ fn the_instructions_page_takes_only_get() {
     assert_eq!(posted.status().as_u16(), 405);
 }
 
+/// What `curl -I`, a link checker and an uptime monitor send. The head is the
+/// GET's, and the length it states is the document's: hyper knows the request
+/// method and writes no body, so nothing here builds a short one.
+#[test]
+fn a_head_states_the_length_of_the_body_it_does_not_send() {
+    let key = test_key();
+    let server = Server::start(&[pool_of(&key)]);
+    for path in [
+        metsuke_server::instructions::PATH.to_string(),
+        metsuke_server::instructions::DETAILS_PATH.to_string(),
+        metsuke_server::instructions::ANALYSIS_PATH.to_string(),
+        metsuke_server::instructions::ICON_PATH.to_string(),
+        format!(
+            "{}config.pipe.toml",
+            metsuke_server::instructions::FILES_PREFIX
+        ),
+    ] {
+        let (status, body, _) = server.pull_as(&path, None);
+        assert_eq!(status, 200, "GET {path}");
+
+        let mut response = agent()
+            .head(format!("{}{path}", server.base()))
+            .call()
+            .unwrap();
+
+        assert_eq!(response.status().as_u16(), 200, "HEAD {path}");
+        let stated = response
+            .headers()
+            .get("content-length")
+            .unwrap_or_else(|| panic!("HEAD {path} stated no length"))
+            .to_str()
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+        assert_eq!(stated, body.len(), "HEAD {path}");
+        assert!(
+            response.body_mut().read_to_vec().unwrap().is_empty(),
+            "HEAD {path} sent a body"
+        );
+    }
+}
+
+/// On every answer, whatever the route and whatever the status. The pages are
+/// what a browser renders, and a refusal is reached from the same origin.
+#[test]
+fn every_answer_carries_the_policy_headers() {
+    let key = test_key();
+    let server = Server::start(&[pool_of(&key)]);
+    let cases = [
+        (metsuke_server::instructions::PATH.to_string(), 200),
+        (metsuke_server::instructions::ANALYSIS_PATH.to_string(), 200),
+        (metsuke_server::instructions::ICON_PATH.to_string(), 200),
+        (
+            format!(
+                "{}config.pipe.toml",
+                metsuke_server::instructions::FILES_PREFIX
+            ),
+            200,
+        ),
+        ("/nothing-here".to_string(), 404),
+        // Unauthenticated, so a 401 with its challenge.
+        (metsuke_server::http::SUBMISSIONS_PATH.to_string(), 401),
+    ];
+    for (path, expected) in cases {
+        let (status, _, headers) = server.pull_as(&path, None);
+        assert_eq!(status, expected, "{path}");
+        let value = |field: &str| {
+            headers
+                .iter()
+                .find(|(name, _)| name == field)
+                .map(|(_, value)| value.clone())
+                .unwrap_or_else(|| panic!("{path} carried no {field}: {headers:?}"))
+        };
+        let policy = value("content-security-policy");
+        // The two the pages depend on, stated rather than matched whole, so
+        // widening the policy for something a page grows does not fail here
+        // while dropping the part that makes it worth having does.
+        assert!(policy.contains("default-src 'none'"), "{path}: {policy}");
+        assert!(
+            policy.contains("frame-ancestors 'none'"),
+            "{path}: {policy}"
+        );
+        assert_eq!(value("x-content-type-options"), "nosniff", "{path}");
+        assert_eq!(value("referrer-policy"), "no-referrer", "{path}");
+    }
+}
+
 #[test]
 fn a_wrong_developer_password_is_refused_on_both_routes() {
     let key = test_key();

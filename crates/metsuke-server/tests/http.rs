@@ -187,6 +187,57 @@ fn a_linked_file_takes_only_get() {
     assert_eq!(answer.status, 405);
 }
 
+/// Every route answering from bytes already held answers a HEAD, and answers
+/// it with the GET's own head. The body is built here and dropped by the
+/// transport (`serve::handle`), which is what leaves `Content-Length` stating
+/// the length a GET would have sent.
+#[test]
+fn every_route_answered_from_held_bytes_takes_head() {
+    let server = server();
+    let mut targets = vec![
+        instructions::PATH.to_string(),
+        instructions::DETAILS_PATH.to_string(),
+        instructions::ANALYSIS_PATH.to_string(),
+        instructions::ICON_PATH.to_string(),
+        instructions::ICON_LEGACY_PATH.to_string(),
+    ];
+    targets.extend(
+        instructions::FILES
+            .iter()
+            .map(|(name, _)| format!("{}{name}", instructions::FILES_PREFIX)),
+    );
+    for target in targets {
+        let head = server.answer(Request {
+            method: Method::Head,
+            ..get(&target)
+        });
+
+        assert_eq!(head.status, 200, "HEAD {target}");
+        assert_eq!(
+            body(&head),
+            body(&server.answer(get(&target))),
+            "HEAD {target} answered a different document than its GET"
+        );
+    }
+}
+
+/// The archive is not among them. A HEAD there would spend the store read its
+/// answer then throws away, and no client this server has needs one.
+#[test]
+fn the_developer_routes_take_only_get() {
+    let server = server();
+    for path in [SUBMISSIONS_PATH, OBJECT_PATH] {
+        for method in [Method::Head, Method::Post] {
+            let answer = server.answer(Request {
+                method,
+                ..pull(path)
+            });
+
+            assert_eq!(answer.status, 405, "{path} answered {method:?}");
+        }
+    }
+}
+
 #[test]
 fn the_details_page_is_answered_without_credentials() {
     let server = server();
