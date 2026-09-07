@@ -165,8 +165,9 @@ at boot and nothing restarts it, so it is primarily for quick debugging.</p>
 <pre>{{install}}</pre>
 
 <p>One static binary, nothing to link against. On ARM it is
-<code>metsuke-static-aarch64-linux</code>. Either can be built rather than
-downloaded, with <code>nix build {{flake}}#metsuke-static-$ARCH</code>.
+<code>metsuke-static-aarch64-linux</code>, with its own
+<code>.sha256</code> beside it as every build has. Either can be built rather
+than downloaded, with <code>nix build {{flake}}#metsuke-static-$ARCH</code>.
 There is no install script and no self-update. On NixOS,
 <a href="{{DETAILS_PATH}}#nixos">import the module instead</a> and skip the rest
 of this page.</p>

@@ -204,6 +204,30 @@ fn digest_of(offered: &[File], name: &str) -> Option<String> {
         .map(|file| digest(&file.bytes))
 }
 
+/// What a build's checksum file is named, beside the build itself.
+pub const CHECKSUM_SUFFIX: &str = ".sha256";
+
+/// The checksum file for one build: the digest and the build's own name, in
+/// the format `sha256sum -c` reads, so the check is a command over a file
+/// rather than a hex string carried out of a page by eye.
+///
+/// The name inside it is the build's, so it checks a download that kept its
+/// name. Where a snippet renames the build as it lands, the digest goes inline
+/// there instead (`try_it`).
+///
+/// Only the builds have one. Every other file served here is text an operator
+/// reads, and a truncated one of those fails to parse in front of them; a
+/// truncated build is a file the install step makes executable.
+fn checksum_for(build: &File) -> File {
+    File {
+        name: format!("{}{CHECKSUM_SUFFIX}", build.name),
+        content_type: "text/plain; charset=utf-8",
+        // Two spaces and a trailing newline, which is what coreutils writes
+        // and what `-c` reads back.
+        bytes: format!("{}  {}\n", digest(&build.bytes), build.name).into_bytes(),
+    }
+}
+
 /// Both pages and every file they link, ready to serve. `binaries` is empty
 /// where the deployment ships none, and the install step then says to build
 /// one instead of offering it.
@@ -224,11 +248,22 @@ pub fn pages(public_url: &url::Url, binaries: Vec<Binary>) -> Pages {
                 siblings_linked(&text, public_url).into_bytes()
             },
         })
-        .chain(binaries.into_iter().map(|binary| File {
+        .collect::<Vec<File>>();
+    let builds = binaries
+        .into_iter()
+        .map(|binary| File {
             name: binary.name,
             content_type: "application/octet-stream",
             bytes: binary.bytes,
-        }))
+        })
+        .collect::<Vec<File>>();
+    // Derived from the builds rather than from the bytes that made them, so a
+    // checksum cannot name a build this deployment does not serve.
+    let checksums = builds.iter().map(checksum_for).collect::<Vec<File>>();
+    let files = files
+        .into_iter()
+        .chain(builds)
+        .chain(checksums)
         .collect::<Vec<File>>();
     Pages {
         quickstart: quickstart(UNIT_JOURNALD, public_url, &files),
@@ -267,23 +302,27 @@ fn install(offered: &[File], files_url: &str, binary: &str) -> String {
     let name = BINARIES[0];
     let lines = match offers_a_build(offered) {
         true => vec![
-            "# Download the build for your architecture".to_string(),
+            "# Download the build for your architecture, and its checksum".to_string(),
             // -f: without it curl writes a 404 body to the destination and
             // exits zero, so a mistyped name becomes an HTML page that the
             // install below makes executable.
-            format!("curl -fo metsuke {files_url}{name}"),
+            //
+            // -O and not -o: the build keeps its own name, which is the name
+            // inside the checksum file, so the check below is one command
+            // over two files it already has.
+            format!("curl -fO {files_url}{name}"),
+            format!("curl -fO {files_url}{name}{CHECKSUM_SUFFIX}"),
             String::new(),
             "# Check it is the build this page describes".to_string(),
-            format!(
-                "echo '{}  metsuke' | sha256sum -c",
-                digest_of(offered, name).unwrap_or_default()
-            ),
+            format!("sha256sum -c {name}{CHECKSUM_SUFFIX}"),
             String::new(),
             "# Install it where the unit will look for it".to_string(),
             // -D: the directory is standard, but a minimal image can be
             // without it, and the operator meets that as a failed install
-            // rather than as a missing path.
-            format!("sudo install -D -m 0755 metsuke {binary}"),
+            // rather than as a missing path. The rename to `metsuke` happens
+            // here, once the bytes have been checked under the name they were
+            // checked as.
+            format!("sudo install -D -m 0755 {name} {binary}"),
         ],
         false => vec![
             "# Build the static agent".to_string(),

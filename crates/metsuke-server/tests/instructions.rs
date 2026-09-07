@@ -410,7 +410,9 @@ fn every_served_file_is_the_shipped_one() {
         )
         .collect();
     let files = instructions::pages(&public_url(), support::test_binaries()).files;
-    assert_eq!(files.len(), expected.len());
+    // Plus one checksum file per build, which
+    // `every_build_is_served_with_a_checksum_file_sha256sum_reads` is about.
+    assert_eq!(files.len(), expected.len() + binaries.len());
     for (name, shipped) in expected {
         let served = files
             .iter()
@@ -1178,4 +1180,62 @@ fn no_page_carries_a_script_or_reaches_across_the_network_for_an_asset() {
             assert!(!page.contains(tag), "{name} carries {tag}");
         }
     }
+}
+
+/// The checksum file is only worth serving if the tool the page names accepts
+/// it, so this runs that tool over what the server would hand out: the build
+/// written under its own name, the checksum beside it, and `sha256sum -c`
+/// asked to check them. A hand-rolled comparison here would pass on a format
+/// coreutils refuses.
+#[test]
+fn every_build_is_served_with_a_checksum_file_sha256sum_reads() {
+    let pages = instructions::pages(&public_url(), support::test_binaries());
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let mut checked = 0;
+    for name in instructions::BINARIES
+        .iter()
+        .chain(instructions::FETCH_BINARIES.iter())
+    {
+        let build = pages
+            .files
+            .iter()
+            .find(|file| file.name == *name)
+            .unwrap_or_else(|| panic!("{name} is not served"));
+        let checksum = pages
+            .files
+            .iter()
+            .find(|file| file.name == format!("{name}{}", instructions::CHECKSUM_SUFFIX))
+            .unwrap_or_else(|| panic!("{name} is served with no checksum file"));
+        // Named as an operator's `curl -fO` would leave them, which is what
+        // the name inside the checksum file has to match.
+        std::fs::write(dir.path().join(name), &build.bytes).expect("the build writes");
+        std::fs::write(dir.path().join(&checksum.name), &checksum.bytes)
+            .expect("the checksum writes");
+
+        let checked_by = std::process::Command::new("sha256sum")
+            .arg("-c")
+            .arg(&checksum.name)
+            .current_dir(dir.path())
+            .output()
+            .expect("sha256sum is what the page tells an operator to run");
+
+        assert!(
+            checked_by.status.success(),
+            "sha256sum refused {}: {}{}",
+            checksum.name,
+            String::from_utf8_lossy(&checked_by.stdout),
+            String::from_utf8_lossy(&checked_by.stderr),
+        );
+        // And it refuses the build it is not for, or it is checking nothing.
+        std::fs::write(dir.path().join(name), b"not the build").expect("the build rewrites");
+        let refused = std::process::Command::new("sha256sum")
+            .arg("-c")
+            .arg(&checksum.name)
+            .current_dir(dir.path())
+            .output()
+            .expect("sha256sum runs");
+        assert!(!refused.status.success(), "{}", checksum.name);
+        checked += 1;
+    }
+    assert!(checked > 0, "no build was offered at all");
 }
