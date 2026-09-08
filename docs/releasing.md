@@ -49,6 +49,13 @@ shipped one and should not want to.
 The rule that decides the case: if updating the agent without also editing
 `/etc/metsuke/config.toml` leaves a working agent, it is not major.
 
+**Before 1.0.0, read those three one place to the right.** A major by the rules
+above goes in the minor position and a minor or a patch goes in the patch one,
+because the leading zero is what says there is no contract to break yet. A
+release that would be 2.0.0 after the cut is 0.2.0 before it. Say which of the
+three a release was in its changelog entry, or the number cannot be read back:
+0.2.0 and 0.2.0 across two crates may be one break and one addition.
+
 **1.0.0 is the exception to the paragraph above.** Going from `0.x` to `1.0.0`
 breaks nothing and requires nothing of an operator. It says the config fields
 and the module options are now a contract, which is what the three rules above
