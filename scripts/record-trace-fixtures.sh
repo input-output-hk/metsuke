@@ -229,8 +229,6 @@ window_edge() {
 # tracing system is up) and the Reflection.* traces that report which tracers
 # the config actually enabled.
 startup_end=$(window_edge "the startup window's end" first '"ns":"Consensus.LeiosKernel.Msg"')
-sed -n "1,${startup_end}p" "$capture" >"$recordings/leios-node-traces-startup.log"
-echo "recorded: leios-node-traces-startup.log"
 
 # The Leios round: from the first EB forged or announced to the last Leios
 # line. Unfiltered within the window. What the fixture is for is exercising
@@ -239,8 +237,18 @@ echo "recorded: leios-node-traces-startup.log"
 leios_start=$(window_edge "the Leios window's start" first \
   '"ns":"Consensus.LeiosKernel.BlockForged"\|"ns":"Consensus.LeiosPeer.Announcement"')
 leios_end=$(window_edge "the Leios window's end" last '"ns":"Consensus.Leios')
-sed -n "${leios_start},${leios_end}p" "$capture" >"$recordings/leios-node-traces.log"
-echo "recorded: leios-node-traces.log"
+
+# Both edges found and both windows cut before either is moved into place. The
+# two are one recording of one stream and are read as a pair, so a run that
+# stopped between two writes would leave a new window beside a stale one, which
+# is the shape nothing downstream can see is wrong. Cut into the workdir, which
+# outlives a failure, so what the run got to is there to look at.
+sed -n "1,${startup_end}p" "$capture" >"$workdir/leios-node-traces-startup.log"
+sed -n "${leios_start},${leios_end}p" "$capture" >"$workdir/leios-node-traces.log"
+for window in leios-node-traces-startup.log leios-node-traces.log; do
+  mv "$workdir/$window" "$recordings/$window"
+  echo "recorded: $window"
+done
 
 echo
 echo "line rate over the whole capture, for spool sizing:"
