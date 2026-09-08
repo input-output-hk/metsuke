@@ -32,7 +32,7 @@ need() {
     }
   done
 }
-need nix jq
+need nix jq cargo
 
 # The Leios source pinned in flake.nix, and the patched cardano-node rev its
 # own lock file pins, the same binary the proto-devnet demo runs. cardano-cli
@@ -243,12 +243,38 @@ leios_end=$(window_edge "the Leios window's end" last '"ns":"Consensus.Leios')
 # stopped between two writes would leave a new window beside a stale one, which
 # is the shape nothing downstream can see is wrong. Cut into the workdir, which
 # outlives a failure, so what the run got to is there to look at.
-sed -n "1,${startup_end}p" "$capture" >"$workdir/leios-node-traces-startup.log"
-sed -n "${leios_start},${leios_end}p" "$capture" >"$workdir/leios-node-traces.log"
-for window in leios-node-traces-startup.log leios-node-traces.log; do
-  mv "$workdir/$window" "$recordings/$window"
-  echo "recorded: $window"
+windows=(leios-node-traces-startup.log leios-node-traces.log)
+sed -n "1,${startup_end}p" "$capture" >"$workdir/${windows[0]}"
+sed -n "${leios_start},${leios_end}p" "$capture" >"$workdir/${windows[1]}"
+
+# In place, then held to what reads them. A window is only a fixture if the
+# tests that name namespaces out of it still pass, and a node emits what its
+# configuration and its luck decide: a round that produced no vote, or a
+# namespace the deployed config now silences, is a recording that looks whole
+# and leaves the tree red. Copied rather than moved, and the previous pair kept
+# beside them, so a recording that cannot be used changes nothing.
+for window in "${windows[@]}"; do
+  if [ -e "$recordings/$window" ]; then
+    cp "$recordings/$window" "$workdir/$window.previous"
+  fi
+  cp "$workdir/$window" "$recordings/$window"
 done
+
+if cargo test --quiet --manifest-path "$repo/Cargo.toml" \
+  -p metsuke --test binary --test logselect --test logsource --test logtail; then
+  for window in "${windows[@]}"; do
+    echo "recorded: $window"
+  done
+else
+  for window in "${windows[@]}"; do
+    if [ -e "$workdir/$window.previous" ]; then
+      cp "$workdir/$window.previous" "$recordings/$window"
+    fi
+  done
+  echo "error: the windows this run cut do not satisfy the tests that read them." >&2
+  echo "       the previous pair is back in place; this run's are in $workdir" >&2
+  exit 1
+fi
 
 echo
 echo "line rate over the whole capture, for spool sizing:"
