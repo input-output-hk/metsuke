@@ -499,3 +499,23 @@ fn the_startup_dump_says_which_key_is_signing() {
         );
     }
 }
+
+/// The address the version nudge sends an operator to. The pages are the
+/// server's root, and the submissions go to a path under it, so the one the
+/// agent can name is the other's origin. The port is part of it: a loopback
+/// deployment reached on 8080 has its pages on 8080 too.
+#[test]
+fn the_server_a_nudge_names_is_the_upload_urls_own() {
+    for (upload, server) in [
+        (
+            "https://metsuke.example.org/v1/submit",
+            "https://metsuke.example.org/",
+        ),
+        ("http://127.0.0.1:8080/v1/submit", "http://127.0.0.1:8080/"),
+    ] {
+        let toml = minimal_toml().replace("https://metsuke.example.org/v1/submit", upload);
+        let config = Config::from_toml(&toml).expect("the endpoint is allowed");
+
+        assert_eq!(config.upload_url.server(), server);
+    }
+}

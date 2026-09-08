@@ -164,6 +164,9 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
         jitter_max: Duration::from_secs(config.upload_jitter_max_secs),
         backoff_max: Duration::from_secs(config.upload_backoff_max_secs),
     };
+    // Derived once here, where the whole config still is, and carried into the
+    // tick for the one line that has somewhere to send an operator.
+    let server = config.upload_url.server();
     let mut schedule = Schedule::new();
     let mut scrapes = ScrapeReport::default();
     // In pipe mode the node starts alongside the agent, so a scrape at once
@@ -202,8 +205,14 @@ fn run() -> Result<std::convert::Infallible, StartupError> {
                 };
         }
         if now >= next_upload {
-            next_upload =
-                now + upload_tick(&mut agent, &mut scrapes, &mut schedule, &schedule_config);
+            next_upload = now
+                + upload_tick(
+                    &mut agent,
+                    &mut scrapes,
+                    &mut schedule,
+                    &schedule_config,
+                    &server,
+                );
         }
         let wake = next_scrape.min(next_upload);
         std::thread::sleep(wake.saturating_duration_since(Instant::now()));
@@ -310,6 +319,7 @@ fn upload_tick(
     scrapes: &mut ScrapeReport,
     schedule: &mut Schedule,
     config: &ScheduleConfig,
+    server: &str,
 ) -> Duration {
     // Before the attempt, so every path out of this function has said it:
     // sustained overload is exactly the case where the attempt fails.
@@ -376,7 +386,7 @@ fn upload_tick(
                 if newer_version_available(env!("CARGO_PKG_VERSION"), &ack.latest_version) {
                     eprintln!(
                         "{WARNING}client {} is available (this is {}); \
-                         see the instructions page for the update procedure",
+                         how to update is at {server}",
                         ack.latest_version,
                         env!("CARGO_PKG_VERSION"),
                     );

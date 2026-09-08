@@ -46,6 +46,27 @@ pub enum NotAbsolute {
     NoHost(String),
 }
 
+impl UploadUrl {
+    /// Where the pages of the server these submissions go to are: the same
+    /// host, at its root (`metsuke_server::instructions::PATH`). The agent
+    /// never fetches a page, so this is the only address it can put in front
+    /// of an operator, and "the instructions page" on its own leaves them
+    /// looking for one.
+    ///
+    /// Both parts are there because `TryFrom` refused a URL without them.
+    pub fn server(&self) -> String {
+        let uri = self
+            .0
+            .parse::<ureq::http::Uri>()
+            .expect("an upload_url parsed once parses again");
+        format!(
+            "{}://{}/",
+            uri.scheme_str().expect("the scheme was checked"),
+            uri.authority().expect("the host was checked")
+        )
+    }
+}
+
 impl TryFrom<String> for MetricsUrl {
     type Error = MetricsUrlError;
 
