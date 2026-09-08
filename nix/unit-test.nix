@@ -390,7 +390,7 @@ pkgs.testers.runNixOSTest {
         assert all(line in recorded for line in lines), [
             line for line in lines if line not in recorded
         ]
-        # And the rules still filtered on the way: the recording's volume is
+        # And the rules still filtered on the way: a third of the recording is
         # Debug lines nobody asked for.
         assert not [line for line in lines if line.get("sev") == "Debug"], lines
 

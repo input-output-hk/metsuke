@@ -297,7 +297,7 @@ fn default_pipe_queue_capacity() -> NonZeroUsize {
 }
 
 /// 64 KiB, which is thirteen times the longest line any recorded node output
-/// holds: 4,909 bytes, and a startup line rather than a trace
+/// holds: 4,914 bytes, and a startup line rather than a trace
 /// (`tests/fixtures/recordings`). Wide enough that no line a node writes to
 /// say something meets it, and narrow enough that what the node writes cannot
 /// decide how much this process allocates. In pipe mode the product with

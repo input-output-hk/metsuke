@@ -221,8 +221,10 @@ window_edge() {
 
 # Two contiguous slices of that one stream, addressed by line number: nothing
 # inside either window is dropped or reordered, so both are still recordings of
-# what the node said. The whole run is mostly Forge.Loop.Call, a volume
-# measurement rather than a fixture; this script prints it at the end.
+# what the node said. Most of a run is the per-slot forge loop -- the
+# leadership check, its state, and the node not being leader -- a volume
+# measurement rather than a fixture; this script prints the histogram at the
+# end.
 #
 # Startup, through the first Leios line. Carries the one line on the stream
 # that is not JSON (cardano-node prints its NodeConfiguration before the

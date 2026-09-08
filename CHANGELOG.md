@@ -26,7 +26,9 @@ deploy the release and the tag only a name for it, so this entry precedes a
   each costs and neither is the default. Without the section the agent reads
   the loopback metrics endpoint alone, as before.
 - `[log].exclude_namespaces` drops namespaces the selection would otherwise
-  keep, under the `namespace_roots` ceiling.
+  keep. Unlike `namespaces`, an exclude is not held to `namespace_roots`: one
+  naming something outside them selects nothing either way, so it is accepted
+  and does nothing rather than refused.
 - The pipe source runs the agent inside your node's unit, so the drop-in that
   sets it up replaces four of that unit's supervision directives. `RestartSec=`
   and `StartLimitIntervalSec=`/`StartLimitBurst=` in `[Unit]` are
