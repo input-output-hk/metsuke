@@ -698,16 +698,42 @@
             # would leave the fixtures describing a node no test runs.
             leios-pin =
               let
-                devnet = (lib.importJSON ./devnet/flake.lock).nodes.leios.locked.rev;
                 here = inputs.cardano-node-leios.rev;
+                # By what a node points at, never by the name it was given. A
+                # lock names its first node for the input and numbers the rest,
+                # so the devnet's second leios -- the one it reaches through
+                # its `metsuke` input, as `cardano-node-leios_2` -- is exactly
+                # what a check reading one name cannot see drift.
+                # Keyed by the lock it came from as well as the node, because a
+                # name can occur in both and the merge would drop one.
+                leiosNodes =
+                  label: lock:
+                  lib.mapAttrs' (name: node: lib.nameValuePair "${label}:${name}" node) (
+                    lib.filterAttrs (_: node: (node.locked.repo or null) == "ouroboros-leios")
+                      (lib.importJSON lock).nodes
+                  );
+                pinned = leiosNodes "flake.lock" ./flake.lock // leiosNodes "devnet/flake.lock" ./devnet/flake.lock;
+                disagree = lib.filterAttrs (_: node: node.locked.rev != here) pinned;
+                named = lib.concatStringsSep ", " (
+                  lib.mapAttrsToList (name: node: "${name} at ${node.locked.rev}") disagree
+                );
               in
-              pkgs.runCommand "leios-pins-agree" { } ''
-                [ "${here}" = "${devnet}" ] || {
-                  echo "flake.lock pins leios ${here}; devnet/flake.lock pins ${devnet}"
-                  exit 1
-                }
-                touch $out
-              '';
+              pkgs.runCommand "leios-pins-agree" { } (
+                # A filter that matched nothing would pass while checking
+                # nothing, which is the shape this whole check exists against.
+                if pinned == { } then
+                  ''
+                    echo "no lock here pins ouroboros-leios, so this check reads nothing"
+                    exit 1
+                  ''
+                else if disagree != { } then
+                  ''
+                    echo "this flake pins leios ${here}; disagreeing: ${named}"
+                    exit 1
+                  ''
+                else
+                  "touch $out"
+              );
 
             # The same rule the units below are held to, for the same reason: a
             # generated file that is committed is a file that can be edited by
