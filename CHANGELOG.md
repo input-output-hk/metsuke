@@ -27,6 +27,17 @@ deploy the release and the tag only a name for it, so this entry precedes a
   the loopback metrics endpoint alone, as before.
 - `[log].exclude_namespaces` drops namespaces the selection would otherwise
   keep, under the `namespace_roots` ceiling.
+- The pipe source runs the agent inside your node's unit, so the drop-in that
+  sets it up replaces four of that unit's supervision directives. `RestartSec=`
+  and `StartLimitIntervalSec=`/`StartLimitBurst=` in `[Unit]` are
+  `contrib/cardano-node.service`'s own values, so a node on that unit is paced
+  as it already was. `Restart=` is the one that widens, to `always`: a
+  pipeline's status is its last command's, and the agent exits 0 when the
+  node's output ends, so `on-failure` would never fire for a node that died.
+- Nothing restarts the agent if it dies while the node lives, under that source
+  alone. The unit's process is the shell, which goes on waiting, so there is no
+  exit for `Restart=` to act on: the agent's startup line in the node's journal
+  is what says it came back.
 - A pool may report under its Leios key rather than its cold key, so a
   reporting machine need hold no cold key (ADR 0011).
 
@@ -71,10 +82,17 @@ Nothing since 0.2.0.
 ### 0.2.0 — 2026-09-07
 
 A **major** by `docs/releasing.md`, in the minor position because the number is
-still `0.x`. A state file written before this version is refused, which is the
-change the number is for. Sync into a new one; the objects already on disk are
-unaffected.
+still `0.x`. Two on-disk formats moved, which is what the number is for: the
+state file and the `--into` directory. Objects keep their bytes and every
+duckdb read over them still works.
 
+- A download directory records the bar it was filled under, in
+  `.metsuke-verification.json`, and a run asking for another is refused before
+  it downloads anything. Two state files at two bars into one `--into` used to
+  leave proven and assumed objects side by side with nothing to tell them
+  apart. A directory that predates the record is claimed rather than refused:
+  there is nothing to read the bar of what is already there off, so the first
+  run under this version is what it is held to from then on.
 - The size bound a run held objects to is recorded in the state file, and a
   file that does not carry one cannot be resumed under any bound. Reading it as
   the shipped default would have taken a low-bound run's cursor as its own and
