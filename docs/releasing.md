@@ -73,22 +73,26 @@ The nudge only reaches operators through a server that was built after the bump,
 so the order matters.
 
 1. Bump `version` in `crates/metsuke/Cargo.toml`.
-2. Add the release to `CHANGELOG.md` under the new version, with today's date.
-3. `just all`. It has to be green, including the VM tests. An agent release is
+2. `METSUKE_RERECORD=1 cargo test -p metsuke --test binary`. The page's check
+   step shows a recorded agent journal, and its first line carries the version,
+   so without this the page shows the release before this one.
+   `the_recorded_journal_names_this_version` fails until you do it.
+3. Add the release to `CHANGELOG.md` under the new version, with today's date.
+4. `just all`. It has to be green, including the VM tests. An agent release is
    the one thing here we cannot roll back for people.
-4. Commit, then tag `client-vX.Y.Z`.
-5. Redeploy the server. `metsuke-server`'s `build.rs` reads the agent's manifest
+5. Commit, then tag `client-vX.Y.Z`.
+6. Redeploy the server. `metsuke-server`'s `build.rs` reads the agent's manifest
    at compile time, so until the server is rebuilt it keeps telling every agent
    the old version is current. This step is the release, and the tag is only a
    name for it.
-6. Confirm the server is serving the new number. It is in the quickstart's
+7. Confirm the server is serving the new number. It is in the quickstart's
    staying up to date step, and in every ACK:
 
    ```
    curl -s https://<server>/ | grep 'built against agent'
    ```
 
-7. Tell operators. There is no self-update and no install script, by decision,
+8. Tell operators. There is no self-update and no install script, by decision,
    so an update happens only because someone chose to do it.
 
 ## Releasing the server

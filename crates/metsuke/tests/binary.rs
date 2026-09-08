@@ -168,6 +168,29 @@ fn binary_refuses_a_journalctl_that_cannot_read_the_journal() {
 /// it, and `metsuke-server` carries it whole.
 const JOURNAL_RECORDING: &str = "tests/fixtures/recordings/agent-journal.log";
 
+/// The recording's first line is what the server renders at the top of the
+/// page's check step, and it carries this build's version because that is what
+/// the agent prints. Held to the manifest here because the comparison below
+/// cannot: `shape` blanks every word of hex digits and dots, which a version
+/// is, so a bump leaves the page showing the version before it and the suite
+/// green. That is how 0.1.0 outlived the 0.2.0 bump.
+#[test]
+fn the_recorded_journal_names_this_version() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(JOURNAL_RECORDING);
+    let shipped = std::fs::read_to_string(&path).expect("the recording is committed");
+    let version = shipped
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .expect("the recording opens by naming the agent and its version");
+
+    assert_eq!(
+        version,
+        env!("CARGO_PKG_VERSION"),
+        "the page would show {version}; re-record with METSUKE_RERECORD=1"
+    );
+}
+
 /// The endpoint the shipped config names. The recorder binds an ephemeral port,
 /// so the one it scraped is rewritten to this before the recording is kept: the
 /// port is the only thing about that line an operator cannot reproduce, and the
