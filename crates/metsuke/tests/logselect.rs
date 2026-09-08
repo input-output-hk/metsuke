@@ -65,16 +65,25 @@ fn the_shipped_rules_ship_what_was_asked_for() {
 #[test]
 fn the_shipped_rules_drop_the_wire_level_chatter() {
     let rules = shipped_rules();
-    for needle in [
+    for (window, needle) in [
         // Outside the roots, under a selected root beside a namespace that is
         // wanted, and under one on a branch of its own: the three ways a line
         // reaches these rules without being asked for.
-        r#""ns":"LeiosNotify.Remote.Send.RequestNext""#,
-        r#""ns":"Forge.Loop.StartLeadershipCheck""#,
-        r#""ns":"Forge.StateInfo.StateInfo""#,
+        (
+            LEIOS_WINDOW,
+            r#""ns":"LeiosNotify.Remote.Send.RequestNext""#,
+        ),
+        (LEIOS_WINDOW, r#""ns":"Forge.Loop.StartLeadershipCheck""#),
+        (LEIOS_WINDOW, r#""ns":"Forge.StateInfo.StateInfo""#),
+        // The third root, from the other window because that is where it says
+        // anything: what ChainDB emits around a Leios round is the one
+        // namespace that is wanted, its Debug ledger-table traces are under
+        // the Info the deployed configuration holds the root to, and the rest
+        // of it is the database opening.
+        (STARTUP_WINDOW, r#""ns":"ChainDB.OpenEvent.OpenedDB""#),
     ] {
         assert_eq!(
-            select(&rules, line_with(LEIOS_WINDOW, needle)),
+            select(&rules, line_with(window, needle)),
             Selection::Skip,
             "the shipped rules kept {needle}"
         );
