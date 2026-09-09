@@ -245,6 +245,31 @@ fn a_public_url_that_is_not_https_is_refused() {
     }
 }
 
+/// Nothing past the host, because the two generated clients do not treat it
+/// the same: the pages `join` an absolute path onto this and discard a path,
+/// while `--server` reaches `metsuke-fetch` as written and has
+/// `/v1/submissions` appended. A path would send the agent and the fetch tool
+/// to different roots, a query swallows the path into itself, and userinfo
+/// would be printed into every command the page shows.
+#[test]
+fn a_public_url_with_anything_after_the_host_is_refused() {
+    for value in [
+        "https://metsuke.example.org/base/",
+        "https://metsuke.example.org/base",
+        "https://metsuke.example.org/?q=1",
+        "https://metsuke.example.org/#frag",
+        "https://developer:hunter2@metsuke.example.org",
+    ] {
+        let error = ServerConfig::from_toml(&with("public_url", &format!("\"{value}\"")))
+            .expect_err(value)
+            .to_string();
+        assert!(
+            error.contains("public_url"),
+            "{value}: the refusal must name the field, got: {error}"
+        );
+    }
+}
+
 /// And what a deployment actually runs on is accepted: TLS anywhere, plain
 /// HTTP only where the address itself says it never leaves the host, which is
 /// what the VM tests and a single-host development server use.

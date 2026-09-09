@@ -180,11 +180,24 @@ pub enum ConfigError {
 pub struct PublicUrl(Url);
 
 #[derive(Debug, thiserror::Error)]
-#[error(
-    "public_url {0} is not https, and only a loopback host may be plain http: \
-     every install command the pages print is built from it"
-)]
-pub struct NotAPublicUrl(Url);
+pub enum NotAPublicUrl {
+    #[error(
+        "public_url {0} is not https, and only a loopback host may be plain http: \
+         every install command the pages print is built from it"
+    )]
+    Plaintext(Url),
+    /// Anything past the host makes the generated clients disagree. The pages
+    /// `join` an absolute path onto this, which discards a path, while
+    /// `--server` reaches `metsuke-fetch` as written and has
+    /// `/v1/submissions` appended, so a path sends the two to different roots
+    /// and a query swallows the path into itself. Userinfo would be printed
+    /// into every command the page shows.
+    #[error(
+        "public_url {0} has to be a bare origin, with nothing after the host: \
+         the agent's endpoint and the fetch tool's are both built from it"
+    )]
+    NotAnOrigin(Url),
+}
 
 impl TryFrom<Url> for PublicUrl {
     type Error = NotAPublicUrl;
@@ -201,10 +214,18 @@ impl TryFrom<Url> for PublicUrl {
                 .parse::<std::net::IpAddr>()
                 .is_ok_and(|address| address.is_loopback())
         });
-        match url.scheme() {
-            "https" => Ok(PublicUrl(url)),
-            "http" if loopback => Ok(PublicUrl(url)),
-            _ => Err(NotAPublicUrl(url)),
+        // `path()` answers "/" for a URL written without one, so this accepts
+        // both spellings of a bare host and refuses everything further.
+        let origin = url.path() == "/"
+            && url.query().is_none()
+            && url.fragment().is_none()
+            && url.username().is_empty()
+            && url.password().is_none();
+        match (url.scheme(), origin) {
+            (_, false) => Err(NotAPublicUrl::NotAnOrigin(url)),
+            ("https", true) => Ok(PublicUrl(url)),
+            ("http", true) if loopback => Ok(PublicUrl(url)),
+            _ => Err(NotAPublicUrl::Plaintext(url)),
         }
     }
 }
