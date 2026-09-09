@@ -95,6 +95,37 @@ fn a_spool_directory_that_is_not_there_yet_is_created() {
     );
 }
 
+// A previous run of the shipped unit leaves the state directory as a symlink
+// into /var/lib/private, which is 0700 root, so a later run from a shell finds
+// a path it cannot stat. A recursive create answers `File exists` for that,
+// which the message has to report as what it is: the operator can see the
+// directory is there, and being told it is not sends them looking for the
+// wrong thing. The dangling link here is that shape without needing root.
+#[test]
+fn a_spool_directory_this_user_cannot_see_through_is_named_as_already_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let unreachable = dir.path().join("metsuke");
+    std::os::unix::fs::symlink(dir.path().join("nowhere"), &unreachable).unwrap();
+
+    let opened = Spool::open(&SpoolConfig {
+        path: unreachable.join("spool.sqlite"),
+        ..temp_config(&dir, WHOLE_SPOOL)
+    });
+    let error = match opened {
+        Ok(_) => panic!("a spool opened through a link this user cannot follow"),
+        Err(error) => error.to_string(),
+    };
+
+    assert!(
+        error.contains("is already there as a symlink this user cannot use"),
+        "got: {error}"
+    );
+    assert!(
+        !error.contains("is not there"),
+        "the directory is there, and the message says otherwise: {error}"
+    );
+}
+
 // A spool holds signed submissions, so no other user on the host reads one.
 // The systemd shapes set UMask=0077 and would arrive here anyway; a shell or a
 // container run is the path this does not depend on, and the -wal and -shm

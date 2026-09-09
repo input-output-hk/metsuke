@@ -75,13 +75,24 @@ pub enum SpoolError {
     /// operator running the agent any other way meets, and the setting is
     /// what the message has to name.
     #[error(
-        "its directory {path} is not there and cannot be created: {source}; set spool_path somewhere this user can write"
+        "its directory {path} cannot be created: {source}; set spool_path somewhere this user can write"
     )]
     Directory {
         path: String,
         #[source]
         source: std::io::Error,
     },
+    /// Separate from `Directory` because the path is there and the operator
+    /// can see that it is: a recursive create answers `AlreadyExists` only
+    /// where it could not stat what it found, since a directory it can see is
+    /// a create it treats as done. Under the shipped unit that shape is what a
+    /// previous run leaves, so an operator meets this on the host where the
+    /// agent already works, which is where a message saying the directory is
+    /// absent costs the most.
+    #[error(
+        "its directory {path} is already there as {found} this user cannot use; set spool_path somewhere this user can write"
+    )]
+    DirectoryUnusable { path: String, found: &'static str },
     /// Refused rather than warned about: the file is open by the time this can
     /// fail, so carrying on would leave submissions accumulating in a spool
     /// this agent has already found it cannot set the mode of.
@@ -170,14 +181,35 @@ fn open_spool(path: &PathBuf, busy_timeout: Duration) -> Result<Connection, Spoo
         // has business reading it. Only the directories this creates: one
         // named under a directory the operator already has is theirs, and
         // tightening what they set is not this agent's to do.
-        std::fs::DirBuilder::new()
+        let created = std::fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
-            .create(directory)
-            .map_err(|source| SpoolError::Directory {
-                path: directory.display().to_string(),
-                source,
-            })?;
+            .create(directory);
+        match created {
+            Ok(()) => {}
+            // What is there rather than what could not be done, because the
+            // io error under this one says `File exists` while the create was
+            // recursive, which reads as a contradiction. `symlink_metadata`
+            // and not `metadata`: the link is the part this user can still
+            // see, and a systemd state directory is reached through one.
+            Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(SpoolError::DirectoryUnusable {
+                    path: directory.display().to_string(),
+                    found: match std::fs::symlink_metadata(directory) {
+                        Ok(found) if found.is_symlink() => "a symlink",
+                        Ok(found) if found.is_file() => "a file",
+                        Ok(_) => "a directory",
+                        Err(_) => "something",
+                    },
+                });
+            }
+            Err(source) => {
+                return Err(SpoolError::Directory {
+                    path: directory.display().to_string(),
+                    source,
+                });
+            }
+        }
     }
     let conn = Connection::open(path)?;
     // Before WAL, because sqlite gives the -wal and -shm files the mode the
