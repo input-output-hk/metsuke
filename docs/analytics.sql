@@ -55,8 +55,9 @@ from scrape, unnest(metrics) as _(u);
 -- Through JSON the reads below hold on any archive: `data->>'$.ebHash'` for a
 -- value, `json_exists(data, '$.ebHash')` for whether it is there at all.
 -- Deduplicated for the reason `scrape` is, on the whole line: a trace line
--- carries no field of the agent's to name it by, so the node's `at`, its
--- namespace and its payload together are the key. `timestamptz` holds that
+-- carries no field of the agent's to name it by, so every column this view
+-- keeps of what the node wrote is the key, `thread` included, because two
+-- threads can emit one payload in one microsecond. `timestamptz` holds that
 -- `at` to the microsecond and not the nanosecond the node wrote, so the
 -- window is that wide.
 create or replace view trace as
@@ -65,7 +66,9 @@ select "at"::timestamptz as t,
        metsuke.pool_id as pool,
        metsuke.agent_id as agent
 from read_json(getvariable('archive') || '/v1/*/*-logs.jsonl.zst', sample_size=-1)
-qualify row_number() over (partition by pool, agent, t, ns, data::varchar) = 1;
+qualify row_number() over (
+  partition by pool, agent, t, ns, sev, thread, host, data::varchar
+) = 1;
 
 -- Did the agent cover the window it claims to? A gap_s far off the configured
 -- scrape interval is a missed upload, not a slow node.

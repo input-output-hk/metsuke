@@ -90,11 +90,14 @@ alter table scrape drop column metrics;
 
 -- One row per trace line, deduplicated for the reason `scrape` is. The whole
 -- line is the key here, because a trace line carries no field of the agent's
--- to name it by: the node's `at`, its namespace and its payload together. That
+-- to name it by: every column this table keeps of what the node wrote. That
 -- `at` is compared to the microsecond, which is all `timestamptz` holds of the
 -- nanoseconds the node wrote, so the window is that wide. Two distinct events
--- inside one microsecond agreeing on namespace and payload is still not a
--- thing a node does. Measured on the same archive: 53 of 3064880.
+-- inside one microsecond agreeing on all of them is not a thing a node does,
+-- and two threads emitting the same payload in one microsecond is, which is
+-- why `thread` is in the key. Measured on the same archive with the narrower
+-- key of `at`, namespace and payload alone: 53 of 3064880, so no more than
+-- that.
 -- `data` as JSON and not as read_json inferred it, for the reason
 -- docs/analytics.sql gives at its own `trace`: inference gives a struct of
 -- whichever fields the objects in front of it carried, so reading a field that
@@ -108,7 +111,9 @@ select "at"::timestamptz as t,
        metsuke.agent_id as agent
 from read_json(getvariable('archive') || '/**/*-logs.jsonl.zst',
                sample_size = -1, union_by_name = true)
-qualify row_number() over (partition by pool, agent, t, ns, data::varchar) = 1;
+qualify row_number() over (
+  partition by pool, agent, t, ns, sev, thread, host, data::varchar
+) = 1;
 
 -- What loaded, so a glob that matched nothing says so at once rather than as
 -- an empty result three queries later.
