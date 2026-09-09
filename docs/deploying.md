@@ -153,6 +153,58 @@ loopback and put a TLS terminator in front of it. `archive.s3` names the bucket
 and region the step above created. `ingest.allowlist` is the generated table,
 never a hand-written one.
 
+`settings.downloads` names store paths, so where those builds come from is a
+deployment decision rather than a value to copy. Take them from a second
+metsuke input pinned to the agent's release tag, and leave the input the server
+itself is built from tracking whatever you deploy:
+
+The agent and the fetch tool are tagged apart, so that is one pin each:
+
+```nix
+inputs.metsuke.url = "github:input-output-hk/metsuke";
+inputs.metsuke-client.url = "github:input-output-hk/metsuke/client-v1.0.0";
+inputs.metsuke-fetch.url = "github:input-output-hk/metsuke/fetch-v0.2.0";
+```
+
+```nix
+services.metsuke-server.settings.downloads =
+  let
+    client = inputs.metsuke-client.packages.x86_64-linux;
+    fetch = inputs.metsuke-fetch.packages.x86_64-linux;
+  in {
+    metsuke-static-x86_64-linux = "${client.metsuke-static-x86_64-linux}/bin/metsuke";
+    metsuke-static-aarch64-linux = "${client.metsuke-static-aarch64-linux}/bin/metsuke";
+    metsuke-fetch-static-x86_64-linux = "${fetch.metsuke-fetch-static-x86_64-linux}/bin/metsuke-fetch";
+    metsuke-fetch-static-aarch64-linux = "${fetch.metsuke-fetch-static-aarch64-linux}/bin/metsuke-fetch";
+  };
+```
+
+All four read `packages.x86_64-linux`, the aarch64 builds included, because
+that is where they are cross-built and where the release's own were built.
+`packages.aarch64-linux` holds a build of the same name that is a different
+derivation, so taking one from there serves bytes no release published.
+
+Every build records the commit it came from. Downloads taken from the server's
+own input therefore change bytes whenever anything in that repository does,
+including a fix that never touches the agent, and the digests the onboarding
+page prints move with them. Pinned to a tag they are that release's bytes and
+stay so across server deploys.
+
+Three inputs to one repository is the cost of the versions being independent.
+Leave what a release input locks alone, `metsuke-client.inputs.nixpkgs` and the
+rest of them: a release build is the release's bytes only when it is built from
+the inputs its own tag locked.
+
+Before a crate has a release to pin, its input follows the one the server is
+built from:
+
+```nix
+inputs.metsuke-client.follows = "metsuke";
+```
+
+That serves the build the deployment would have served anyway, and leaves the
+digest step in `docs/releasing.md` nothing to compare until the tag exists.
+
 The service runs under `DynamicUser` with `ProtectSystem=strict` and a
 `StateDirectory` of `/var/lib/metsuke-server`. A filesystem archive, if you use
 one instead of S3, has to have its root under that path, and the module asserts

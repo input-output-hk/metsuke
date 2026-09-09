@@ -17,6 +17,26 @@ public_url = "https://metsuke.example.org"
 # or an operator following the ARM note beside it has nothing to fetch. Anything
 # else here is served but not linked from that page, which is how a tool for a
 # different audience is handed out without putting it in front of a pool.
+#
+# Every build records the commit it came from. A build taken from whatever this
+# server was built from is therefore a different file after any commit to the
+# repository, including a fix that never touches the agent. One taken from a
+# release is that release's own file.
+#
+# Each is fetched from its own release, the agent builds from the
+# client-vX.Y.Z whose version this server was built against and the fetch
+# builds from a fetch-vX.Y.Z:
+#
+#   tag=client-v1.0.0
+#   base=https://github.com/input-output-hk/metsuke/releases/download/$tag
+#   curl -fLO $base/metsuke-static-x86_64-linux
+#   curl -fLO $base/metsuke-static-x86_64-linux.sha256
+#   sha256sum -c metsuke-static-x86_64-linux.sha256
+#   sudo mkdir -p /usr/local/lib/metsuke
+#   sudo install -m 0644 metsuke-static-x86_64-linux /usr/local/lib/metsuke/
+#
+# The other names below go the same way. A nix deployment pins a metsuke input
+# at each tag instead, which docs/deploying.md has.
 # [downloads]
 # metsuke-static-x86_64-linux = "/usr/local/lib/metsuke/metsuke-static-x86_64-linux"
 # metsuke-static-aarch64-linux = "/usr/local/lib/metsuke/metsuke-static-aarch64-linux"

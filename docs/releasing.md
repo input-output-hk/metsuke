@@ -67,6 +67,41 @@ For `metsuke-fetch`, read the same three against its two on-disk formats. A
 cursor file the new build cannot read, or a change to the tree layout under
 `--into` that breaks a duckdb read someone already wrote, is major.
 
+## What a tag publishes
+
+`client-v*` and `fetch-v*` each attach that crate's two static builds to a
+draft release, with a `.sha256` beside each one. The asset names are the
+flake's own output names, which is what a deployment serves the same builds
+under, so `sha256sum -c` reads the name back out of the sidecar either way.
+`server-v*` publishes nothing, since the deploy is the release.
+
+The draft is left for you to write a description on and publish. Nothing in CI
+writes one, and a tag lands before the server is redeployed, so a release
+published at tag time would name a version the onboarding page does not yet
+serve.
+
+Nothing is compiled to make those assets. The job waits up to thirty minutes
+for the tag's builds and for `hydraJobs.required-x86_64-linux` to reach
+`cache.iog.io`, then substitutes them, so an asset is the bytes Hydra built or
+the release does not happen. The aggregate is the part that makes step 4 more
+than a promise: it is built only where every check and the VM units for that
+arch were, so a tag on a commit whose suite fails cannot publish.
+
+Tagging ahead of Hydra is fine, and tagging something Hydra cannot build is
+what fails. A queue slower than thirty minutes fails the same way, so re-run
+the workflow rather than reading it as a verdict. A re-run reaches the same
+end state while the release is still a draft.
+
+The onboarding page still documents the download from the deployment an
+operator is already talking to. A deployment pins each of those builds at its
+own release tag, so what it serves and what the release carries are the same
+bytes, and they stay so across server deploys that have nothing to do with the
+agent. `docs/deploying.md` has the pins.
+
+GitHub shows one release as Latest, which is what the repository's landing page
+and `/releases/latest` resolve to. Publishing a fetch draft would take it from
+the agent's, so leave "Set as the latest release" unchecked on that one.
+
 ## Releasing the agent
 
 The nudge only reaches operators through a server that was built after the bump,
@@ -80,11 +115,14 @@ so the order matters.
 3. Add the release to `CHANGELOG.md` under the new version, with today's date.
 4. `just all`. It has to be green, including the VM tests. An agent release is
    the one thing here we cannot roll back for people.
-5. Commit, then tag `client-vX.Y.Z`.
-6. Redeploy the server. `metsuke-server`'s `build.rs` reads the agent's manifest
-   at compile time, so until the server is rebuilt it keeps telling every agent
-   the old version is current. This step is the release, and the tag is only a
-   name for it.
+5. Commit, then tag `client-vX.Y.Z` and push the tag, which drafts the release
+   and attaches the two static builds to it.
+6. Move the deployment's client pin to this tag and redeploy the server.
+   `metsuke-server`'s `build.rs` reads the agent's manifest at compile time, so
+   until the server is rebuilt it keeps telling every agent the old version is
+   current. This step is the release, and the tag is only a name for it.
+   `docs/deploying.md` has the pin and why the downloads come from it rather
+   than from the input the server is built from.
 7. Confirm the server is serving the new number. It is in the quickstart's
    staying up to date step, and in every ACK:
 
@@ -92,7 +130,20 @@ so the order matters.
    curl -s https://<server>/ | grep 'built against agent'
    ```
 
-8. Tell operators. There is no self-update and no install script, by decision,
+8. Write the draft release's description and publish it. Its assets are not
+   reachable without a token until you do, which is what the next step needs.
+9. Confirm the release asset and the served copy are the same bytes:
+
+   ```
+   curl -fsS https://<server>/files/metsuke-static-x86_64-linux.sha256
+   curl -fsSL https://github.com/input-output-hk/metsuke/releases/download/client-vX.Y.Z/metsuke-static-x86_64-linux.sha256
+   ```
+
+   They are identical when the deployment's release pin is this tag, which is
+   what this is checking. A difference means the pin did not move with step 6,
+   so operators are being handed a build this release did not publish.
+
+10. Tell operators. There is no self-update and no install script, by decision,
    so an update happens only because someone chose to do it.
 
 ## Releasing the server
@@ -113,11 +164,17 @@ not bump the agent's manifest until you mean to release it.
 1. Bump `version` in `crates/metsuke-fetch/Cargo.toml`.
 2. Add the release to `CHANGELOG.md`.
 3. `just all`.
-4. Commit, then tag `fetch-vX.Y.Z`.
+4. Commit, then tag `fetch-vX.Y.Z` and push the tag, which drafts the release
+   and attaches the two static builds to it. Publish the draft with "Set as
+   the latest release" unchecked, so the agent's release keeps it.
+5. Move the deployment's fetch pin to this tag and redeploy.
+   `docs/deploying.md` has the pin.
 
-There is nothing to deploy. Nobody is nudged, and nothing tells a Developer
-their copy is behind, so a release that changes either on-disk format is one to
-announce rather than assume.
+Unlike the agent's, the deploy is not the release here: the tag and its assets
+are what a Developer needs, and step 5 only keeps the copy under `/files/`
+current. Nobody is nudged, and nothing tells a Developer their copy is behind,
+so a release that changes either on-disk format is one to announce rather than
+assume.
 
 ## Checking the nudge works
 

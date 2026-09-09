@@ -277,6 +277,12 @@ in
               A name the server already serves cannot be reused here: one of
               the two files would be published under the other's checksum, so
               the server refuses to start instead.
+
+              Take these from an input pinned to the tag each build was
+              released under, not from the input this server is built from.
+              Every build records the commit it came from, so the latter is a
+              different file after any commit to the repository, including one
+              that never touches the agent. `docs/deploying.md` has the pins.
             '';
           };
 

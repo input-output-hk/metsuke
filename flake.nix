@@ -867,6 +867,37 @@
               touch $out
             '';
 
+            # The workflow a tag runs publishes builds by name, and the names
+            # are the flake's own, so an asset matches what a deployment serves
+            # the same build under. A rename here would leave a tag publishing
+            # nothing, and nothing in a workflow can see that an output went
+            # away.
+            release-workflow = pkgs.runCommand "release-workflow-names-real-outputs" { } ''
+              # `|| true` for the reason the two checks above give.
+              packages=$(grep -ohE 'metsuke-(fetch-)?static-[a-z0-9_-][a-z0-9_-]*' \
+                ${./.github/workflows/release.yml} | sort -u || true)
+              [ -n "$packages" ] || { echo "the release workflow publishes nothing"; exit 1; }
+              for name in $packages; do
+                case " ${toString (builtins.attrNames config.packages)} " in
+                  *" $name "*) ;;
+                  *)
+                    echo "the release workflow publishes $name, which this flake does not build"
+                    exit 1
+                    ;;
+                esac
+                # It builds the linksNothing check beside each build, taking
+                # that name off the package's own.
+                case " ${toString (builtins.attrNames config.checks)} " in
+                  *" ''${name#metsuke-} "*) ;;
+                  *)
+                    echo "the release workflow publishes $name with no check that it links nothing"
+                    exit 1
+                    ;;
+                esac
+              done
+              touch $out
+            '';
+
             clippy = craneLib.cargoClippy (
               commonArgs
               // {
@@ -909,6 +940,9 @@
               rustfmt.enable = true;
               nixfmt.enable = true;
               taplo.enable = true;
+              # Reads the workflow as a workflow, and shellchecks every `run:`
+              # block, which nothing else here can see into.
+              actionlint.enable = true;
               deadnix.enable = true;
               statix.enable = true;
             };

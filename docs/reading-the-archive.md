@@ -24,6 +24,11 @@ nix build github:input-output-hk/metsuke#metsuke-fetch-static-x86_64-linux
 nix build github:input-output-hk/metsuke#metsuke-fetch-static-aarch64-linux
 ```
 
+Those two need nix on whichever machine builds them. A host with none takes the
+same builds from the newest `fetch-v*`
+[release](https://github.com/input-output-hk/metsuke/releases), where each has
+a `.sha256` beside it.
+
 A deployment may also serve those builds under `/files/`, in which case `curl`
 the one you want from the server you pull the archive from. Its `/analysis`
 page is the short version of this document against that particular deployment,
