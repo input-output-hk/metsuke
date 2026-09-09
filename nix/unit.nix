@@ -6,6 +6,14 @@
 {
   restartSecs = 30;
 
+  # Restart=always rather than `set -o pipefail`, which would make the node's
+  # own status the pipeline's and leave the node unit's policy meaning what it
+  # says. The drop-in runs under whatever /bin/sh the host has, dash gained
+  # pipefail in 0.5.12, and an unknown `set -o` ends a non-interactive shell,
+  # so on Ubuntu 22.04, supported into 2027, the node would not start at all.
+  # A restart policy wider than the operator chose beats a node that does not
+  # start.
+  #
   # The pipe drop-in's own pacing, which is the node's rather than the agent's:
   # the drop-in supervises the node's unit. The three together are what makes
   # the outcome the drop-in's instead of whichever unit it lands on. Left unset,

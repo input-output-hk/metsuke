@@ -1,7 +1,5 @@
 # Example hardened unit for a host that is not NixOS, collecting
-# the node's trace lines from its journal. Generated: edit
-# nix/unit.nix, then `nix build .#metsuke-journald-unit` and commit
-# what it wrote here.
+# the node's trace lines from its journal.
 #
 # contrib/metsuke.service plus the two directives journalctl
 # needs: the systemd-journal group, which reads every unit's

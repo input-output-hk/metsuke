@@ -1,6 +1,4 @@
-# Example hardened unit for a host that is not NixOS. Generated:
-# edit nix/unit.nix, then `nix build .#metsuke-unit` and commit
-# what it wrote here.
+# Example hardened unit for a host that is not NixOS.
 #
 # Copy to /etc/systemd/system/metsuke.service, and bring:
 #   the binary at /usr/local/bin/metsuke

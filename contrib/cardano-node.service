@@ -1,8 +1,8 @@
 # /etc/systemd/system/cardano-node.service
 #
-# An example to adapt, not a supported unit. cardano-node ships no service
-# file of its own, and both of metsuke's systemd setups need the node to have
-# one: the journald setup reads its journal, the drop-in setup extends it.
+# This is an example to adapt, not a supported unit. cardano-node ships no
+# service file of its own, and both of metsuke's systemd setups need the node
+# to have one: the journald setup reads its journal, the drop-in extends it.
 #
 #   REPO=input-output-hk/ouroboros-leios
 #
@@ -20,8 +20,6 @@
 #   tar -xzf "$ARCHIVE"
 #   sudo install -D -m 0755 bin/cardano-node /usr/local/bin/cardano-node
 #   sudo install -D -m 0755 bin/cardano-cli /usr/local/bin/cardano-cli
-#   sudo install -D -m 0755 bin/mempool-monitor /usr/local/bin/mempool-monitor
-#   sudo install -D -m 0755 bin/tx-firehose /usr/local/bin/tx-firehose
 #
 #   # The config, from the same tag. The script writes a config/ beside
 #   # itself and needs no privilege, so run it as yourself, in a
@@ -46,11 +44,11 @@
 Description=cardano-node (Musashi)
 Wants=network-online.target
 After=network-online.target
-# Wide enough that RestartSec= below can reach the burst. systemd's defaults
-# are 5 starts in 10s, and a node restarting every 60s only ever fits one of
-# them in that window, so the limit never trips and a node that cannot start
-# retries for ever. Reaching it puts the unit in `failed`, which is the state
-# a monitor can see.
+# This is wide enough that RestartSec= below can reach the burst. systemd's
+# defaults are 5 starts in 10s, and a node restarting every 60s only ever fits
+# one of them in that window, so the limit never trips and a node that cannot
+# start retries for ever. Reaching it puts the unit in `failed`, which is the
+# state a monitor can see.
 StartLimitIntervalSec=600
 StartLimitBurst=5
 
@@ -80,20 +78,16 @@ TimeoutStopSec=300
 LimitNOFILE=32768
 SyslogIdentifier=cardano-node
 
-# Confinement, deliberately tighter than a node has been shown to need. It
-# starts from what contrib/metsuke.service carries and goes further, adding
-# PrivateUsers, PrivateIPC, PrivateMounts, RemoveIPC, KeyringMode and
+# The confinement below is deliberately tighter than a node has been shown to
+# need. It starts from what contrib/metsuke.service carries and goes further,
+# adding PrivateUsers, PrivateIPC, PrivateMounts, RemoveIPC, KeyringMode and
 # DevicePolicy on top; the state directory stays writable through
 # ProtectSystem=strict.
 #
-# Every directive in this block runs in this project's end-to-end test, on a
-# node that forges real blocks with real KES, VRF and BLS keys, so none of them
-# is a guess. The sections above it are not part of that, and what the run does
-# not cover is a long one: a path first taken hours in could still meet
-# MemoryDenyWriteExecute or the syscall filter, and your node is a different
-# build on a different distribution's systemd.
-#
-# So if it will not start or will not stay up, take lines off, in this order:
+# Your node is a different build on a different distribution's systemd, and a
+# path first taken hours in can still meet MemoryDenyWriteExecute or the
+# syscall filter. So if it will not start or will not stay up, take lines off,
+# in this order:
 #
 #   MemoryDenyWriteExecute    if the runtime ever maps a page writable+executable
 #   SystemCallFilter          one syscall outside @system-service. Note the
@@ -105,7 +99,7 @@ SyslogIdentifier=cardano-node
 #                             SupplementaryGroups= added here buys nothing
 #   RestrictNamespaces, LockPersonality, RestrictRealtime  unlikely
 #
-# What not to take off is User=. Everything below is depth behind that line;
+# What not to take off is User=. Everything below it is defence in depth;
 # that line is the one that matters.
 NoNewPrivileges=true
 CapabilityBoundingSet=
@@ -140,10 +134,10 @@ DevicePolicy=closed
 # why User=/Group= name a real group rather than using DynamicUser: put
 # yourself in that group and the cli reaches the node.
 #
-# It costs more than the socket. A umask cannot tell a socket from a file and
-# no directive sets a socket's own mode, so group write lands on everything the
-# node creates, the chain database included. Keep that group to the node and
-# whoever has to reach its socket.
+# The mask reaches more than the socket. A umask cannot tell a socket from a
+# file and no directive sets a socket's own mode, so group write lands on
+# everything the node creates, the chain database included. Keep that group to
+# the node and whoever has to reach its socket.
 UMask=0007
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
