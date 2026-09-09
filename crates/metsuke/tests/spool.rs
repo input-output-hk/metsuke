@@ -73,6 +73,142 @@ fn temp_log_config(dir: &tempfile::TempDir, max_bytes: u64) -> LogSpoolConfig {
     }
 }
 
+// sqlite creates the file and not the directory over it, and the shipped
+// default is the systemd state directory, so an operator running the agent any
+// other way would otherwise have to mkdir it first.
+#[test]
+fn a_spool_directory_that_is_not_there_yet_is_created() {
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("metsuke").join("state");
+    let config = SpoolConfig {
+        path: nested.join("spool.sqlite"),
+        ..temp_config(&dir, WHOLE_SPOOL)
+    };
+
+    let mut spool = Spool::open(&config).unwrap();
+    spool.push(&scrape_at(1)).unwrap();
+
+    assert!(
+        config.path.is_file(),
+        "the spool is not at {:?}",
+        config.path
+    );
+}
+
+// A previous run of the shipped unit leaves the state directory as a symlink
+// into /var/lib/private, which is 0700 root, so a later run from a shell finds
+// a path it cannot stat. A recursive create answers `File exists` for that,
+// which the message has to report as what it is: the operator can see the
+// directory is there, and being told it is not sends them looking for the
+// wrong thing. The dangling link here is that shape without needing root.
+#[test]
+fn a_spool_directory_this_user_cannot_see_through_is_named_as_already_there() {
+    let dir = tempfile::tempdir().unwrap();
+    let unreachable = dir.path().join("metsuke");
+    std::os::unix::fs::symlink(dir.path().join("nowhere"), &unreachable).unwrap();
+
+    let opened = Spool::open(&SpoolConfig {
+        path: unreachable.join("spool.sqlite"),
+        ..temp_config(&dir, WHOLE_SPOOL)
+    });
+    let error = match opened {
+        Ok(_) => panic!("a spool opened through a link this user cannot follow"),
+        Err(error) => error.to_string(),
+    };
+
+    assert!(
+        error.contains("is already there as a symlink this user cannot follow"),
+        "got: {error}"
+    );
+    assert!(
+        !error.contains("is not there"),
+        "the directory is there, and the message says otherwise: {error}"
+    );
+}
+
+// A spool holds signed submissions, so no other user on the host reads one.
+// The systemd shapes set UMask=0077 and would arrive here anyway; a shell or a
+// container run is the path this does not depend on, and the -wal and -shm
+// files are checked because sqlite creates those itself, from the mode the
+// database has at the time.
+#[test]
+fn a_spool_and_its_sidecars_are_readable_only_by_the_agent() {
+    let dir = tempfile::tempdir().unwrap();
+    let nested = dir.path().join("metsuke").join("state");
+    let config = SpoolConfig {
+        path: nested.join("spool.sqlite"),
+        ..temp_config(&dir, WHOLE_SPOOL)
+    };
+
+    let mut spool = Spool::open(&config).unwrap();
+    spool.push(&scrape_at(1)).unwrap();
+
+    let mode = |path: &std::path::Path| {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::metadata(path)
+            .unwrap_or_else(|error| panic!("{path:?}: {error}"))
+            .permissions()
+            .mode()
+            & 0o777
+    };
+    assert_eq!(mode(&nested), 0o700, "the directory the agent created");
+    assert_eq!(mode(&config.path), 0o600, "the spool");
+    for sidecar in ["spool.sqlite-wal", "spool.sqlite-shm"] {
+        assert_eq!(mode(&nested.join(sidecar)), 0o600, "{sidecar}");
+    }
+}
+
+// And a sidecar that was already there is tightened rather than left. sqlite
+// copies the database's mode onto the ones it creates, so a -wal an unclean
+// exit left at a wider umask is reopened at that wider mode, holding the rows
+// the spool holds. Two connections here because a clean close removes both,
+// which is the only way to have one already open.
+#[test]
+fn opening_a_spool_tightens_sidecars_left_at_a_wider_mode() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config = temp_config(&dir, WHOLE_SPOOL);
+    let mut holding = Spool::open(&config).unwrap();
+    holding.push(&scrape_at(1)).unwrap();
+
+    let sidecars = ["spool.sqlite-wal", "spool.sqlite-shm"].map(|name| dir.path().join(name));
+    for sidecar in &sidecars {
+        std::fs::set_permissions(sidecar, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    let _reopened = Spool::open(&config).unwrap();
+
+    for sidecar in &sidecars {
+        let mode = std::fs::metadata(sidecar).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{}", sidecar.display());
+    }
+}
+
+// And where it cannot be created, the refusal names the directory and the
+// setting, because the default path is one most operators cannot write.
+#[test]
+fn a_spool_directory_that_cannot_be_created_names_the_setting() {
+    let dir = tempfile::tempdir().unwrap();
+    let over_a_file = dir.path().join("a-file");
+    std::fs::write(&over_a_file, b"not a directory").unwrap();
+    let config = SpoolConfig {
+        path: over_a_file.join("under-a-file").join("spool.sqlite"),
+        ..temp_config(&dir, WHOLE_SPOOL)
+    };
+
+    let error = match Spool::open(&config) {
+        Err(error) => error.to_string(),
+        Ok(_) => panic!("a spool under a file must not open"),
+    };
+
+    assert!(error.contains("spool_path"), "got: {error}");
+    assert!(
+        error.contains(&over_a_file.display().to_string()),
+        "got: {error}"
+    );
+}
+
 #[test]
 fn undelivered_rows_survive_restart() {
     let dir = tempfile::tempdir().unwrap();

@@ -21,9 +21,8 @@ pub fn replacing<T>(
     write: impl FnOnce(&mut fs::File) -> io::Result<T>,
 ) -> io::Result<T> {
     let staged = staging(path)?;
-    if let Some(parent) = staged.parent() {
-        fs::create_dir_all(parent)?;
-    }
+    let directory = directory(path);
+    fs::create_dir_all(directory)?;
     let written = || -> io::Result<T> {
         let mut file = fs::File::create(&staged)?;
         let written = write(&mut file)?;
@@ -31,9 +30,7 @@ pub fn replacing<T>(
         fs::rename(&staged, path)?;
         // The rename is a directory operation, so the file's own sync says
         // nothing about it. Costs one fsync per object written.
-        if let Some(parent) = path.parent() {
-            fs::File::open(parent)?.sync_all()?;
-        }
+        fs::File::open(directory)?.sync_all()?;
         Ok(written)
     };
     match written() {
@@ -44,6 +41,17 @@ pub fn replacing<T>(
             let _ = fs::remove_file(&staged);
             Err(error)
         }
+    }
+}
+
+/// The directory `path` sits in, and the one both the staging file and the
+/// fsync are about. `Path::parent` answers `Some("")` for a bare filename,
+/// which no directory operation can take, so that reads as the working
+/// directory here.
+fn directory(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
     }
 }
 

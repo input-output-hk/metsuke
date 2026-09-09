@@ -6,6 +6,36 @@
 {
   restartSecs = 30;
 
+  # Restart=always rather than `set -o pipefail`, which would make the node's
+  # own status the pipeline's and leave the node unit's policy meaning what it
+  # says. The drop-in runs under whatever /bin/sh the host has, dash gained
+  # pipefail in 0.5.12, and an unknown `set -o` ends a non-interactive shell,
+  # so on Ubuntu 22.04, supported into 2027, the node would not start at all.
+  # A restart policy wider than the operator chose beats a node that does not
+  # start.
+  #
+  # The pipe drop-in's own pacing, which is the node's rather than the agent's:
+  # the drop-in supervises the node's unit. The three together are what makes
+  # the outcome the drop-in's instead of whichever unit it lands on. Left unset,
+  # a node with systemd's 100ms default reaches the default burst and stays in
+  # `failed`, and one pacing itself in seconds retries for ever.
+  #
+  # These are contrib/cardano-node.service's own values, so the drop-in changes
+  # nothing when it lands there, and
+  # `the_pipe_dropin_paces_restarts_as_the_node_unit_does` holds the two files
+  # to agreeing. That unit says why the burst is worth reaching: it is the state
+  # a monitor can see. Only a pipeline that fails at once gets there, which is
+  # the failure retrying cannot fix; five slow failures span far more than the
+  # interval, so those keep retrying.
+  nodeRestartSecs = 60;
+  nodeStartLimitIntervalSecs = 600;
+  nodeStartLimitBurst = 5;
+
+  # What an operator replaces in the shipped pipe drop-in with their node's own
+  # command. Unmistakable on purpose: a plausible-looking command is one
+  # somebody installs as it stands, and this one cannot start a node.
+  nodeCommandPlaceholder = "YOUR-NODE-COMMAND";
+
   # AF_NETLINK is not reachability: glibc asks the kernel which addresses the
   # host has before it resolves a name, and the units that speak HTTP name
   # hosts. No AF_UNIX: a unit that talks to a local socket asks for it, which

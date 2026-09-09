@@ -30,7 +30,7 @@
     # Same revision as ../flake.lock's cardano-node-leios, as a flake this
     # time: the process-compose stack needs the node and cli packages at
     # evaluation, not a source tree.
-    leios.url = "github:input-output-hk/ouroboros-leios?ref=refs/tags/prototype-2026w32";
+    leios.url = "github:input-output-hk/ouroboros-leios?ref=refs/tags/prototype-2026w35";
 
     # The db-sync leios1-dbsync-a-1 runs; cardano-playground pins this branch.
     cardano-db-sync-leios.url = "github:IntersectMBO/cardano-db-sync/jl/leios-prototype";

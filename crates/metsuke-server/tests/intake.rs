@@ -424,6 +424,32 @@ fn a_replayed_submission_spends_none_of_the_pools_budget() {
     submit(&intake, &key, &envelope_for(&key, 2)).unwrap();
 }
 
+/// A submission names its pool twice, once by the key that signed it and once
+/// in the header inside those bytes, and the signature makes only the first
+/// true. Both pools are allowlisted here, so what refuses this is the two
+/// disagreeing and not participation.
+#[test]
+fn a_submission_whose_header_names_another_pool_is_refused() {
+    let key = test_key();
+    let stranger = pool_of(&other_key());
+    let (intake, _dir) = intake_for(&[pool_of(&key), stranger]);
+    let (body, attestation) = seal(&key, &support::envelope_claiming(stranger, 1));
+
+    let error = intake
+        .submit(&cold_submission(attestation, &body), test_now())
+        .unwrap_err();
+
+    let rejection = rejection(error);
+    assert_eq!(status_for(&rejection), 400);
+    assert!(
+        matches!(rejection, Rejection::NotItsProvenance { .. }),
+        "got: {rejection:?}"
+    );
+    // The harm this prevents is in the archive, not the answer: every line
+    // inside is stamped with the pool the header named.
+    assert!(stored_keys(&intake).is_empty());
+}
+
 // The container check is first: a body that is not a submission is refused
 // before the allowlist, the limiter or any cryptography, so a pool that is
 // not allowlisted still hears about the framing rather than the allowlist.

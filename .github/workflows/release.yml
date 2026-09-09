@@ -1,0 +1,219 @@
+# Publishes the static builds a tag names, as assets on that tag's release.
+#
+# Nothing is compiled here. Hydra builds every output of this flake, so the job
+# waits for the tag's builds to reach cache.iog.io and then substitutes them.
+#
+# The substituters are named below rather than read out of flake.nix.
+# Accepting a flake's nixConfig would let anyone who can edit that file choose
+# a cache this workflow fetches store paths from.
+#
+# The release is left a draft. CI writes no description, and the tag lands
+# before the server is redeployed, so what an operator sees goes public at the
+# end of docs/releasing.md rather than here.
+#
+# Two jobs, because only one of them may write. Evaluating a flake runs code
+# from every input it reads, unsandboxed and able to fetch, so the job that
+# does it holds a read-only token and hands the bytes on as an artifact.
+name: release
+
+on:
+  push:
+    tags:
+      - client-v*
+      - fetch-v*
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # The poll below bounds itself at thirty minutes. This bounds the rest,
+    # a nix evaluation hung on a fetch above all, which the six hour default
+    # would leave sitting.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The binaries record the commit they were built from, so nix has to
+          # be able to read it, and a shallow clone has no revision to read.
+          fetch-depth: 0
+          # Nothing here pushes, and the default leaves the token in
+          # .git/config, which is a file everything this job evaluates can
+          # read.
+          persist-credentials: false
+
+      - uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+        with:
+          extra_nix_config: |
+            substituters = https://cache.iog.io https://cache.nixos.org/
+            trusted-public-keys = hydra.iohk.io:f/Ea+s+dFdN+3Y/G+FDgSq+a5NEWhJGzdjvKNGv0/EQ= cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=
+          # The flake's inputs come from GitHub, and an unauthenticated fetch of
+          # them is rate limited per runner address rather than per repository.
+          # This job's token is read-only, so the copy of it that lands in
+          # nix.conf, where an evaluation can read it, grants no more than the
+          # fetch it is there for.
+          github_access_token: ${{ github.token }}
+
+      - name: Assemble the assets
+        run: |
+          set -euo pipefail
+
+          version=${GITHUB_REF_NAME#*-v}
+          case $GITHUB_REF_NAME in
+            client-v*)
+              binary=metsuke
+              packages="metsuke-static-x86_64-linux metsuke-static-aarch64-linux"
+              ;;
+            fetch-v*)
+              binary=metsuke-fetch
+              packages="metsuke-fetch-static-x86_64-linux metsuke-fetch-static-aarch64-linux"
+              ;;
+            *)
+              echo "$GITHUB_REF_NAME is neither a client nor a fetch tag"
+              exit 1
+              ;;
+          esac
+
+          # This arch's jobset aggregate, then each build and the check beside
+          # it that it links nothing, which is the whole of what static means
+          # to an operator dropping one on a host whose libc is not ours. A
+          # check takes its name off the package's, and
+          # checks.release-workflow holds both names to outputs this flake has.
+          #
+          # An aggregate is built only where every constituent was, so its
+          # being in the cache is the green tick for the suite, clippy,
+          # treefmt and the VM units at this commit. Without it a tag on a
+          # commit whose tests fail would publish. The end-to-end job is
+          # devnet's own and is not among them.
+          #
+          # required-x86_64-linux and not required: the four assets are all
+          # cross builds out of this arch's package set, so the whole-jobset
+          # aggregate would additionally hold the release behind native
+          # aarch64 builds that nothing here publishes.
+          attrs=".#hydraJobs.required-x86_64-linux"
+          for package in $packages; do
+            attrs="$attrs .#$package .#checks.x86_64-linux.${package#metsuke-}"
+          done
+
+          # Resolved before the deadline is set, so the wait below is a wait on
+          # Hydra rather than partly on this evaluation. The attribute travels
+          # with its path to keep the message below naming what is missing.
+          wanted=""
+          for attr in $attrs; do
+            wanted="$wanted $attr=$(nix eval --raw "$attr.outPath")"
+          done
+
+          # --refresh: nix caches the answer that a path is absent, so a poll
+          # without it would keep reading the first no for an hour.
+          deadline=$((SECONDS + 1800))
+          for pair in $wanted; do
+            attr=${pair%%=*}
+            out=${pair#*=}
+            until nix path-info --refresh --store https://cache.iog.io "$out" >/dev/null 2>&1; do
+              if [ "$SECONDS" -ge "$deadline" ]; then
+                echo "timed out waiting for Hydra to build $attr"
+                echo "$out is not in cache.iog.io"
+                exit 1
+              fi
+              echo "$attr is not in the cache yet, waiting 30s"
+              sleep 30
+            done
+          done
+
+          mkdir assets
+          for package in $packages; do
+            # --max-jobs 0 and no builders leaves nix able to substitute and
+            # nothing else, so an asset is the bytes Hydra built. A gap in the
+            # cache stops the release rather than being filled in here by a
+            # build nothing has checked.
+            nix build --builders "" --max-jobs 0 -L --no-link ".#checks.x86_64-linux.${package#metsuke-}"
+            out=$(nix build --builders "" --max-jobs 0 -L --no-link --print-out-paths ".#$package")
+            # The asset keeps the flake's own name for the build, which is the
+            # name a deployment serves the same build under and the name
+            # inside the checksum file below. The mode is for the version read
+            # further down: an asset is served without one, and the install
+            # step an operator runs sets it.
+            install -m 0755 "$out/bin/$binary" "assets/$package"
+          done
+
+          # Digest, two spaces, name: what coreutils writes and what -c reads,
+          # which is also the sidecar the server serves beside its own copy.
+          for package in $packages; do
+            ( cd assets && sha256sum "$package" > "$package.sha256" )
+          done
+          ( cd assets && sha256sum -c ./*.sha256 )
+
+          # x86_64 first in both lists above, so this is the build this runner
+          # can execute. Reading the version out of the bytes being published
+          # rather than out of the manifest they were built from is what binds
+          # the tag to them; the aarch64 build is the same source and cannot
+          # run here.
+          native=${packages%% *}
+          stamp=$(./assets/"$native" --version)
+          built_rev=${stamp#*(}
+          if [ "${stamp%% *}" != "$version" ]; then
+            echo "$GITHUB_REF_NAME publishes a binary that says ${stamp%% *}"
+            exit 1
+          fi
+          # ^{commit} because an annotated tag resolves to the tag object, and
+          # the rev a build records is the commit's. The first seven characters
+          # of the full rev rather than `--short=7`, which is a minimum width
+          # and returns more where seven would be ambiguous, while the rev nix
+          # stamps in is exactly seven.
+          tagged=$(git rev-parse "$GITHUB_SHA^{commit}")
+          if [ "${built_rev%)}" != "${tagged:0:7}" ]; then
+            echo "$GITHUB_REF_NAME publishes a binary built from ${built_rev%)}"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release
+          path: assets
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+          path: assets
+
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # The sidecars travel in the artifact beside the files they describe,
+          # so this catches a round trip that corrupted one and not a substituted
+          # one: whatever could rewrite a build could rewrite its digest too.
+          ( cd assets && sha256sum -c ./*.sha256 )
+          # A re-run has to reach the same end state, since a Hydra queue longer
+          # than the poll's deadline is a failed run whose remedy is another
+          # one. Only a draft is rewritten: once published, the assets are what
+          # operators already have.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Assigned rather than read inside `[`, where a failed call would
+            # be an empty string that reads as "published" and answers a token
+            # problem with a destructive remedy. Assignment lets errexit see
+            # the failure.
+            draft=$(gh release view "$TAG" --json isDraft --jq .isDraft)
+            if [ "$draft" != "true" ]; then
+              echo "$TAG is published; delete its release to rebuild the assets"
+              exit 1
+            fi
+            gh release upload "$TAG" assets/* --clobber
+          else
+            # --notes "": the description is written by hand when the draft is
+            # published, so the body goes out empty. Passed rather than left
+            # out because gh documents --notes as the non-interactive form.
+            gh release create "$TAG" assets/* --draft --title "$TAG" --notes ""
+          fi

@@ -8,6 +8,7 @@
 
 pub mod cli;
 pub mod cursor;
+pub mod provenance;
 pub mod pull;
 pub mod recipe;
 pub mod select;

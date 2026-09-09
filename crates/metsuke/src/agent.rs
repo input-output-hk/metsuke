@@ -71,6 +71,36 @@ pub struct Uploaded {
     pub payload_digest: String,
 }
 
+/// What one upload tick has for the journal: every submission it sent, and the
+/// failure that ended it if one did.
+///
+/// Both, and not one or the other. A tick that sent two and then could not ack
+/// the third put three objects in the archive, and returning only the failure
+/// left all three unnamed while the caller reported a tick that sent nothing.
+/// Which submission a line is about is what ties it to an archived object, so
+/// the ones that landed are the ones an operator most needs named.
+#[derive(Debug)]
+pub struct UploadTick {
+    pub sent: Vec<Uploaded>,
+    /// `None` where the tick ran out of submissions or the server ended it.
+    /// A tick that failed always sent an accepted submission last, because a
+    /// server that did not take one ends the tick before the next is read.
+    pub failed: Option<UploadError>,
+}
+
+impl UploadTick {
+    fn done(sent: Vec<Uploaded>) -> UploadTick {
+        UploadTick { sent, failed: None }
+    }
+
+    fn ended(sent: Vec<Uploaded>, failed: UploadError) -> UploadTick {
+        UploadTick {
+            sent,
+            failed: Some(failed),
+        }
+    }
+}
+
 impl Agent {
     pub fn new(
         scraper: ScraperConfig,
@@ -108,7 +138,12 @@ impl Agent {
     /// several is several lines in the journal. The caller schedules on the
     /// last, and a submission the server did not take ends the tick, because
     /// pressing on would ignore the answer.
-    pub fn upload_once(&mut self) -> Result<Vec<Uploaded>, UploadError> {
+    ///
+    /// A failure ends the tick without discarding what it sent
+    /// (`UploadTick`), so it is not a `Result`: every submission this reached
+    /// the server with is an object in the archive whether or not the tick
+    /// finished.
+    pub fn upload_once(&mut self) -> UploadTick {
         type Take =
             fn(&mut Delivery, OffsetDateTime) -> Result<Option<SealedSubmission>, DeliveryError>;
         let streams: [Take; 2] = [Delivery::take_submission, Delivery::take_line_submission];
@@ -118,42 +153,58 @@ impl Agent {
         let mut sent = Vec::new();
         for take in streams {
             while sent.len() < allowance {
-                let taken = take(&mut self.delivery, now).map_err(UploadError::NotAttempted)?;
-                let Some(one) = self.send(taken)? else {
+                let taken = match take(&mut self.delivery, now) {
+                    Ok(taken) => taken,
+                    Err(error) => {
+                        return UploadTick::ended(sent, UploadError::NotAttempted(error));
+                    }
+                };
+                // Whether a row waited above the highest id this batch took,
+                // asked before the POST so what lands during one is invisible
+                // to the decision to continue. Mid-tick arrivals are carried
+                // by the next batch but cannot keep the loop alive on their
+                // own: the drain ends at the first batch nothing waited
+                // behind, and what landed during that round trip waits for
+                // the next tick. A stream filling faster than a batch per
+                // round trip drains to the allowance: a backlog, not a chase.
+                let more = taken.as_ref().is_some_and(SealedSubmission::more_waits);
+                let Some(submission) = taken else {
                     break;
                 };
-                let accepted = matches!(one.outcome, UploadOutcome::Acked(_));
-                sent.push(one);
+                // Recorded before the ack, which is the only thing after this
+                // that can fail, and which failing does not unsend it.
+                let record = self.posted(&submission);
+                let accepted = matches!(record.outcome, UploadOutcome::Acked(_));
+                sent.push(record);
+                // A refusal ends the tick, because pressing on would ignore
+                // the answer; a drained stream ends only this one, because
+                // the other still has its own backlog to send.
                 if !accepted {
-                    return Ok(sent);
+                    return UploadTick::done(sent);
+                }
+                if let Err(error) = self.delivery.ack(submission) {
+                    return UploadTick::ended(sent, UploadError::AckAfterAccept(error));
+                }
+                if !more {
+                    break;
                 }
             }
         }
-        Ok(sent)
+        UploadTick::done(sent)
     }
 
-    /// POST one submission if there is one, acking its rows only on `Acked`.
-    fn send(
-        &mut self,
-        submission: Option<SealedSubmission>,
-    ) -> Result<Option<Uploaded>, UploadError> {
-        let Some(submission) = submission else {
-            return Ok(None);
-        };
-        let sent = Uploaded {
-            outcome: upload(&self.upload, self.pool_id, &submission),
+    /// POST one submission and record what the server said. Everything a log
+    /// line needs comes off the submission here, because acking it consumes
+    /// it.
+    fn posted(&self, submission: &SealedSubmission) -> Uploaded {
+        Uploaded {
+            outcome: upload(&self.upload, self.pool_id, submission),
             counter: submission.counter,
             lines: submission.lines(),
             carried: submission.carried(),
             bytes: submission.wire_bytes.len(),
             payload_digest: submission.payload_digest.clone(),
-        };
-        if matches!(sent.outcome, UploadOutcome::Acked(_)) {
-            self.delivery
-                .ack(submission)
-                .map_err(UploadError::AckAfterAccept)?;
         }
-        Ok(Some(sent))
     }
 
     /// How many rows the spool's cap dropped since this was last asked, and

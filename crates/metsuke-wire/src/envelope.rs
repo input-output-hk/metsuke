@@ -88,6 +88,24 @@ pub enum AttestationError {
     Leios(#[from] leios::LeiosKeyError),
 }
 
+/// What an answer's head said about whose the bytes are
+/// (`Attestation::from_headers`).
+#[derive(Debug)]
+pub enum Attested {
+    /// Neither header. Every reader of this has to decide what to do about an
+    /// object nobody can check, and none of them may call it a fault of the
+    /// answer: a filesystem archive discards the pair at ingest.
+    None,
+    /// Boxed because a Leios pair is the widest thing here by some way, and
+    /// every answer that carries no pair at all would otherwise be as wide as
+    /// one that does.
+    Pair(Box<Attestation>),
+    /// A pair was sent and did not decode. Distinct from `None`, because the
+    /// remedy is not the operator's archive but whatever is between them and
+    /// it.
+    Malformed(AttestationError),
+}
+
 impl Attestation {
     /// The pair as a download's headers, in the encoding `decode` reads.
     pub fn headers(&self) -> [(&'static str, String); 2] {
@@ -162,11 +180,25 @@ impl Attestation {
         }
     }
 
-    /// The pair off an answer's head. `None` where either header is absent or
-    /// unreadable: what an unverifiable object means is the caller's to say,
-    /// and on this path a download is not refused for it.
-    pub fn from_headers(vkey: Option<&str>, signature: Option<&str>) -> Option<Attestation> {
-        Attestation::decode(Some(vkey?), Some(signature?)).ok()
+    /// The pair off an answer's head, as one of three answers rather than two.
+    ///
+    /// An answer carrying no pair at all is not a fault of the download, and
+    /// what it means is the caller's to say. An answer carrying one that does
+    /// not decode is a different fact and used to read as the same one: both
+    /// arrived as `None`, so a proxy mangling `x-metsuke-vkey` looked exactly
+    /// like an archive storing no pairs, which is a far larger claim about a
+    /// deployment than the truth.
+    pub fn from_headers(vkey: Option<&str>, signature: Option<&str>) -> Attested {
+        match (vkey, signature) {
+            (None, None) => Attested::None,
+            // Half a pair included: the server writes both or neither
+            // (`headers`), so one on its own is something between here and
+            // there having dropped the other.
+            (vkey, signature) => match Attestation::decode(vkey, signature) {
+                Ok(pair) => Attested::Pair(Box::new(pair)),
+                Err(error) => Attested::Malformed(error),
+            },
+        }
     }
 }
 

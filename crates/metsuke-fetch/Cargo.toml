@@ -1,7 +1,7 @@
 [package]
 name = "metsuke-fetch"
 description = "Delta-sync of the signed telemetry archive to local files a developer reads directly"
-version = "0.1.0"
+version = "0.2.0"
 publish = false
 edition.workspace = true
 license.workspace = true
@@ -14,6 +14,9 @@ base64 = "0.22.1"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 thiserror = "2.0.20"
+# `parsing` alone, for the RFC 3339 form of --from and --to. The day form is
+# hand-parsed like every other flag, which is what keeps `macros` out.
+time = { version = "0.3.55", features = ["parsing"] }
 # rustls, because a server reached over TLS is the deployed case and ureq
 # without a provider answers TlsRequired.
 ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
@@ -23,4 +26,8 @@ metsuke-wire = { path = "../metsuke-wire", features = ["fixtures"] }
 # tests/support/mod.rs says what the server is doing here.
 metsuke-server = { path = "../metsuke-server" }
 tempfile = "3.27.0"
-time = "0.3.55"
+# `formatting` for the suite alone: the trace fixture writes an `at` for the
+# duckdb init files to read as a timestamp. Named here rather than added above,
+# so the shipped binary keeps the one feature the note there is about, and
+# resolver 2 is what holds that.
+time = { version = "0.3.55", features = ["formatting"] }

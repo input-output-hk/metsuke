@@ -1,0 +1,156 @@
+# /etc/systemd/system/cardano-node.service
+#
+# This is an example to adapt, not a supported unit. cardano-node ships no
+# service file of its own, and both of metsuke's systemd setups need the node
+# to have one: the journald setup reads its journal, the drop-in extends it.
+#
+#   REPO=input-output-hk/ouroboros-leios
+#
+#   TAG=$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=30" |
+#     awk -F'"' '/"tag_name"/ && !t && $4 ~ /^prototype-[0-9]+w[0-9]+[a-z]?$/ {t=$4} END {print t}')
+#   echo "${TAG:?no prototype release found in the newest 30}"
+#
+#   BASE=https://github.com/$REPO/releases/download/$TAG
+#   ARCHIVE=cardano-node-leios-x86_64-linux.tar.gz     # or aarch64-linux
+#
+#   cd "$(mktemp -d)"
+#   curl -L -O "$BASE/$ARCHIVE"
+#   curl -L -O "$BASE/${ARCHIVE%.tar.gz}.sha256"
+#   sha256sum -c "${ARCHIVE%.tar.gz}.sha256"
+#   tar -xzf "$ARCHIVE"
+#   sudo install -D -m 0755 bin/cardano-node /usr/local/bin/cardano-node
+#   sudo install -D -m 0755 bin/cardano-cli /usr/local/bin/cardano-cli
+#
+#   # The config, from the same tag. The script writes a config/ beside
+#   # itself and needs no privilege, so run it as yourself, in a
+#   # directory of its own so what you install is what it wrote.
+#   cd "$(mktemp -d)"
+#   curl -fLO https://raw.githubusercontent.com/$REPO/$TAG/testnet/pin-config.sh
+#   less pin-config.sh
+#   bash pin-config.sh
+#   sudo mkdir -p /var/lib/cardano-node
+#   sudo cp -r config /var/lib/cardano-node/
+#
+#   # The node runs as its own user, so it owns what it was given.
+#   sudo useradd --system --home-dir /var/lib/cardano-node --shell /usr/sbin/nologin cardano-node || true
+#   sudo chown -R cardano-node:cardano-node /var/lib/cardano-node
+#
+#   sudo cp <THIS_FILE> /etc/systemd/system/cardano-node.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cardano-node
+#   journalctl -u cardano-node -f
+#
+[Unit]
+Description=cardano-node (Musashi)
+Wants=network-online.target
+After=network-online.target
+# This is wide enough that RestartSec= below can reach the burst. systemd's
+# defaults are 5 starts in 10s, and a node restarting every 60s only ever fits
+# one of them in that window, so the limit never trips and a node that cannot
+# start retries for ever. Reaching it puts the unit in `failed`, which is the
+# state a monitor can see.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# Not root. The node binds 0.0.0.0 and takes connections from strangers, and
+# under the pipe setup this unit also holds your signing key as a credential,
+# so root here is the whole host to anything that gets in. The install steps
+# above create this user and give it the state directory.
+User=cardano-node
+Group=cardano-node
+StateDirectory=cardano-node
+WorkingDirectory=/var/lib/cardano-node
+ExecStart=/usr/local/bin/cardano-node run \
+  --topology config/topology.json \
+  --database-path db \
+  --socket-path node.socket \
+  --config config/config.json \
+  --host-addr 0.0.0.0 \
+  --port 3010
+Restart=on-failure
+RestartSec=60
+# The node closes its databases on SIGINT. Killed instead, the next start
+# replays, which is the expensive kind of restart.
+KillSignal=SIGINT
+TimeoutStopSec=300
+LimitNOFILE=32768
+SyslogIdentifier=cardano-node
+
+# The confinement below is deliberately tighter than a node has been shown to
+# need. It starts from what contrib/metsuke.service carries and goes further,
+# adding PrivateUsers, PrivateIPC, PrivateMounts, RemoveIPC, KeyringMode and
+# DevicePolicy on top; the state directory stays writable through
+# ProtectSystem=strict.
+#
+# Your node is a different build on a different distribution's systemd, and a
+# path first taken hours in can still meet MemoryDenyWriteExecute or the
+# syscall filter. So if it will not start or will not stay up, take lines off,
+# in this order:
+#
+#   MemoryDenyWriteExecute    if the runtime ever maps a page writable+executable
+#   SystemCallFilter          one syscall outside @system-service. Note the
+#                             default action is SIGSYS, so this arrives as a
+#                             kill rather than as an error the node reports
+#   ProcSubset=pid            the RTS reads /proc beyond its own task
+#   PrivateUsers              ownership of the state directory or the socket,
+#                             and it maps every other uid to 65534, so a
+#                             SupplementaryGroups= added here buys nothing
+#   RestrictNamespaces, LockPersonality, RestrictRealtime  unlikely
+#
+# What not to take off is User=. Everything below it is defence in depth;
+# that line is the one that matters.
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=true
+PrivateDevices=true
+PrivateIPC=true
+PrivateUsers=true
+PrivateMounts=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectProc=invisible
+ProcSubset=pid
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+RemoveIPC=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+KeyringMode=private
+DevicePolicy=closed
+# 0007 and not 0077: connecting to a unix socket needs write permission on it,
+# and the socket is created 0777 less this mask. At 0077 it lands 0700, so
+# nothing but the node itself and root can reach it and your own cardano-cli
+# is locked out however its group is set. Group write is the grant, which is
+# why User=/Group= name a real group rather than using DynamicUser: put
+# yourself in that group and the cli reaches the node.
+#
+# The mask reaches more than the socket. A umask cannot tell a socket from a
+# file and no directive sets a socket's own mode, so group write lands on
+# everything the node creates, the chain database included. Keep that group to
+# the node and whoever has to reach its socket.
+UMask=0007
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+SystemCallFilter=~@resources
+# The node's peers, and the local socket cardano-cli reaches it on.
+# AF_NETLINK grants no reachability: glibc asks the kernel which
+# addresses this host has before it resolves a name, so without it
+# getaddrinfo loses AI_ADDRCONFIG filtering and starts answering with AAAA
+# records on a host that has no IPv6 route. Relay names out of topology.json
+# are what that costs, and under the pipe drop-in the agent inherits this list
+# and has its own upload_url to resolve.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

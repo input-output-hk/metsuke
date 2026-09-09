@@ -4,6 +4,17 @@
 //! uploads without linking the agent's scraping and spooling, so an agent
 //! dependency never becomes a server dependency.
 
+/// The commit the binaries were built from, or `unknown` where neither the
+/// flake nor a repository said (`build.rs`). Here rather than in each binary
+/// because all three link this crate and none of them build differently.
+pub const BUILD_REV: &str = env!("BUILD_REV");
+
+/// How a binary names itself, in `--version` and on the line it starts with.
+/// The version is the crate's own, so this takes it rather than holding one.
+pub fn version_line(version: &str) -> String {
+    format!("{version} ({BUILD_REV})")
+}
+
 pub mod envelope;
 #[cfg(feature = "fixtures")]
 pub mod fixtures;

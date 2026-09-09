@@ -9,24 +9,54 @@ const CODE = '^[A-Za-z0-9._-]+$'
 const POOL_ID_COLUMN = "pool_id"
 const CODE_COLUMN = "application_code"
 
-# An earlier update's code is one the operator has already replaced, so only the
-# current registration counts. DISTINCT because one transaction may carry
-# several registration certificates for a pool.
-const REGISTERED_CODES = "
+# The code an operator declared most recently, which is the latest registration
+# that carries one rather than the code on the latest registration. An earlier
+# update's code is replaced only by a later update that states one: changing
+# relays, pledge, margin or the reward account submits a new registration
+# certificate, and nothing asks the operator to re-attach the metadata. Reading
+# the newest certificate alone dropped every compliant pool that changed a
+# relay, and a pool off this list is refused before any cryptography runs, on
+# its side silently.
+#
+# Retirement is judged against the newest certificate and not that one, because
+# a pool that retired and re-registered is active while its code is still the
+# last one it declared.
+#
+# DISTINCT because one transaction may carry several registration certificates
+# for a pool.
+#
+# Every psql variable here is quoted. The unquoted form is textual
+# substitution into the statement, so what keeps it safe is whatever type the
+# caller happened to annotate rather than anything at the site itself.
+# postgres reads a quoted variable as an unknown literal and compares it to the
+# numeric column as one, so the query answers the same either way.
+#
+# Exported so `test.nu` can hold the whole string to that, which is the guard:
+# a comment is not one, and the site easiest to miss is inside a correlated
+# subquery.
+export const REGISTERED_CODES = "
 SELECT DISTINCT ph.view AS pool_id,
        tm.json ->> :'code_key' AS application_code
 FROM pool_hash ph
 JOIN pool_update pu ON pu.hash_id = ph.id
 JOIN tx_metadata tm ON tm.tx_id = pu.registered_tx_id
-WHERE tm.key = :label
+WHERE tm.key = :'label'
   AND tm.json ? :'code_key'
   AND pu.registered_tx_id = (
-        SELECT MAX(registered_tx_id) FROM pool_update WHERE hash_id = ph.id)
+        SELECT MAX(pu2.registered_tx_id)
+        FROM pool_update pu2
+        JOIN tx_metadata tm2 ON tm2.tx_id = pu2.registered_tx_id
+        WHERE pu2.hash_id = ph.id
+          AND tm2.key = :'label'
+          AND tm2.json ? :'code_key')
   AND NOT EXISTS (
         SELECT 1
         FROM pool_retire pr
         WHERE pr.hash_id = ph.id
-          AND pr.announced_tx_id > pu.registered_tx_id)
+          AND pr.announced_tx_id > (
+                SELECT MAX(registered_tx_id)
+                FROM pool_update
+                WHERE hash_id = ph.id))
 "
 
 def demand [value: any, name: string] {
@@ -54,27 +84,51 @@ export def normalise [
   let pool_columns = demand $pool_columns "--pool-columns"
   # Bound rather than piped on: an error raised inside a streaming `each` is
   # carried as a value through `sort-by` instead of stopping the run.
-  let pools = $in
+  #
+  # A missing column still stops here, on the first row: it is the same answer
+  # for every row after it, so naming them all would say nothing more.
+  let read = $in
   | enumerate
   | each {|entry|
       let at = $entry.index + 2
-      let code = field $entry.item $code_column $at
-      if not ($code =~ $CODE) {
-        error make {msg: $"row ($at): ($code) is not an application code"}
-      }
-      let pools = $pool_columns
-        | each {|name| field $entry.item $name $at }
-        | where {|found| $found != "" }
-      if ($pools | is-empty) {
-        error make {msg: $"row ($at): none of ($pool_columns | str join ', ') names a pool"}
-      }
-      $pools | each {|pool_id|
-        if not ($pool_id =~ $POOL_ID) {
-          error make {msg: $"row ($at): ($pool_id) is not a pool id"}
-        }
-        {pool_id: $pool_id, application_code: $code}
+      {
+        at: $at
+        code: (field $entry.item $code_column $at)
+        pools: ($pool_columns
+          | each {|name| field $entry.item $name $at }
+          | where {|found| $found != "" })
       }
     }
+  # Every unreadable row at once. One export holds many, and a run that named
+  # only the first is one edit and one re-run per bad row.
+  let problems = $read
+  | each {|row|
+      [
+        (if not ($row.code =~ $CODE) {
+          $"row ($row.at): ($row.code) is not an application code"
+        })
+        (if ($row.pools | is-empty) {
+          $"row ($row.at): none of ($pool_columns | str join ', ') names a pool"
+        })
+      ]
+      | append ($row.pools
+        | where {|pool_id| not ($pool_id =~ $POOL_ID) }
+        | each {|pool_id| $"row ($row.at): ($pool_id) is not a pool id" })
+      | compact
+      | each {|told| {at: $row.at, told: $told} }
+    }
+  | flatten
+  if ($problems | is-not-empty) {
+    # Rows and not problems: one row can hold several, and what an operator
+    # has to go and edit is rows.
+    let rows = $problems | get at | uniq | length
+    let told = $problems | get told | str join "\n  "
+    error make {
+      msg: $"($rows) of ($read | length) application rows do not read:\n  ($told)"
+    }
+  }
+  let pools = $read
+  | each {|row| $row.pools | each {|pool_id| {pool_id: $pool_id, application_code: $row.code}} }
   | flatten
   | group-by --to-table pool_id
   | insert codes {|group| $group.items | get application_code | uniq }
@@ -171,7 +225,14 @@ def "main query" [
   --metadata-key: string
   --statement-timeout: duration
 ]: nothing -> string {
+  # postgres reads statement_timeout=0 as no timeout at all, and `into int`
+  # truncates, so anything under a millisecond asks for the opposite of what it
+  # says. This is the only guard on a query that runs against a production
+  # db-sync, so a value it cannot express is refused rather than rounded.
   let timeout_ms = ((demand $statement_timeout "--statement-timeout") / 1ms) | into int
+  if $timeout_ms < 1 {
+    error make {msg: $"--statement-timeout ($statement_timeout) is under 1ms, which postgres reads as no timeout"}
+  }
   let arguments = [
     "--host" (demand $socket_dir "--socket-dir")
     "--dbname" (demand $dbname "--dbname")
@@ -180,10 +241,11 @@ def "main query" [
     "--variable" "ON_ERROR_STOP=1"
     "--variable" $"code_key=(demand $metadata_key '--metadata-key')"
     "--variable" $"label=(demand $metadata_label '--metadata-label')"
-    "--command" $"SET statement_timeout = ($timeout_ms)"
-    "--command" $REGISTERED_CODES
+    "--file" "-"
   ]
-  let answer = ^psql ...$arguments | complete
+  let answer = with-env {PGOPTIONS: $"-c statement_timeout=($timeout_ms)"} {
+    $REGISTERED_CODES | ^psql ...$arguments | complete
+  }
   if $answer.exit_code != 0 {
     error make {msg: $"psql failed: ($answer.stderr)"}
   }

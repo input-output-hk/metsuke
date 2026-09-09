@@ -1,11 +1,13 @@
 # 10. Trace lines off the journal, selected by configuration
 
-Status: accepted (2026-08-27). Supersedes ADR 0007.
+Status: accepted (2026-08-27). Supersedes
+[ADR 0007](0007-agent-reads-only-loopback-prometheus.md).
 Amended by metsuke-jfb.11, which moved where a line's stamp is applied, by
 metsuke-jfb.19, which dropped severity as a selection rule, by
 metsuke-4zo.98, which settled what the archive says about lost lines: nothing,
-by metsuke-4zo.107, which made a prefix match on segment boundaries, and by
-metsuke-4zo.116, which made a journalctl that never follows fail the start.
+by metsuke-4zo.107, which made a prefix match on segment boundaries, by
+metsuke-4zo.116, which made a journalctl that never follows fail the start, and
+by the exclusion rule below, which subtracts from what the prefixes select.
 
 ## Context
 
@@ -29,15 +31,18 @@ has no field to read. The data exists only in the node's trace stream.
 
 Two transports carry that stream. `journalctl --follow` on the node's unit is
 out of band. An agent that stalls or dies leaves the node untouched. Reading
-the node's stdout as a pipe needs no privilege at all, but puts metsuke inside
-the block producer's write path, where a stalled reader is the node's problem.
+the node's stdout as a pipe grants the agent no group of its own, but puts
+metsuke inside the block producer's write path, where a stalled reader is the
+node's problem, and inside the node's unit, where the consequence below is that
+it keeps the node's confinement rather than its own.
 
 ## Decision
 
 The agent reads the node's trace stream from the source `[log].source` names,
-selects lines by namespace prefix, which is configuration, and ships every field
-of what it selects. The journal source follows `journalctl --follow`; the pipe
-source reads the node's own stdout and tees it through untouched.
+selects lines by a namespace prefix list less a namespace prefix list, which is
+configuration, and ships every field of what it selects. The journal source
+follows `journalctl --follow`; the pipe source reads the node's own stdout and
+tees it through untouched.
 It parses the line as a JSON object and reads `ns` off its top level and nothing
 else; a line the parse refuses declares no namespace, so no rule reaches it.
 
@@ -47,6 +52,22 @@ stops mid-segment selects nothing rather than whatever shares its letters, so an
 entry names a namespace or an ancestor of one and never a fragment. The roots
 are spelled without a trailing dot, because the boundary is the rule's rather
 than the spelling's (metsuke-4zo.107).
+
+A second list subtracts. `exclude_namespaces` is prefixes read the same way,
+and a line under one is dropped however it was selected, so an exclusion can
+name a namespace beneath a prefix the selection keeps whole. Without it the
+only way to refuse one namespace is to stop selecting its parent, which also
+gives up every namespace the node adds under that parent later. That is not
+hypothetical: `Consensus.LeiosPeer.Msg` is two thirds of the payload bytes a
+node ships and carries a Haskell `Show` rendering nothing downstream can group
+by, while `Consensus.LeiosPeer.Announcement` beside it answers one of the
+distributions the program asked for.
+
+Exclusions are not checked against `namespace_roots`. The ceiling bounds what a
+host may ship, and an exclusion only ever ships less, so one naming a namespace
+no root covers is redundant rather than a rule to refuse. The subtraction wins
+over the selection, which is the only ordering under which an exclusion beneath
+a selected prefix can fire at all.
 
 Severity is not a rule. A namespace's severity is assigned by the node's own
 `TraceOptions`, so what a line carries in `sev` states what its operator
@@ -74,7 +95,9 @@ beyond the state directory. The two are one parameter in nix/unit.nix, because
 a unit holding the group without the second cannot start journalctl at all.
 
 Selected lines land in the existing spool under their own byte cap and upload
-as schema v2 envelopes on the same signed path as scrapes (ADR 0001, 0005).
+as schema v2 envelopes on the same signed path as scrapes
+([ADR 0001](0001-raw-ed25519-detached-signature.md),
+[0005](0005-archive-raw-signed-bytes.md)).
 They are the data frame's lines, each the node's object with the agent's
 provenance added under the one reserved `metsuke` key, so a trace line and a
 metrics line have the same shape and one query over the archive reads both. One
@@ -113,8 +136,38 @@ upstream of it.
   to merge, never a `TraceOptions` to paste over one. An operator's own config
   may already carry these namespaces and settings on them that replacing the
   object would discard. The instructions page carries the step and
-  docs/research/cardano-node-11-tracing.md carries why, and what the published
-  configs hold.
+  [docs/research/cardano-node-11-tracing.md](../research/cardano-node-11-tracing.md)
+  carries why, and what the published configs hold.
+- An excluded namespace is absent from the archive exactly as a namespace the
+  node never emitted is, and nothing in the data tells them apart. That is the
+  same silence metsuke-4zo.98 accepted for lost lines, and it holds here for the
+  same reason only because an exclusion is all-or-nothing: a consumer reading no
+  `Consensus.LeiosPeer.Msg` rows is reading a namespace that was not collected,
+  not a sample of one. A rule that dropped *some* lines of a namespace would
+  break that, because a count over what survived would look like a whole. The
+  agent names its exclusions on the startup line beside its selection, which is
+  where an operator asks the question; a consumer holding only the archive asks
+  the deployment.
+- The pipe's cost is not the journal's, and it is not nothing. This ADR priced
+  the two sources by the group each needs and concluded the pipe "needs no
+  privilege at all", which is true of the agent in isolation and false of what
+  a deployment runs. Under the drop-in the agent is a process of the node's
+  unit, so it keeps that unit's user, sandbox and supplementary groups instead
+  of the ones `nix/unit.nix` writes for it, and the drop-in's `LoadCredential=`
+  is the node unit's, which puts the signing key in `$CREDENTIALS_DIRECTORY`
+  for every process that unit runs, cardano-node included. What that is worth
+  depends on the host, and the block producer is the case where it is worth
+  least: a node signing with its Leios key already holds that key, so a
+  credential it can read is nothing new. On a relay the key is present only
+  because the agent needs it, and the journald setup keeps it readable by the
+  agent's unit alone, so this is the setup under which a compromised
+  cardano-node reaches a key of the pool's. So the comparison is a group that
+  reads every unit's journal against a key the node can read, and an operator
+  who must not grant `systemd-journal` is choosing the less confined of the two
+  rather than the cheaper one. Both onboarding pages say so, and both name the
+  Leios key for this setup, because a cold key cannot be replaced. The Pool ID
+  is its hash (CONTEXT.md), so a compromised cold key is not rotated: that pool
+  ends and any successor is an unrelated one holding none of its delegation.
 - The grant is real and lasts as long as `[log]` is set. `systemd-journal`
   reads the whole system journal, not the node's unit. An agent compromised on
   a host that logs anything sensitive to the journal reads that too. The

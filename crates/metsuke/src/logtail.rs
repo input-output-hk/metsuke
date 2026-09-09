@@ -88,6 +88,26 @@ fn is_busy(error: &SpoolError) -> bool {
     )
 }
 
+/// Whether the row was refused for its own size rather than the file being
+/// unwritable. The line is what is too big, so it is the line that is dropped:
+/// the spool is fine, and every other line still reaches it.
+///
+/// `max_line_bytes` is what keeps this out of reach, and it is configuration,
+/// so an operator can raise it past what SQLite will store. That is the case
+/// this exists for, not one an ordinary run meets.
+fn is_too_big(error: &SpoolError) -> bool {
+    matches!(
+        error,
+        SpoolError::Sqlite(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: rusqlite::ErrorCode::TooBig,
+                ..
+            },
+            _
+        ))
+    )
+}
+
 /// Read until the stream ends, or return the failure that made the spool
 /// unwritable. A busy spool is waited out; anything else is the caller's to
 /// end the process on.
@@ -109,6 +129,7 @@ pub fn drain(
 ) -> Result<DrainEnd, SpoolError> {
     let mut dropped = 0u64;
     let mut reserved = 0u64;
+    let mut too_big = 0u64;
     let mut end = DrainEnd::NodeExited;
     loop {
         let line = match source.next_line() {
@@ -148,25 +169,41 @@ pub fn drain(
                 }
                 dropped += count;
             }
+            // The line, not the file. Counted and stepped over, because ending
+            // the process here would let one line the node wrote decide
+            // whether this agent keeps running at all.
+            Err(error) if is_too_big(&error) => {
+                if too_big == 0 {
+                    eprintln!(
+                        "{WARNING}sqlite will not store a trace line this long and it is dropped, \
+                         which max_line_bytes is what bounds: {error}"
+                    );
+                }
+                too_big += 1;
+            }
             Err(error) => {
-                report_totals(dropped, reserved);
+                report_totals(dropped, reserved, too_big);
                 return Err(error);
             }
         }
     }
-    report_totals(dropped, reserved);
+    report_totals(dropped, reserved, too_big);
     Ok(end)
 }
 
 /// What a drain lost, each with its own remedy: the cap bites when uploads
-/// cannot keep up, and a reserved key is the node writing a name metsuke has
-/// taken.
-fn report_totals(dropped: u64, reserved: u64) {
+/// cannot keep up, a reserved key is the node writing a name metsuke has
+/// taken, and a row sqlite refuses for its size is `max_line_bytes` set past
+/// what sqlite will store.
+fn report_totals(dropped: u64, reserved: u64, too_big: u64) {
     if dropped > 0 {
         eprintln!("{WARNING}the trace-line spool cap dropped {dropped} lines in all");
     }
     if reserved > 0 {
         eprintln!("{WARNING}{reserved} node lines carried metsuke's reserved key and were dropped");
+    }
+    if too_big > 0 {
+        eprintln!("{WARNING}{too_big} trace lines were too long for sqlite to store");
     }
 }
 

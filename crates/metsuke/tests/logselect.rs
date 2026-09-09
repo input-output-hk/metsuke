@@ -43,7 +43,11 @@ fn the_shipped_rules_ship_what_was_asked_for() {
         r#""ns":"Consensus.LeiosKernel.BlockAcquired""#,
         r#""ns":"Consensus.LeiosKernel.BlockTxsAcquired""#,
         r#""ns":"Consensus.LeiosKernel.Certified""#,
-        r#""ns":"Consensus.LeiosKernel.NotVoted""#,
+        // The vote path as a round that went well leaves it. Its counterpart
+        // `NotVoted` is a node declining to vote, which a devnet where nothing
+        // goes wrong never emits, so a recording is not the place to ask for
+        // one.
+        r#""ns":"Consensus.LeiosKernel.Voted""#,
         r#""ns":"ChainDB.AddBlockEvent.AddedToCurrentChain""#,
         r#""ns":"Forge.Loop.AdoptedBlock""#,
     ] {
@@ -56,18 +60,31 @@ fn the_shipped_rules_ship_what_was_asked_for() {
     }
 }
 
-// The loudest namespace in the recording is wire-level keepalive polling that
-// nobody asked for, and no rule names it.
+// Lines no rule names. The recording's loudest namespaces are the two Leios
+// `Msg` streams, which are wanted, so these are picked for the shape of how
+// they reach the rules rather than for how much of the window they are.
 #[test]
 fn the_shipped_rules_drop_the_wire_level_chatter() {
     let rules = shipped_rules();
-    for needle in [
-        r#""ns":"LeiosNotify.Remote.Send.RequestNext""#,
-        r#""ns":"Forge.Loop.Call""#,
-        r#""ns":"ChainDB.LedgerEvent.Flavor.V2.LedgerTablesHandleCreate""#,
+    for (window, needle) in [
+        // Outside the roots, under a selected root beside a namespace that is
+        // wanted, and under one on a branch of its own: the three ways a line
+        // reaches these rules without being asked for.
+        (
+            LEIOS_WINDOW,
+            r#""ns":"LeiosNotify.Remote.Send.RequestNext""#,
+        ),
+        (LEIOS_WINDOW, r#""ns":"Forge.Loop.StartLeadershipCheck""#),
+        (LEIOS_WINDOW, r#""ns":"Forge.StateInfo.StateInfo""#),
+        // The third root, from the other window because that is where it says
+        // anything: what ChainDB emits around a Leios round is the one
+        // namespace that is wanted, its Debug ledger-table traces are under
+        // the Info the deployed configuration holds the root to, and the rest
+        // of it is the database opening.
+        (STARTUP_WINDOW, r#""ns":"ChainDB.OpenEvent.OpenedDB""#),
     ] {
         assert_eq!(
-            select(&rules, line_with(LEIOS_WINDOW, needle)),
+            select(&rules, line_with(window, needle)),
             Selection::Skip,
             "the shipped rules kept {needle}"
         );
@@ -92,6 +109,7 @@ fn a_listed_namespace_ships_at_any_severity() {
     let rules = SelectConfig::new(
         &["LeiosNotify".to_string()],
         vec!["LeiosNotify.Remote".to_string()],
+        Vec::new(),
     )
     .unwrap();
     let debug = line_with(
@@ -110,6 +128,7 @@ fn a_rule_stopping_mid_segment_selects_nothing() {
     let rules = SelectConfig::new(
         &shipped_log_config().namespace_roots,
         vec!["Consensus.Leios".to_string()],
+        Vec::new(),
     )
     .unwrap();
     let kernel = line_with(LEIOS_WINDOW, r#""ns":"Consensus.LeiosKernel.Certified""#);
@@ -129,6 +148,7 @@ fn a_namespace_outside_the_roots_is_refused() {
     let error = SelectConfig::new(
         &shipped_log_config().namespace_roots,
         vec!["Consensus.Leios".to_string(), "Reflection".to_string()],
+        Vec::new(),
     )
     .unwrap_err();
     assert!(
@@ -141,6 +161,7 @@ fn a_namespace_outside_the_roots_is_refused() {
         SelectConfig::new(
             &shipped_log_config().namespace_roots,
             vec!["ConsensusOther.Thing".to_string()],
+            Vec::new(),
         )
         .is_err()
     );
@@ -227,9 +248,9 @@ fn every_recorded_record_declares_the_field_a_rule_reads() {
 }
 
 // The point of selecting at all. Stated as a shape rather than a ratio: the
-// shipped rules select something, and nothing they select is a Debug line,
-// which is where the volume in this recording is, and none of it was asked
-// for.
+// shipped rules select something, and nothing they select is a Debug line. A
+// third of this window is Debug and none of it was asked for, so what the
+// assertion is worth is that the rules reach none of it.
 #[test]
 fn the_shipped_rules_select_without_reaching_debug() {
     let rules = shipped_rules();
@@ -262,4 +283,92 @@ fn a_shipped_line_holds_every_field_the_node_wrote() {
         serde_json::from_str::<serde_json::Value>(&shipped.to_line()).unwrap(),
         serde_json::from_str::<serde_json::Value>(line).unwrap()
     );
+}
+
+/// The case the feature is for, against the recording rather than a synthetic
+/// line: `Consensus.LeiosPeer.Msg` is two thirds of what a node ships and
+/// nothing downstream can group by it, while `Consensus.LeiosPeer.Announcement`
+/// under the same prefix answers one of the distributions the program asked
+/// for. An exclusion keeps the prefix and drops the one namespace.
+#[test]
+fn an_exclusion_drops_a_namespace_under_a_prefix_that_is_kept() {
+    let log = shipped_log_config();
+    let rules = SelectConfig::new(
+        &log.namespace_roots,
+        log.namespaces.clone(),
+        vec!["Consensus.LeiosPeer.Msg".to_string()],
+    )
+    .unwrap();
+
+    let excluded = line_with(LEIOS_WINDOW, r#""ns":"Consensus.LeiosPeer.Msg""#);
+    assert_eq!(select(&rules, excluded), Selection::Skip);
+
+    // The sibling under the same prefix is untouched, which is the whole
+    // difference between this and narrowing `namespaces`.
+    let kept = line_with(LEIOS_WINDOW, r#""ns":"Consensus.LeiosKernel.Msg""#);
+    assert!(
+        matches!(select(&rules, kept), Selection::Ship(_)),
+        "an exclusion took a namespace it does not name"
+    );
+
+    // And with no exclusion the same line ships, so the test is about the rule
+    // rather than about the recording.
+    assert!(
+        matches!(select(&shipped_rules(), excluded), Selection::Ship(_)),
+        "the shipped rules already dropped this line, so nothing was excluded"
+    );
+}
+
+/// An exclusion is a prefix like any other rule, so it takes the namespaces
+/// under it and stops at a segment boundary rather than at shared letters.
+#[test]
+fn an_exclusion_matches_on_segment_boundaries() {
+    let log = shipped_log_config();
+    let whole_prefix = SelectConfig::new(
+        &log.namespace_roots,
+        log.namespaces.clone(),
+        vec!["Consensus.LeiosPeer".to_string()],
+    )
+    .unwrap();
+    for needle in [
+        r#""ns":"Consensus.LeiosPeer.Msg""#,
+        r#""ns":"Consensus.LeiosPeer.Announcement""#,
+    ] {
+        assert_eq!(
+            select(&whole_prefix, line_with(LEIOS_WINDOW, needle)),
+            Selection::Skip,
+            "{needle} survived an exclusion of its parent"
+        );
+    }
+
+    // Mid-segment, so it names nothing the node emits and excludes nothing.
+    let fragment = SelectConfig::new(
+        &log.namespace_roots,
+        log.namespaces.clone(),
+        vec!["Consensus.LeiosP".to_string()],
+    )
+    .unwrap();
+    assert!(
+        matches!(
+            select(
+                &fragment,
+                line_with(LEIOS_WINDOW, r#""ns":"Consensus.LeiosPeer.Msg""#)
+            ),
+            Selection::Ship(_)
+        ),
+        "a rule stopping mid-segment excluded whatever shares its letters"
+    );
+}
+
+/// Exclusions are not held to the ceiling: they only ever ship less, so one
+/// naming a namespace no root covers is redundant rather than wrong.
+#[test]
+fn an_exclusion_outside_the_roots_is_allowed() {
+    let log = shipped_log_config();
+    SelectConfig::new(
+        &log.namespace_roots,
+        log.namespaces.clone(),
+        vec!["Reflection".to_string()],
+    )
+    .expect("an exclusion outside the roots narrows nothing and is not refused");
 }

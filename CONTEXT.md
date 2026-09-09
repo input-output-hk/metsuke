@@ -96,8 +96,9 @@ _Avoid_: token, secret, invite code
 
 **Developer**:
 Someone working on the rewards program who reads **Submissions** back out of
-the archive. Neither an **Operator** nor a **Pool**, and authenticated as one
-shared account rather than per person.
+the archive. Neither an **Operator** nor a **Pool**, and authenticated as an
+account of their own, so a pull names who made it and revoking one person is an
+edit to one line.
 _Avoid_: user, consumer, analyst, client
 
 ## Relationships

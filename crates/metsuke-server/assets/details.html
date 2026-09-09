@@ -1,0 +1,445 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Metsuke Details</title>
+<link rel="icon" href="{{ICON_PATH}}" type="{{ICON_CONTENT_TYPE}}">
+<style>{{style}}</style>
+
+<header>
+<a class="logo-link" href="https://musashi.network">{{logo}}</a>
+<h1>Metsuke Details</h1>
+</header>
+
+<div class="layout">
+{{nav}}
+
+<main>
+
+<p>This page describes what the agent sends, which key signs, and every config
+setting there is. <a href="{{PATH}}">The four steps to get running</a> are on
+the quickstart, and nothing here is needed to follow them.</p>
+
+<h2 id="code">Your application code on chain</h2>
+
+<p>The <a href="https://leios.cardano-scaling.org/docs/testnet/rewards-program">rewards
+program</a> emails you an application code when you apply. That code has to be
+in your pool registration transaction's metadata, under label
+{{METADATA_LABEL}}:</p>
+
+<pre>{{metadata}}</pre>
+
+<p>Only your cold key can sign a pool registration, so the code on chain
+matching the one you were emailed is what shows the application came from you.
+Until they match, this server refuses your submissions regardless of what key
+signs them. This is program registration rather than agent setup, so it is
+normally done before you reach the quickstart.</p>
+
+<p><strong>Keep it on every registration you submit afterwards.</strong>
+Changing your relays, pledge, margin or reward account submits a new
+registration certificate, and one that carries no metadata is read as a
+registration with no code. Attaching the same code again is what keeps your
+pool on the list; the code itself does not change unless the program says
+so.</p>
+
+<h2 id="wire">What leaves your machine</h2>
+
+<p>One submission is a plain JSON header, then your scrapes zstd compressed, one
+JSON object per line, with a detached Ed25519 signature over the whole byte
+sequence. The header rides in a zstd skippable frame, so <code>zstd -d</code>
+on a submission hands back the lines and nothing else. This is an example of the
+whole thing: two scrapes, the first cut down to two metrics where a real line
+carries every metric your node exposes, the second a scrape that failed.</p>
+
+<pre>{{envelope}}</pre>
+
+<p>There is one line per scrape, and its <code>metrics</code> are every metric
+your node exposes whose value JSON can hold. Those are the same metric lines
+<code>curl</code> prints against the metrics endpoint. Each entry carries
+the metric's <code>name</code>, its <code>labels</code> and its
+<code>value</code> as your node stated them, plus the <code>declared_type</code>
+its <code># TYPE</code> line gave if it had one. The agent reads nothing else on
+your machine. It contributes two facts of its own: <code>scraped_at</code>, the
+time it scraped, and <code>clock_offset_ms</code>, the offset its own NTP query
+measured.</p>
+
+<p>A scrape that failed is itself a signal, so the submission is sent either
+way: no metrics, and <code>failure</code> names what stopped it. Its
+<code>reason</code> is one of {{reasons}}, and its <code>detail</code> is the
+message the agent had: the port, the status, or the size limit it was configured
+with.</p>
+
+<p>Every line names the pool and the machine that wrote it under
+<code>metsuke</code>, as <code>pool_id</code> and <code>agent_id</code>, which
+is the name you configure. One line read out of the archive on its own still
+says where it came from.</p>
+
+<p>The header carries those same two, and four more: <code>agent_version</code>,
+the build that scraped; <code>counter</code>, which submission of yours this is;
+<code>timestamp</code>, when the submission was sealed; and
+<code>schema_version</code>, which shape its lines are.</p>
+
+<p>Trace lines travel as their own submissions: the same header with
+<code>schema_version</code> 2, and then the lines your agent config selects,
+one per line, each containing the object your node wrote plus
+that same <code>metsuke</code> JSON key.</p>
+
+<p>The signature travels beside the body in two headers:
+<code>{{HEADER_VKEY}}</code> and <code>{{HEADER_SIGNATURE}}</code>. Anything
+between your agent and this server has to pass both through unchanged, or the
+signature will not verify.</p>
+
+<p>Which pool a submission is from is settled from those rather than taken on
+trust. A cold key hashes to your pool id, so this server derives it from the
+verification key in the first header. A Leios key hashes to nothing, so the
+submission names its pool in a third header, <code>{{HEADER_POOL}}</code>, and
+this server believes it only where its key roster lists that key for that
+pool.</p>
+
+<h2 id="keys">Which key signs</h2>
+
+<p><strong>Use your Leios key.</strong> Your node already forges and votes with
+it, so it is already on the machine the agent runs on and nothing new has to be
+put there. Signing telemetry is a poor reason to move a cold key onto a
+reporting host, which is what using a cold key here comes to.</p>
+
+<p>The same goes if you report from your relays as well as your block producer.
+Every host that reports needs one of your keys on it, and a relay is the machine
+taking connections from strangers, so a cold key there is the worse version of
+the same mistake. Which host a submission came from is in it either way, under
+<code>agent_id</code>.</p>
+
+<p>A cold key does work and this server accepts it, so it is an option if you
+have a reason to prefer it. If you use one it has to hash to the
+<code>pool_id</code> in your config, or the agent refuses to start.</p>
+
+<p>The agent reads the <code>bls.skey</code> or <code>pool.skey</code> you
+already have. The path the unit loads it from names neither, so either one
+installs there and the unit runs unedited.</p>
+
+<h2 id="metrics">The node's metrics endpoint</h2>
+
+<p>The published MusashiNet configuration already serves this on loopback, and
+the config the quickstart hands you already points there, so this section is a
+check and a repair kit rather than a step:</p>
+
+<pre>curl -s {{metrics_url}}</pre>
+
+<p>If you receive metric lines back, there is nothing to do here. If nothing
+answers, your node's tracing has diverged from the published configuration, and
+this is the backend to add to its <code>TraceOptions</code>, bound to loopback
+so it is not reachable from anywhere else:</p>
+
+<pre>{{backend}}</pre>
+
+<p>If your node configuration has no <code>TraceOptions</code> at all, paste
+that as it stands. If it has one, merge into it rather than pasting over it. The
+<code>""</code> key is your node's root entry, so keep every other key it has
+and add to its backends list.</p>
+
+<p>Each backend replaces one of its own kind rather than sitting alongside it.
+If your root already names a <code>PrometheusSimple</code> or a
+<code>Stdout</code> backend, replace that one instead of keeping both. Where
+this is wrong, metrics still work, the trace configuration below looks applied,
+and not one trace line is ever collected.</p>
+
+<p><code>Stdout MachineFormat</code> is what both trace sources, journald and
+pipe, read, so it has to be in that list for either of them. Metrics alone do
+not need it.</p>
+
+<p>Restart the node and run the check again.</p>
+
+<h2 id="traces">What the node has to emit for trace lines</h2>
+
+<p>The metrics endpoint carries no per-event timestamps, so it cannot answer
+when an announcement arrived, when a block body and its closure were received,
+or when a quorum was reached. Those live in the node's trace stream, and the
+agent ships every field of the lines you select from it. It reads one field to
+decide whether to ship a line, and computes nothing from any of them.</p>
+
+<p>The published MusashiNet configuration already emits every one of them, so
+again there is nothing to do unless your node's tracing has diverged from it.
+These are the namespaces, as keys to merge into your
+<code>TraceOptions</code>:</p>
+
+<pre>{{traces}}</pre>
+
+<p><strong>Check before you add them.</strong> Your configuration may already
+set some of these, and merging replaces a key's whole entry, so these take the
+place of whatever severity or rate limit you had on those namespaces. It may
+also set rate limits on namespaces this snippet does not name; pasting over the
+object rather than merging into it would drop those too.</p>
+
+<p>Each namespace carries its own <code>severity</code>, so your node's root
+threshold is left as you have it and nothing here depends on where you set it.
+There is no <code>""</code> key in this snippet, so it cannot disturb the root
+entry the backend above touched. <code>maxFrequency: 0</code> is not a typo; it
+means no rate limit, and leaving it out silently caps the stream.</p>
+
+<p>Restart the node if you changed anything. What it emits is the same
+regardless of trace source; how the agent gets it is the choice below.</p>
+
+<h2 id="pipe">The pipe</h2>
+
+<p>In the pipe setup the node runs as <code>cardano-node run ... | {{binary}}
+--config {{config_path}}</code>. The agent reads the node's stdout on its own
+stdin, adds no group of its own, and writes every line through to its own
+stdout unchanged, so whatever read the node's output before still reads it.</p>
+
+<p><strong>What this setup costs is not nothing.</strong> The agent is a
+process of your node's unit rather than one of its own, and two things follow
+from that. It runs as your node's user under your node's sandbox, so it keeps
+none of the confinement
+<a href="{{FILES_PREFIX}}metsuke.service">metsuke.service</a> sets for it and
+inherits every group your node's unit already had. And the drop-in loads your
+signing key as a credential of that unit, so
+<code>$CREDENTIALS_DIRECTORY/signing-key</code> is readable by every process
+the unit runs, cardano-node among them.</p>
+
+<p>What the credential costs depends on the host. On a block producer signing
+with its Leios key it costs nothing new: your node already forges and votes
+with that key, so a credential it can read is a key it already holds. On a
+relay it is a real difference. The key is on that host only because the agent
+needs it, and under the journald setup only the agent's own unit can read it,
+so a cardano-node compromise there reaches no key of yours. Under the drop-in
+it reaches this one.</p>
+
+<p>So adding no group is a real saving over the journald setup, but it is not
+the same as costing nothing, and an operator picking the pipe <em>because</em>
+it grants no group is picking the less confined of the two. Use your
+<strong>Leios key</strong> either way. A cold key works and this server accepts
+it, but a cold key cannot be replaced: your pool id is its hash, so a
+compromised one cannot be rotated; it is the end of that pool and the start of
+an unrelated one your delegators have to find.</p>
+
+<p>The agent runs downstream of the node, so it needs no unit of its own. That
+makes this a change to the node's unit, and systemd has no pipelines, so the
+command is wrapped in a shell. This drop-in is that change, and the empty
+<code>ExecStart=</code> is what clears the command the node's unit already
+had: <a href="{{FILES_PREFIX}}node-pipe.conf">node-pipe.conf</a>, with
+<a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a> beside it.</p>
+
+<p><strong>Read your node's unit before you use it.</strong> The shell is what
+systemd supervises once the drop-in is in place, not your node, so three
+directives change meaning: <code>Type=notify</code> times the start out and
+systemd kills your node, <code>WatchdogSec=</code> kills it every interval, and
+<code>ExecReload=</code> signals the shell instead of your node. Two more
+things concern the command itself: it sits inside single quotes, and systemd
+expands <code>%</code> in it. The drop-in's own header lists what to do about
+each. None of this applies to the journald setup, which leaves your node's unit
+alone.</p>
+
+<p>A node whose output goes to a file rather than the journal, by
+<code>StandardOutput=append:</code> with logrotate over it, needs nothing
+different. The drop-in replaces the command and leaves that directive alone,
+and the agent writes every line it reads straight back to its own stdout, so
+the same file receives the same content. Rotation works exactly as it did
+before the agent was there: systemd still opens the file and hands the
+descriptor down. <a href="#container">Redirecting the pipeline yourself</a> is
+the case where that is not true.</p>
+
+<p>There is one thing to know if you redirect stdout to a file.
+<code>StandardError=</code> follows <code>StandardOutput=</code> unless you set
+it, so stderr goes to that file as well, and journald receives neither stream:
+<code>journalctl -u &lt;your-node&gt;</code> will show the unit starting and
+stopping and nothing from the node or the agent. Everything is in your file,
+where the agent's prose is easy to pick out from the node's JSON. If you would
+rather keep the file to the node alone, the pipeline is a shell command and
+takes a redirect of its own:
+<code>… | metsuke --config … 2&gt;&gt;/var/log/metsuke.log</code>.</p>
+
+<p id="container">Where your node's command lives somewhere other than a unit,
+the pipeline goes there instead: a wrapper script, a runit or s6 run file, a
+supervisord program, or a container entrypoint. In a shell or a terminal it
+works as it stands. Wrapped around the command that starts a container, it
+works only while that command stays attached: a detached one prints an id
+rather than the node's output. So in a container the pipeline goes inside, as
+the entrypoint.</p>
+
+<p><strong>If you redirect that pipeline to a file yourself, rotation is
+yours to get right.</strong> Writing
+<code>cardano-node run ... | {{binary}} --config {{config_path}} &gt;&gt;
+/var/log/node.log</code> puts the descriptor on that file in the agent's hands
+rather than your node's, and the agent installs no signal handler, so it never
+reopens. logrotate's default <code>create</code> renames the file and leaves
+the agent writing to the renamed one: the new file stays empty and the old one
+grows. Use <code>copytruncate</code>, which keeps the same file and so needs no
+reopen. A <code>postrotate</code> that signals your node to reopen does nothing
+here either, because your node is no longer what holds that descriptor.</p>
+
+<p>And nothing restarts either half. Under a unit the drop-in's
+<code>Restart=always</code> does that; here it is your supervisor's job, and it
+has to treat the pipeline as one thing. If the agent exits, your node's next
+write to the pipe fails, and what your node does about that is your node's to
+decide.</p>
+
+<p>The agent is a static binary, which is what makes a container setup cheap:
+it needs no image of its own and nothing in the node's image has to match it.
+Mount it in beside the node, with its config and its key. Nothing has to be
+installed on the host first, so a container setup can skip the install and
+configure steps of the quickstart and keep all three files in the directory the
+node already runs from. Against the MusashiNet node image:</p>
+
+<pre># Run this from the directory holding the node's data and these three files
+docker run -d --name leios-relay --init \
+  -p 3010:3010 \
+  -v "$PWD:/data" \
+  -v "$PWD/metsuke:{{binary}}:ro" \
+  -v "$PWD/config.pipe.toml:{{config_path}}:ro" \
+  -v "$PWD/bls.skey:{{key_path}}:ro" \
+  -v metsuke-spool:/var/lib/metsuke \
+  --entrypoint /bin/sh \
+  ghcr.io/input-output-hk/ouroboros-leios/cardano-node-testnet:&lt;tag&gt; \
+  -c '/app/run-node.sh | {{binary}} \
+        --config {{config_path}} \
+        --signing-key {{key_path}}'</pre>
+
+<p><code>&lt;tag&gt;</code> is the node image's version, which the
+<a href="https://leios.cardano-scaling.org/docs/testnet/getting-started/">testnet
+getting started guide</a> names. This page prints no tag of its own: the node
+and this agent are released apart, so one written here would be a second place
+for that version to live and the wrong one to trust when they disagree.</p>
+
+<p>Nothing of the node's is mounted in. That image ships the pinned MusashiNet
+configuration already, and it is one this agent reads unchanged: it serves
+Prometheus on loopback and writes its trace lines to stdout in the machine
+format, which are the two backends
+<a href="#metrics">the metrics endpoint</a> and
+<a href="#traces">the trace lines</a> above ask for. Mount your own over
+<code>/app/config</code> only if you have changed the node's tracing.</p>
+
+<p><code>/app/run-node.sh</code> is that image's own launcher, which is what it
+runs when you do not override the entrypoint. On any other image,
+<code>docker inspect</code> prints the command to put there instead.
+Every path left of a colon is on this host and every path right of one is
+inside the container, which is why the agent's three are mounted at the same
+places its unit would have put them. Write the host side as
+<code>$PWD/...</code> rather than <code>./...</code>: docker reads a source
+that does not start with a slash as the name of a volume, so a relative one
+either fails or quietly creates a volume instead of mounting your file. The
+port and the two mounts under it are the node's. The three below those are the
+agent's, all read-only because it only reads them, and the spool volume is what
+survives a restart. The tag is the one thing left to fill in, and the testnet
+documentation is what pins it.</p>
+
+<p><strong>Keep <code>--init</code>.</strong> A shell running a pipeline as PID 1
+does not pass SIGTERM on to what it started, so without an init the runtime waits
+out the stop timeout and kills the node instead of letting it close its
+databases. That is a slow replay on the next start, and on a block producer it is
+the expensive kind of mistake.</p>
+
+<p>The spool volume is what makes a restart cheap rather than lossy, and
+<code>metrics_url</code> needs no change: the agent is in the node's container
+network namespace, so the node's loopback is its own. That holds however the
+node binds its endpoint, since a wildcard bind includes loopback.</p>
+
+<p>Write that <code>metrics_url</code> endpoint as an IP literal regardless of
+how the node binds it. Nothing resolves that host, so <code>localhost</code> is
+refused and it has to parse as a loopback address, meaning
+<code>127.0.0.1</code> or <code>[::1]</code>.</p>
+
+<p>The pipeline can also run on the host instead of inside the container, as
+<code>docker logs -f --tail 0 &lt;container&gt; | {{binary}} --config
+{{config_path}}</code>. That decouples the agent from the node's lifecycle and
+leaves the image alone, but it costs more than it appears to. Reading the docker
+socket is root-equivalent on that host, whereas the entrypoint approach above
+needs no privilege at all. It also needs the node's metrics endpoint bound to a
+wildcard, and the MusashiNet image bakes in
+<code>PrometheusSimple suffix 127.0.0.1 12798</code>, so you would need to
+override its configuration to get one. The <code>EXPOSE 12798</code> in that
+image does not help: a published port forwards to the container's interface,
+and nothing is listening there. And without <code>--tail 0</code> a restart
+re-reads the whole log and sends it again.</p>
+
+<p>None of that applies to the entrypoint above, which shares the node's
+container network namespace and so reaches the loopback the image already binds.
+The image ships <code>Stdout MachineFormat</code> in its backends either way, so
+the trace lines themselves need nothing.</p>
+
+<p>The NixOS module only renders the journald setup, not the pipe one.</p>
+
+<h2 id="journal">The journal</h2>
+
+<p>In the journald setup the agent reads the node's journal under its own unit,
+so it needs a node that runs as a systemd unit and logs to the journal. That
+costs it membership of the <code>systemd-journal</code> group, which reads every
+unit's journal on the host and is the one privilege it holds beyond scraping
+loopback. Two directives are the whole difference from the quickstart's unit,
+and journalctl needs both:
+<a href="{{FILES_PREFIX}}metsuke-journald.service">metsuke-journald.service</a>,
+with <a href="{{FILES_PREFIX}}config.journald.toml">config.journald.toml</a>
+beside it.</p>
+
+<p>That config is the one place the agent cannot guess anything: neither your
+node's unit name nor where journalctl lives on your distribution.</p>
+
+<h2 id="settings">Every setting</h2>
+
+<p>The quickstart ships the values that have to be set and leaves the rest at
+their defaults.
+<a href="{{FILES_PREFIX}}config.example.toml">config.example.toml</a> is the
+annotated form of the same file, with every default written out.</p>
+
+<h2 id="nixos">On NixOS</h2>
+
+<p>Add <code>{{flake}}</code> as a flake input and import its
+<code>nixosModules.metsuke</code>. That writes the configuration and the unit
+for you, including the two directives the journal source needs.</p>
+
+<p>Every setting in
+<a href="{{FILES_PREFIX}}config.example.toml">config.example.toml</a> is an
+option under <code>services.metsuke.settings</code>, named the same, and the
+three required ones have to be set. The exception is <code>signing_key</code>,
+which is not an option: the module hands the key over as a systemd credential,
+and you point <code>signingKeyFile</code> at the path instead.</p>
+
+<pre>services.metsuke = {
+  enable = true;
+  signingKeyFile = "/run/secrets/metsuke-signing-key";
+  settings = {
+    pool_id = "pool1…";
+    metrics_url = "{{metrics_url}}";
+    upload_url = "{{submit_url}}";
+    log.journal_unit = "cardano-node.service";
+  };
+};</pre>
+
+<p>Every option, with its type and its default, is in the
+<a href="{{DOCS_PREFIX}}docs/nixos-options.md">options reference</a>.</p>
+
+<h2 id="builds">Where the builds come from</h2>
+
+<p>The builds this server offers are also attached to the
+<a href="{{REPOSITORY}}/releases">releases</a> in the repository, with a
+checksum file each. Check whichever copy you download against the
+<code>.sha256</code> beside it.</p>
+
+<h2 id="reading">Further reading</h2>
+
+<p>The agent and this server are
+<a href="{{REPOSITORY}}">one repository</a>, and its
+<a href="{{DOCS_PREFIX}}README.md">README</a> is what metsuke is and which
+crate does what. Every decision this page rests on is written down rather than
+left in the code, and three of them are worth reading if you run a pool:</p>
+
+<ul>
+<li><a href="{{DOCS_PREFIX}}docs/adr/0010-log-based-trace-collection.md">ADR
+0010</a>, the two trace sources and what each costs in privilege, which is the
+difference between the journald setup and the pipe.</li>
+<li><a href="{{DOCS_PREFIX}}docs/adr/0011-leios-key-submissions.md">ADR
+0011</a>, how a Leios key speaks for your pool, and what the key roster is.</li>
+<li><a href="{{DOCS_PREFIX}}docs/adr/0004-client-spool-is-the-durability-layer.md">ADR
+0004</a>, why the spool is the only place a scrape is kept, and what an
+unreachable server costs you.</li>
+</ul>
+
+<p><a href="{{REPOSITORY}}/tree/main/docs/adr">The rest of them</a> are in
+<code>docs/adr</code>, superseded ones included.
+<a href="{{ANALYSIS_PATH}}">The analysis page</a> is how your submissions are
+read back on the other side; it is written for the developers processing this
+data rather than for you, which is what makes it the account of what your lines
+are used for.</p>
+
+</main>
+
+{{toc}}
+{{sequence}}
+</div>

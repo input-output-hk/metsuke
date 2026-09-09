@@ -1,0 +1,372 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Metsuke: telemetry for the MusashiNet rewards program</title>
+<link rel="icon" href="{{ICON_PATH}}" type="{{ICON_CONTENT_TYPE}}">
+<style>{{style}}</style>
+
+<header>
+<a class="logo-link" href="https://musashi.network">{{logo}}</a>
+<h1>Metsuke</h1>
+</header>
+
+<div class="layout">
+{{nav}}
+
+<main>
+
+<p>Metsuke is a small agent you run beside the Haskell
+<a href="https://github.com/IntersectMBO/cardano-node">cardano-node</a> on the
+<a href="https://musashi.network">Musashi network</a>. It reads your node's
+Prometheus endpoint over loopback, collects the trace lines it has been
+configured for, and sends this server a signed submission. It never opens your
+node socket, and it reads only the signing key you point it at.</p>
+
+<p>These instructions assume a node running on the Musashi network, which the
+<a href="https://leios.cardano-scaling.org/docs/testnet/getting-started/">getting
+started guide</a> covers, and a pool already in the rewards program, with your
+application code in your pool registration's metadata. Submissions are refused
+until that code is on chain, and <a href="{{DETAILS_PATH}}#code">the details
+page</a> says how to put it there.</p>
+
+<h2 id="try">Try it</h2>
+
+<p>Nothing is installed, and it all stops when you press Ctrl-C.</p>
+
+<pre>{{try_fetch}}
+curl -fO {{files_url}}config.pipe.toml
+
+# Set your pool id, and a spool_path you can write
+$EDITOR config.pipe.toml
+
+cardano-node run ... | {{try_agent}} --config config.pipe.toml --signing-key bls.skey &gt; /dev/null
+
+# Or, where your node already runs under systemd and you can read its
+# journal. These are the flags the journald setup runs itself, so the agent
+# reads the same bytes either way
+journalctl -f -n 0 -o cat -u &lt;your-node&gt; | {{try_agent}} --config config.pipe.toml --signing-key bls.skey &gt; /dev/null
+
+# Or, where your node writes to a file. -F and not -f, because only -F
+# reopens by name after a rotation
+tail -n 0 -F /var/log/node.log | {{try_agent}} --config config.pipe.toml --signing-key bls.skey &gt; /dev/null</pre>
+
+<p>That is the whole agent. It writes your node's output straight back out, and
+the redirect to <code>/dev/null</code> drops that copy: without it a node's
+trace stream buries what the agent has to say. What is left on your terminal is
+the agent's own output. The first five lines arrive at once, and the scrape
+submission about ten seconds later, once the node has had time to bind its
+metrics endpoint, or straight away against a node already running. The
+trace-line submission waits for the next upload, one hour by default:</p>
+
+<pre>{{journal}}</pre>
+
+<p>The second line, cut short above, is every setting the agent is running with,
+including the defaults for the ones you did not set. Yours runs to about nine
+hundred characters. <strong>Send that line if you ask anyone for help.</strong>
+It answers most of what anyone helping you would otherwise have to ask for, and
+it holds no key material: the signing key appears as the path it was read from,
+never its contents.</p>
+
+<p>Without the <code>&gt; /dev/null</code> your node's output comes back,
+interleaved with the agent's own lines. That pass-through is what the setups
+below depend on: whatever read your node's output before still reads it.</p>
+
+<p>The config already points at this server, and its metrics URL is the port
+most nodes already serve Prometheus on. If your node is configured differently,
+the metrics URL is the second line to change in the config file.</p>
+
+<p><code>spool_path</code> is the line a run from a shell usually has to change.
+It ships as a file in the state directory the systemd setups below create,
+which a shell often cannot write to, and an agent that cannot write its spool
+says so and stops rather than starting with nowhere to put a scrape. Once the
+agent has run under a unit of its own, that directory is a symlink only root
+can follow, so set your own path even though it looks present.</p>
+
+<h2 id="setups">How you'll run it for real</h2>
+
+<p>Each setup below costs something different. Everything after the table is the
+same four steps whichever row you take; only the filenames change.</p>
+
+<table>
+<tr>
+  <th>Setup<th>Trace line source<th>What it costs in privilege<th>Restarts
+  <th>Metsuke config<th>Systemd service<th>Systemd drop-in
+<tr>
+  <td><strong>Its own unit</strong><br><span class="note">the usual one</span>
+  <td>the node's journal
+  <td>its own user, confined;<br>reads every unit's journal
+  <td>on its own
+  <td><a href="{{FILES_PREFIX}}config.journald.toml">config.journald.toml</a>
+  <td><a href="{{FILES_PREFIX}}metsuke-journald.service">metsuke-journald.service</a>
+  <td>none
+<tr>
+  <td><strong>Your node's unit</strong><br><span class="note">a drop-in</span>
+  <td>the node's stdout
+  <td><strong>your node's user and sandbox;<br>your node can read your signing
+  key</strong>
+  <td>with the node
+  <td><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a>
+  <td>your node's own
+  <td><a href="{{FILES_PREFIX}}node-pipe.conf">node-pipe.conf</a>
+<tr>
+  <td><strong>A container</strong><br><span class="note">no systemd</span>
+  <td>the node's stdout
+  <td>whatever your entrypoint runs as
+  <td>with the node
+  <td><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a>
+  <td><span class="note">your own entrypoint</span>
+  <td>none
+<tr>
+  <td><strong>Metrics only</strong><br><span class="note">fallback</span>
+  <td>nothing
+  <td>its own user, confined;<br>no group at all
+  <td>on its own
+  <td><a href="{{FILES_PREFIX}}config.minimal.toml">config.minimal.toml</a>
+  <td><a href="{{FILES_PREFIX}}metsuke.service">metsuke.service</a>
+  <td>none
+<tr>
+  <td><strong>A shell</strong><br><span class="note">debugging</span>
+  <td>the node's stdout
+  <td>yours, unconfined
+  <td>not at all
+  <td><a href="{{FILES_PREFIX}}config.pipe.toml">config.pipe.toml</a>
+  <td>none
+  <td>none
+</table>
+
+<p><strong>Its own unit</strong> is what most pools want. The agent runs under a
+unit of its own, so it restarts without touching your node and keeps the
+confinement that unit sets, and the cost is one group:
+<code>systemd-journal</code> can read every unit's journal on the host, not
+only your node's.</p>
+
+<p><strong>Your node's unit</strong> costs more than it appears to, in a way
+worth reading before you take it. The drop-in runs the agent inside your node's
+unit, so it is your node's user that runs it and your node's sandbox that
+confines it, not the one
+<a href="{{FILES_PREFIX}}metsuke.service">metsuke.service</a> sets. The
+drop-in also loads your signing key as a credential of that unit, which makes
+it readable by <em>every process the unit runs</em>, cardano-node included. On
+a block producer signing with its Leios key that costs nothing new, since your
+node already holds that key; on a relay it is a key the node could not
+otherwise read. It also ties the agent's lifecycle to your node's, so
+restarting one restarts the other.
+<a href="{{DETAILS_PATH}}#pipe">The details page</a> covers it in full.</p>
+
+<p>If you take that row, use your <strong>Leios key</strong> and not a cold
+key. Both work, but a cold key cannot be replaced: your pool id is its hash, so
+a compromised one cannot be rotated; it is the end of that pool.</p>
+
+<p>Both of those need a node that already runs as a systemd unit, and
+<strong>Its own unit</strong> also needs it logging to the journal, which is
+where the agent reads its trace lines from.
+<a href="{{FILES_PREFIX}}cardano-node.service">cardano-node.service</a> is an
+example to adapt where yours has no unit yet. It suits either row: the journald
+setup reads the journal it writes to, and the drop-in setup replaces the command
+it runs.</p>
+
+<p><strong>A container</strong> is the row for anything that starts your node
+without systemd: a container entrypoint, but equally a wrapper script, a runit
+or s6 run file, or a supervisord program. The pipeline goes wherever that
+command lives.
+<a href="{{DETAILS_PATH}}#container">The details page</a> has the two things
+that setup has to get right itself, which the systemd rows get for free:
+rotating a log file the agent now holds open, and restarting the pipeline.</p>
+
+<p>The last two are fallbacks rather than places to stay. <strong>Metrics
+only</strong> collects no trace lines, and the rewards program wants those, so
+it is where to drop back to if collection is giving you trouble. <strong>A
+shell</strong> is the try-it above: nothing starts it at boot and nothing
+restarts it, so it is primarily for quick debugging.</p>
+
+<h2 id="install">1. Install the agent</h2>
+
+<pre>{{install}}</pre>
+
+<p>One static binary, nothing to link against, and the block above fetches the
+one for your machine. Either architecture can be built rather than downloaded,
+with <code>nix build {{flake}}#metsuke-static-$ARCH</code>.
+There is no install script and no self-update. On NixOS,
+<a href="{{DETAILS_PATH}}#nixos">import the module instead</a> and skip the rest
+of this page.</p>
+
+<h2 id="configure">2. Configure it</h2>
+
+<p>Take the config your setup names in the table above, set your pool id, and
+put your signing key where the agent will look for it:</p>
+
+<pre># Both the config and signing-key files go here, and nothing has made this
+# directory yet
+sudo mkdir -p {{config_dir}}
+
+# Download one config file, and only one, from the preferred setup above
+
+# Its own unit
+sudo curl -fo {{config_path}} {{files_url}}config.journald.toml
+
+# Your node's unit, A container, or A shell
+sudo curl -fo {{config_path}} {{files_url}}config.pipe.toml
+
+# Metrics only
+sudo curl -fo {{config_path}} {{files_url}}config.minimal.toml
+
+# Set your pool id, and check the metrics URL. Two setups have more to set:
+#   Its own unit  your node's unit, and journalctl's absolute path
+#   A shell       a spool_path you can write
+sudo $EDITOR {{config_path}}
+
+# Install your signing key, bls.skey or pool.skey, readable by root alone
+sudo install -m 0400 -o root -g root bls.skey {{key_path}}</pre>
+
+<p>The journald config needs two things the agent cannot guess: your node's
+unit name, and where journalctl lives on your distribution. They fail
+differently. A journalctl that is not at the path you gave stops the agent at
+startup and says so. A unit name that matches nothing does not stop it:
+journalctl follows it and prints nothing, so the agent starts, ships its
+scrapes, and never ships a trace line.</p>
+
+<p><code>agent_id</code> is what a submission calls the machine it came from,
+and it needs no setting: left unset, it is that host's hostname, which the
+startup line prints. Set it where the hostname is not the name you want, and in
+a container, where the hostname is the runtime's rather than yours.</p>
+
+<p>Those permissions are for the three systemd setups, where the unit hands the
+key over as a credential and the service never reads the file itself. If you
+took <strong>A container</strong> or <strong>A shell</strong>, you point
+<code>--signing-key</code> at your own copy instead, and it needs to be readable
+by whoever runs the agent.</p>
+
+<p>Both your Leios key and your cold key work; use your
+<strong>Leios key</strong>, for
+<a href="{{DETAILS_PATH}}#keys">the reason the details page gives</a>.</p>
+
+<p>There is nothing to configure for the trace lines themselves. The config you
+just took already selects the traces the program asks for, and the published
+MusashiNet node configuration already emits them. If you have changed your
+node's tracing, <a href="{{DETAILS_PATH}}#traces">the details page</a> offers
+further guidance.</p>
+
+<h2 id="run">3. Run it</h2>
+
+<p>The page splits three ways from here, and the row you took decides which one
+you follow. If you took <strong>Its own unit</strong> or <strong>Metrics
+only</strong>, the agent runs under a unit of its own, and you download one of
+the two:</p>
+
+<pre># Its own unit
+sudo curl -fo /etc/systemd/system/metsuke.service {{files_url}}metsuke-journald.service
+
+# Metrics only
+sudo curl -fo /etc/systemd/system/metsuke.service {{files_url}}metsuke.service
+
+# Start it now, and on every boot
+sudo systemctl daemon-reload
+sudo systemctl enable --now metsuke</pre>
+
+<p>If you took <strong>Your node's unit</strong>, the agent gets no unit of its
+own. A drop-in replaces the command your node's unit already runs with that
+same command piped through the agent, for
+<a href="{{DETAILS_PATH}}#pipe">the reasons the details page gives</a>.</p>
+
+<pre># The directory is yours to make. The zzzz- name sorts the drop-in last, so
+# nothing host-wide can clear its credential after it
+sudo mkdir -p /etc/systemd/system/&lt;your-node&gt;.service.d
+sudo curl -fo /etc/systemd/system/&lt;your-node&gt;.service.d/zzzz-metsuke.conf {{files_url}}node-pipe.conf
+
+# Replace YOUR-NODE-COMMAND with what your node already runs, which
+# systemctl cat &lt;your-node&gt;.service prints
+sudo $EDITOR /etc/systemd/system/&lt;your-node&gt;.service.d/zzzz-metsuke.conf
+
+# Restarting the node is what starts the agent
+sudo systemctl daemon-reload
+sudo systemctl restart &lt;your-node&gt;</pre>
+
+<p>If you took <strong>A container</strong> or <strong>A shell</strong>, nothing
+above applies and nothing starts the agent for you. In a container
+<a href="{{DETAILS_PATH}}#container">the pipeline goes in your entrypoint</a>,
+which the details page shows in full against the MusashiNet node image. In a
+shell you run the try-it command at the top of this page.</p>
+
+<h2 id="check">4. Check it</h2>
+
+<p>Where the agent's own lines come out depends on your setup:</p>
+
+<pre># Its own unit, or Metrics only
+journalctl -u metsuke -f
+
+# Your node's unit: the agent runs inside it, so its lines are the node's
+journalctl -u &lt;your-node&gt; -f
+
+# A container
+docker logs -f &lt;container&gt;
+
+# A shell: they are already on your terminal</pre>
+
+<p>Whichever command you ran, expect the same lines the try-it printed above,
+though not all at once. The first submission goes out on the first scrape
+rather than on a cadence, so the startup lines and the scrape line appear within
+seconds of each other and you do not wait out an interval to find out something
+is wrong. Trace lines have not accumulated by then, so their submission goes out
+on the next upload, one hour by default.</p>
+
+<p>A refused submission logs this server's reason in place of one of those
+accepted lines, and the scrapes stay spooled, so nothing is lost while you fix
+it.</p>
+
+<p>If you took <strong>Its own unit</strong> or <strong>Metrics only</strong>, a
+failure naming <code>cannot read signing key</code> under
+<code>/run/credentials</code> is usually the unit's credential being cleared
+rather than a permission problem. <code>systemctl cat metsuke</code> prints the
+unit and every drop-in that applies to it, including the host-wide ones under
+<code>/usr/lib/systemd/system/service.d/</code> that the LXC and LXD images
+ship. A bare <code>LoadCredential=</code> in one of those resets the list after
+your unit's own line. Restore it in a drop-in that sorts after theirs.</p>
+
+<pre>sudo mkdir -p /etc/systemd/system/metsuke.service.d
+sudo tee /etc/systemd/system/metsuke.service.d/zzzz-credential.conf &gt;/dev/null &lt;&lt;'EOF'
+[Service]
+LoadCredential=signing-key:/etc/metsuke/signing-key
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl restart metsuke</pre>
+
+<p><strong>Your node's unit</strong> is already out of this: the drop-in you
+installed is named to sort after anything host-wide, which is what the
+<code>zzzz-</code> is for.</p>
+
+<h2 id="updating">Staying up to date</h2>
+
+<p>This server was built against agent {{CLIENT_VERSION}} and reports that
+version to every agent that uploads to it. Your agent logs a warning when its
+own version is older. To update, repeat step 1, then restart whatever runs
+it:</p>
+
+<pre># Its own unit, or Metrics only
+sudo systemctl restart metsuke
+
+# Your node's unit: the agent restarts with the node
+sudo systemctl restart &lt;your-node&gt;
+
+# A container
+docker restart &lt;container&gt;
+
+# A shell: run the try-it command again</pre>
+
+<p>The spool is on disk, so queued scrapes survive the restart. Nothing is
+scraped while the agent is down.</p>
+
+<h2 id="reading">Further reading</h2>
+
+<p><a href="{{DETAILS_PATH}}">The details page</a> is what this one left out:
+<a href="{{DETAILS_PATH}}#keys">which key signs</a> and why one of your keys is
+the wrong one to use, <a href="{{DETAILS_PATH}}#traces">what your node has to
+emit</a> for the trace lines, and every setting the configs above leave at a
+default. Its <a href="{{DETAILS_PATH}}#reading">own further reading</a> points
+at the repository, the README, and the three decisions worth reading if you run
+a pool.</p>
+
+</main>
+
+{{toc}}
+{{sequence}}
+</div>

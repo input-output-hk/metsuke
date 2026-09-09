@@ -12,7 +12,8 @@
 //! are not the same size and a trace stream's rate is not the scrape tick's; a
 //! row count bounds neither the file nor the memory a submission costs.
 
-use std::path::PathBuf;
+use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension};
@@ -70,6 +71,39 @@ pub struct SpooledRow {
 
 #[derive(Debug, thiserror::Error)]
 pub enum SpoolError {
+    /// The default path is the systemd state directory, so this is what an
+    /// operator running the agent any other way meets, and the setting is
+    /// what the message has to name.
+    #[error(
+        "its directory {path} cannot be created: {source}; set spool_path somewhere this user can write"
+    )]
+    Directory {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    /// Separate from `Directory` because the path is there and the operator
+    /// can see that it is: a recursive create treats a directory it can see as
+    /// a create already done, so `AlreadyExists` reaches here only for
+    /// something that is not a directory or that this user cannot stat. Under
+    /// the shipped unit the second is what a previous run leaves, so an
+    /// operator meets this on the host where the agent already works, which is
+    /// where a message saying the directory is absent costs the most.
+    /// `found` carries the whole predicate rather than a noun, so the file
+    /// case says a file is in the way instead of blaming a permission for it.
+    #[error(
+        "its directory {path} is already there as {found}; set spool_path somewhere this user can write"
+    )]
+    DirectoryUnusable { path: String, found: &'static str },
+    /// Refused rather than warned about: the file is open by the time this can
+    /// fail, so carrying on would leave submissions accumulating in a spool
+    /// this agent has already found it cannot set the mode of.
+    #[error("its mode cannot be set on {path}: {source}; the spool holds signed submissions")]
+    Mode {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("sqlite: {0}")]
     Sqlite(#[from] rusqlite::Error),
     #[error(transparent)]
@@ -136,11 +170,100 @@ const LINES: Stream = Stream {
 /// takes a shared lock that blocks the trace-line writer, so the upload loop
 /// reading a submission would stall the stream for as long as it takes.
 fn open_spool(path: &PathBuf, busy_timeout: Duration) -> Result<Connection, SpoolError> {
+    // sqlite creates the file and not the directory over it. The systemd
+    // shapes get theirs from StateDirectory; a shell or a container run has
+    // whatever the operator named in `spool_path`.
+    if let Some(directory) = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    {
+        // 0700 at creation, rather than 0755 less whatever umask happens to be
+        // in force. A spool holds signed submissions and the pool ids they are
+        // for, and there is no shape of this where another user on the host
+        // has business reading it. Only the directories this creates: one
+        // named under a directory the operator already has is theirs, and
+        // tightening what they set is not this agent's to do.
+        let created = std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(directory);
+        match created {
+            Ok(()) => {}
+            // What is there rather than what could not be done, because the
+            // io error under this one says `File exists` while the create was
+            // recursive, which reads as a contradiction. `symlink_metadata`
+            // and not `metadata`: the link is the part this user can still
+            // see, and a systemd state directory is reached through one.
+            Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(SpoolError::DirectoryUnusable {
+                    path: directory.display().to_string(),
+                    found: match std::fs::symlink_metadata(directory) {
+                        Ok(found) if found.is_symlink() => "a symlink this user cannot follow",
+                        Ok(found) if found.is_file() => "a file",
+                        Ok(_) => "a directory this user cannot use",
+                        Err(_) => "something this user cannot read",
+                    },
+                });
+            }
+            Err(source) => {
+                return Err(SpoolError::Directory {
+                    path: directory.display().to_string(),
+                    source,
+                });
+            }
+        }
+    }
     let conn = Connection::open(path)?;
+    // Before WAL, because sqlite gives the -wal and -shm files the mode the
+    // database has when it creates them: after the pragma there would be two
+    // more files at whatever the umask allowed, holding the same rows.
+    restrict(path)?;
     conn.busy_timeout(busy_timeout)?;
     conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
+    // The mode above reaches only the sidecars sqlite creates. A -wal an
+    // unclean exit left behind is reopened rather than created, at whatever
+    // mode it already had, and it holds the same signed rows as the spool. So
+    // both are tightened here, after the pragma is what opens them.
+    restrict_sidecars(path)?;
     metsuke_wire::sqlite::migrate(&conn, MIGRATIONS)?;
     Ok(conn)
+}
+
+/// 0600 on the `-wal` and `-shm` beside the spool, where they are there. A
+/// clean close removes both, so absent is the ordinary case and not a failure.
+fn restrict_sidecars(path: &Path) -> Result<(), SpoolError> {
+    for suffix in ["-wal", "-shm"] {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        let sidecar = PathBuf::from(name);
+        match std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o600)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(SpoolError::Mode {
+                    path: sidecar.display().to_string(),
+                    source,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 0600 on the spool itself, whatever the umask the agent inherited. The
+/// systemd shapes set `UMask=0077` and would have got there anyway; a shell
+/// or a container run is the path this does not depend on, and it is the one
+/// the pipe setup put in front of operators.
+///
+/// Applied on every open rather than only on the one that created the file, so
+/// a spool that already exists at 0644 is tightened rather than reported.
+fn restrict(path: &PathBuf) -> Result<(), SpoolError> {
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|source| {
+        SpoolError::Mode {
+            path: path.display().to_string(),
+            source,
+        }
+    })
 }
 
 /// What a stream currently holds, as `stream_bytes` records it. Kept in the
@@ -375,6 +498,30 @@ impl Spool {
     /// seals.
     pub fn outstanding_lines(&mut self, budget: RowBudget) -> Result<Vec<SpooledRow>, SpoolError> {
         self.taken(&LINES, budget)
+    }
+
+    /// Whether the stream holds a row past `id`, which is what says a take
+    /// was cut off by its budget rather than by the stream running out. Asked
+    /// of the rows rather than of the bytes: a budget is measured against a
+    /// header whose length follows the clock, so comparing totals to it
+    /// decides a boundary case differently from one run to the next.
+    pub fn scrapes_after(&self, id: i64) -> Result<bool, SpoolError> {
+        self.has_after(&SCRAPES, id)
+    }
+
+    pub fn lines_after(&self, id: i64) -> Result<bool, SpoolError> {
+        self.has_after(&LINES, id)
+    }
+
+    fn has_after(&self, stream: &Stream, id: i64) -> Result<bool, SpoolError> {
+        Ok(self.conn.query_row(
+            &format!(
+                "SELECT EXISTS(SELECT 1 FROM {} WHERE id > ?1)",
+                stream.table
+            ),
+            [id],
+            |row| row.get(0),
+        )?)
     }
 
     fn taken(&mut self, stream: &Stream, budget: RowBudget) -> Result<Vec<SpooledRow>, SpoolError> {

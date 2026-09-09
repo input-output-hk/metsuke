@@ -17,7 +17,7 @@ use metsuke_fetch::pull::Archive;
 use metsuke_server::applications::Codes;
 use metsuke_server::archive::{FilesystemArchive, Kind, ObjectName};
 use metsuke_server::config::{AbsolutePath, DeveloperConfig, HttpConfig, IngestConfig};
-use metsuke_server::developer::Developer;
+use metsuke_server::developer::{Accounts, Developer};
 use metsuke_server::instructions;
 use metsuke_server::intake::Intake;
 use metsuke_server::serve;
@@ -26,6 +26,7 @@ use metsuke_wire::envelope::{
     SubmissionKey, seal,
 };
 use metsuke_wire::fixtures;
+use metsuke_wire::leios::LeiosSigningKey;
 use time::OffsetDateTime;
 
 /// The one account the routes authenticate.
@@ -67,7 +68,7 @@ pub struct Object {
 
 /// A filesystem archive that answers the metadata an S3 one holds beside an
 /// object. A real filesystem archive discards the pair at ingest, so a suite
-/// built on one could only ever exercise the unverifiable path; what a test
+/// built on one could only ever exercise the unattested path; what a test
 /// seeds into `attested` is what the download then carries.
 /// Shared, so a test can answer a different pair after the server is up.
 pub type Attested = std::sync::Arc<std::sync::Mutex<HashMap<String, Attestation>>>;
@@ -158,14 +159,14 @@ impl Server {
             .map(|index| seeded(&root, index))
             .collect::<Vec<Object>>();
         let password_file = dir.path().join("password");
-        std::fs::write(&password_file, format!("{PASSWORD}\n")).expect("the password file writes");
+        let secret = format!("{USER} = \"{PASSWORD}\"\n");
+        std::fs::write(&password_file, &secret).expect("the password file writes");
         let developer = Developer::new(
             &DeveloperConfig {
-                user: USER.to_string(),
                 password_file: AbsolutePath::new(password_file).expect("a temp dir is absolute"),
                 list_max_rows: nonzero_u32(list_max_rows),
             },
-            PASSWORD,
+            Accounts::parse(&secret).expect("the test secret parses"),
         );
         let listener = serve::bind("127.0.0.1:0").expect("a kernel-chosen port binds");
         let url = format!("http://{}", listener.address());
@@ -185,7 +186,18 @@ impl Server {
             None,
         );
         std::thread::spawn(move || {
-            match listener.serve(http_config(), intake, developer, instructions::page()) {
+            // Its own copy of the server suite's value, which metsuke-jfb.33 is
+            // about: nothing ties this test support to that one.
+            let public_url = "https://metsuke.example.org"
+                .parse()
+                .expect("a fixed URL parses");
+            match listener.serve(
+                http_config(),
+                intake,
+                developer,
+                instructions::pages(&public_url, Vec::new())
+                    .expect("the shipped files share no name"),
+            ) {
                 Ok(never) => match never {},
                 Err(error) => panic!("the test server stopped accepting: {error}"),
             }
@@ -215,6 +227,25 @@ impl Server {
             .iter()
             .map(|object| object.key.clone())
             .collect()
+    }
+
+    /// Answer `key`'s pair as a Leios key's, over the same stored bytes. The
+    /// object is untouched: what changes is the pair the download carries, and
+    /// that is the whole difference between a cold-signed object and one whose
+    /// pool nothing but the server's word files it.
+    pub fn leios_sign(&self, key: &str) {
+        let object = self
+            .objects
+            .iter()
+            .find(|object| object.key == key)
+            .expect("a key this server seeded");
+        let leios = SubmissionKey::LeiosKey(
+            LeiosSigningKey::from_bytes(&[3u8; 32]).expect("a fixed seed is a scalar"),
+        );
+        self.attested
+            .lock()
+            .expect("the attested map is never poisoned")
+            .insert(key.to_string(), leios.attest(&object.wire_bytes));
     }
 
     /// One object the archive lists and cannot read.
@@ -285,6 +316,16 @@ impl Server {
     }
 }
 
+/// An archive at an address nothing is listening on. A bound port is taken
+/// and dropped, so the number is one this host is not serving rather than one
+/// guessed at.
+pub fn unreachable_archive() -> Archive {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a kernel-chosen port binds");
+    let address = listener.local_addr().expect("a bound address");
+    drop(listener);
+    Archive::new(&format!("http://{address}"), USER, PASSWORD, TIMEOUT)
+}
+
 /// A listing route answering `listing` to every request, whatever it asked
 /// for. Hand-written rather than the shipped server, because what
 /// `SyncError::Stuck` guards is a page the server does not produce. The body is
@@ -311,6 +352,92 @@ pub fn fixed_listing(listing: &metsuke_wire::http::Listing) -> Archive {
                 body.len()
             )
             .expect("the answer writes");
+        }
+    });
+    Archive::new(&url, USER, PASSWORD, TIMEOUT)
+}
+
+/// How the stub below answers the download route.
+pub enum Downloads {
+    /// 200, with a key and signature that do not decode, which is what
+    /// something between a reader and the server rewriting a header looks
+    /// like. The shipped server encodes the pair from typed values and cannot
+    /// produce this.
+    ManglingTheAttestation(Vec<u8>),
+    /// 404 on a key the listing just handed back, which is what a lifecycle
+    /// rule expiring an object mid-page leaves. The shipped server cannot
+    /// produce this either: its listing reads the same archive the download
+    /// does, so an object it lists is an object it has.
+    Refusing,
+    /// A status of the caller's choosing on the download route, for the ones
+    /// that are the path's rather than one object's: 401 after a credential
+    /// rotates mid-run, 403 from a WAF that refuses only that route.
+    RefusingWith(u16),
+}
+
+/// An archive listing exactly `key` and answering the download of it as
+/// `answers` says. Hand-written for the same reason `fixed_listing` is: what
+/// these tests are about is an answer the shipped server does not give.
+pub fn stub_archive(keys: &[&str], answers: Downloads) -> Archive {
+    let listing = serde_json::to_string(&metsuke_wire::http::Listing {
+        keys: keys.iter().map(|key| key.to_string()).collect(),
+        truncated: false,
+    })
+    .expect("a listing serializes");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("a kernel-chosen port binds");
+    let url = format!("http://{}", listener.local_addr().expect("a bound address"));
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let mut stream = stream.expect("an accepted connection");
+            let mut head = std::io::BufReader::new(stream.try_clone().expect("the stream clones"));
+            let mut request = String::new();
+            let mut line = String::new();
+            while head.read_line(&mut line).expect("the request head reads") > 2 {
+                request.push_str(&line);
+                line.clear();
+            }
+            if request.contains(metsuke_wire::http::SUBMISSIONS_PATH) {
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{listing}",
+                    listing.len()
+                )
+                .expect("the listing writes");
+                continue;
+            }
+            match &answers {
+                // Hex of the right length and not a key, so what fails is the
+                // decode and not the length check that precedes it.
+                Downloads::ManglingTheAttestation(bytes) => {
+                    write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/octet-stream\r\n\
+                         {}: {}\r\n{}: {}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                        metsuke_wire::envelope::HEADER_VKEY,
+                        "zz".repeat(32),
+                        metsuke_wire::envelope::HEADER_SIGNATURE,
+                        "00".repeat(64),
+                        bytes.len(),
+                    )
+                    .expect("the head writes");
+                    stream.write_all(bytes).expect("the body writes");
+                }
+                Downloads::Refusing | Downloads::RefusingWith(_) => {
+                    let status = match &answers {
+                        Downloads::RefusingWith(status) => *status,
+                        _ => 404,
+                    };
+                    let body = "refused";
+                    write!(
+                        stream,
+                        "HTTP/1.1 {status} Refused\r\ncontent-type: text/plain\r\n\
+                         content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .expect("the refusal writes");
+                }
+            }
         }
     });
     Archive::new(&url, USER, PASSWORD, TIMEOUT)
@@ -343,9 +470,23 @@ fn seeded(root: &Path, index: usize) -> Object {
         Kind::Metrics => Payload::scrapes(vec![
             PayloadLine::scrape(&scrape(stamped), &provenance).expect("a scrape stamps"),
         ]),
+        // The envelope a node writes, with the fields docs/archive.sql and
+        // docs/analytics.sql read off it: a line carrying only `ns` would
+        // leave the trace table failing to build and every test over it
+        // asserting nothing.
         Kind::Logs => Payload::trace_lines(vec![PayloadLine::spooled(
-            serde_json::json!({"ns": "Test", "metsuke": {"pool_id": pool_id, "agent_id": agent_id}})
-                .to_string(),
+            serde_json::json!({
+                "at": stamped
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .expect("a fixed instant formats"),
+                "ns": "Consensus.LeiosKernel.BlockForged",
+                "sev": "Info",
+                "thread": "42",
+                "host": agent_id.to_string(),
+                "data": {"kind": "TraceLeiosBlockForged", "slot": 1 + index},
+                "metsuke": {"pool_id": pool_id, "agent_id": agent_id},
+            })
+            .to_string(),
         )]),
     };
     let envelope = Envelope::new(

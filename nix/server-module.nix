@@ -83,13 +83,17 @@ let
     };
   };
 
-  # The one nullable setting is absent rather than null in the file: TOML has
-  # no null, and the server reads absence as "no Leios keys" (ADR 0011).
+  # TOML has no null, so a nullable setting is left out of the file rather than
+  # written as one, and the server reads the absence. No `leios_roster` is no
+  # Leios keys (ADR 0011); no `downloads` is a deployment offering no agent
+  # build, whose page then says to build one.
   configFile = toml.generate "metsuke-server-config.toml" (
-    cfg.settings
-    // {
-      ingest = lib.filterAttrs (_: value: value != null) cfg.settings.ingest;
-    }
+    lib.filterAttrs (_: value: value != null) (
+      cfg.settings
+      // {
+        ingest = lib.filterAttrs (_: value: value != null) cfg.settings.ingest;
+      }
+    )
   );
 in
 {
@@ -109,8 +113,9 @@ in
       # and it is also what lets the secret be replaced without a rebuild.
       type = lib.types.str;
       description = ''
-        The developer account's password, alone in a file. Read by systemd as
-        root, so the deployed secret stays unreadable to the service user.
+        The developer accounts, as one `user = "password"` line each and
+        nothing else. Read by systemd as root, so the deployed secret stays
+        unreadable to the service user.
       '';
     };
 
@@ -247,6 +252,39 @@ in
       type = types.submodule {
         options = {
           listen = required types.str;
+          public_url = required types.str;
+
+          # Optional, and null by default rather than pointing at the flake's
+          # own static packages: defaulting them would make every VM test build
+          # two cross-compiled agents to stand up a server node.
+          downloads = mkOption {
+            type = types.nullOr (types.attrsOf types.path);
+            default = null;
+            example = {
+              metsuke-static-x86_64-linux = "/usr/local/lib/metsuke/metsuke-static-x86_64-linux";
+            };
+            description = ''
+              Static builds this server offers for download, keyed by the name
+              each is served and linked under. The quickstart's install step
+              offers a download when `metsuke-static-x86_64-linux` is among
+              them, since that is the build its command names, and tells an
+              operator to build one otherwise; name the aarch64 build too, or
+              an operator following the ARM note beside it has nothing to
+              fetch. Anything else here is served but not linked from that
+              page, which is how a tool for another audience is handed out
+              without putting it in front of a pool.
+
+              A name the server already serves cannot be reused here: one of
+              the two files would be published under the other's checksum, so
+              the server refuses to start instead.
+
+              Take these from an input pinned to the tag each build was
+              released under, not from the input this server is built from.
+              Every build records the commit it came from, so the latter is a
+              different file after any commit to the repository, including one
+              that never touches the agent. `docs/deploying.md` has the pins.
+            '';
+          };
 
           http = mkOption {
             type = types.submodule {
@@ -292,7 +330,6 @@ in
           developer = mkOption {
             type = types.submodule {
               options = {
-                user = required types.str;
                 password_file = mkOption {
                   type = types.str;
                   default = credentialPath "developer-password";
@@ -419,11 +456,41 @@ in
         services.metsuke-server.settings.archive.filesystem stores the submission
         bytes alone and drops the key and signature they were checked with, so
         nothing can verify that archive afterwards, verify-archive refuses it, and
-        every download reaches a consumer unverifiable. S3 is what production runs
+        every download reaches a consumer unattested. S3 is what production runs
         (ADR 0005).
       '';
 
     assertions = [
+      {
+        # The server refuses this at load too. Asserted here as well because
+        # the two failures cost differently: a deploy that never evaluates has
+        # changed nothing, where one that reaches the host leaves the unit
+        # failing on a value only the journal names.
+        #
+        # Both of the rules the server applies, not one of them: a prefix test
+        # passes http://127.example.com, which is a name and not a loopback
+        # address, and passes an https URL carrying a path, which the server
+        # refuses as well. Either would evaluate here and fail on the host.
+        #
+        # The address is matched as a literal rather than parsed, so a
+        # malformed octet is left to the server. That is the one case this
+        # still lets through.
+        assertion =
+          let
+            origin = builtins.match "(https?)://([^/?#@]+)/?" cfg.settings.public_url;
+            loopback =
+              let
+                authority = builtins.elemAt origin 1;
+                # The port comes off first, or a loopback address carrying one
+                # fails a test the server passes.
+                ported = builtins.match "(.*):[0-9]+" authority;
+                host = if ported == null then authority else builtins.head ported;
+              in
+              builtins.match "127\\.[0-9]+\\.[0-9]+\\.[0-9]+" host != null || host == "[::1]";
+          in
+          origin != null && (builtins.head origin == "https" || loopback);
+        message = "services.metsuke-server.settings.public_url is ${cfg.settings.public_url}. It has to be a bare origin with nothing after the host, and either https or http on a loopback address. Every install command the onboarding pages print is built from it, so a plaintext one tells every pool operator to fetch a binary in clear and install it as root, and anything after the host sends the agent's endpoint and the fetch tool's to different roots.";
+      }
       {
         assertion = !cfg.roster.enable || cfg.settings.ingest.leios_roster == rosterFile;
         message = "services.metsuke-server.settings.ingest.leios_roster has to be ${rosterFile} when roster.enable is set: that is the only path the timer writes, and a server pointed anywhere else reads a roster nothing refreshes.";

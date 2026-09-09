@@ -15,13 +15,15 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # than one Agent can tell them apart. Defaults to this Agent's hostname, folded
 # to lowercase a-z0-9 in dash-separated runs; a value set here is folded the
 # same way.
-#   agent_id = "edge-1"
+# agent_id = "edge-1"
 
-# Path to the signing key (cardano-cli TextEnvelope). It has to be the cold key
-# pool_id above hashes from, or the agent refuses to start. The --signing-key
-# flag overrides this: with systemd, leave this unset and pass the key as a
-# credential. See contrib/metsuke.service.
-# signing_key = "/etc/metsuke/pool.skey"
+# Path to the signing key, a cardano-cli TextEnvelope: the cold key pool_id
+# above hashes from, or the pool's Leios key. A cold key that does not hash to
+# pool_id refuses to start; a Leios key hashes to nothing, so nothing is
+# checked here and the server's roster settles which pool it speaks for. The
+# --signing-key flag overrides this: with systemd, leave this unset and pass
+# the key as a credential. See contrib/metsuke.service.
+# signing_key = "/etc/metsuke/bls.skey"
 
 # Cadences: scraping and uploading are independent.
 # scrape_interval_secs = 300
@@ -47,6 +49,8 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # accepted submission picks a point in upload_jitter_max_secs and every upload
 # after it keeps that point, so agents installed together do not all upload in
 # the same second while yours still lands on a cadence you can watch for.
+# It is a ceiling: a spread wider than the interval places nobody better than
+# one exactly as wide, so a shorter upload_interval_secs bounds it instead.
 #
 # upload_batch_max_bytes counts the header frame and the payload before
 # compression; the server's own ceiling is [ingest].max_body_bytes on the
@@ -74,7 +78,7 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # node's journal, which the unit has to be allowed to do. The instructions
 # page says which two directives change, and the NixOS module makes both when
 # this section is set (docs/adr/0010). The node also has to be configured to
-# write these traces at all: that step is on the instructions page too.
+# write these traces at all: that is on the server's details page too.
 #
 # source picks the stream and is never guessed. With "journald", journal_unit
 # and journalctl_path have no default: name your node's unit, and give
@@ -88,21 +92,55 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # reads no journal, so none of the journal keys may be set, and the NixOS module
 # does not render this source: the unit it writes has no node upstream of it.
 #
-# namespaces are prefixes and are the whole selection rule; namespace_roots is
-# this host's ceiling on them, and a namespaces entry outside it is refused at
-# startup. Both match on segment boundaries, so an entry names a namespace the
-# node emits or an ancestor of one, never a fragment of a name. Why severity is
-# not a second rule: docs/adr/0010.
+# namespaces are prefixes and are the selection rule, less whatever
+# exclude_namespaces names; namespace_roots is this host's ceiling on them, and
+# a namespaces entry outside it is refused at startup. All three match on
+# segment boundaries, so an entry names a namespace the node emits or an
+# ancestor of one, never a fragment of a name. Why severity is not a further
+# rule: docs/adr/0010.
+#
+# An exclusion is for a namespace the node puts under a prefix you otherwise
+# want whole. Narrowing namespaces instead would give up every namespace added
+# under that prefix later. Exclusions are not checked against namespace_roots,
+# because they only ever ship less.
 #
 # start_grace_secs is how long a just-started journalctl has to stay running
 # before the agent accepts it as following, so a unit that may not read the
 # journal fails the start rather than collecting nothing (docs/adr/0010).
 # [log]
+#
+# Which stream the lines come from, "journald" or "pipe". Never guessed.
 # source = "journald"
+#
+# Your node's unit. No default: which service the node runs as is not
+# something this agent can guess.
 # journal_unit = "cardano-node"
+#
+# journalctl's absolute path. No default either, because a hardened unit's
+# PATH is not one to resolve a program on.
 # journalctl_path = "/usr/bin/journalctl"
+#
+# The ceiling on what may be selected, and the selection itself. Both are
+# prefixes matched on segment boundaries.
 # namespace_roots = ["Consensus", "ChainDB", "Forge"]
 # namespaces = ["Consensus.LeiosKernel", "Consensus.LeiosPeer", "ChainDB.AddBlockEvent.AddedToCurrentChain", "Forge.Loop.AdoptedBlock"]
+#
+# Namespaces to drop back out of that selection. Empty by default.
+# exclude_namespaces = []
+#
+# The trace-line spool's cap, and how long a journalctl that died waits before
+# it is started again.
 # log_max_bytes = 268435456
 # respawn_backoff_secs = 30
+#
+# The most of one line the agent keeps. A longer one is read whole, so the
+# stream stays in sync, written through unchanged in pipe mode, and then
+# dropped and counted. The default is 64 KiB, more than ten times the longest
+# line a node has been seen to write, and it is here so that what the node
+# writes cannot decide how much the agent allocates. In pipe mode the product
+# with pipe_queue_capacity is what a queue full of lines at this length costs.
+# max_line_bytes = 65536
+#
+# How long a just-started journalctl has to stay running before the agent
+# accepts it as following.
 # start_grace_secs = 1

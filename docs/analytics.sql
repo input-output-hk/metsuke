@@ -1,16 +1,36 @@
 -- Views over a directory `metsuke-fetch sync --into` wrote. Load with
---   duckdb -init docs/analytics.sql
--- and override the root first if it is not ./into:
+--   METSUKE_ARCHIVE=downloads duckdb -init docs/analytics.sql
+--
+-- Which directory is read comes from the first of: an `archive` variable
+-- already set, $METSUKE_ARCHIVE, then ./into. These are views rather than
+-- tables, so unlike docs/archive.sql the variable can also be set afterwards,
+-- from the prompt, and the next query reads the new root:
 --   set variable archive = 'downloads';
 --
 -- `select *` over the raw objects is not a useful read: a scrape holds its
 -- metrics as a nested list, and a trace line holds its payload as a map. The
 -- views below flatten both, so every question after this is one GROUP BY.
+--
+-- They also drop a submission the archive holds twice, which the two base
+-- views say why. These are views, so that runs on every query: measured over
+-- 3M trace lines it about doubles a full scan. docs/archive.sql pays it once
+-- into tables instead, which is what repeated questions want anyway.
 -- docs/reading-the-archive.md explains sample_size=-1 and the name globs.
 
-set variable archive = 'into';
+-- nullif, because getenv answers an unset variable with the empty string
+-- rather than NULL, and coalesce would take it and read the filesystem root.
+set variable archive =
+  coalesce(getvariable('archive'), nullif(getenv('METSUKE_ARCHIVE'), ''), 'into');
 
--- One row per scrape, metrics still nested.
+-- One row per scrape, metrics still nested, and one row per scrape rather than
+-- per stored copy of it. A submission whose PUT succeeded with the response
+-- lost is resealed under a fresh key, and a replay inside the skew window is
+-- stored again, so the same scrape can reach the archive as two objects and
+-- nothing on the server deduplicates them (ADR 0005 keeps what landed). Every
+-- count below, and `coverage` in particular, would otherwise read a pool with
+-- a flaky uplink as a more productive one. An agent reads the endpoint once
+-- per interval, so pool, agent and the agent's own scraped_at name the scrape
+-- rather than the upload.
 create or replace view scrape as
 select scraped_at::timestamptz as t,
        clock_offset_ms,
@@ -18,20 +38,39 @@ select scraped_at::timestamptz as t,
        metsuke.pool_id as pool,
        metsuke.agent_id as agent,
        metrics
-from read_json(getvariable('archive') || '/v1/*/*-metrics.jsonl.zst', sample_size=-1);
+from read_json(getvariable('archive') || '/v1/*/*-metrics.jsonl.zst',
+               sample_size = -1, union_by_name = true)
+qualify row_number() over (partition by pool, agent, t) = 1;
 
 -- One row per metric sample. This is the table to group over.
 create or replace view metric as
 select t, pool, agent, u.name, u.labels, u.value, u.declared_type
 from scrape, unnest(metrics) as _(u);
 
--- One row per trace line. `data` is map(varchar, json): data['ebHash'].
+-- One row per trace line.
+--
+-- `data` is cast to JSON rather than left as read_json inferred it. Inference
+-- gives a struct of whichever fields the objects in front of it happened to
+-- carry, so a field name is a column that exists on one archive and not on
+-- the next, and reading one that is absent is an error rather than a null.
+-- Through JSON the reads below hold on any archive: `data->>'$.ebHash'` for a
+-- value, `json_exists(data, '$.ebHash')` for whether it is there at all.
+-- Deduplicated for the reason `scrape` is, on the whole line: a trace line
+-- carries no field of the agent's to name it by, so every column this view
+-- keeps of what the node wrote is the key, `thread` included, because two
+-- threads can emit one payload in one microsecond. `timestamptz` holds that
+-- `at` to the microsecond and not the nanosecond the node wrote, so the
+-- window is that wide.
 create or replace view trace as
 select "at"::timestamptz as t,
-       ns, sev, thread, host, data,
+       ns, sev, thread, host, data::json as data,
        metsuke.pool_id as pool,
        metsuke.agent_id as agent
-from read_json(getvariable('archive') || '/v1/*/*-logs.jsonl.zst', sample_size=-1);
+from read_json(getvariable('archive') || '/v1/*/*-logs.jsonl.zst',
+               sample_size = -1, union_by_name = true)
+qualify row_number() over (
+  partition by pool, agent, t, ns, sev, thread, host, data::varchar
+) = 1;
 
 -- Did the agent cover the window it claims to? A gap_s far off the configured
 -- scrape interval is a missed upload, not a slow node.
@@ -103,27 +142,28 @@ from pivoted window w as (partition by pool, agent order by t);
 -- announced_at is null but forged_at is not is an EB that never left.
 create or replace view eb_lifecycle as
 with ev as (
-  select coalesce(data['ebHash'], data['hash'])::varchar as eb, ns, t, pool, agent, data
-  from trace where map_contains(data, 'ebHash') or ns like 'Consensus.LeiosKernel.Block%')
+  select coalesce(data->>'$.ebHash', data->>'$.hash') as eb, ns, t, pool, agent, data
+  from trace
+  where json_exists(data, '$.ebHash') or ns like 'Consensus.LeiosKernel.Block%')
 select eb, pool, agent,
   min(t) filter (where ns = 'Consensus.LeiosKernel.BlockForged')          as forged_at,
   min(t) filter (where ns = 'Consensus.LeiosKernel.BlockAnnounced')       as announced_at,
   min(t) filter (where ns = 'Consensus.LeiosKernel.AnnouncementAccepted') as accepted_at,
   min(t) filter (where ns = 'Consensus.LeiosKernel.BlockAcquired')        as acquired_at,
   min(t) filter (where ns = 'Consensus.LeiosKernel.BlockCertified')       as certified_at,
-  any_value(data['reason']) filter (where ns = 'Consensus.LeiosKernel.NotVoted') as not_voted_reason,
+  any_value(data->>'$.reason') filter (where ns = 'Consensus.LeiosKernel.NotVoted') as not_voted_reason,
   bool_or(ns = 'Consensus.LeiosKernel.BlockPointMissing')                 as point_missing,
-  any_value(data['announcementAgeSeconds']::double)
+  any_value((data->>'$.announcementAgeSeconds')::double)
     filter (where ns = 'Consensus.LeiosKernel.AnnouncementAccepted')      as announcement_age_s,
-  any_value(data['ebBodySize']::bigint)
+  any_value((data->>'$.ebBodySize')::bigint)
     filter (where ns = 'Consensus.LeiosKernel.AnnouncementAccepted')      as eb_body_size
 from ev group by 1, 2, 3;
 
 -- What each upstream peer delivered, by connection.
 create or replace view peer_activity as
-select pool, agent, data['peer']->>'$.connectionId' as connection_id,
+select pool, agent, data->>'$.peer.connectionId' as connection_id,
        count(*) as announcements,
-       count(distinct data['ebHash']::varchar) as distinct_ebs,
+       count(distinct data->>'$.ebHash') as distinct_ebs,
        min(t) as first_seen, max(t) as last_seen
 from trace where ns = 'Consensus.LeiosPeer.Announcement'
 group by 1, 2, 3;

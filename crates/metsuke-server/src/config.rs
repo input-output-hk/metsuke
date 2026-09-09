@@ -18,11 +18,29 @@ use crate::applications::Codes;
 pub struct ServerConfig {
     /// `host:port` to bind, plain HTTP (what fronts it: `http`).
     pub listen: String,
+    /// Where operators reach this server, which `listen` does not say: behind a
+    /// proxy the bound address is not the one anyone types. The onboarding page
+    /// hands out configs pointing at it, so an operator edits their pool id and
+    /// nothing else.
+    pub public_url: PublicUrl,
     pub http: HttpConfig,
     pub archive: ArchiveConfig,
     pub ingest: IngestConfig,
     pub developer: DeveloperConfig,
+    /// The static agent builds this deployment offers, so an operator needs no
+    /// nix to get one. Optional as a whole rather than defaulted, because a
+    /// deployment that ships none is a deployment whose page must say so, and
+    /// because requiring it would make every VM test build two cross-compiled
+    /// agents to stand up a server.
+    #[serde(default)]
+    pub downloads: Option<DownloadsConfig>,
 }
+
+/// Every static build this deployment offers, by the name it is served and
+/// linked under, to the path it is at on this host. Keyed rather than a field
+/// per build: the two the page offers are the agent's architectures, and what
+/// a deployment hands out beyond those is its own to decide.
+pub type DownloadsConfig = std::collections::BTreeMap<String, AbsolutePath>;
 
 /// What the transport refuses, as against what the intake refuses. Every field
 /// bounds one way a client can hold a connection open without finishing with
@@ -78,17 +96,18 @@ impl<'de> Deserialize<'de> for AbsolutePath {
     }
 }
 
-/// The one account that may pull the archive back out (ticket metsuke-4zo.10).
-/// Not optional: a serving host either has the credential or refuses to start,
-/// where an absent section would leave the routes quietly open or quietly gone.
+/// The accounts that may pull the archive back out (ticket metsuke-4zo.10).
+/// Not optional: a serving host either has the credentials or refuses to
+/// start, where an absent section would leave the routes quietly open or
+/// quietly gone.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DeveloperConfig {
-    /// The user developers authenticate as. Public, as this whole file is.
-    pub user: String,
-    /// A file holding the account's password and nothing else. The path is
-    /// config, the password is whatever systemd's `LoadCredential` put there,
-    /// so no password reaches the environment (metsuke-4zo.50).
+    /// A file holding one `user = "password"` line per developer and nothing
+    /// else, so who has access is the secret's to say rather than this file's
+    /// (`developer::Accounts`). The path is config, the contents are whatever
+    /// systemd's `LoadCredential` put there, so no password reaches the
+    /// environment (metsuke-4zo.50).
     pub password_file: AbsolutePath,
     /// Keys one listing may answer with. A value above the upstream cap is
     /// clamped rather than refused (`developer::Developer::list_max_rows`).
@@ -143,6 +162,84 @@ pub struct S3Config {
 pub enum ConfigError {
     #[error("config does not parse: {0}")]
     Toml(#[from] toml::de::Error),
+}
+
+/// Where this deployment tells operators to reach it. Checked rather than
+/// taken, and checked the way the agent checks its own `upload_url`
+/// (`metsuke::endpoint::UploadUrl`): the two ends of the same deployment
+/// should not disagree about what counts as an address.
+///
+/// The reason is what the pages do with it. Every install command is built
+/// from this value, so under `http://` this server publishes a page telling
+/// every pool operator to fetch a binary in clear and `sudo install` it, which
+/// hands an on-path attacker the whole fleet through our own onboarding.
+/// Refusing plaintext also refuses a scheme that cannot be a base, which is
+/// what `join` would otherwise fail on after the listener is already past it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "Url")]
+pub struct PublicUrl(Url);
+
+#[derive(Debug, thiserror::Error)]
+pub enum NotAPublicUrl {
+    #[error(
+        "public_url {0} is not https, and only a loopback host may be plain http: \
+         every install command the pages print is built from it"
+    )]
+    Plaintext(Url),
+    /// Anything past the host makes the generated clients disagree. The pages
+    /// `join` an absolute path onto this, which discards a path, while
+    /// `--server` reaches `metsuke-fetch` as written and has
+    /// `/v1/submissions` appended, so a path sends the two to different roots
+    /// and a query swallows the path into itself. Userinfo would be printed
+    /// into every command the page shows.
+    #[error(
+        "public_url {0} has to be a bare origin, with nothing after the host: \
+         the agent's endpoint and the fetch tool's are both built from it"
+    )]
+    NotAnOrigin(Url),
+}
+
+impl TryFrom<Url> for PublicUrl {
+    type Error = NotAPublicUrl;
+
+    fn try_from(url: Url) -> Result<PublicUrl, NotAPublicUrl> {
+        // Loopback http is what the VM tests and a single-host development
+        // deployment reach this server on; a name is not enough, for the
+        // reason `endpoint::is_loopback` gives.
+        // Brackets come off first: `Url` hands back an IPv6 host as it is
+        // written in the authority, and `[::1]` parses as no address at all.
+        let loopback = url.host_str().is_some_and(|host| {
+            host.trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+        });
+        // `path()` answers "/" for a URL written without one, so this accepts
+        // both spellings of a bare host and refuses everything further.
+        let origin = url.path() == "/"
+            && url.query().is_none()
+            && url.fragment().is_none()
+            && url.username().is_empty()
+            && url.password().is_none();
+        match (url.scheme(), origin) {
+            (_, false) => Err(NotAPublicUrl::NotAnOrigin(url)),
+            ("https", true) => Ok(PublicUrl(url)),
+            ("http", true) if loopback => Ok(PublicUrl(url)),
+            _ => Err(NotAPublicUrl::Plaintext(url)),
+        }
+    }
+}
+
+impl PublicUrl {
+    pub fn as_url(&self) -> &Url {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for PublicUrl {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(formatter)
+    }
 }
 
 impl ServerConfig {

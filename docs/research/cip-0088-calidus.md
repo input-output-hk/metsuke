@@ -44,10 +44,10 @@ Source: https://cips.cardano.org/cip/CIP-0151
 - **Signing payload (v2 change)**: v2 signs a `blake2b-256` of the payload
   object rather than the payload itself, chosen for hardware-wallet
   compatibility. Fields must be in numeric index order for deterministic
-  hashing. The CIP text says the hash is over the payload's hex; cardano-signer
-  hashes the CBOR bytes, which is what the recordings under
-  crates/metsuke-server/tests/fixtures/calidus carry and what the server
-  follows.
+  hashing. The CIP text says the hash is over the payload's hex, and
+  cardano-signer hashes the CBOR bytes. Which of the two a verifier has to
+  follow is unsettled here, and nothing in this repository implements either:
+  whatever does will need recordings off a real registration to settle it.
 - **Witness formats (v2)**:
   - Simple witness: `[witnessType, pubKeyBytes, sigBytes]`.
   - COSE witness (hardware wallets): CIP-0008/CIP-30 `COSE_Key` +
@@ -60,9 +60,9 @@ Source: https://cips.cardano.org/cip/CIP-0151
   Revocation without replacement: register with `calidusPublicKey =
   h'0000...0000'` (all-zero, 32 bytes).
 
-Concrete CBOR payload observed in `gitmachtl/scripts/cardano/mainnet/15_calidusPoolKey.sh`
-(local clone at `/home/manveru/ghq/github.com/gitmachtl/scripts`), lines
-332-347:
+Concrete CBOR payload observed in
+[cardano/mainnet/15_calidusPoolKey.sh](https://github.com/gitmachtl/scripts/blob/HEAD/cardano/mainnet/15_calidusPoolKey.sh),
+lines 332-347:
 ```
 map(5)
   1 -> [1, poolIdHex]        # scope: pool registration
@@ -195,6 +195,6 @@ specific doc).
 - https://cips.cardano.org/cip/CIP-0088
 - https://cips.cardano.org/cip/CIP-0151
 - https://github.com/gitmachtl/cardano-signer (README)
-- `/home/manveru/ghq/github.com/gitmachtl/scripts/cardano/mainnet/15_calidusPoolKey.sh` (local clone)
+- [cardano/mainnet/15_calidusPoolKey.sh](https://github.com/gitmachtl/scripts/blob/HEAD/cardano/mainnet/15_calidusPoolKey.sh)
 - https://cardano-community.github.io/guild-operators/Build/grest-changelog/
 - https://api.koios.rest/api/v1/pool_calidus_keys (live endpoint, schema observed)

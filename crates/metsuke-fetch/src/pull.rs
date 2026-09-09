@@ -8,7 +8,7 @@ use std::num::NonZeroU64;
 use std::time::Duration;
 
 use base64::Engine as _;
-use metsuke_wire::envelope::{Attestation, HEADER_SIGNATURE, HEADER_VKEY};
+use metsuke_wire::envelope::{Attestation, Attested, HEADER_SIGNATURE, HEADER_VKEY};
 use metsuke_wire::http::{
     self, AFTER_FIELD, KEY_FIELD, Listing, OBJECT_PATH, PREFIX_FIELD, SUBMISSIONS_PATH,
 };
@@ -22,21 +22,32 @@ use metsuke_wire::http::{
 /// `--max-object-bytes`.
 const PREALLOCATED_MAX: u64 = 1024 * 1024;
 
-/// One object as it came back: the bytes to write, and the pair that says
-/// whose they are where the archive held it. `None` is not a fault of the
-/// download. A filesystem archive discards the pair at ingest
+/// One object as it came back: the bytes to write, and what the answer said
+/// about whose they are where the archive held it.
+///
+/// `Attested::None` is not a fault of the download. A filesystem archive
+/// discards the pair at ingest
 /// (`metsuke_server::archive::FilesystemArchive`), so an object stored through
 /// one can never be checked by anybody, and an object written by something
-/// other than metsuke-server carries none either.
+/// other than metsuke-server carries none either. `Attested::Malformed` is a
+/// fault, and of neither the object nor the archive.
 pub struct Object {
     pub bytes: Vec<u8>,
-    pub attestation: Option<Attestation>,
+    pub attestation: Attested,
 }
 
-/// The two headers off an answer's head. What an unverifiable object means is
-/// `sync`'s to say; `Attestation::from_headers` says when there is one.
-fn attestation(response: &ureq::http::Response<ureq::Body>) -> Option<Attestation> {
-    let text = |header: &str| -> Option<&str> { response.headers().get(header)?.to_str().ok() };
+/// The two headers off an answer's head. What an object carrying none means is
+/// `sync`'s to say; `Attestation::from_headers` tells the three apart.
+fn attestation(response: &ureq::http::Response<ureq::Body>) -> Attested {
+    // A header whose bytes are not text is present and undecodable, not
+    // absent, and the empty string is how that reaches `from_headers` as the
+    // malformed pair it is.
+    let text = |header: &str| -> Option<&str> {
+        response
+            .headers()
+            .get(header)
+            .map(|value| value.to_str().unwrap_or_default())
+    };
     Attestation::from_headers(text(HEADER_VKEY), text(HEADER_SIGNATURE))
 }
 
@@ -83,6 +94,51 @@ pub enum PullError {
         #[source]
         source: io::Error,
     },
+}
+
+/// The two statuses that are about the object and not about the path to it.
+///
+/// 404 and 410 both say this key is not there to be had, which is what a
+/// lifecycle rule expiring an object mid-page leaves behind. Everything else a
+/// 4xx can be is the run's problem wearing one object's clothes: 401 and 403
+/// are the credential, 400 is the request this build makes, and each of them
+/// answers the same way for every object after this one.
+const GONE: [u16; 2] = [404, 410];
+
+impl PullError {
+    /// Whether this is one object's problem, as against this archive being out
+    /// of reach.
+    ///
+    /// One object's is the run's to report and step over, the same as one this
+    /// build cannot name: the cursor advances, and a single key nobody can
+    /// fetch does not stand in front of every key after it for good. Two
+    /// shapes qualify, and only two — the archive says the key is not there,
+    /// or the object is there and over the bound this run holds objects to.
+    /// Everything else stops the run with the cursor where it was, so the next
+    /// one asks again.
+    ///
+    /// **Keep this narrow.** Every rejection advances the cursor, so anything
+    /// admitted here that is really the path's — a credential, a proxy, the
+    /// request this build makes — rejects the whole archive one key at a time
+    /// and leaves the next run nothing to ask for. A status says only ever "not
+    /// here" about one object; what it says about authorisation or framing it
+    /// says about all of them. `classify`'s retryable rule is the wrong test
+    /// for that: it answers "may this be retried", not "is this one key's".
+    pub fn is_one_objects_problem(&self) -> bool {
+        match self {
+            PullError::Refused { status, .. } => GONE.contains(status),
+            // The operator's own bound, and the message says to raise it.
+            PullError::Oversized { .. } => true,
+            // Not here either, and for the reason above. A body with no length
+            // is how a proxy that re-frames answers looks, so it arrives for
+            // every object rather than for one.
+            PullError::NoLength { .. }
+            | PullError::Unreachable { .. }
+            | PullError::UnreadableListing { .. }
+            | PullError::Short { .. }
+            | PullError::Unread { .. } => false,
+        }
+    }
 }
 
 impl Archive {

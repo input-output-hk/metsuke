@@ -60,6 +60,56 @@ fn temp_log_spool(dir: &tempfile::TempDir) -> LogSpool {
     .unwrap()
 }
 
+// What the upload loop drains on: whether the budget cut a batch off with
+// rows still spooled, or it took the stream to the end. Asked of the rows and
+// not of the bytes, so a header whose length follows the clock cannot decide
+// it differently from one run to the next.
+#[test]
+fn a_submission_says_whether_the_budget_cut_it_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let now = OffsetDateTime::UNIX_EPOCH;
+    let two_scrapes = spent_on_rows(&[scrape_at(1), scrape_at(2)]);
+    let mut delivery = delivery_with_submission_cap(&dir, two_scrapes);
+    for at in 1..=3 {
+        delivery.push(&scrape_at(at)).unwrap();
+    }
+
+    let cut_off = delivery.take_submission(now).unwrap().unwrap();
+    assert_eq!(cut_off.lines(), 2, "the budget holds two");
+    assert!(cut_off.more_waits(), "a third scrape is still spooled");
+    delivery.ack(cut_off).unwrap();
+
+    let last = delivery.take_submission(now).unwrap().unwrap();
+    assert_eq!(last.lines(), 1);
+    assert!(
+        !last.more_waits(),
+        "the stream ran out, so nothing waits behind it"
+    );
+}
+
+/// A submission cap that holds `rows` and no more: the framing, which is
+/// spent before any row, plus what those rows cost the spool, plus half a row
+/// of slack. The slack is what makes it a count rather than a coin flip: the
+/// header carries a timestamp whose subsecond digits vary per run, so a cap
+/// measured to the byte sometimes holds one row fewer.
+fn spent_on_rows(rows: &[Scrape]) -> u64 {
+    let empty = envelope::Envelope::new(
+        test_provenance(),
+        metsuke::AGENT_VERSION.to_string(),
+        u64::MAX,
+        OffsetDateTime::UNIX_EPOCH,
+        Payload::scrapes(vec![]),
+    );
+    let framing = (envelope::HEADER_OFFSET + envelope::header_json(&empty).unwrap().len()) as u64;
+    let row = |scrape: &Scrape| {
+        PayloadLine::scrape(scrape, &test_provenance())
+            .unwrap()
+            .wire_bytes()
+    };
+    let slack = rows.first().map(row).unwrap_or_default() / 2;
+    framing + rows.iter().map(row).sum::<u64>() + slack
+}
+
 // The whole loop contract: what was pushed comes out as a submission the server's
 // own call (`open` with the verifying key) accepts, and an ack empties the
 // spool.

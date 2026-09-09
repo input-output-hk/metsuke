@@ -16,10 +16,10 @@ use time::OffsetDateTime;
 mod support;
 use metsuke_server::config::{HttpConfig, IngestConfig};
 use support::{
-    DEVELOPER_PASSWORD, ServerToml, developer_config, developer_toml_with_rows, envelope_at,
-    example_s3_archive, filesystem_archive, http_toml, ingest_toml, nonzero_u32, nonzero_u64,
-    object_name, other_key, permissive_config, permissive_http, pool_of, seal, server_toml,
-    stored_submission, test_key,
+    DEVELOPER_PASSWORD, DEVELOPER_USER, ServerToml, developer_config, developer_toml_with_rows,
+    envelope_at, example_s3_archive, filesystem_archive, http_toml, ingest_toml, nonzero_u32,
+    nonzero_u64, object_name, other_key, permissive_config, permissive_http, pool_of, seal,
+    server_toml, stored_submission, test_key,
 };
 
 /// What the S3 archive reads its credentials from. Passed to every spawn, so
@@ -201,6 +201,35 @@ impl Server {
         Upload(answered)
     }
 
+    /// A submission a **Leios Key** signed, which names no pool, so the claim
+    /// travels in its own header and the roster is what decides it (ADR 0011).
+    fn post_leios(
+        &self,
+        key: &metsuke_wire::envelope::SubmissionKey,
+        pool: PoolId,
+        envelope: &Envelope,
+    ) -> (u16, String) {
+        let (body, attestation) = support::seal_with(key, envelope);
+        let mut response = agent()
+            .post(&self.url)
+            .header(
+                HEADER_VKEY,
+                metsuke_wire::hex::encode(&attestation.key_bytes()),
+            )
+            .header(
+                HEADER_SIGNATURE,
+                metsuke_wire::hex::encode(&attestation.signature_bytes()),
+            )
+            .header(metsuke_wire::envelope::HEADER_POOL, pool.to_bech32())
+            .content_type("application/json")
+            .send(&body[..])
+            .unwrap();
+        (
+            response.status().as_u16(),
+            response.body_mut().read_to_string().unwrap(),
+        )
+    }
+
     fn post_raw(&self, vkey: &str, signature: &str, body: Vec<u8>) -> (u16, String) {
         let mut response = agent()
             .post(&self.url)
@@ -252,10 +281,7 @@ impl Server {
 
     /// GET `path` with the configured developer credentials.
     fn pull(&self, path: &str) -> (u16, Vec<u8>, Vec<(String, String)>) {
-        self.pull_as(
-            path,
-            Some((&developer_config(self.dir.path()).user, DEVELOPER_PASSWORD)),
-        )
+        self.pull_as(path, Some((DEVELOPER_USER, DEVELOPER_PASSWORD)))
     }
 
     fn pull_as(
@@ -613,6 +639,12 @@ fn an_accepted_submission_is_logged_against_its_pool_and_object() {
         logged.contains(&format!("accepted {stored}")),
         "the acceptance must name the object it became, got: {logged}"
     );
+    // Which build reported, for a rollout. It is in the object's own header
+    // too, but reading that takes bucket credentials.
+    assert!(
+        logged.contains(&format!("from agent {}", metsuke_server::CLIENT_VERSION)),
+        "the acceptance must name the agent version, got: {logged}"
+    );
     assert!(
         stored.contains(&pool_of(&key).to_string()),
         "and that name is what says whose it was, so the line does not repeat \
@@ -727,9 +759,11 @@ fn the_instructions_page_is_served_without_credentials() {
     let server = Server::start(&[pool_of(&key)]);
     let (status, body, headers) = server.pull_as(metsuke_server::instructions::PATH, None);
     assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    // No binaries: this server is spawned from a config with no `[downloads]`,
+    // and its page offers a build rather than a download because of it.
     assert_eq!(
         String::from_utf8_lossy(&body),
-        metsuke_server::instructions::page()
+        support::pages_of(Vec::new()).quickstart
     );
     let content_type = headers
         .iter()
@@ -775,16 +809,103 @@ fn the_instructions_page_takes_only_get() {
     assert_eq!(posted.status().as_u16(), 405);
 }
 
+/// What `curl -I`, a link checker and an uptime monitor send. The head is the
+/// GET's, and the length it states is the document's: hyper knows the request
+/// method and writes no body, so nothing here builds a short one.
+#[test]
+fn a_head_states_the_length_of_the_body_it_does_not_send() {
+    let key = test_key();
+    let server = Server::start(&[pool_of(&key)]);
+    for path in [
+        metsuke_server::instructions::PATH.to_string(),
+        metsuke_server::instructions::DETAILS_PATH.to_string(),
+        metsuke_server::instructions::ANALYSIS_PATH.to_string(),
+        metsuke_server::instructions::ICON_PATH.to_string(),
+        format!(
+            "{}config.pipe.toml",
+            metsuke_server::instructions::FILES_PREFIX
+        ),
+    ] {
+        let (status, body, _) = server.pull_as(&path, None);
+        assert_eq!(status, 200, "GET {path}");
+
+        let mut response = agent()
+            .head(format!("{}{path}", server.base()))
+            .call()
+            .unwrap();
+
+        assert_eq!(response.status().as_u16(), 200, "HEAD {path}");
+        let stated = response
+            .headers()
+            .get("content-length")
+            .unwrap_or_else(|| panic!("HEAD {path} stated no length"))
+            .to_str()
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+        assert_eq!(stated, body.len(), "HEAD {path}");
+        assert!(
+            response.body_mut().read_to_vec().unwrap().is_empty(),
+            "HEAD {path} sent a body"
+        );
+    }
+}
+
+/// On every answer, whatever the route and whatever the status. The pages are
+/// what a browser renders, and a refusal is reached from the same origin.
+#[test]
+fn every_answer_carries_the_policy_headers() {
+    let key = test_key();
+    let server = Server::start(&[pool_of(&key)]);
+    let cases = [
+        (metsuke_server::instructions::PATH.to_string(), 200),
+        (metsuke_server::instructions::ANALYSIS_PATH.to_string(), 200),
+        (metsuke_server::instructions::ICON_PATH.to_string(), 200),
+        (
+            format!(
+                "{}config.pipe.toml",
+                metsuke_server::instructions::FILES_PREFIX
+            ),
+            200,
+        ),
+        ("/nothing-here".to_string(), 404),
+        // Unauthenticated, so a 401 with its challenge.
+        (metsuke_server::http::SUBMISSIONS_PATH.to_string(), 401),
+    ];
+    for (path, expected) in cases {
+        let (status, _, headers) = server.pull_as(&path, None);
+        assert_eq!(status, expected, "{path}");
+        let value = |field: &str| {
+            headers
+                .iter()
+                .find(|(name, _)| name == field)
+                .map(|(_, value)| value.clone())
+                .unwrap_or_else(|| panic!("{path} carried no {field}: {headers:?}"))
+        };
+        let policy = value("content-security-policy");
+        // The two the pages depend on, stated rather than matched whole, so
+        // widening the policy for something a page grows does not fail here
+        // while dropping the part that makes it worth having does.
+        assert!(policy.contains("default-src 'none'"), "{path}: {policy}");
+        assert!(
+            policy.contains("frame-ancestors 'none'"),
+            "{path}: {policy}"
+        );
+        assert_eq!(value("x-content-type-options"), "nosniff", "{path}");
+        assert_eq!(value("referrer-policy"), "no-referrer", "{path}");
+    }
+}
+
 #[test]
 fn a_wrong_developer_password_is_refused_on_both_routes() {
     let key = test_key();
     let server = Server::start(&[pool_of(&key)]);
-    let user = developer_config(server.dir.path()).user;
+    let user = DEVELOPER_USER;
     for path in [
         metsuke_server::http::SUBMISSIONS_PATH.to_string(),
         format!("{}?key=anything", metsuke_server::http::OBJECT_PATH),
     ] {
-        let (status, body, _) = server.pull_as(&path, Some((&user, "not the password")));
+        let (status, body, _) = server.pull_as(&path, Some((user, "not the password")));
         assert_eq!(status, 401, "{path}");
         assert_eq!(
             String::from_utf8_lossy(&body),
@@ -1319,10 +1440,8 @@ fn big_object(server: &Server, key: &SigningKey) -> (String, usize) {
 /// reading past the head.
 fn stalled_download(server: &Server, stored: &str) -> (Raw, usize) {
     let mut download = Raw::connect(server);
-    let credentials = base64::engine::general_purpose::STANDARD.encode(format!(
-        "{}:{DEVELOPER_PASSWORD}",
-        developer_config(server.dir.path()).user
-    ));
+    let credentials = base64::engine::general_purpose::STANDARD
+        .encode(format!("{}:{DEVELOPER_PASSWORD}", DEVELOPER_USER));
     download.send(
         &format!(
             "GET {path}?{field}={key} HTTP/1.1\r\n\
@@ -1518,15 +1637,29 @@ fn a_connection_that_sends_no_request_is_closed_at_the_idle_timeout() {
     );
 }
 
-/// Every credential file that yields no password stops startup, because
-/// `user:`, half of it already in the public config, would otherwise
-/// authorize every pull. `None` is the file never written at all.
+/// Every credential file that names no usable account stops startup: an empty
+/// password authorizes anyone who names its user, and a file naming nobody
+/// leaves routes that answer to no one. `None` is the file never written at
+/// all.
 #[test]
-fn a_developer_password_file_with_no_password_in_it_stops_startup() {
-    for (written, reason) in [
-        (Some(""), "empty"),
-        (Some("\n"), "empty"),
-        (None, "No such file"),
+fn a_developer_secret_that_names_no_usable_account_stops_startup() {
+    for (written, reason, secret) in [
+        (Some(""), "names no accounts", None),
+        (Some("\n"), "names no accounts", None),
+        // The user is named on purpose: an account name is not the secret, and
+        // the operator has to know which line to fix.
+        (Some("metsuke-dev = \"\"\n"), "empty password", None),
+        // The upgrade path off the old shared-password format, where the whole
+        // file is one credential.
+        (Some("hunter2\n"), "is not one", Some("hunter2")),
+        // A password written unquoted. A word cannot hold this on its own: it
+        // is a scalar that the parser's message renders back.
+        (
+            Some("metsuke-dev = 8675309\n"),
+            "is not one",
+            Some("8675309"),
+        ),
+        (None, "No such file", None),
     ] {
         let dir = tempfile::tempdir().unwrap();
         let config = server_toml(dir.path(), &[pool_of(&test_key())]);
@@ -1545,7 +1678,41 @@ fn a_developer_password_file_with_no_password_in_it_stops_startup() {
             "{written:?}: the refusal must name the file, got {stderr}"
         );
         assert!(stderr.contains(reason), "{written:?}: {stderr}");
+        // End to end, because this is what a journal holds: the refusal is
+        // rendered by the real binary and read off its stderr, so a parser
+        // whose message quotes the line it failed on is caught here whatever
+        // the unit tests say.
+        if let Some(secret) = secret {
+            assert!(
+                !stderr.contains(secret),
+                "{written:?}: the refusal carries the password: {stderr}"
+            );
+        }
     }
+}
+
+/// A download under a name this server already serves stops startup, rather
+/// than serving one file and publishing the other's digest beside it. Run
+/// against the real binary because the refusal has to be what the config path
+/// reaches: `pages` is where the collision is found, and startup is the only
+/// caller that can be handed one.
+#[test]
+fn a_download_shadowing_a_shipped_file_stops_startup() {
+    let (shipped, _) = metsuke_server::instructions::FILES[0];
+    let dir = tempfile::tempdir().unwrap();
+    let offered = dir.path().join("theirs.toml");
+    std::fs::write(&offered, "mine = true\n").unwrap();
+    let mut config = server_toml(dir.path(), &[pool_of(&test_key())]);
+    config.downloads = Some(support::downloads_toml(&[(shipped, offered.as_path())]));
+    let path = config.write(dir.path());
+
+    let (exit, stderr) = refuses_to_start(&path);
+
+    assert!(!exit.success(), "a shadowed name must not start");
+    assert!(
+        stderr.contains(shipped) && stderr.contains("[downloads]"),
+        "the refusal says nothing to fix: {stderr}"
+    );
 }
 
 /// Spawn the server expecting it not to reach its listener, and hand back how
@@ -1599,7 +1766,7 @@ fn version_is_printed_on_its_own_and_names_the_crates_version() {
     );
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
-        env!("CARGO_PKG_VERSION")
+        metsuke_wire::version_line(env!("CARGO_PKG_VERSION"))
     );
 }
 
@@ -1642,4 +1809,56 @@ fn a_start_that_stops_on_its_config_still_names_the_build() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains(env!("CARGO_PKG_VERSION")), "got: {stderr}");
+}
+
+/// A roster that cannot be read is one line, not one line per request.
+///
+/// The lookup runs before the signature and before the limiter, deliberately
+/// (`intake::Intake::accept`), and a pool id is public on chain while a Leios
+/// key can be generated by anybody. So while the roster is gone every body
+/// naming an allowlisted pool used to write a warning nothing throttled, from
+/// a client that had proved nothing.
+#[test]
+fn an_unreadable_roster_is_reported_once_and_not_once_per_request() {
+    let key = test_key();
+    let pool = pool_of(&key);
+    let roster_path = std::sync::Arc::new(std::sync::Mutex::new(std::path::PathBuf::new()));
+    let written = std::sync::Arc::clone(&roster_path);
+    let server = Server::start_with(&[pool], move |config, dir| {
+        let path = dir.join("roster.json");
+        std::fs::write(
+            &path,
+            format!(
+                r#"{{"epoch": 1, "slot": 2, "pools": {{"{}": []}}}}"#,
+                metsuke_wire::hex::encode(pool.as_hash())
+            ),
+        )
+        .expect("the roster writes");
+        config.ingest = support::ingest_toml(&metsuke_server::config::IngestConfig {
+            leios_roster: Some(
+                metsuke_server::config::AbsolutePath::new(path.clone()).expect("a temp dir"),
+            ),
+            ..support::permissive_config(&[pool])
+        });
+        *written.lock().unwrap() = path;
+    });
+    // Loaded, so the file being gone is a change rather than a start failure.
+    assert!(server.logged_until("roster").contains("roster"));
+    std::fs::remove_file(&*roster_path.lock().unwrap()).expect("the roster is removed");
+
+    // Bodies a stranger can build: an allowlisted pool id is public, and this
+    // key is nobody's. None of them is signed by anything the roster lists.
+    let stranger = support::test_leios_key(9);
+    for counter in 0..20 {
+        let envelope = support::envelope_for(&key, counter);
+        let (status, _) = server.post_leios(&stranger, pool, &envelope);
+        assert_eq!(status, 403, "a key no roster lists is refused");
+    }
+
+    let warnings = server
+        .logged()
+        .lines()
+        .filter(|line| line.contains("keeping the roster already loaded"))
+        .count();
+    assert_eq!(warnings, 1, "one failure, said once:\n{}", server.logged());
 }

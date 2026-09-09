@@ -115,3 +115,23 @@ fn a_reason_that_is_already_a_line_is_left_alone() {
     let refusal = http::classify(&mut answered(403, "pool is not on the allowlist")).unwrap_err();
     assert_eq!(refusal.reason, "pool is not on the allowlist");
 }
+
+/// Every control character goes, not only the whitespace ones. A reason and an
+/// agent_version both reach a journal an operator reads in a terminal, and an
+/// escape sequence surviving that is the sender deciding what their screen
+/// does. `split_whitespace` does not treat ESC as whitespace, so it passed.
+#[test]
+fn a_control_character_does_not_survive_into_the_journal() {
+    let hostile = "ok \u{1b}[2J\u{1b}[H cleared \u{7} \u{0} done";
+    let line = http::one_line(hostile.to_string());
+
+    assert!(
+        !line.chars().any(char::is_control),
+        "a control character survived: {line:?}"
+    );
+    // The readable part is still there: this replaces them rather than
+    // truncating at the first one.
+    assert!(line.contains("ok"), "{line:?}");
+    assert!(line.contains("cleared"), "{line:?}");
+    assert!(line.contains("done"), "{line:?}");
+}

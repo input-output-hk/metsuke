@@ -67,8 +67,11 @@ root sets no `maxFrequency`.
 Two different configs are in play, and everything measured above is the first:
 
 - `demo/proto-devnet/config/config.yaml` in the ouroboros-leios repo, pinned at
-  `prototype-2026w32`. The fixture recordings come from it, and so does the chain the e2e
-  node joins. It is a demo, not what anyone operates.
+  `prototype-2026w35`. It is a demo, not what anyone operates. The chain the e2e node
+  joins comes from it, and so does everything about a recording except the tracing: both
+  `scripts/record-trace-fixtures.sh` and `nix/e2e-test.nix` keep this config's
+  non-`TraceOption*` keys and take the `TraceOption*` ones from the recording below, so
+  what a fixture holds is the severity a pool's node emits at rather than the demo's.
 - `book.world.dev.cardano.org/environments-pre/leios/config.json`, which is what SPOs
   run, recorded at nix/fixtures/leios-preprod-node-config.json — the recording owns every
   value below. It already gives each namespace the agent selects an override that emits

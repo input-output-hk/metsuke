@@ -5,6 +5,43 @@
 
 listen = "127.0.0.1:8080"
 
+# Where operators reach this server. The onboarding page hands out agent
+# configs pointing at it, so getting this wrong sends every pool's submissions
+# somewhere else.
+public_url = "https://metsuke.example.org"
+
+# Optional. Static builds this server offers for download, keyed by the name
+# each is served and linked under, so an operator needs no nix to get one. The
+# onboarding page's install step offers a download when the x86_64 agent build
+# is among them, and tells them to build it otherwise; name the aarch64 one too
+# or an operator following the ARM note beside it has nothing to fetch. Anything
+# else here is served but not linked from that page, which is how a tool for a
+# different audience is handed out without putting it in front of a pool.
+#
+# Every build records the commit it came from. A build taken from whatever this
+# server was built from is therefore a different file after any commit to the
+# repository, including a fix that never touches the agent. One taken from a
+# release is that release's own file.
+#
+# Each is fetched from its own release, the agent builds from the
+# client-vX.Y.Z whose version this server was built against and the fetch
+# builds from a fetch-vX.Y.Z:
+#
+#   tag=client-v1.0.0
+#   base=https://github.com/input-output-hk/metsuke/releases/download/$tag
+#   curl -fLO $base/metsuke-static-x86_64-linux
+#   curl -fLO $base/metsuke-static-x86_64-linux.sha256
+#   sha256sum -c metsuke-static-x86_64-linux.sha256
+#   sudo mkdir -p /usr/local/lib/metsuke
+#   sudo install -m 0644 metsuke-static-x86_64-linux /usr/local/lib/metsuke/
+#
+# The other names below go the same way. A nix deployment pins a metsuke input
+# at each tag instead, which docs/deploying.md has.
+# [downloads]
+# metsuke-static-x86_64-linux = "/usr/local/lib/metsuke/metsuke-static-x86_64-linux"
+# metsuke-static-aarch64-linux = "/usr/local/lib/metsuke/metsuke-static-aarch64-linux"
+# metsuke-fetch-static-x86_64-linux = "/usr/local/lib/metsuke/metsuke-fetch-static-x86_64-linux"
+
 # Generous, because a pool on a bad link still has to get its submission in.
 [http]
 idle_timeout_ms = 30000
@@ -15,7 +52,7 @@ max_concurrent_requests = 64
 # The S3 archive reads its credentials from AWS_ACCESS_KEY_ID and
 # AWS_SECRET_ACCESS_KEY in the process environment.
 [archive.s3]
-bucket = "cardano-playground-metsuke"
+bucket = "metsuke-archive-example"
 region = "eu-central-1"
 # Whatever stands in for S3 here has to answer a GET with a Content-Length,
 # not chunked.
@@ -55,9 +92,11 @@ rate_limit_uploads = 100
 rate_limit_uploads_total = 2000
 rate_limit_window_secs = 3600
 
-# The account developers pull the archive back out as.
+# The accounts developers pull the archive back out as. The file holds one
+# `user = "password"` line each, so who has access is the secret's to say and
+# revoking one person is an edit to one line. A username is letters, digits, '-'
+# and '_', matched exactly.
 [developer]
-user = "metsuke-dev"
-password_file = "/run/credentials/metsuke-server.service/developerpassword"
+password_file = "/run/credentials/metsuke-server.service/developer-password"
 # One listing is one bucket request, so anything above 1000 is clamped to it.
 list_max_rows = 1000

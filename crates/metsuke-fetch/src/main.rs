@@ -29,8 +29,17 @@ enum Fatal {
     Sync(#[from] SyncError),
     /// Not a failure to sync: the run did what it could and the objects it
     /// refused are named above this. The code is what a script reads.
-    #[error("{count} object(s) did not verify and were not written")]
-    NotWritten { count: usize },
+    ///
+    /// `unverified` is what the state file holds rather than what this run
+    /// found, so it is nonzero on a run that fetched nothing and refused
+    /// nothing. Clearing it is `--forget-unverified`.
+    /// Two scopes rather than a sum: the same object can be in both, so the
+    /// message says which each number is about.
+    #[error(
+        "this run did not write {count} object(s); \
+         {unverified} key(s) in this state file are unverified. Each is named above"
+    )]
+    NotWritten { count: usize, unverified: usize },
 }
 
 fn main() -> std::process::ExitCode {
@@ -44,7 +53,7 @@ fn main() -> std::process::ExitCode {
 }
 
 fn run() -> Result<(), Fatal> {
-    match Invocation::parse(std::env::args().skip(1))? {
+    match Invocation::parse(std::env::args().skip(1), |name| std::env::var(name).ok())? {
         // Asked for, so it is the run's answer and goes to stdout; the same
         // text reaching stderr under an error is a refusal, not an answer.
         Invocation::Help => {
@@ -52,7 +61,7 @@ fn run() -> Result<(), Fatal> {
             Ok(())
         }
         Invocation::Version => {
-            println!("{VERSION}");
+            println!("{}", metsuke_wire::version_line(VERSION));
             Ok(())
         }
         Invocation::Run(args) => fetch(*args),
@@ -65,11 +74,16 @@ fn fetch(args: Args) -> Result<(), Fatal> {
         access,
         prefix,
         selection,
+        days,
         verification,
     } = args;
     // Before anything that can fail, so a run that stops on its password file
     // or on the server has still named the build it stopped from.
-    eprintln!("metsuke-fetch {VERSION} against {}", access.server);
+    eprintln!(
+        "metsuke-fetch {} against {}",
+        metsuke_wire::version_line(VERSION),
+        access.server
+    );
     let archive = Archive::new(
         &access.server,
         &access.user,
@@ -79,23 +93,38 @@ fn fetch(args: Args) -> Result<(), Fatal> {
     let filters = Filters {
         prefix: &prefix,
         selection: &selection,
+        days: &days,
     };
-    let (report, what, read) = match command {
+    let (report, landed, read) = match command {
         Command::List => (
             sync::list(&archive, &filters, |key| println!("{key}"))?,
-            "listed".to_string(),
+            None,
             None,
         ),
-        Command::Sync { state, into } => {
+        Command::Sync {
+            state,
+            into,
+            forget_unverified,
+        } => {
             let destination = Destination {
                 into: &into,
                 state: &state,
             };
+            // Before the sync, so the run that clears them still reports
+            // whatever it finds for itself.
+            if forget_unverified {
+                let forgotten = sync::forget_unverified(&destination, &filters, verification)?;
+                eprintln!("forgot {forgotten} keys this state file held as unverified");
+            }
             let report = sync::run(&archive, &filters, &destination, verification, |key| {
                 println!("{key}")
             })?;
-            let what = format!("into {}, {} bytes", into.display(), report.bytes);
-            (report, what, Some(recipe::read(&into, selection.kind)))
+            let landed = format!("into {}, {} bytes", into.display(), report.bytes);
+            (
+                report,
+                Some(landed),
+                Some(recipe::read(&into, selection.kind)),
+            )
         }
     };
     // Before the summary, because a key nobody may trust is the news and the
@@ -103,28 +132,55 @@ fn fetch(args: Args) -> Result<(), Fatal> {
     for rejected in &report.rejected {
         eprintln!("not written: {} {}", rejected.key, rejected.reason);
     }
+    // The listing first, and under the prefix that bounded it: every count
+    // here is of the keys that prefix returned, so a bare "outside the
+    // filters" would read as the whole archive and be short by everything the
+    // prefix never listed.
     eprintln!(
-        "{} objects {what}; {} verified, {} unverifiable, {} not written; \
-         {} outside the filters, {} this build cannot name",
-        report.objects,
-        report.verified,
-        report.unverifiable,
-        report.rejected.len(),
+        "{} keys under {prefix}; {} selected, {} outside the selection, \
+         {} this build cannot name",
+        report.listed(),
+        report.selected(),
         report.passed,
         report.unnameable
     );
+    if let Some(landed) = landed {
+        // Three states and not two: a Leios-signed object had its signature
+        // checked here and only its pool taken on the server's word, which is
+        // nothing like an object that carried no signature at all.
+        eprintln!(
+            "{} objects {landed}; {} cold-signed, {} Leios-signed, {} unattested, \
+             {} not written",
+            report.objects,
+            report.cold_signed,
+            report.leios_signed,
+            report.unattested,
+            report.rejected.len()
+        );
+    }
     // Printed rather than left to the reader, because the read a consumer
     // reaches for first is lossy here. See docs/reading-the-archive.md.
     if let Some(read) = read {
         eprintln!("read them with: duckdb -c \"select * from {read}\"");
     }
+    // Held by the state file rather than found by this run, so a second run
+    // over the same corpus still names them: the cursor is past every one, and
+    // this list is what keeps the news from ending with the run that had it.
+    for key in &report.unverified {
+        eprintln!("unverified, from this run or an earlier one: {key}");
+    }
     // The objects that did land are on disk and the cursor is past every key
     // this run saw, so the exit code is the only thing left to say that what a
     // reader will find is short of what was listed.
-    match report.rejected.is_empty() {
-        true => Ok(()),
-        false => Err(Fatal::NotWritten {
+    match (report.rejected.is_empty(), report.unverified.is_empty()) {
+        (true, true) => Ok(()),
+        // Whichever is non-empty, and the carried list decides it even for a
+        // run that fetched nothing at all: an exit code that went green
+        // because this run happened to see no bad object is what
+        // `--forget-unverified` exists to be asked for instead.
+        _ => Err(Fatal::NotWritten {
             count: report.rejected.len(),
+            unverified: report.unverified.len(),
         }),
     }
 }

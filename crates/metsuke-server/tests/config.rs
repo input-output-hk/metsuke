@@ -19,7 +19,7 @@ fn the_shipped_example_config_loads() {
     let ArchiveConfig::S3(s3) = config.archive else {
         panic!("the example names an S3 archive");
     };
-    assert_eq!(s3.bucket, "cardano-playground-metsuke");
+    assert_eq!(s3.bucket, "metsuke-archive-example");
     assert_eq!(s3.put_retries, 1);
     assert_eq!(
         s3.endpoint.host_str(),
@@ -114,9 +114,8 @@ const NONZERO_FIELDS: [&str; 15] = [
 
 /// The rest, where only absence is a mistake. Together with `NONZERO_FIELDS`
 /// this is every field the server reads, so a new one joins exactly one list.
-const OTHER_FIELDS: [&str; 8] = [
+const OTHER_FIELDS: [&str; 7] = [
     "listen",
-    "user",
     "bucket",
     "region",
     "endpoint",
@@ -218,4 +217,70 @@ fn an_endpoint_that_is_not_a_url_is_refused_at_load() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("not a url"), "got: {error}");
+}
+
+/// Every install command the pages print is built from `public_url`, so a
+/// plaintext one publishes a page telling every pool operator to fetch a
+/// binary in clear and install it as root. Refused at load, where the operator
+/// who set it is the one who reads the refusal, rather than served.
+#[test]
+fn a_public_url_that_is_not_https_is_refused() {
+    for value in [
+        "http://metsuke.example.org",
+        // A name that resolves to loopback is still a name: what it resolves
+        // to is not this server's to know.
+        "http://localhost:8080",
+        "ftp://metsuke.example.org",
+        // Cannot be a base, so joining the files prefix onto it would fail
+        // after the listener was already past this point.
+        "data:text/plain,nothing",
+    ] {
+        let error = ServerConfig::from_toml(&with("public_url", &format!("\"{value}\"")))
+            .expect_err(value)
+            .to_string();
+        assert!(
+            error.contains("public_url"),
+            "{value}: the refusal must name the field, got: {error}"
+        );
+    }
+}
+
+/// Nothing past the host, because the two generated clients do not treat it
+/// the same: the pages `join` an absolute path onto this and discard a path,
+/// while `--server` reaches `metsuke-fetch` as written and has
+/// `/v1/submissions` appended. A path would send the agent and the fetch tool
+/// to different roots, a query swallows the path into itself, and userinfo
+/// would be printed into every command the page shows.
+#[test]
+fn a_public_url_with_anything_after_the_host_is_refused() {
+    for value in [
+        "https://metsuke.example.org/base/",
+        "https://metsuke.example.org/base",
+        "https://metsuke.example.org/?q=1",
+        "https://metsuke.example.org/#frag",
+        "https://developer:hunter2@metsuke.example.org",
+    ] {
+        let error = ServerConfig::from_toml(&with("public_url", &format!("\"{value}\"")))
+            .expect_err(value)
+            .to_string();
+        assert!(
+            error.contains("public_url"),
+            "{value}: the refusal must name the field, got: {error}"
+        );
+    }
+}
+
+/// And what a deployment actually runs on is accepted: TLS anywhere, plain
+/// HTTP only where the address itself says it never leaves the host, which is
+/// what the VM tests and a single-host development server use.
+#[test]
+fn a_public_url_is_https_or_loopback_http() {
+    for value in [
+        "https://metsuke.example.org",
+        "https://metsuke.example.org:8443/",
+        "http://127.0.0.1:8080",
+        "http://[::1]:8080",
+    ] {
+        ServerConfig::from_toml(&with("public_url", &format!("\"{value}\""))).expect(value);
+    }
 }

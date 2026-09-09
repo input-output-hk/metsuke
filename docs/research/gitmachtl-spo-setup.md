@@ -14,8 +14,8 @@ The gitmachtl/scripts toolkit does not include systemd units or node launch scri
 - Node runs as a systemd service (typical for production setups referenced in guides)
 - Node user account created for service isolation
 - Restart policy not specified in scripts (assumed restart=always or on-failure per standard guides)
-- Node launched with config JSON and topology JSON (see `/cardano/mainnet/00_common.sh:50-51`)
-- File references: `/home/manveru/ghq/github.com/gitmachtl/scripts/cardano/mainnet/00_common.sh`
+- Node launched with config JSON and topology JSON (see [cardano/mainnet/00_common.sh:50-51](https://github.com/gitmachtl/scripts/blob/HEAD/cardano/mainnet/00_common.sh))
+- File references: [cardano/mainnet/00_common.sh](https://github.com/gitmachtl/scripts/blob/HEAD/cardano/mainnet/00_common.sh)
 
 ## 2. Logging Configuration
 
@@ -29,7 +29,7 @@ The gitmachtl/scripts toolkit does not include systemd units or node launch scri
 - RTView (real-time metrics monitoring tool) commonly paired with node for visualization
 - Logging config shipped with node via Haskell RTS flags (-N, -A, -qn)
 - Default logging to journald, queried by operators via `journalctl -u cardano-node`
-- File references: `/home/manveru/ghq/github.com/gitmachtl/scripts/cardano/mainnet/README.md:107-113`
+- File references: [cardano/mainnet/README.md:107-113](https://github.com/gitmachtl/scripts/blob/HEAD/cardano/mainnet/README.md)
 
 ## 3. Node Configuration, Topology, and Socket Paths
 
@@ -37,20 +37,20 @@ The gitmachtl/scripts toolkit does not include systemd units or node launch scri
 - Downloaded separately from [Cardano book (official source)](https://book.play.dev.cardano.org/environments.html)
 - Configs for MAINNET, PREPROD, PREVIEW, SANCHONET available
 - Include both Shelley and Byron genesis files
-- File references: `/home/manveru/ghq/github.com/gitmachtl/scripts/cardano/mainnet/README.md:9`, `/cardano/mainnet/00_common.sh:50-51`
+- File references: [cardano/mainnet/README.md:9](https://github.com/gitmachtl/scripts/blob/HEAD/cardano/mainnet/README.md), [cardano/mainnet/00_common.sh:50-51](https://github.com/gitmachtl/scripts/blob/HEAD/cardano/mainnet/00_common.sh)
 
 **Socket path:**
 - Default configurable socket: `db-mainnet/node.socket` (scripts parameter: `socket="db/node.socket"`)
 - Can vary: examples show `$HOME/cnode/sockets/node.socket` in comments
 - Socket created by cardano-node at startup
 - Socket path must be passed to cardano-cli via `CARDANO_NODE_SOCKET_PATH` environment variable
-- File reference: `/home/manveru/ghq/github.com/gitmachtl/scripts/cardano/mainnet/00_common.sh:46`
+- File reference: [cardano/mainnet/00_common.sh:46](https://github.com/gitmachtl/scripts/blob/HEAD/cardano/mainnet/00_common.sh)
 
 **Socket permissions:**
 - Not explicitly documented in scripts, but standard Unix socket permissions apply
 - Running agents must have read/write access to socket file
 - Group membership may be required (cardano-node runs as specific user, socket accessible by group)
-- File reference: `/home/manveru/ghq/github.com/gitmachtl/scripts/cardano/mainnet/00_common.sh:272`
+- File reference: [cardano/mainnet/00_common.sh:272](https://github.com/gitmachtl/scripts/blob/HEAD/cardano/mainnet/00_common.sh)
 
 ## 4. Key Handling Conventions & Calidus Keys
 
@@ -61,13 +61,13 @@ The gitmachtl/scripts toolkit does not include systemd units or node launch scri
 - `poolname.vrf.skey` / `poolname.vrf.vkey` — VRF keys for block lottery
 - `poolname.pool.json` — pool metadata, includes relay info and security parameters
 - `poolname.kes.counter` — increments with each KES generation
-- File references: `/home/manveru/ghq/github.com/gitmachtl/scripts/cardano/mainnet/README.md:837,993-996`
+- File references: [cardano/mainnet/README.md:837,993-996](https://github.com/gitmachtl/scripts/blob/HEAD/cardano/mainnet/README.md)
 
 **Key protection:**
 - Scripts support CLI (`cli`), encrypted (`enc`), and hardware wallet (`hw`) modes
 - Encrypted keys: `.skey` files password-protected; prompted on use via `01_protectKey.sh`
 - Hardware wallet support: keys managed off-device (Ledger/Trezor), only public keys stored locally
-- File reference: `/home/manveru/ghq/github.com/gitmachtl/scripts/cardano/mainnet/00_common.sh:34-56`
+- File reference: [cardano/mainnet/00_common.sh:34-56](https://github.com/gitmachtl/scripts/blob/HEAD/cardano/mainnet/00_common.sh)
 
 **Calidus Pool Keys:**
 - Calidus is a pool performance/validation signing mechanism (separate from node cold keys)
@@ -77,7 +77,7 @@ The gitmachtl/scripts toolkit does not include systemd units or node launch scri
 - Calidus ID: `poolname.calidus.id` (bech32 format)
 - Path derivation: `1852H/1815H/0H/0/0` (standard Cardano BIP-32 path for pool operations)
 - Uses `cardano-signer` binary for key generation and signing
-- File references: `/home/manveru/ghq/github.com/gitmachtl/scripts/cardano/mainnet/15_calidusPoolKey.sh:66,117-150`
+- File references: [cardano/mainnet/15_calidusPoolKey.sh:66,117-150](https://github.com/gitmachtl/scripts/blob/HEAD/cardano/mainnet/15_calidusPoolKey.sh)
 
 ## 5. Implications for a Metrics Agent Supporting Gitmachtl Setups
 

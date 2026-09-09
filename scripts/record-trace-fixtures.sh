@@ -17,12 +17,12 @@ recordings="$repo/crates/metsuke/tests/fixtures/recordings"
 # the recording needs a mempool larger than one RB. These are the shape of that
 # overflow, not properties of the protocol: enough near-maximum-size
 # transactions to overrun maxBlockBodySize several times over.
-FLOOD_TXS="${FLOOD_TXS:-60}"
+FLOOD_TXS="${FLOOD_TXS:-120}"
 FLOOD_FEE="${FLOOD_FEE:-2000000}"
 FLOOD_METADATA_STRINGS="${FLOOD_METADATA_STRINGS:-200}"
 # Seconds before the flood, and the capture window after it.
 WARMUP_SECONDS="${WARMUP_SECONDS:-30}"
-CAPTURE_SECONDS="${CAPTURE_SECONDS:-300}"
+CAPTURE_SECONDS="${CAPTURE_SECONDS:-600}"
 
 need() {
   for cmd in "$@"; do
@@ -32,7 +32,7 @@ need() {
     }
   done
 }
-need nix jq
+need nix jq cargo
 
 # The Leios source pinned in flake.nix, and the patched cardano-node rev its
 # own lock file pins, the same binary the proto-devnet demo runs. cardano-cli
@@ -73,17 +73,32 @@ for i in 1 2 3; do
   dir="$workdir/node$i"
   mkdir -p "$dir"
 
-  # The demo config with stdout as the only backend: this fixture is the line
-  # stream, and PrometheusSimple would only open a port nothing here reads.
-  # Converted to JSON (cardano-node's YAML parser reads JSON) so plain jq can
-  # address the empty-string TraceOptions key.
+  # The demo config, with the deployed environment's tracing in place of its
+  # own: what a recording is for is the line stream a pool's node produces, and
+  # the severity each namespace is emitted at is the network's setting rather
+  # than the demo's. The same overlay nix/e2e-test.nix applies, from the same
+  # recorded file, so the two cannot disagree about what a node emits.
+  #
+  # Stdout as the only backend: this fixture is the line stream, and
+  # PrometheusSimple would only open a port nothing here reads. Converted to
+  # JSON (cardano-node's YAML parser reads JSON) so plain jq can address the
+  # empty-string TraceOptions key.
   nix shell nixpkgs#yq-go --command yq -o=json . "$config/config.yaml" |
-    jq --arg n "node$i" \
-      '.TraceOptionNodeName = $n | .TraceOptions."".backends = ["Stdout MachineFormat"]' \
+    jq -s --arg n "node$i" \
+      '.[0] as $devnet
+       | .[1] as $deployed
+       | ($deployed | with_entries(select(.key | startswith("TraceOption")))) as $tracing
+       | ($devnet | with_entries(select(.key | startswith("TraceOption") | not)))
+       + $tracing
+       + { TraceOptionNodeName: $n }
+       | .TraceOptions."".backends = ["Stdout MachineFormat"]' \
+      - "$repo/nix/fixtures/leios-preprod-node-config.json" \
       >"$dir/config.json"
 
   access_points=$(for j in 1 2 3; do
-    [ "$i" -ne "$j" ] && echo "{\"port\": 300$j, \"address\": \"127.2.0.$j\"}"
+    if [ "$i" -ne "$j" ]; then
+      echo "{\"port\": 300$j, \"address\": \"127.2.0.$j\"}"
+    fi
   done | jq -s '.')
   jq --argjson accessPoints "$access_points" \
     '.localRoots[0].accessPoints = $accessPoints' \
@@ -176,11 +191,12 @@ wait || true
 # path only shows both ends on a node that took both. Whether that is node1,
 # node2 or node3 is up to three VRFs.
 capture=$(for i in 1 2 3; do
-  kinds=$(grep -o '"ns":"Consensus.Leios[^"]*"' "$workdir/node$i.stdout" | sort -u | wc -l)
-  echo "$kinds $workdir/node$i.stdout"
+  out="$workdir/node$i.stdout"
+  grep -q '"ns":"Consensus.LeiosKernel.BlockForged"' "$out" || continue
+  grep -q '"ns":"Consensus.LeiosPeer.Announcement"' "$out" || continue
+  echo "$(grep -o '"ns":"Consensus.Leios[^"]*"' "$out" | sort -u | wc -l) $out"
 done | sort -rn | head -1 | cut -d' ' -f2)
-grep -q '"ns":"Consensus.LeiosKernel.BlockForged"' "$capture" &&
-  grep -q '"ns":"Consensus.LeiosPeer.Announcement"' "$capture" || {
+[ -n "$capture" ] || {
   echo "error: no node both forged and received an EB, see $workdir/node*.stdout" >&2
   exit 1
 }
@@ -205,16 +221,16 @@ window_edge() {
 
 # Two contiguous slices of that one stream, addressed by line number: nothing
 # inside either window is dropped or reordered, so both are still recordings of
-# what the node said. The whole run is mostly Forge.Loop.Call, a volume
-# measurement rather than a fixture; this script prints it at the end.
+# what the node said. Most of a run is the per-slot forge loop -- the
+# leadership check, its state, and the node not being leader -- a volume
+# measurement rather than a fixture; this script prints the histogram at the
+# end.
 #
 # Startup, through the first Leios line. Carries the one line on the stream
 # that is not JSON (cardano-node prints its NodeConfiguration before the
 # tracing system is up) and the Reflection.* traces that report which tracers
 # the config actually enabled.
 startup_end=$(window_edge "the startup window's end" first '"ns":"Consensus.LeiosKernel.Msg"')
-sed -n "1,${startup_end}p" "$capture" >"$recordings/leios-node-traces-startup.log"
-echo "recorded: leios-node-traces-startup.log"
 
 # The Leios round: from the first EB forged or announced to the last Leios
 # line. Unfiltered within the window. What the fixture is for is exercising
@@ -223,8 +239,44 @@ echo "recorded: leios-node-traces-startup.log"
 leios_start=$(window_edge "the Leios window's start" first \
   '"ns":"Consensus.LeiosKernel.BlockForged"\|"ns":"Consensus.LeiosPeer.Announcement"')
 leios_end=$(window_edge "the Leios window's end" last '"ns":"Consensus.Leios')
-sed -n "${leios_start},${leios_end}p" "$capture" >"$recordings/leios-node-traces.log"
-echo "recorded: leios-node-traces.log"
+
+# Both edges found and both windows cut before either is moved into place. The
+# two are one recording of one stream and are read as a pair, so a run that
+# stopped between two writes would leave a new window beside a stale one, which
+# is the shape nothing downstream can see is wrong. Cut into the workdir, which
+# outlives a failure, so what the run got to is there to look at.
+windows=(leios-node-traces-startup.log leios-node-traces.log)
+sed -n "1,${startup_end}p" "$capture" >"$workdir/${windows[0]}"
+sed -n "${leios_start},${leios_end}p" "$capture" >"$workdir/${windows[1]}"
+
+# In place, then held to what reads them. A window is only a fixture if the
+# tests that name namespaces out of it still pass, and a node emits what its
+# configuration and its luck decide: a round that produced no vote, or a
+# namespace the deployed config now silences, is a recording that looks whole
+# and leaves the tree red. Copied rather than moved, and the previous pair kept
+# beside them, so a recording that cannot be used changes nothing.
+for window in "${windows[@]}"; do
+  if [ -e "$recordings/$window" ]; then
+    cp "$recordings/$window" "$workdir/$window.previous"
+  fi
+  cp "$workdir/$window" "$recordings/$window"
+done
+
+if cargo test --quiet --manifest-path "$repo/Cargo.toml" \
+  -p metsuke --test binary --test logselect --test logsource --test logtail; then
+  for window in "${windows[@]}"; do
+    echo "recorded: $window"
+  done
+else
+  for window in "${windows[@]}"; do
+    if [ -e "$workdir/$window.previous" ]; then
+      cp "$workdir/$window.previous" "$recordings/$window"
+    fi
+  done
+  echo "error: the windows this run cut do not satisfy the tests that read them." >&2
+  echo "       the previous pair is back in place; this run's are in $workdir" >&2
+  exit 1
+fi
 
 echo
 echo "line rate over the whole capture, for spool sizing:"

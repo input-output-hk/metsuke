@@ -2,13 +2,16 @@
 //! out. Required fields fail loudly when absent; cadence and probe knobs
 //! default to the shipped values the example config documents.
 
+use std::path::Path;
 use std::time::Duration;
 
 use metsuke::config::{Config, LogConfig, LogSource};
 use metsuke::logsource::JournalConfig;
+use metsuke_wire::envelope::{AgentId, SubmissionKey};
+use metsuke_wire::leios::LeiosSigningKey;
 
 mod support;
-use support::test_pool_id;
+use support::{test_pool_id, test_submission_key};
 
 fn journal(log: &LogConfig) -> &JournalConfig {
     match &log.source {
@@ -50,8 +53,8 @@ fn minimal_config_parses_with_shipped_defaults() {
     );
     assert_eq!(config.signing_key, None);
     assert_eq!(config.agent_id, None);
-    assert_eq!(config.scrape_interval_secs, 300);
-    assert_eq!(config.upload_interval_secs, 3600);
+    assert_eq!(config.scrape_interval_secs.get(), 300);
+    assert_eq!(config.upload_interval_secs.get(), 3600);
     assert_eq!(config.sntp_servers, vec!["time.cloudflare.com:123"]);
     assert_eq!(config.sntp_timeout_secs, 5);
     assert_eq!(
@@ -154,8 +157,22 @@ fn the_retired_min_severity_key_fails_loudly() {
 fn scrape_and_upload_cadences_are_independent() {
     let toml = format!("{}\nscrape_interval_secs = 60\n", minimal_toml());
     let config = Config::from_toml(&toml).unwrap();
-    assert_eq!(config.scrape_interval_secs, 60);
-    assert_eq!(config.upload_interval_secs, 3600);
+    assert_eq!(config.scrape_interval_secs.get(), 60);
+    assert_eq!(config.upload_interval_secs.get(), 3600);
+}
+
+// Acceptance: a zero cadence is refused at parse, naming the field. Accepting
+// it would spin the loop with no interval to wait out.
+#[test]
+fn zero_cadences_are_refused() {
+    for field in ["scrape_interval_secs", "upload_interval_secs"] {
+        let toml = format!("{}\n{field} = 0\n", minimal_toml());
+        let err = Config::from_toml(&toml).unwrap_err();
+        assert!(
+            err.to_string().contains(field),
+            "error must name {field}, got: {err}"
+        );
+    }
 }
 
 const EXAMPLE: &str = include_str!("../../../contrib/config.example.toml");
@@ -184,8 +201,11 @@ fn uncomment(example: &str) -> String {
         .collect::<Vec<_>>()
         .join("\n")
         .replace("pool1CHANGEME", &test_pool_id().to_bech32())
-        // The signing_key line documents how the flag and config interact, not a default.
+        // Neither of these documents a default: signing_key shows how the flag
+        // and the config interact, agent_id what a set value looks like where
+        // the default is the hostname.
         .replace("signing_key = ", "# signing_key = ")
+        .replace("agent_id = ", "# agent_id = ")
 }
 
 // The example config's commented defaults must be the code's defaults:
@@ -226,6 +246,104 @@ fn the_example_log_section_documents_the_real_defaults() {
     .log
     .unwrap();
     assert_eq!(documented, shipped);
+}
+
+/// The startup dump is hand-built, so nothing but this stops a new setting
+/// being added and never appearing in the line an operator pastes. The example
+/// is the anchor because it already has to document every key, and the two
+/// resolved values are asserted by their resolved form: `agent_id` as the name
+/// handed in rather than the config's, `signing_key` as the path the flag won.
+#[test]
+fn the_startup_dump_names_every_setting_the_example_documents() {
+    let config = Config::from_toml(&uncomment(EXAMPLE)).unwrap();
+    let agent_id = AgentId::parse("relay-1").expect("a fixed name is a slug");
+    let dump = config.resolved(
+        &agent_id,
+        Some(Path::new("/run/credentials/signing-key")),
+        &test_submission_key(),
+    );
+
+    let mut checked = 0;
+    for key in uncomment(EXAMPLE)
+        .lines()
+        .filter_map(|line| line.split_once(" = "))
+        .map(|(key, _)| key.trim())
+        .filter(|key| !key.is_empty() && !key.starts_with('#'))
+    {
+        assert!(
+            dump.contains(&format!("\"{key}\"")),
+            "the example documents {key}, which the startup dump never names: {dump}"
+        );
+        checked += 1;
+    }
+    // A literal, because a loop over nothing passes every assertion in it and
+    // would report that the dump names every key while naming none.
+    assert!(
+        checked > 15,
+        "only {checked} keys were read out of the example, so this proves nothing"
+    );
+    // The two the file cannot tell you, which is the reason the dump is built
+    // rather than derived.
+    assert!(dump.contains("\"agent_id\":\"relay-1\""), "{dump}");
+    assert!(
+        dump.contains("\"signing_key\":\"/run/credentials/signing-key\""),
+        "{dump}"
+    );
+}
+
+/// The configs an operator copies, one per log source. `config.example.toml` is
+/// the annotated reference and documents every default; these hold only what
+/// has to be set, so what is asserted here is that "only" is true.
+const MINIMAL: &str = include_str!("../../../contrib/config.minimal.toml");
+const PIPE: &str = include_str!("../../../contrib/config.pipe.toml");
+const JOURNALD: &str = include_str!("../../../contrib/config.journald.toml");
+
+/// A shipped config with the one value it cannot ship a usable form of.
+fn as_shipped(config: &str) -> String {
+    assert!(
+        config.contains("pool1CHANGEME"),
+        "a shipped config marks the pool id for an operator to replace"
+    );
+    config.replace("pool1CHANGEME", &test_pool_id().to_bech32())
+}
+
+// Each shipped config is the minimal one plus its source and nothing else: a
+// value that drifted from the code's default would show up here as a config
+// that no longer matches the three keys it claims to be.
+#[test]
+fn every_shipped_config_is_the_minimal_one_plus_its_source() {
+    let minimal = Config::from_toml(&minimal_toml()).unwrap();
+    assert_eq!(Config::from_toml(&as_shipped(MINIMAL)).unwrap(), minimal);
+    for shipped in [PIPE, JOURNALD] {
+        let config = Config::from_toml(&as_shipped(shipped)).unwrap();
+        assert!(config.log.is_some(), "a source config configures one");
+        assert_eq!(
+            Config {
+                log: None,
+                ..config
+            },
+            minimal
+        );
+    }
+}
+
+#[test]
+fn the_shipped_pipe_config_takes_lines_on_stdin() {
+    let log = Config::from_toml(&as_shipped(PIPE)).unwrap().log.unwrap();
+    assert!(matches!(log.source, LogSource::Pipe(_)), "{:?}", log.source);
+}
+
+#[test]
+fn the_shipped_journald_config_names_this_host_s_paths() {
+    let log = Config::from_toml(&as_shipped(JOURNALD))
+        .unwrap()
+        .log
+        .unwrap();
+    assert_eq!(journal(&log).journal_unit, "cardano-node");
+    assert_eq!(
+        journal(&log).journalctl_path,
+        std::path::PathBuf::from("/usr/bin/journalctl")
+    );
 }
 
 // Every value is required or an explicit default: a config without a
@@ -335,4 +453,69 @@ fn unknown_field_fails_loudly() {
         err.to_string().contains("upload_intervall_secs"),
         "error must name the unknown field, got: {err}"
     );
+}
+
+/// The two schemes load from the same path and produce a config that reads the
+/// same, so the dump has to say which one is signing. What it decides is not
+/// cosmetic: a cold key settles the pool by derivation, a Leios key is believed
+/// only where the roster lists it (ADR 0011), and an operator who copied the
+/// wrong file has no other signal until this server refuses them an upload
+/// interval later.
+#[test]
+fn the_startup_dump_says_which_key_is_signing() {
+    let config = Config::from_toml(&uncomment(EXAMPLE)).unwrap();
+    let agent_id = AgentId::parse("relay-1").expect("a fixed name is a slug");
+    let path = Some(Path::new("/run/credentials/signing-key"));
+
+    let cold = SubmissionKey::ColdKey(support::test_key());
+    let leios = SubmissionKey::LeiosKey(
+        LeiosSigningKey::from_bytes(&[3u8; 32]).expect("a fixed seed is a scalar"),
+    );
+
+    let dumped = |key: &SubmissionKey| config.resolved(&agent_id, path, key);
+    assert!(
+        dumped(&cold).contains("\"signing_key_scheme\":\"cold\""),
+        "got: {}",
+        dumped(&cold)
+    );
+    assert!(
+        dumped(&leios).contains("\"signing_key_scheme\":\"leios\""),
+        "got: {}",
+        dumped(&leios)
+    );
+    // The same path, so nothing else in the line tells them apart.
+    assert_ne!(dumped(&cold), dumped(&leios));
+
+    // The public half is there too, and it is the key's rather than the
+    // configured pool's: that is what a reader compares against the roster.
+    for key in [&cold, &leios] {
+        assert!(
+            dumped(key).contains(&format!(
+                "\"signing_key_public\":\"{}\"",
+                key.public_key_hex()
+            )),
+            "got: {}",
+            dumped(key)
+        );
+    }
+}
+
+/// The address the version nudge sends an operator to. The pages are the
+/// server's root, and the submissions go to a path under it, so the one the
+/// agent can name is the other's origin. The port is part of it: a loopback
+/// deployment reached on 8080 has its pages on 8080 too.
+#[test]
+fn the_server_a_nudge_names_is_the_upload_urls_own() {
+    for (upload, server) in [
+        (
+            "https://metsuke.example.org/v1/submit",
+            "https://metsuke.example.org/",
+        ),
+        ("http://127.0.0.1:8080/v1/submit", "http://127.0.0.1:8080/"),
+    ] {
+        let toml = minimal_toml().replace("https://metsuke.example.org/v1/submit", upload);
+        let config = Config::from_toml(&toml).expect("the endpoint is allowed");
+
+        assert_eq!(config.upload_url.server(), server);
+    }
 }
