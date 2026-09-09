@@ -28,25 +28,25 @@ and nothing is rewritten, so what you download is what a pool signed.</p>
 <h2 id="account">1. Get an account</h2>
 
 <p>The archive is not public. Reading it needs a developer account on this
-server, which is a username and a password held in the
-<code>{{REALM}}</code> realm, and the operators of this deployment are who
-issues one. Ask them, and put the password in a file of its own:</p>
+server, a username and a password held in the <code>{{REALM}}</code> realm,
+which the operators of this deployment issue. Ask them, and put the password in
+a file of its own:</p>
 
 <pre>mkdir -p ~/.config/metsuke
 install -m 0600 /dev/null ~/.config/metsuke/password
 $EDITOR ~/.config/metsuke/password</pre>
 
 <p>The empty file is created with its mode before anything is written to it,
-rather than fixed with <code>chmod</code> afterwards: between the two your
-editor has already saved the password at whatever your umask allows, and on a
-shared machine that is long enough. Note that the first command truncates the
-file, so it is the one to skip when you come back to change a password rather
-than set one.</p>
+rather than fixed with <code>chmod</code> afterwards: between writing and the
+<code>chmod</code> your editor has already saved the password at whatever your
+umask allows, and on a shared machine that window is long enough. The first
+command truncates the file, so skip it when you come back to change a password
+rather than set one.</p>
 
-<p>A file rather than a flag or a variable holding the secret itself: an
-argument is visible in the process table, and an environment variable reaches
-every child process and anything that may read <code>/proc</code>. The tool
-below takes the path and reads it itself.</p>
+<p>The password goes in a file rather than in a flag or a variable holding the
+secret itself: an argument is visible in the process table, and an environment
+variable reaches every child process and anything that may read
+<code>/proc</code>. The tool below takes the path and reads it itself.</p>
 
 <h2 id="tool">2. Get the tool</h2>
 
@@ -55,8 +55,8 @@ binary with nothing to link against, the same as the agent:</p>
 
 <pre>{{fetch_install}}</pre>
 
-<p>The block above fetches the build for your machine. Either can be
-built rather than downloaded, with
+<p>The block above fetches the build for your machine. Either architecture can
+be built rather than downloaded, with
 <code>nix build {{flake}}#metsuke-fetch-static-$ARCH</code>, and
 <code>nix run {{flake}}#metsuke-fetch</code> runs it without installing
 anything. <code>{{fetch}} --help</code> is the complete flag list; what follows
@@ -85,19 +85,20 @@ records the last key seen, and a later run resumes past it. Deleting the file
 is the only way to start over, and the run after that downloads everything
 again, because nothing checks whether an object is already on disk.</p>
 
-<p>Those three counts on the second line are how much of the archive proves
-itself. A <strong>cold-signed</strong> object was signed by a key that derives
-the pool it is filed under, so it stays checkable from the object alone,
-forever. A <strong>Leios-signed</strong> object had its signature checked here
-too, but which pool it belongs to is this server's word against a roster;
-its bytes are as authentic, and only the attribution rests on us. An
+<p>The cold-signed, Leios-signed and unattested counts on the second line are
+how much of the archive can prove itself. A <strong>cold-signed</strong> object
+was signed by a key that derives the pool it is filed under, so it stays
+checkable from the object alone, forever. A <strong>Leios-signed</strong> object
+had its signature checked here too, but which pool it belongs to is this
+server's word, taken from a roster; its bytes are just as authentic, and only
+the attribution rests on us. An
 <strong>unattested</strong> object came with nothing to check. Most of the
 archive is Leios-signed by design, and
 <a href="{{DOCS_PREFIX}}docs/reading-the-archive.md">reading the archive</a>
 has the flags that keep only what you are willing to trust.</p>
 
 <p>Start with an unbounded sync as above. <code>--from</code> and
-<code>--to</code> exist, and they bound a run by <em>when this server received a
+<code>--to</code> bound a run by <em>when this server received a
 submission</em>, which is not when its rows were measured; an agent that
 spooled through an outage can put those days far apart. Slice by time in SQL,
 where the row's own timestamp is, rather than in the flags.</p>
@@ -105,41 +106,43 @@ where the row's own timestamp is, rather than in the flags.</p>
 <h2 id="read">4. Read it</h2>
 
 <p>An object is a zstd stream whose first frame is skippable, so duckdb reads
-the downloaded tree where it landed with no unpacking step. Neither kind reads
-usefully through <code>select *</code> though: a scrape holds its metrics as a
-nested list and a trace line holds its payload as a map, so both want
-flattening first. Two init files do that, and this server hands them out:</p>
+the downloaded tree where it landed with no unpacking step. Neither kind of
+object reads usefully through <code>select *</code> though: a scrape holds its
+metrics as a nested list and a trace line holds its payload as a map, so both
+want flattening first. Two init files do that, and this server hands them
+out:</p>
 
 <pre>curl -fO {{files_url}}analytics.sql
 curl -fO {{files_url}}archive.sql</pre>
 
 <p><a href="{{FILES_PREFIX}}analytics.sql">analytics.sql</a> is the one to
-start with. It defines the views a consumer actually groups over, coverage per
-agent, the block producer's scoreboard, the lifecycle of every endorsement
-block, and it answers most first questions without you writing a join:</p>
+start with. It defines the views a consumer actually groups over: coverage per
+agent, the block producer's scoreboard, and the lifecycle of every endorsement
+block. Most first questions are answered without you writing a join:</p>
 
 <pre>METSUKE_ARCHIVE=~/archive duckdb -init analytics.sql</pre>
 
 <p><a href="{{FILES_PREFIX}}archive.sql">archive.sql</a> is the same flattening
 with none of the views, as three tables over whatever directory you point it
-at. Load that one where your question is not one the views already answered. It
+at. Load it when your question is not one the views already answer. It
 globs recursively rather than assuming the archive's layout, and it keeps a row
 for every submission including the failed ones:</p>
 
 <pre>METSUKE_ARCHIVE=~/archive duckdb -init archive.sql archive.duckdb</pre>
 
-<p>Naming a database file as above makes the tables persist, so for later
-questions in another session open <code>duckdb archive.duckdb</code> and ask
-rather than re-reading every object. Both files carry their own instructions in
-their opening comments.</p>
+<p>Naming a database file as above makes the tables persist. A later session
+then opens <code>duckdb archive.duckdb</code> and asks, rather than re-reading
+every object. Both files carry their own instructions in their opening
+comments.</p>
 
 <h2 id="reading">Further reading</h2>
 
 <p><a href="{{DOCS_PREFIX}}docs/reading-the-archive.md">Reading the archive</a>
 is the complete account and the one to go to next. This page stops at getting
-you a first query; that document is why the read is not the obvious one, what
-makes an object provably a pool's, how the time bounds really behave, and the
-duckdb defaults that silently return NULL for a field they did not sample.</p>
+you a first query; that document covers why the read is not the obvious one,
+what makes an object provably a pool's, how the time bounds really behave, and
+the duckdb defaults that silently return NULL for a field they did not
+sample.</p>
 
 <p>The agent, this server and the fetch tool are
 <a href="{{REPOSITORY}}">one repository</a>, and its
@@ -161,7 +164,7 @@ apart.</li>
 
 <p><a href="{{DOCS_PREFIX}}CONTEXT.md">CONTEXT.md</a> is the vocabulary, and
 <a href="{{REPOSITORY}}/tree/main/docs/adr">the rest of the decisions</a> are in
-the directory they sit in. <a href="{{DETAILS_PATH}}">The details page</a> is
+<code>docs/adr</code>. <a href="{{DETAILS_PATH}}">The details page</a> is
 the other side of this one: what a pool operator installs, what leaves their
 machine, and what the node has to emit for the trace lines you are reading
 here.</p>
