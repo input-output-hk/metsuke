@@ -470,8 +470,8 @@ pkgs.testers.runNixOSTest {
         # is whether it reached the unit. A USec property comes back as a
         # timespan, so 60 reads as 1min.
         for name, applied in [
-            ("RestartUSec", "5s"),
-            ("StartLimitIntervalUSec", "1min"),
+            ("RestartUSec", "1min"),
+            ("StartLimitIntervalUSec", "10min"),
             ("StartLimitBurst", "5"),
         ]:
             piping.succeed(

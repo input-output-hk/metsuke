@@ -47,11 +47,11 @@ Description=cardano-node (Musashi)
 Wants=network-online.target
 After=network-online.target
 # Wide enough that RestartSec= below can reach the burst. systemd's defaults
-# are 5 starts in 10s, and a node restarting every 5s only ever fits two of
+# are 5 starts in 10s, and a node restarting every 60s only ever fits one of
 # them in that window, so the limit never trips and a node that cannot start
 # retries for ever. Reaching it puts the unit in `failed`, which is the state
 # a monitor can see.
-StartLimitIntervalSec=60
+StartLimitIntervalSec=600
 StartLimitBurst=5
 
 [Service]
@@ -72,7 +72,7 @@ ExecStart=/usr/local/bin/cardano-node run \
   --host-addr 0.0.0.0 \
   --port 3010
 Restart=on-failure
-RestartSec=5
+RestartSec=60
 # The node closes its databases on SIGINT. Killed instead, the next start
 # replays, which is the expensive kind of restart.
 KillSignal=SIGINT

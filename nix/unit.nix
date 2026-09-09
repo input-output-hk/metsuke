@@ -19,8 +19,8 @@
   # a monitor can see. Only a pipeline that fails at once gets there, which is
   # the failure retrying cannot fix; five slow failures span far more than the
   # interval, so those keep retrying.
-  nodeRestartSecs = 5;
-  nodeStartLimitIntervalSecs = 60;
+  nodeRestartSecs = 60;
+  nodeStartLimitIntervalSecs = 600;
   nodeStartLimitBurst = 5;
 
   # What an operator replaces in the shipped pipe drop-in with their node's own
