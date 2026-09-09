@@ -27,7 +27,17 @@ fn from_git() -> Option<String> {
     };
     let git_dir = git(&["rev-parse", "--absolute-git-dir"])?;
     // So a commit moving is what rebuilds this, rather than every invocation.
+    // HEAD alone does not move: on a branch it holds that branch's name, and
+    // committing rewrites the ref rather than HEAD, so the rev would be the
+    // one cached from whenever HEAD was last written. The ref and the file it
+    // may be packed into are read from the common directory, which a linked
+    // worktree does not share with its own.
     println!("cargo::rerun-if-changed={git_dir}/HEAD");
+    if let Some(head_ref) = git(&["symbolic-ref", "--quiet", "HEAD"]) {
+        let common = git(&["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+        println!("cargo::rerun-if-changed={common}/{head_ref}");
+        println!("cargo::rerun-if-changed={common}/packed-refs");
+    }
     let rev = git(&["rev-parse", "--short=7", "HEAD"])?;
     let dirty = git(&["status", "--porcelain"]).is_some_and(|status| !status.is_empty());
     Some(match dirty {
