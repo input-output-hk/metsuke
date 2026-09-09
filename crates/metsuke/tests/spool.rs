@@ -117,7 +117,7 @@ fn a_spool_directory_this_user_cannot_see_through_is_named_as_already_there() {
     };
 
     assert!(
-        error.contains("is already there as a symlink this user cannot use"),
+        error.contains("is already there as a symlink this user cannot follow"),
         "got: {error}"
     );
     assert!(
@@ -155,6 +155,33 @@ fn a_spool_and_its_sidecars_are_readable_only_by_the_agent() {
     assert_eq!(mode(&config.path), 0o600, "the spool");
     for sidecar in ["spool.sqlite-wal", "spool.sqlite-shm"] {
         assert_eq!(mode(&nested.join(sidecar)), 0o600, "{sidecar}");
+    }
+}
+
+// And a sidecar that was already there is tightened rather than left. sqlite
+// copies the database's mode onto the ones it creates, so a -wal an unclean
+// exit left at a wider umask is reopened at that wider mode, holding the rows
+// the spool holds. Two connections here because a clean close removes both,
+// which is the only way to have one already open.
+#[test]
+fn opening_a_spool_tightens_sidecars_left_at_a_wider_mode() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config = temp_config(&dir, WHOLE_SPOOL);
+    let mut holding = Spool::open(&config).unwrap();
+    holding.push(&scrape_at(1)).unwrap();
+
+    let sidecars = ["spool.sqlite-wal", "spool.sqlite-shm"].map(|name| dir.path().join(name));
+    for sidecar in &sidecars {
+        std::fs::set_permissions(sidecar, std::fs::Permissions::from_mode(0o644)).unwrap();
+    }
+
+    let _reopened = Spool::open(&config).unwrap();
+
+    for sidecar in &sidecars {
+        let mode = std::fs::metadata(sidecar).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "{}", sidecar.display());
     }
 }
 

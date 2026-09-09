@@ -518,9 +518,9 @@
             #
             # None of that reaches the agent dying while the node lives. The
             # unit's process is the shell, which goes on waiting, so there is
-            # no exit for Restart= to act on. A node that writes again dies on
-            # the closed pipe and brings both back; a quiet one leaves the unit
-            # active and collecting nothing. Under this source the agent's
+            # no exit for Restart= to act on. A node that writes again may die
+            # on the closed pipe and bring both back; a quiet one leaves the
+            # unit active and collecting nothing. Under this source the agent's
             # liveness is yours to watch, and its startup line in
             # `journalctl -u <your-node>` is the signal. Supervising it is what
             # metsuke.service does for you under every other source.

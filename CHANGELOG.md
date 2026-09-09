@@ -42,6 +42,15 @@ deploy the release and the tag only a name for it, so this entry precedes a
   is what says it came back.
 - A pool may report under its Leios key rather than its cold key, so a
   reporting machine need hold no cold key (ADR 0011).
+- The `-wal` and `-shm` beside the spool are held to 0600 whether the agent
+  created them or found them. sqlite copies the database's mode onto the ones
+  it creates, so a pair left behind by an unclean exit under a permissive
+  umask stayed readable while holding the same signed rows.
+- A `spool_path` whose directory is there but unusable says so, where it used
+  to report the directory as absent and name the error that says it exists.
+  A previous run under a unit of its own leaves that directory a symlink into
+  `/var/lib/private`, which only root can follow, so this is what a later run
+  from a shell on the same host meets.
 
 ## metsuke-server
 
@@ -66,8 +75,12 @@ act on. Nothing had shipped, so nobody had to.
   under names of their own and one can be revoked by editing one line. A file
   in the old format stops startup.
 - `public_url` has to be https, or http on a loopback host, which is what the
-  agent already held its `upload_url` to. Every install command the pages print
-  is built from it.
+  agent already held its `upload_url` to, and it has to be a bare origin: a
+  path, query, fragment or userinfo in it is refused at startup, and
+  `nixosModules.metsuke-server` refuses it at evaluation rather than leaving a
+  failed unit on the host. Every install command the pages print is built from
+  it, and the agent's endpoint and the fetch tool's are appended to it
+  differently, so a path sent the two to different roots.
 - A `[downloads]` entry naming a file the server already serves stops startup,
   rather than serving one file and publishing the other's checksum beside it.
 - A roster naming one pool twice is refused instead of taking whichever line
@@ -104,4 +117,6 @@ duckdb read over them still works.
   end of representable time walks to the end.
 - A key whose bytes did not verify is remembered in the state file and named by
   every later run, which exits nonzero while any are held.
-  `--forget-unverified` clears them once they have been dealt with.
+  `--forget-unverified` clears them once they have been dealt with, and `list`
+  refuses it rather than accepting it and doing nothing: a listing keeps no
+  verification state to forget.

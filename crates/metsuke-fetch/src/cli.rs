@@ -472,12 +472,17 @@ impl Given {
                     });
                 }
             }
-            // The same refusal, for the flag that carries no value to test.
-            if self.insist != Insist::Nothing {
-                return Err(ArgsError::NotForCommand {
-                    command: command.name(),
-                    flag: "--require-attested",
-                });
+            // The same refusal, for the flags that carry no value to test.
+            for (flag, given) in [
+                ("--require-attested", self.insist != Insist::Nothing),
+                ("--forget-unverified", self.forget_unverified),
+            ] {
+                if given {
+                    return Err(ArgsError::NotForCommand {
+                        command: command.name(),
+                        flag,
+                    });
+                }
             }
         }
         let name = command.name();

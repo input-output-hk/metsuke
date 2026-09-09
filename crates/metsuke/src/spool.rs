@@ -13,7 +13,7 @@
 //! row count bounds neither the file nor the memory a submission costs.
 
 use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension};
@@ -89,8 +89,10 @@ pub enum SpoolError {
     /// the shipped unit the second is what a previous run leaves, so an
     /// operator meets this on the host where the agent already works, which is
     /// where a message saying the directory is absent costs the most.
+    /// `found` carries the whole predicate rather than a noun, so the file
+    /// case says a file is in the way instead of blaming a permission for it.
     #[error(
-        "its directory {path} is already there as {found} this user cannot use; set spool_path somewhere this user can write"
+        "its directory {path} is already there as {found}; set spool_path somewhere this user can write"
     )]
     DirectoryUnusable { path: String, found: &'static str },
     /// Refused rather than warned about: the file is open by the time this can
@@ -196,10 +198,10 @@ fn open_spool(path: &PathBuf, busy_timeout: Duration) -> Result<Connection, Spoo
                 return Err(SpoolError::DirectoryUnusable {
                     path: directory.display().to_string(),
                     found: match std::fs::symlink_metadata(directory) {
-                        Ok(found) if found.is_symlink() => "a symlink",
+                        Ok(found) if found.is_symlink() => "a symlink this user cannot follow",
                         Ok(found) if found.is_file() => "a file",
-                        Ok(_) => "a directory",
-                        Err(_) => "something",
+                        Ok(_) => "a directory this user cannot use",
+                        Err(_) => "something this user cannot read",
                     },
                 });
             }
@@ -218,8 +220,34 @@ fn open_spool(path: &PathBuf, busy_timeout: Duration) -> Result<Connection, Spoo
     restrict(path)?;
     conn.busy_timeout(busy_timeout)?;
     conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()))?;
+    // The mode above reaches only the sidecars sqlite creates. A -wal an
+    // unclean exit left behind is reopened rather than created, at whatever
+    // mode it already had, and it holds the same signed rows as the spool. So
+    // both are tightened here, after the pragma is what opens them.
+    restrict_sidecars(path)?;
     metsuke_wire::sqlite::migrate(&conn, MIGRATIONS)?;
     Ok(conn)
+}
+
+/// 0600 on the `-wal` and `-shm` beside the spool, where they are there. A
+/// clean close removes both, so absent is the ordinary case and not a failure.
+fn restrict_sidecars(path: &Path) -> Result<(), SpoolError> {
+    for suffix in ["-wal", "-shm"] {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        let sidecar = PathBuf::from(name);
+        match std::fs::set_permissions(&sidecar, std::fs::Permissions::from_mode(0o600)) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(SpoolError::Mode {
+                    path: sidecar.display().to_string(),
+                    source,
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// 0600 on the spool itself, whatever the umask the agent inherited. The

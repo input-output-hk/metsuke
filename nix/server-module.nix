@@ -466,13 +466,30 @@ in
         # the two failures cost differently: a deploy that never evaluates has
         # changed nothing, where one that reaches the host leaves the unit
         # failing on a value only the journal names.
+        #
+        # Both of the rules the server applies, not one of them: a prefix test
+        # passes http://127.example.com, which is a name and not a loopback
+        # address, and passes an https URL carrying a path, which the server
+        # refuses as well. Either would evaluate here and fail on the host.
+        #
+        # The address is matched as a literal rather than parsed, so a
+        # malformed octet is left to the server. That is the one case this
+        # still lets through.
         assertion =
-          lib.hasPrefix "https://" cfg.settings.public_url
-          || lib.any (loopback: lib.hasPrefix "http://${loopback}" cfg.settings.public_url) [
-            "127."
-            "[::1]"
-          ];
-        message = "services.metsuke-server.settings.public_url is ${cfg.settings.public_url}, which is neither https nor http on a loopback address. Every install command the onboarding pages print is built from it, so a plaintext one tells every pool operator to fetch a binary in clear and install it as root.";
+          let
+            origin = builtins.match "(https?)://([^/?#@]+)/?" cfg.settings.public_url;
+            loopback =
+              let
+                authority = builtins.elemAt origin 1;
+                # The port comes off first, or a loopback address carrying one
+                # fails a test the server passes.
+                ported = builtins.match "(.*):[0-9]+" authority;
+                host = if ported == null then authority else builtins.head ported;
+              in
+              builtins.match "127\\.[0-9]+\\.[0-9]+\\.[0-9]+" host != null || host == "[::1]";
+          in
+          origin != null && (builtins.head origin == "https" || loopback);
+        message = "services.metsuke-server.settings.public_url is ${cfg.settings.public_url}. It has to be a bare origin with nothing after the host, and either https or http on a loopback address. Every install command the onboarding pages print is built from it, so a plaintext one tells every pool operator to fetch a binary in clear and install it as root, and anything after the host sends the agent's endpoint and the fetch tool's to different roots.";
       }
       {
         assertion = !cfg.roster.enable || cfg.settings.ingest.leios_roster == rosterFile;

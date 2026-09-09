@@ -38,7 +38,8 @@ select scraped_at::timestamptz as t,
        metsuke.pool_id as pool,
        metsuke.agent_id as agent,
        metrics
-from read_json(getvariable('archive') || '/v1/*/*-metrics.jsonl.zst', sample_size=-1)
+from read_json(getvariable('archive') || '/v1/*/*-metrics.jsonl.zst',
+               sample_size = -1, union_by_name = true)
 qualify row_number() over (partition by pool, agent, t) = 1;
 
 -- One row per metric sample. This is the table to group over.
@@ -65,7 +66,8 @@ select "at"::timestamptz as t,
        ns, sev, thread, host, data::json as data,
        metsuke.pool_id as pool,
        metsuke.agent_id as agent
-from read_json(getvariable('archive') || '/v1/*/*-logs.jsonl.zst', sample_size=-1)
+from read_json(getvariable('archive') || '/v1/*/*-logs.jsonl.zst',
+               sample_size = -1, union_by_name = true)
 qualify row_number() over (
   partition by pool, agent, t, ns, sev, thread, host, data::varchar
 ) = 1;

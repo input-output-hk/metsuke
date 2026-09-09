@@ -200,6 +200,26 @@ fn a_listing_given_a_download_directory_is_refused() {
     );
 }
 
+/// And a listing keeps no verification state, so it has no bar to forget.
+/// Refused for the reason above: the flag reads as state this run would
+/// change, and accepting it while doing nothing is the worse answer.
+#[test]
+fn a_listing_told_to_forget_unverified_keys_is_refused() {
+    let error = parsed_command("list", &["--forget-unverified"])
+        .expect_err("list keeps no verification state");
+
+    assert!(
+        matches!(
+            error,
+            ArgsError::NotForCommand {
+                command: "list",
+                flag: "--forget-unverified"
+            }
+        ),
+        "got: {error}"
+    );
+}
+
 #[test]
 fn every_access_flag_is_required() {
     for flag in ACCESS.map(|[flag, _]| flag) {
