@@ -40,12 +40,13 @@ $EDITOR config.pipe.toml
 
 cardano-node run ... | {{try_agent}} --config config.pipe.toml --signing-key bls.skey &gt; /dev/null
 
-# Or, where your node already runs under systemd. These are the flags the
-# journald setup runs itself, so the agent reads the same bytes either way
+# Or, where your node already runs under systemd and you can read its
+# journal. These are the flags the journald setup runs itself, so the agent
+# reads the same bytes either way
 journalctl -f -n 0 -o cat -u &lt;your-node&gt; | {{try_agent}} --config config.pipe.toml --signing-key bls.skey &gt; /dev/null
 
-# Or, where your node writes to a file. -F and not -f, which follows the file
-# it opened including after rotation
+# Or, where your node writes to a file. -F and not -f, because only -F
+# reopens by name after a rotation
 tail -n 0 -F /var/log/node.log | {{try_agent}} --config config.pipe.toml --signing-key bls.skey &gt; /dev/null</pre>
 
 <p>That is the whole agent. It writes your node's output straight back out, and

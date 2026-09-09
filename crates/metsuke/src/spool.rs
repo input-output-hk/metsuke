@@ -83,12 +83,12 @@ pub enum SpoolError {
         source: std::io::Error,
     },
     /// Separate from `Directory` because the path is there and the operator
-    /// can see that it is: a recursive create answers `AlreadyExists` only
-    /// where it could not stat what it found, since a directory it can see is
-    /// a create it treats as done. Under the shipped unit that shape is what a
-    /// previous run leaves, so an operator meets this on the host where the
-    /// agent already works, which is where a message saying the directory is
-    /// absent costs the most.
+    /// can see that it is: a recursive create treats a directory it can see as
+    /// a create already done, so `AlreadyExists` reaches here only for
+    /// something that is not a directory or that this user cannot stat. Under
+    /// the shipped unit the second is what a previous run leaves, so an
+    /// operator meets this on the host where the agent already works, which is
+    /// where a message saying the directory is absent costs the most.
     #[error(
         "its directory {path} is already there as {found} this user cannot use; set spool_path somewhere this user can write"
     )]

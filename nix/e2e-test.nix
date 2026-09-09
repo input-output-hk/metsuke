@@ -130,7 +130,7 @@ let
         (builtins.foldl'
           (
             acc: line:
-            if builtins.match "# Confinement,.*" line != null then
+            if builtins.match "# The confinement below.*" line != null then
               acc // { inside = true; }
             else if pkgs.lib.hasPrefix "[Install]" line then
               acc // { inside = false; }
@@ -185,8 +185,9 @@ let
     if missing != [ ] then
       throw ''
         contrib/cardano-node.service's confinement block is missing ${builtins.concatStringsSep ", " missing}.
-        Either those directives were taken out of the file, or the "# Confinement,"
-        comment this parse finds the block by has been reworded.
+        Either those directives were taken out of the file, or the
+        "# The confinement below" comment this parse finds the block by has
+        been reworded. Rewording it is fine; match the new wording here.
       ''
     else
       directives;
