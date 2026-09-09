@@ -432,8 +432,9 @@ async fn a_tick_does_not_chase_lines_that_arrive_while_it_runs() {
     assert_eq!(
         sent.iter().map(|one| one.lines).collect::<Vec<_>>(),
         [3, 3],
-        "the five spooled leave in two, and what arrived meanwhile waits for \
-         the next tick, got {sent:?}"
+        "the five spooled leave in two, the line that arrived during the first \
+         round trip goes with them, and the one from the second waits for the \
+         next tick, got {sent:?}"
     );
 }
 

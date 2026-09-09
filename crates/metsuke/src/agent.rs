@@ -159,11 +159,14 @@ impl Agent {
                         return UploadTick::ended(sent, UploadError::NotAttempted(error));
                     }
                 };
-                // What a tick drains is the backlog it found. A batch that
-                // took everything spooled says there is none left, and a
-                // stream filling faster than a round trip would otherwise be
-                // chased to the allowance, spending a request, a counter and
-                // an object on each handful that arrived mid-tick.
+                // Whether a row waited above the highest id this batch took,
+                // asked before the POST so what lands during one is invisible
+                // to the decision to continue. Mid-tick arrivals are carried
+                // by the next batch but cannot keep the loop alive on their
+                // own: the drain ends at the first batch nothing waited
+                // behind, and what landed during that round trip waits for
+                // the next tick. A stream filling faster than a batch per
+                // round trip drains to the allowance: a backlog, not a chase.
                 let more = taken.as_ref().is_some_and(SealedSubmission::more_waits);
                 let Some(submission) = taken else {
                     break;
