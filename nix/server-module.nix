@@ -419,7 +419,10 @@ in
 
         # Ordered after nothing: it reaches one local socket, so it wants no
         # network, and the node it queries is a unit this module does not name.
-        # A run before the node answers fails and the timer takes the next one.
+        # A run against a node not answering yet retries a few times first, and
+        # only then fails and leaves the next tick to it. `cli` in
+        # tools/roster/roster.nu holds that budget, and holds it well inside
+        # this unit's start timeout, which is why nothing here passes it.
         serviceConfig = {
           Type = "oneshot";
           ExecStart = lib.getExe rosterScript;

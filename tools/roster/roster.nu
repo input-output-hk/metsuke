@@ -85,7 +85,22 @@ def "main query" [
   --socket-path: path
   --testnet-magic: int
   --mainnet
+  # Per query, not per run, and both queries get their own. Three attempts ten
+  # seconds apart is the transient window `cli` describes; a node that needs
+  # longer is one the next tick should find rather than this run wait out.
+  #
+  # These stage work rather than bound what a roster may contain, so the
+  # deployment takes them as they are and the NixOS module passes neither.
+  # Widening them past a unit's start timeout is what that would risk: the
+  # defaults spend at most twenty seconds a query, well inside the ninety a
+  # `Type=oneshot` service is given, and a budget over that is SIGTERMed
+  # before the last attempt can report why.
+  --attempts: int = 3
+  --retry-backoff: duration = 10sec
 ]: nothing -> string {
+  if $attempts < 1 {
+    error make {msg: "--attempts is how many times a query may run, so it cannot be under 1"}
+  }
   let network = if $mainnet {
     if $testnet_magic != null {
       error make {msg: "--mainnet and --testnet-magic name two different networks"}
@@ -96,19 +111,43 @@ def "main query" [
   }
   let common = ["--socket-path" (demand $socket_path "--socket-path")] ++ $network
   {
-    tip: (cli [$era "query" "tip"] $common)
-    pool_state: (cli [$era "query" "pool-state" "--all-stake-pools"] $common)
+    tip: (cli [$era "query" "tip"] $common $attempts $retry_backoff)
+    pool_state: (cli [$era "query" "pool-state" "--all-stake-pools"] $common $attempts $retry_backoff)
   }
   | to json
 }
 
-def cli [command: list<string>, common: list<string>]: nothing -> any {
+# One cardano-cli call, retried. A node that is up but not answering yet is the
+# ordinary case here: the timer fires against a node this script does not
+# supervise, and an activation that restarts something beside it is enough to
+# catch one mid-answer. Bounded, so a socket that is genuinely gone still fails
+# and still says so on the last attempt. Each retry goes to stderr rather than
+# being swallowed, because a run that recovered and a run that never had to are
+# worth telling apart in the journal.
+#
+# Every non-zero exit is retried, so a wrong era or a mistyped magic waits out
+# the same budget before it is reported. That is the trade: telling those apart
+# means matching on cardano-cli's stderr, which would go stale under it.
+def cli [
+  command: list<string>
+  common: list<string>
+  attempts: int
+  backoff: duration
+]: nothing -> any {
   let arguments = $command ++ $common
-  let answer = ^cardano-cli ...$arguments | complete
-  if $answer.exit_code != 0 {
-    error make {msg: $"cardano-cli ($arguments | str join ' ') failed: ($answer.stderr)"}
+  mut attempt = 1
+  loop {
+    let answer = ^cardano-cli ...$arguments | complete
+    if $answer.exit_code == 0 {
+      return ($answer.stdout | from json)
+    }
+    if $attempt >= $attempts {
+      error make {msg: $"cardano-cli ($arguments | str join ' ') failed: ($answer.stderr)"}
+    }
+    print --stderr $"cardano-cli ($command | str join ' ') attempt ($attempt) of ($attempts) failed, retrying in ($backoff): ($answer.stderr | str trim)"
+    sleep $backoff
+    $attempt += 1
   }
-  $answer.stdout | from json
 }
 
 # Write the file the server reads: beside it, then renamed over it. Taking the

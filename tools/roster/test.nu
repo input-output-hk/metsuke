@@ -128,6 +128,89 @@ def each-generate-replaces-the-file-by-rename [] {
   rm --recursive --force $dir
 }
 
+# A cardano-cli that fails its first `failures` calls and answers the recording
+# after that, so `query`'s retry can be exercised without a node. The counter
+# is a file because each call is its own process, and it is shared across the
+# two queries one run makes: the tip query spends the failures, the pool-state
+# query that follows finds the fake already answering.
+def fake-cli [directory: path, failures: int]: nothing -> nothing {
+  let answer = recorded
+  $answer.tip | to json | save --force ($directory | path join tip.json)
+  $answer.pool_state | to json | save --force ($directory | path join pool-state.json)
+  $failures | into string | save --force ($directory | path join failures)
+  let script = $directory | path join cardano-cli
+  # A raw string and $FAKE_DIR rather than interpolation: every $ below is the
+  # shell's, and nothing here has to be escaped past nu to reach it.
+  '#!/bin/sh
+count=$(cat "$FAKE_DIR/count" 2>/dev/null || echo 0)
+count=$((count + 1))
+echo "$count" > "$FAKE_DIR/count"
+if [ "$count" -le "$(cat "$FAKE_DIR/failures")" ]; then
+  echo "Network.Socket.connect: does not exist" >&2
+  exit 1
+fi
+case "$*" in
+  *pool-state*) cat "$FAKE_DIR/pool-state.json" ;;
+  *) cat "$FAKE_DIR/tip.json" ;;
+esac
+' | save --force $script
+  chmod +x $script
+}
+
+# Prepended to PATH rather than replacing it: the fake is a shell script, so it
+# needs the coreutils the real environment has, and a PATH holding only the
+# fake makes its every read fail into the fallback instead.
+def query-with [directory: path, --attempts: int]: nothing -> record {
+  with-env {PATH: ([$directory] ++ $env.PATH), FAKE_DIR: $directory} {
+    ^$nu.current-exe $ROSTER query babbage --socket-path /dev/null --testnet-magic 42 --attempts $attempts --retry-backoff 10ms
+  }
+  | complete
+}
+
+# The failure this exists for: a node up but not answering yet, which an
+# activation beside it is enough to cause. One transient refusal is absorbed
+# and the run still writes a roster.
+def a-query-that-fails-once-is-retried [] {
+  let dir = mktemp --directory
+  fake-cli $dir 1
+
+  let run = query-with $dir --attempts 3
+
+  assert equal $run.exit_code 0
+  assert equal ($run.stdout | from json | get tip.epoch) 2
+  assert str contains $run.stderr "attempt 1 of 3 failed"
+  rm --recursive --force $dir
+}
+
+# And the alarm keeps its meaning: a socket that never answers still fails, so
+# a genuinely unreachable node is not retried into silence.
+def a-query-that-never-answers-is-still-an-error [] {
+  let dir = mktemp --directory
+  fake-cli $dir 99
+
+  let run = query-with $dir --attempts 3
+
+  assert not equal $run.exit_code 0
+  assert str contains $run.stderr "does not exist"
+  rm --recursive --force $dir
+}
+
+# One attempt is the old behaviour, and asking for none is refused rather than
+# read as one.
+def the-attempt-count-is-what-bounds-the-retry [] {
+  let dir = mktemp --directory
+  fake-cli $dir 1
+
+  let once = query-with $dir --attempts 1
+  assert not equal $once.exit_code 0
+  assert str contains $once.stderr "does not exist"
+
+  let none = query-with $dir --attempts 0
+  assert not equal $none.exit_code 0
+  assert str contains $none.stderr "cannot be under 1"
+  rm --recursive --force $dir
+}
+
 def main [] {
   the-recorded-answer-becomes-a-roster
   each-generate-replaces-the-file-by-rename
@@ -141,5 +224,8 @@ def main [] {
   a-node-still-catching-up-is-an-error
   the-threshold-is-what-refuses-an-answer
   an-answer-with-no-sync-figure-is-an-error
+  a-query-that-fails-once-is-retried
+  a-query-that-never-answers-is-still-an-error
+  the-attempt-count-is-what-bounds-the-retry
   print "roster: ok"
 }
