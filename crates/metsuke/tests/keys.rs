@@ -24,10 +24,16 @@ fn test_key_envelope() -> String {
 /// key. The prefix and the 32 bytes are the cold key file's, so `type` is the
 /// only difference between the two.
 fn leios_key_envelope() -> String {
+    leios_key_envelope_typed("BlsSigningKey_bls12-381-BLS-Signature-Minimal-Signature-Size")
+}
+
+/// The same file under a caller-chosen `type`, so the two spellings the node
+/// has written for one key are both testable.
+fn leios_key_envelope_typed(key_type: &str) -> String {
     let seed = metsuke_wire::hex::encode(&test_key().to_bytes());
     format!(
         r#"{{
-            "type": "BlsSigningKey_bls12-381-BLS-Signature-Mininimal-Signature-Size",
+            "type": "{key_type}",
             "description": "BLS12-381 signing key",
             "cborHex": "5820{seed}"
         }}"#
@@ -156,6 +162,33 @@ fn a_bls_envelope_loads_as_a_leios_key() {
         "a Leios key names no pool: {key:?}"
     );
     assert_eq!(key.public_key_hex().len(), 192, "96 bytes of hex");
+}
+
+/// prototype-2026w36 corrected "Mininimal" to "Minimal" in that type, so a
+/// pool that generated its key before the respin has the older spelling on
+/// disk. Both load, because the seed behind them is the same and refusing one
+/// would stop a working agent on a respin that touched no key of theirs.
+#[test]
+fn either_spelling_of_the_bls_type_loads_the_same_key() {
+    let dir = tempfile::tempdir().unwrap();
+    let spellings = [
+        "BlsSigningKey_bls12-381-BLS-Signature-Minimal-Signature-Size",
+        "BlsSigningKey_bls12-381-BLS-Signature-Mininimal-Signature-Size",
+    ];
+
+    let loaded: Vec<String> = spellings
+        .iter()
+        .map(|key_type| {
+            let path = dir.path().join(format!("{key_type}.skey"));
+            std::fs::write(&path, leios_key_envelope_typed(key_type)).unwrap();
+            let key =
+                keys::load_signing_key(&path).unwrap_or_else(|error| panic!("{key_type}: {error}"));
+            assert!(key.attributes().is_none(), "a Leios key names no pool");
+            key.public_key_hex()
+        })
+        .collect();
+
+    assert_eq!(loaded[0], loaded[1], "one key, two spellings of its type");
 }
 
 #[test]

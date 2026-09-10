@@ -22,7 +22,15 @@ const SEED_PREFIX: &str = "5820";
 /// The `type` cardano-cli writes for each of the two keys an Agent may sign
 /// with: `node key-gen`'s cold key and `node key-gen-BLS`'s Leios key.
 const COLD_KEY_TYPE: &str = "StakePoolSigningKey_ed25519";
-const LEIOS_KEY_TYPE: &str = "BlsSigningKey_bls12-381-BLS-Signature-Mininimal-Signature-Size";
+const LEIOS_KEY_TYPE: &str = "BlsSigningKey_bls12-381-BLS-Signature-Minimal-Signature-Size";
+
+/// The same key, spelled as the node wrote it until prototype-2026w36
+/// corrected "Mininimal" in that string. Accepted as well as the spelling
+/// above, because a pool that generated its key under an earlier prototype has
+/// this one on disk and the seed behind it is unchanged: refusing it would
+/// make a working agent stop at startup on a respin that touched no key.
+const LEIOS_KEY_TYPE_BEFORE_W36: &str =
+    "BlsSigningKey_bls12-381-BLS-Signature-Mininimal-Signature-Size";
 
 /// The subset of a cardano-cli TextEnvelope this agent reads.
 #[derive(Deserialize)]
@@ -111,7 +119,7 @@ pub fn load_signing_key(path: &Path) -> Result<SubmissionKey, KeyError> {
     })?;
     match envelope.key_type.as_str() {
         COLD_KEY_TYPE => Ok(SubmissionKey::ColdKey(SigningKey::from_bytes(&seed))),
-        LEIOS_KEY_TYPE => Ok(SubmissionKey::LeiosKey(
+        LEIOS_KEY_TYPE | LEIOS_KEY_TYPE_BEFORE_W36 => Ok(SubmissionKey::LeiosKey(
             LeiosSigningKey::from_bytes(&seed).map_err(|source| KeyError::NotALeiosKey {
                 path: display,
                 source,
