@@ -119,17 +119,22 @@ count_metrics() { grep -cvE '^#|^[[:space:]]*$'; }
 # $3 is an optional second predicate for a state waiting cannot leave, and 3
 # is what it returns: the body is printed either way, so the caller can say
 # what the node had reached when it gave up.
+#
+# The abort is asked first, because both can hold at once: a node that crosses
+# $SYNC_BLOCKS and reaches the tip inside one scrape interval satisfies the
+# wanted predicate with a body that is no longer of the state it names. Asked
+# in the other order that body is what gets recorded.
 scrape_until() {
   local deadline=$((SECONDS + $1)) predicate=$2 abort=${3:-} body
   while [ "$SECONDS" -lt "$deadline" ]; do
     body=$(curl -sf -m 3 "$metrics_url" || true)
-    if [ -n "$body" ] && "$predicate" "$body"; then
-      printf '%s' "$body"
-      return 0
-    fi
     if [ -n "$abort" ] && "$abort" "$body"; then
       printf '%s' "$body"
       return 3
+    fi
+    if [ -n "$body" ] && "$predicate" "$body"; then
+      printf '%s' "$body"
+      return 0
     fi
     kill -0 "$node_pid" 2>/dev/null || return 2
     sleep 1
@@ -168,8 +173,14 @@ echo "syncing to block $SYNC_BLOCKS"
 # of waiting that was never going to end, and the height it stopped at is the
 # one thing that says what to use instead.
 caught_up() { grep -q 'CaughtUp' "$node_dir/node.log"; }
-bootstrap=$(scrape_until 3600 bootstrapping caught_up)
-status=$?
+# Tested rather than assigned and then read: `set -e` acts on a bare assignment
+# from a command substitution, so every non-zero return left the script here
+# with none of the diagnosis below reached.
+if bootstrap=$(scrape_until 3600 bootstrapping caught_up); then
+  status=0
+else
+  status=$?
+fi
 case "$status" in
   0) ;;
   3)

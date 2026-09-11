@@ -66,8 +66,9 @@ root sets no `maxFrequency`.
 
 Two different configs are in play, and everything measured above is the first:
 
-- `demo/proto-devnet/config/config.yaml` in the ouroboros-leios repo, pinned at
-  `prototype-2026w35`. It is a demo, not what anyone operates. The chain the e2e node
+- `demo/proto-devnet/config/config.yaml` in the ouroboros-leios repo, at whichever
+  tag `flake.nix`'s `cardano-node-leios` names rather than a tag written out here,
+  which a bump leaves behind. It is a demo, not what anyone operates. The chain the e2e node
   joins comes from it, and so does everything about a recording except the tracing: both
   `scripts/record-trace-fixtures.sh` and `nix/e2e-test.nix` keep this config's
   non-`TraceOption*` keys and take the `TraceOption*` ones from the recording below, so
