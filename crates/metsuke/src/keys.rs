@@ -55,6 +55,9 @@ pub enum KeyError {
         #[source]
         source: serde_json::Error,
     },
+    /// Names the current spelling alone. A reader of this has neither, and
+    /// `LEIOS_KEY_TYPE_BEFORE_W36` differs by three characters, so naming it
+    /// too would set someone comparing near-identical strings.
     #[error(
         "signing key {path} is a {found:?}, and an Agent signs with a \
          {COLD_KEY_TYPE:?} or a {LEIOS_KEY_TYPE:?}"
