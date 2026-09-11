@@ -8,6 +8,13 @@ why. `metsuke-wire` is not released and does not appear.
 
 ### Unreleased
 
+Nothing since 0.2.1.
+
+### 0.2.1 — 2026-09-11
+
+A **patch**: no config field moved and the page tells an operator nothing new,
+so updating without touching `/etc/metsuke/config.toml` leaves a working agent.
+
 - Both spellings of the Leios key's envelope `type` load. prototype-2026w36
   corrected `Mininimal` to `Minimal` in what `cardano-cli node key-gen-BLS`
   writes, so a key generated under it is refused at startup by 0.2.0 while one
@@ -59,6 +66,13 @@ deploy the release and the tag only a name for it, so this entry precedes a
 ## metsuke-server
 
 ### Unreleased
+
+Nothing since 0.2.1.
+
+### 0.2.1 — 2026-09-11
+
+A **patch**, and the deploy is the release in the plainest sense: no crate
+source changed at all, the roster generator beside it did.
 
 - The roster reads the BLS key where `pool-state` answers it as of
   prototype-2026w36, which renamed the field and left the registered and
