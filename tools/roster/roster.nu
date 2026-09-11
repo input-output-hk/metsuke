@@ -30,21 +30,22 @@ def demand [value: any, name: string] {
 # and `futurePoolParams` as a StakePoolParams, whose instance is written by
 # hand. The two carry the same key under different names and different nesting,
 # so a half read with the other's path reads as a pool that registered nothing.
+# A half carrying no key lists none rather than failing here: what to do about a
+# pool the chain registers no key for is a decision about the whole answer, and
+# `as-file` is where it is taken. A key that is present and the wrong shape
+# still fails, because that is not a pool without a key.
 export def keys-of []: record -> list<string> {
   let entry = $in
   [
-    {half: "poolParams", key: ($entry | get --optional poolParams.spsBlsKey.bksKey.blsPubKey)}
-    {half: "futurePoolParams", key: ($entry | get --optional futurePoolParams.blsKey.blsPubKey)}
+    ($entry | get --optional poolParams.spsBlsKey.bksKey.blsPubKey)
+    ($entry | get --optional futurePoolParams.blsKey.blsPubKey)
   ]
-  | where {|found| ($entry | get --optional $found.half) != null }
-  | each {|found|
-      if $found.key == null {
-        error make {msg: $"a pool's ($found.half) carries no BLS public key"}
+  | where {|key| $key != null }
+  | each {|key|
+      if not ($key =~ $LEIOS_KEY_HEX) {
+        error make {msg: $"blsPubKey ($key) is not 96 bytes of hex"}
       }
-      if not ($found.key =~ $LEIOS_KEY_HEX) {
-        error make {msg: $"blsPubKey ($found.key) is not 96 bytes of hex"}
-      }
-      $found.key
+      $key
     }
   | uniq
 }
@@ -63,19 +64,32 @@ export def as-file [--min-sync: float = 99.8]: record -> string {
   if $synced < $min_sync {
     error make {msg: $"the node has synced ($synced)% of the chain, under the ($min_sync)% asked for"}
   }
+  let listed = (
+    $pools
+    | items {|pool_id, entry|
+        if not ($pool_id =~ $POOL_ID_HEX) {
+          error make {msg: $"($pool_id) is not a 28-byte pool id"}
+        }
+        {pool: $pool_id, keys: ($entry | keys-of)}
+      }
+  )
+
+  # A pool the chain registers no BLS key for is left out rather than refused:
+  # it cannot sign with a key it does not have, so failing the run would only
+  # deny every pool that can. Every pool at once is a different thing, the
+  # field this reads having moved as it did at w36, and that has to be loud
+  # because an empty roster refuses the whole network silently.
+  let keyed = $listed | where {|pool| ($pool.keys | length) > 0 }
+  if ($listed | length) > 0 and ($keyed | length) == 0 {
+    error make {
+      msg: $"none of the ($listed | length) pools list a BLS key, so the path pool-state answers it under has moved again"
+    }
+  }
+
   {
     epoch: (demand ($tip | get --optional epoch) "tip.epoch")
     slot: (demand ($tip | get --optional slot) "tip.slot")
-    pools: (
-      $pools
-      | items {|pool_id, entry|
-          if not ($pool_id =~ $POOL_ID_HEX) {
-            error make {msg: $"($pool_id) is not a 28-byte pool id"}
-          }
-          [$pool_id ($entry | keys-of)]
-        }
-      | into record
-    )
+    pools: ($keyed | each {|pool| [$pool.pool $pool.keys] } | into record)
   }
   | to json
 }
@@ -162,6 +176,18 @@ def cli [
 # roster in use. ADR 0011 has why the swap has to be a rename.
 def "main generate" [answer: path, into: path, --min-sync: float = 99.8]: nothing -> nothing {
   let next = $"($into).next"
-  open --raw $answer | from json | as-file --min-sync $min_sync | save --force $next
+  let answered = open --raw $answer | from json
+  let roster = $answered | as-file --min-sync $min_sync
+  $roster | save --force $next
   mv --force $next $into
+
+  # A pool left out for registering no key is not an error, so this line is the
+  # only place it is visible. A count rather than a list: what it answers is
+  # whether the roster still covers the network, and a timer's stderr is read in
+  # the journal after the fact rather than watched.
+  let covered = $roster | from json | get pools | columns | length
+  let omitted = ($answered.pool_state | columns | length) - $covered
+  if $omitted > 0 {
+    print --stderr $"($omitted) of ($omitted + $covered) pools list no BLS key and are not in the roster"
+  }
 }

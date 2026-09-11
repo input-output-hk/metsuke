@@ -72,11 +72,39 @@ def a-key-announced-unchanged-is-listed-once [] {
   assert equal ($unchanged | keys-of) [$KEY]
 }
 
-def a-pool-with-no-leios-key-is-an-error [] {
+def a-pool-with-no-key-lists-none [] {
   let entry = recorded | get pool_state | get $POOL
   let keyless = $entry | update poolParams { reject spsBlsKey }
 
-  assert error { $keyless | keys-of }
+  assert equal ($keyless | keys-of) []
+}
+
+# The real network has pools that registered no BLS key, and one of them must
+# not cost every other pool its roster: it cannot sign with a key it does not
+# have, so it is left out and the rest are listed as before.
+def a-pool-with-no-key-is-left-out [] {
+  let answer = recorded
+  let keyless = $answer.pool_state | get $POOL | update poolParams { reject spsBlsKey }
+  let stripped = $answer | upsert pool_state ($answer.pool_state | upsert $POOL $keyless)
+
+  let roster = $stripped | as-file | from json
+
+  assert equal ($roster.pools | columns | length) 2
+  assert equal ($roster.pools | columns | any {|pool| $pool == $POOL }) false
+}
+
+# The other side of that threshold. Every pool at once is the path having moved
+# rather than a network of keyless pools, and the roster it would write refuses
+# everyone without saying so.
+def every-pool-without-a-key-is-an-error [] {
+  let answer = recorded
+  let stripped = $answer | upsert pool_state (
+    $answer.pool_state
+    | items {|pool, entry| [$pool ($entry | update poolParams { reject spsBlsKey })] }
+    | into record
+  )
+
+  assert error { $stripped | as-file }
 }
 
 def a-key-that-is-not-96-bytes-is-an-error [] {
@@ -232,7 +260,9 @@ def main [] {
   the-tip-the-answer-was-taken-at-travels-with-it
   both-the-registered-and-the-announced-key-are-listed
   a-key-announced-unchanged-is-listed-once
-  a-pool-with-no-leios-key-is-an-error
+  a-pool-with-no-key-lists-none
+  a-pool-with-no-key-is-left-out
+  every-pool-without-a-key-is-an-error
   a-key-that-is-not-96-bytes-is-an-error
   an-answer-missing-a-half-is-an-error
   a-key-that-is-not-a-pool-id-is-an-error
