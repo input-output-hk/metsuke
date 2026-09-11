@@ -247,12 +247,14 @@ fn every_recorded_record_declares_the_field_a_rule_reads() {
     assert_eq!(declaring_nothing, 1);
 }
 
-// The point of selecting at all. Stated as a shape rather than a ratio: the
-// shipped rules select something, and nothing they select is a Debug line. A
-// third of this window is Debug and none of it was asked for, so what the
-// assertion is worth is that the rules reach none of it.
+// The point of selecting at all: the rules keep some of the window and not all
+// of it, and every line they keep sits under a namespace that was asked for.
+// Severity is not one of the terms. MusashiNet runs Consensus.LeiosKernel at
+// Debug, so that subtree's Debug members are as asked for as its Info ones, and
+// a prototype adding another one is a line this agent ships (ADR 0010).
 #[test]
-fn the_shipped_rules_select_without_reaching_debug() {
+fn the_shipped_rules_select_only_under_the_namespaces_asked_for() {
+    let wanted = shipped_log_config().namespaces;
     let rules = shipped_rules();
     let shipped: Vec<TraceLine> = LEIOS_WINDOW
         .lines()
@@ -263,11 +265,18 @@ fn the_shipped_rules_select_without_reaching_debug() {
         .collect();
     assert!(!shipped.is_empty(), "the rules selected nothing at all");
     assert!(shipped.len() < LEIOS_WINDOW.lines().count());
-    let debug = shipped
-        .iter()
-        .filter(|line| severity_of(line) == "Debug")
-        .count();
-    assert_eq!(debug, 0, "{debug} Debug lines selected");
+    for line in &shipped {
+        let namespace = Fields::of(line)
+            .namespace
+            .expect("a selected line declares ns");
+        assert!(
+            wanted.iter().any(|asked| namespace == asked
+                || namespace
+                    .strip_prefix(asked.as_str())
+                    .is_some_and(|rest| rest.starts_with('.'))),
+            "selected {namespace}, which no shipped namespace names"
+        );
+    }
 }
 
 // The line that goes to the spool is every field the node wrote, under the keys
