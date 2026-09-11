@@ -1,25 +1,25 @@
 # TYPE cardano_node_metrics_Mem_resident_int gauge
-cardano_node_metrics_Mem_resident_int 127090688
+cardano_node_metrics_Mem_resident_int 89341952
 # TYPE cardano_node_metrics_forging_enabled_int gauge
 cardano_node_metrics_forging_enabled_int 0
 # TYPE rts_gc_init_cpu_ms counter
 rts_gc_init_cpu_ms 1
 # TYPE rts_gc_par_tot_bytes_copied gauge
-rts_gc_par_tot_bytes_copied 4544840
+rts_gc_par_tot_bytes_copied 4637400
 # TYPE cardano_node_metrics_cardano_version_patch_int gauge
 cardano_node_metrics_cardano_version_patch_int 0
 # TYPE cardano_node_metrics_cardano_build_info info
-cardano_node_metrics_cardano_build_info{version_major="11",version_minor="1",version_patch="0",version="11.1.0.164",revision="6a540bd43a83e697fd662b973f7e99cee02a59fb",compiler_name="ghc",compiler_version="9.6.7",compiler_version_major="9",compiler_version_minor="6",compiler_version_patch="7",architecture="x86_64",os_name="linux"} 1
+cardano_node_metrics_cardano_build_info{version_major="11",version_minor="1",version_patch="0",version="11.1.0.164",revision="afa091b4af2795d1d9c46e59145ed16127760f7b",compiler_name="ghc",compiler_version="9.6.7",compiler_version_major="9",compiler_version_minor="6",compiler_version_patch="7",architecture="x86_64",os_name="linux"} 1
 # TYPE rts_gc_par_balanced_bytes_copied gauge
-rts_gc_par_balanced_bytes_copied 2593472
+rts_gc_par_balanced_bytes_copied 2823472
 # TYPE rts_gc_current_bytes_slop gauge
-rts_gc_current_bytes_slop 2498616
+rts_gc_current_bytes_slop 1390344
 # TYPE rts_gc_cumulative_bytes_used counter
-rts_gc_cumulative_bytes_used 173317336
+rts_gc_cumulative_bytes_used 173371032
 # TYPE cardano_node_metrics_Stat_fsRd_int gauge
 cardano_node_metrics_Stat_fsRd_int 0
 # TYPE rts_gc_par_max_bytes_copied gauge
-rts_gc_par_max_bytes_copied 3245016
+rts_gc_par_max_bytes_copied 3223608
 # TYPE cardano_node_metrics_cardano_version_major_int gauge
 cardano_node_metrics_cardano_version_major_int 11
 # TYPE rts_gc_nm_max_elapsed_ms counter
@@ -33,76 +33,76 @@ cardano_node_metrics_Stat_blkIOticks_int 0
 # TYPE cardano_node_metrics_haskell_compiler_patch_int gauge
 cardano_node_metrics_haskell_compiler_patch_int 7
 # TYPE rts_gc_peak_megabytes_allocated gauge
-rts_gc_peak_megabytes_allocated 240
+rts_gc_peak_megabytes_allocated 218
 # TYPE rts_gc_nm_cpu_ms counter
 rts_gc_nm_cpu_ms 0
 # TYPE rts_gc_nm_elapsed_ms counter
 rts_gc_nm_elapsed_ms 0
 # TYPE cardano_node_metrics_RTS_mutticks_int gauge
-cardano_node_metrics_RTS_mutticks_int 105
+cardano_node_metrics_RTS_mutticks_int 11
 # TYPE rts_gc_mutator_cpu_ms counter
-rts_gc_mutator_cpu_ms 1964
+rts_gc_mutator_cpu_ms 920
 # TYPE cardano_node_metrics_Stat_cputicks_int gauge
-cardano_node_metrics_Stat_cputicks_int 107
+cardano_node_metrics_Stat_cputicks_int 13
 # TYPE cardano_node_metrics_RTS_alloc_int gauge
-cardano_node_metrics_RTS_alloc_int 4367745048
+cardano_node_metrics_RTS_alloc_int 291390920
 # TYPE cardano_node_metrics_RTS_gcLiveBytes_int gauge
-cardano_node_metrics_RTS_gcLiveBytes_int 206329376
+cardano_node_metrics_RTS_gcLiveBytes_int 2068304
 # TYPE rts_gc_max_bytes_slop gauge
-rts_gc_max_bytes_slop 1113648
+rts_gc_max_bytes_slop 1115064
 # TYPE cardano_node_metrics_Stat_netRd_int gauge
 cardano_node_metrics_Stat_netRd_int 0
 # TYPE cardano_node_metrics_basicInfo info
-cardano_node_metrics_basicInfo{nodeStartTime="2026-09-07 21:01:13.240823073 UTC"} 1
+cardano_node_metrics_basicInfo{nodeStartTime="2026-09-10 23:23:43.769790667 UTC"} 1
 # TYPE cardano_node_metrics_RTS_gcMajorNum_int gauge
-cardano_node_metrics_RTS_gcMajorNum_int 3
+cardano_node_metrics_RTS_gcMajorNum_int 2
 # TYPE rts_gc_gc_wall_ms counter
-rts_gc_gc_wall_ms 94
+rts_gc_gc_wall_ms 68
 # TYPE rts_gc_cpu_ms counter
-rts_gc_cpu_ms 1993
+rts_gc_cpu_ms 954
 # TYPE cardano_node_metrics_Stat_netWr_int gauge
 cardano_node_metrics_Stat_netWr_int 0
 # TYPE rts_gc_wall_ms counter
-rts_gc_wall_ms 1994
+rts_gc_wall_ms 984
 # TYPE cardano_node_metrics_RTS_threads_int gauge
 cardano_node_metrics_RTS_threads_int 9
 # TYPE rts_gc_nm_sync_elapsed_ms counter
 rts_gc_nm_sync_elapsed_ms 0
 # TYPE rts_gc_mutator_wall_ms counter
-rts_gc_mutator_wall_ms 1900
+rts_gc_mutator_wall_ms 916
 # TYPE rts_gc_bytes_allocated counter
-rts_gc_bytes_allocated 5300982344
+rts_gc_bytes_allocated 2832602952
 # TYPE cardano_node_metrics_RTS_gcHeapBytes_int gauge
-cardano_node_metrics_RTS_gcHeapBytes_int 246415360
+cardano_node_metrics_RTS_gcHeapBytes_int 40894464
 # TYPE rts_gc_nm_sync_max_elapsed_ms counter
 rts_gc_nm_sync_max_elapsed_ms 0
 # TYPE rts_gc_max_bytes_used gauge
-rts_gc_max_bytes_used 170742224
+rts_gc_max_bytes_used 170847304
 # TYPE rts_gc_gc_cpu_ms counter
-rts_gc_gc_cpu_ms 29
+rts_gc_gc_cpu_ms 33
 # TYPE rts_gc_max_large_bytes_used gauge
-rts_gc_max_large_bytes_used 168526120
+rts_gc_max_large_bytes_used 168525880
 # TYPE rts_gc_par_avg_bytes_copied gauge
-rts_gc_par_avg_bytes_copied 4544840
+rts_gc_par_avg_bytes_copied 4637400
 # TYPE rts_gc_num_bytes_usage_samples counter
 rts_gc_num_bytes_usage_samples 3
 # TYPE cardano_node_metrics_RTS_gcMinorNum_int gauge
-cardano_node_metrics_RTS_gcMinorNum_int 138
+cardano_node_metrics_RTS_gcMinorNum_int 8
 # TYPE rts_gc_bytes_copied counter
-rts_gc_bytes_copied 84461296
+rts_gc_bytes_copied 48248504
 # TYPE rts_gc_num_gcs counter
-rts_gc_num_gcs 172
+rts_gc_num_gcs 91
 # TYPE cardano_node_metrics_RTS_gcticks_int gauge
 cardano_node_metrics_RTS_gcticks_int 2
-cardano_node_metrics_blockReplayProgress_real 10.99608748317966
+cardano_node_metrics_blockReplayProgress_real 7.817733560782458
 # TYPE cardano_node_metrics_node_start_time_int gauge
-cardano_node_metrics_node_start_time_int 1788814874
+cardano_node_metrics_node_start_time_int 1789082624
 # TYPE rts_gc_current_bytes_used gauge
-rts_gc_current_bytes_used 209608648
+rts_gc_current_bytes_used 188410104
 # TYPE cardano_node_metrics_haskell_compiler_major_int gauge
 cardano_node_metrics_haskell_compiler_major_int 9
 # TYPE cardano_node_metrics_Stat_fsWr_int gauge
-cardano_node_metrics_Stat_fsWr_int 414504
+cardano_node_metrics_Stat_fsWr_int 0
 # TYPE rts_gc_max_compact_bytes_used gauge
 rts_gc_max_compact_bytes_used 0
 # TYPE rts_gc_init_wall_ms counter

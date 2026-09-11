@@ -390,9 +390,12 @@ pkgs.testers.runNixOSTest {
         assert all(line in recorded for line in lines), [
             line for line in lines if line not in recorded
         ]
-        # And the rules still filtered on the way: a third of the recording is
-        # Debug lines nobody asked for.
-        assert not [line for line in lines if line.get("sev") == "Debug"], lines
+        # And the rules still filtered on the way: a quarter of the recording is
+        # the wire-level LeiosNotify chatter, which sits under no namespace the
+        # program asked for, and none of it arrived. Severity is not the test,
+        # because Consensus.LeiosKernel is configured at Debug on this network
+        # and its Debug members are as asked for as its Info ones.
+        assert not [line for line in lines if line["ns"].startswith("LeiosNotify.")], lines
 
     with subtest("the contrib unit runs the agent on a host that is not NixOS"):
         bare.wait_for_unit("metrics-endpoint.service")

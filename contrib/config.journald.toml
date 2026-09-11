@@ -23,6 +23,16 @@ upload_url = "https://metsuke.example.org/v1/submit"
 # can tell them apart. Unset, it is this host's hostname, folded to lowercase.
 # agent_id = "edge-1"
 
+# Where the spool goes. Unset, it is the path below, which is the state
+# directory contrib/metsuke-journald.service creates, so a host running one
+# agent leaves this alone.
+#
+# One agent per spool. A host with multiple agents needs each to have its own
+# path here and its own StateDirectory in its unit to hold it: that directory
+# is the only path ProtectSystem=strict leaves writable, so setting one
+# without the other dies on the first open.
+# spool_path = "/var/lib/metsuke/spool.sqlite"
+
 [log]
 source = "journald"
 

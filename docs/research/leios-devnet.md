@@ -81,8 +81,8 @@ recorded under narrower options would not describe production.
 ## cardano-cli on this chain
 
 The node runs Dijkstra from epoch 0 (`TestDijkstraHardForkAtEpoch: 0`), and
-cardano-cli 11.1.0.0's `latest` still means Conway, so era-bearing commands are
-`cardano-cli dijkstra ...`. `latest query tip` answers anyway.
+`latest` still means Conway in every cardano-cli released so far, so era-bearing
+commands are `cardano-cli dijkstra ...`. `latest query tip` answers anyway.
 
 Two things the leios prototype adds to a pool registration certificate:
 `--bls-signing-key-file` is mandatory, and `--pool-cost` is rejected below

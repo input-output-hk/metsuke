@@ -971,12 +971,11 @@ let
             for namespace in selected:
                 assert namespaces[namespace] > 0, namespaces
             # Nothing outside the configured namespaces rides along, whatever
-            # severity it carries: Reflection is under no configured namespace, so
-            # severity alone selects nothing.
+            # severity it carries, and that it selected rather than forwarded is
+            # the same assertion: Reflection is under no configured namespace, so
+            # severity alone selects nothing. A severity check here would refuse
+            # Consensus.LeiosKernel's own Debug members, which are asked for.
             assert not [ns for ns in namespaces if ns.startswith("Reflection.")], namespaces
-            # And it selected rather than forwarded: the node's Debug volume,
-            # which nobody asked for, is not in the bucket.
-            assert not [line for line in archived if line["sev"] == "Debug"], namespaces
             # Every line says which pool and machine wrote it (metsuke-jfb.3).
             assert all(
                 line["metsuke"]["pool_id"] == "${poolId}"

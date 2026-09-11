@@ -16,8 +16,13 @@
     # Leios prototype the MusashiNet nodes run (same pin as cardano-playground).
     # Source only, never evaluated as a flake: scripts/record-scrape-fixtures.sh
     # records scrape fixtures from it, and the VM test will run it.
+    #
+    # Bumping it is three re-locks, not two: this input, then in devnet/ both
+    # `leios` and `metsuke`, the last of which carries a copy of this lock
+    # inside it. checks.leios-pin is what fails on that third one, because no
+    # input name reveals it.
     cardano-node-leios = {
-      url = "github:input-output-hk/ouroboros-leios?ref=refs/tags/prototype-2026w35";
+      url = "github:input-output-hk/ouroboros-leios?ref=refs/tags/prototype-2026w36";
       flake = false;
     };
     advisory-db = {

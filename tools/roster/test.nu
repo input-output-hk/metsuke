@@ -5,10 +5,11 @@ use roster.nu *
 
 # fixtures/query-answer.json is a recording: the two answers `main query` makes,
 # taken from the local Leios devnet (docs/research/leios-devnet.md) with
-# cardano-cli 11.1.0.0. Every pool in it has one registered key and no announced
+# cardano-cli 11.2.2.0. Every pool in it has one registered key and no announced
 # one, so the recording covers the roster's shape and not a rotation in flight.
 # Re-record it from a node at the tip: its syncProgress has to clear `as-file`'s
-# own default or every test here refuses it.
+# own default or every test here refuses it, and `query` names the era because
+# `latest` is Conway while the devnet forges Dijkstra.
 const ANSWER = path self fixtures/query-answer.json
 const ROSTER = path self roster.nu
 
@@ -34,20 +35,30 @@ def the-recorded-answer-becomes-a-roster [] {
 # it was taken has to travel with it.
 def the-tip-the-answer-was-taken-at-travels-with-it [] {
   let roster = generated
-  assert equal $roster.epoch 2
-  assert equal $roster.slot 2605
+  assert equal $roster.epoch 0
+  assert equal $roster.slot 144
 }
 
-# The rotation case, which the recording has no announced registration for. The
-# shape is not guessed: cardano-cli encodes both fields from one `Maybe
-# PoolParams` (`Cardano.CLI.Type.Common`, the `ToJSON (Params crypto)`
-# instance), so an announced registration is the recorded entry's own
-# `poolParams` under the other name, which is what this builds.
+# The announced half in the shape cardano-cli answers it in, which is not the
+# registered half's. `futurePoolParams` is a ledger StakePoolParams, whose
+# hand-written ToJSON (`Cardano.Ledger.State.StakePool`) emits the key as a flat
+# `blsKey`; `poolParams` is a StakePoolState, whose JSON comes from its own field
+# names and nests the key under `spsBlsKey.bksKey`. Building this half by copying
+# the other is what stops holding when they diverge.
+def announced-half [key: string]: record -> record {
+  let entry = $in
+  {
+    blsKey: {
+      blsPubKey: $key
+      blsPossessionProof: $entry.poolParams.spsBlsKey.bksKey.blsPossessionProof
+    }
+  }
+}
+
+# The rotation case, which the recording has no announced registration for.
 def both-the-registered-and-the-announced-key-are-listed [] {
   let entry = recorded | get pool_state | get $POOL
-  let announced = $entry | upsert futurePoolParams (
-    $entry.poolParams | upsert spsLeiosKey.leiosPubKey $OTHER_KEY
-  )
+  let announced = $entry | upsert futurePoolParams ($entry | announced-half $OTHER_KEY)
 
   assert equal ($announced | keys-of) [$KEY $OTHER_KEY]
 }
@@ -56,21 +67,57 @@ def both-the-registered-and-the-announced-key-are-listed [] {
 # checks is membership.
 def a-key-announced-unchanged-is-listed-once [] {
   let entry = recorded | get pool_state | get $POOL
-  let unchanged = $entry | upsert futurePoolParams $entry.poolParams
+  let unchanged = $entry | upsert futurePoolParams ($entry | announced-half $KEY)
 
   assert equal ($unchanged | keys-of) [$KEY]
 }
 
-def a-pool-with-no-leios-key-is-an-error [] {
+def a-pool-with-no-key-lists-none [] {
   let entry = recorded | get pool_state | get $POOL
-  let keyless = $entry | update poolParams { reject spsLeiosKey }
+  let keyless = $entry | update poolParams { reject spsBlsKey }
 
-  assert error { $keyless | keys-of }
+  assert equal ($keyless | keys-of) []
+}
+
+# The real network has pools that registered no BLS key, and one of them must
+# not cost every other pool its roster: it cannot sign with a key it does not
+# have, so it is left out and the rest are listed as before.
+def a-pool-with-no-key-is-left-out [] {
+  let answer = recorded
+  let keyless = $answer.pool_state | get $POOL | update poolParams { reject spsBlsKey }
+  let stripped = $answer | upsert pool_state ($answer.pool_state | upsert $POOL $keyless)
+
+  let roster = $stripped | as-file | from json
+
+  assert equal ($roster.pools | columns | length) 2
+  assert equal ($roster.pools | columns | any {|pool| $pool == $POOL }) false
+}
+
+# The other side of that threshold. Every pool at once is the path having moved
+# rather than a network of keyless pools, and the roster it would write refuses
+# everyone without saying so.
+def every-pool-without-a-key-is-an-error [] {
+  let answer = recorded
+  let stripped = $answer | upsert pool_state (
+    $answer.pool_state
+    | items {|pool, entry| [$pool ($entry | update poolParams { reject spsBlsKey })] }
+    | into record
+  )
+
+  assert error { $stripped | as-file }
+}
+
+# An answer that lists no pool at all takes the same refusal as one where none
+# has a key: the roster it would write is the one that refuses everybody.
+def an-answer-with-no-pools-is-an-error [] {
+  let answer = recorded
+
+  assert error { {tip: $answer.tip, pool_state: {}} | as-file }
 }
 
 def a-key-that-is-not-96-bytes-is-an-error [] {
   let entry = recorded | get pool_state | get $POOL
-  let short = $entry | upsert poolParams.spsLeiosKey.leiosPubKey "abcd"
+  let short = $entry | upsert poolParams.spsBlsKey.bksKey.blsPubKey "abcd"
 
   assert error { $short | keys-of }
 }
@@ -86,11 +133,15 @@ def a-node-still-catching-up-is-an-error [] {
   assert error { $syncing | as-file }
 }
 
-# The recording is a caught-up node, so the threshold is what decides rather
-# than the shape of the answer.
+# One answer, accepted under one threshold and refused under another, so what
+# decides is the threshold and not the shape of the answer. The figure is set
+# here rather than taken from the recording, which would only hold while a
+# re-recording kept landing in the narrow band between the two.
 def the-threshold-is-what-refuses-an-answer [] {
-  assert equal (generated | get epoch) 2
-  assert error { recorded | as-file --min-sync 99.9 }
+  let behind = recorded | upsert tip.syncProgress "99.85"
+
+  assert equal ($behind | as-file --min-sync 99.8 | from json | get epoch) 0
+  assert error { $behind | as-file --min-sync 99.9 }
 }
 
 # Refused rather than assumed caught up: a cli that stops reporting it must not
@@ -124,7 +175,90 @@ def each-generate-replaces-the-file-by-rename [] {
 
   assert not equal $first $second
   assert equal (ls $dir | get name | path basename) ["roster.json"]
-  assert equal (open $into | get epoch) 2
+  assert equal (open $into | get epoch) 0
+  rm --recursive --force $dir
+}
+
+# A cardano-cli that fails its first `failures` calls and answers the recording
+# after that, so `query`'s retry can be exercised without a node. The counter
+# is a file because each call is its own process, and it is shared across the
+# two queries one run makes: the tip query spends the failures, the pool-state
+# query that follows finds the fake already answering.
+def fake-cli [directory: path, failures: int]: nothing -> nothing {
+  let answer = recorded
+  $answer.tip | to json | save --force ($directory | path join tip.json)
+  $answer.pool_state | to json | save --force ($directory | path join pool-state.json)
+  $failures | into string | save --force ($directory | path join failures)
+  let script = $directory | path join cardano-cli
+  # A raw string and $FAKE_DIR rather than interpolation: every $ below is the
+  # shell's, and nothing here has to be escaped past nu to reach it.
+  '#!/bin/sh
+count=$(cat "$FAKE_DIR/count" 2>/dev/null || echo 0)
+count=$((count + 1))
+echo "$count" > "$FAKE_DIR/count"
+if [ "$count" -le "$(cat "$FAKE_DIR/failures")" ]; then
+  echo "Network.Socket.connect: does not exist" >&2
+  exit 1
+fi
+case "$*" in
+  *pool-state*) cat "$FAKE_DIR/pool-state.json" ;;
+  *) cat "$FAKE_DIR/tip.json" ;;
+esac
+' | save --force $script
+  chmod +x $script
+}
+
+# Prepended to PATH rather than replacing it: the fake is a shell script, so it
+# needs the coreutils the real environment has, and a PATH holding only the
+# fake makes its every read fail into the fallback instead.
+def query-with [directory: path, --attempts: int]: nothing -> record {
+  with-env {PATH: ([$directory] ++ $env.PATH), FAKE_DIR: $directory} {
+    ^$nu.current-exe $ROSTER query babbage --socket-path /dev/null --testnet-magic 42 --attempts $attempts --retry-backoff 10ms
+  }
+  | complete
+}
+
+# The failure this exists for: a node up but not answering yet, which an
+# activation beside it is enough to cause. One transient refusal is absorbed
+# and the run still writes a roster.
+def a-query-that-fails-once-is-retried [] {
+  let dir = mktemp --directory
+  fake-cli $dir 1
+
+  let run = query-with $dir --attempts 3
+
+  assert equal $run.exit_code 0
+  assert equal ($run.stdout | from json | get tip.epoch) 0
+  assert str contains $run.stderr "attempt 1 of 3 failed"
+  rm --recursive --force $dir
+}
+
+# And the alarm keeps its meaning: a socket that never answers still fails, so
+# a genuinely unreachable node is not retried into silence.
+def a-query-that-never-answers-is-still-an-error [] {
+  let dir = mktemp --directory
+  fake-cli $dir 99
+
+  let run = query-with $dir --attempts 3
+
+  assert not equal $run.exit_code 0
+  assert str contains $run.stderr "does not exist"
+  rm --recursive --force $dir
+}
+
+# One attempt is the old behaviour, and asking for none is refused rather than
+# read as one.
+def the-attempt-count-is-what-bounds-the-retry [] {
+  let dir = mktemp --directory
+  fake-cli $dir 1
+
+  let once = query-with $dir --attempts 1
+  assert not equal $once.exit_code 0
+  assert str contains $once.stderr "does not exist"
+
+  let none = query-with $dir --attempts 0
+  assert not equal $none.exit_code 0
+  assert str contains $none.stderr "cannot be under 1"
   rm --recursive --force $dir
 }
 
@@ -134,12 +268,18 @@ def main [] {
   the-tip-the-answer-was-taken-at-travels-with-it
   both-the-registered-and-the-announced-key-are-listed
   a-key-announced-unchanged-is-listed-once
-  a-pool-with-no-leios-key-is-an-error
+  a-pool-with-no-key-lists-none
+  a-pool-with-no-key-is-left-out
+  every-pool-without-a-key-is-an-error
+  an-answer-with-no-pools-is-an-error
   a-key-that-is-not-96-bytes-is-an-error
   an-answer-missing-a-half-is-an-error
   a-key-that-is-not-a-pool-id-is-an-error
   a-node-still-catching-up-is-an-error
   the-threshold-is-what-refuses-an-answer
   an-answer-with-no-sync-figure-is-an-error
+  a-query-that-fails-once-is-retried
+  a-query-that-never-answers-is-still-an-error
+  the-attempt-count-is-what-bounds-the-retry
   print "roster: ok"
 }

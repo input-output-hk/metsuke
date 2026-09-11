@@ -34,6 +34,14 @@ need() {
 }
 need nix jq cargo
 
+# The gate at the end replays the Leios window through nix/unit-test.nix, which
+# is a NixOS test and wants a hypervisor. Checked here rather than there,
+# because reaching that gate costs the whole capture.
+[ -w /dev/kvm ] || {
+  echo "error: /dev/kvm is not writable, and the gate this run ends with needs it" >&2
+  exit 1
+}
+
 # The Leios source pinned in flake.nix, and the patched cardano-node rev its
 # own lock file pins, the same binary the proto-devnet demo runs. cardano-cli
 # comes from the same rev: only the patched build can address the Dijkstra era
@@ -104,8 +112,8 @@ for i in 1 2 3; do
     '.localRoots[0].accessPoints = $accessPoints' \
     "$config/topology.template.json" >"$dir/topology.json"
 
-  for era in byron shelley alonzo conway dijkstra; do
-    ln -s "../genesis/$era-genesis.json" "$dir/"
+  for genesis_era in byron shelley alonzo conway dijkstra; do
+    ln -s "../genesis/$genesis_era-genesis.json" "$dir/"
   done
 
   cp -r "$config/pools-keys/pool$i" "$dir/keys"
@@ -140,48 +148,77 @@ export CARDANO_NODE_SOCKET_PATH="$workdir/node1/node.socket"
 export CARDANO_NODE_NETWORK_ID=164
 
 for _ in $(seq "$WARMUP_SECONDS"); do
-  "$cli" latest query tip >/dev/null 2>&1 && break
+  "$cli" query tip >/dev/null 2>&1 && break
   sleep 1
 done
-"$cli" latest query tip >/dev/null || {
+tip=$("$cli" query tip) || {
   echo "error: node1 never answered a tip query, see $workdir/node1.stderr" >&2
   exit 1
 }
+
+# The era to build in, asked of the node rather than assumed. `latest` is
+# Conway in every cardano-cli so far, so on this devnet it is the wrong era:
+# Conway carries a script-validity flag where Dijkstra's mempool encoding has
+# no field, and the node reads whatever sits in that position as a phase-2 tag.
+# `query tip` takes no era of its own, which is what makes it the bootstrap.
+era=$(jq -er '.era | ascii_downcase' <<<"$tip")
+echo "era: $era"
+
+# Refused rather than attempted: this cardano-cli inverts Conway's flag, so the
+# default and --script-valid both serialise as phase-2 invalid and every
+# transaction built here would come back ValidationTagMismatch Phase2Invalid
+# PassedUnexpectedly. Reached only if a pin stops hardforking to Dijkstra.
+if [ "$era" = conway ]; then
+  echo "error: this cardano-cli builds Conway transactions flagged phase-2" \
+    "invalid, so a devnet in Conway needs a different one" >&2
+  exit 1
+fi
 sleep "$WARMUP_SECONDS"
 
 # A chain of self-sends, each near maxTxSize. Chained by txid rather than by
 # re-querying: a utxo query reads the ledger at the tip and knows nothing of
 # the mempool, so every submission in a batch would pick the same input.
-addr=$("$cli" latest address build \
+addr=$("$cli" "$era" address build \
   --payment-verification-key-file "$config/utxo-keys/utxo1/utxo.vkey")
 jq -n --argjson n "$FLOOD_METADATA_STRINGS" \
   '{"674": {"msg": [range($n) | "x"*64]}}' >"$workdir/metadata.json"
 
-utxo=$("$cli" latest query utxo --address "$addr" --output-json)
+utxo=$("$cli" "$era" query utxo --address "$addr" --output-json)
 txin=$(jq -er 'to_entries | max_by(.value.value.lovelace) | .key' <<<"$utxo")
 value=$(jq -er 'to_entries | max_by(.value.value.lovelace) | .value.value.lovelace' <<<"$utxo")
 
 # Built first, submitted second: a build/sign/txid round trip costs three
 # cardano-cli startups, and the mempool has to hold them all at once.
+txids=()
 for i in $(seq 1 "$FLOOD_TXS"); do
-  "$cli" latest transaction build-raw \
+  "$cli" "$era" transaction build-raw \
     --tx-in "$txin" \
     --tx-out "$addr+$((value - i * FLOOD_FEE))" \
     --fee "$FLOOD_FEE" \
     --metadata-json-file "$workdir/metadata.json" \
     --out-file "$workdir/tx$i.raw"
-  "$cli" latest transaction sign \
+  "$cli" "$era" transaction sign \
     --tx-body-file "$workdir/tx$i.raw" \
     --signing-key-file "$config/utxo-keys/utxo1/utxo.skey" \
     --testnet-magic 164 \
     --out-file "$workdir/tx$i.signed"
-  txid=$("$cli" latest transaction txid --tx-file "$workdir/tx$i.signed" | jq -er .txhash)
+  txid=$("$cli" "$era" transaction txid --tx-file "$workdir/tx$i.signed" | jq -er .txhash)
+  txids+=("$txid")
   txin="$txid#0"
 done
+
+# The id is named on refusal rather than per submission: 120 of them is noise,
+# and the one the node refused is the only one worth going to the logs with.
+# Each is the input of the next, so the first refusal ends the chain.
 for i in $(seq 1 "$FLOOD_TXS"); do
-  "$cli" latest transaction submit --tx-file "$workdir/tx$i.signed" >/dev/null
+  "$cli" "$era" transaction submit --tx-file "$workdir/tx$i.signed" >/dev/null || {
+    echo "error: transaction $i of $FLOOD_TXS was refused, txid ${txids[i - 1]}" >&2
+    exit 1
+  }
 done
-echo "flooded $FLOOD_TXS transactions, capturing for ${CAPTURE_SECONDS}s"
+echo "flooded $FLOOD_TXS transactions, ${txids[0]} to ${txids[-1]}"
+echo "capturing for ${CAPTURE_SECONDS}s, until" \
+  "$(date -u -d "+$CAPTURE_SECONDS seconds" +"%Y-%m-%dT%H:%M:%SZ")"
 
 sleep "$CAPTURE_SECONDS"
 kill "${pids[@]}" 2>/dev/null || true
@@ -262,8 +299,17 @@ for window in "${windows[@]}"; do
   cp "$workdir/$window" "$recordings/$window"
 done
 
-if cargo test --quiet --manifest-path "$repo/Cargo.toml" \
-  -p metsuke --test binary --test logselect --test logsource --test logtail; then
+# Everything that reads these windows, not only the Rust half. The crates name
+# namespaces out of them; nix/unit-test.nix replays the Leios window into a
+# journal and asserts what reaches the spool, so a window that satisfies cargo
+# can still leave `just vm` red, and the tree stays red until somebody runs it.
+gate() {
+  cargo test --quiet --manifest-path "$repo/Cargo.toml" \
+    -p metsuke --test binary --test logselect --test logsource --test logtail &&
+    nix build "$repo#hydraJobs.units.x86_64-linux" --accept-flake-config --no-link
+}
+
+if gate; then
   for window in "${windows[@]}"; do
     echo "recorded: $window"
   done
