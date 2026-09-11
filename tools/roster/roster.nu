@@ -76,13 +76,14 @@ export def as-file [--min-sync: float = 99.8]: record -> string {
 
   # A pool the chain registers no BLS key for is left out rather than refused:
   # it cannot sign with a key it does not have, so failing the run would only
-  # deny every pool that can. Every pool at once is a different thing, the
-  # field this reads having moved as it did at w36, and that has to be loud
-  # because an empty roster refuses the whole network silently.
+  # deny every pool that can. A roster with no pool in it at all is the other
+  # thing, either the path this reads having moved as it did at w36 or
+  # pool-state answering nothing, and that is loud whichever it was: an empty
+  # roster refuses the whole network and reads exactly like a quiet one.
   let keyed = $listed | where {|pool| ($pool.keys | length) > 0 }
-  if ($listed | length) > 0 and ($keyed | length) == 0 {
+  if ($keyed | length) == 0 {
     error make {
-      msg: $"none of the ($listed | length) pools list a BLS key, so the path pool-state answers it under has moved again"
+      msg: $"no pool of the ($listed | length) answered lists a BLS key, so either pool-state returned nothing or the path this reads has moved"
     }
   }
 

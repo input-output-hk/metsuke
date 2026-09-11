@@ -346,6 +346,20 @@ fn the_shipped_journald_config_names_this_host_s_paths() {
     );
 }
 
+// The commented spool_path that file carries for a host running an agent per
+// pool. A commented line is not parsed, so the test above cannot see it, and
+// what it documents is a default an operator is copying: pinned here so the
+// two cannot drift apart unnoticed.
+#[test]
+fn the_journald_config_comments_the_spool_path_default() {
+    let default = Config::from_toml(&minimal_toml()).unwrap().spool_path;
+    let documented = format!("# spool_path = \"{}\"", default.display());
+    assert!(
+        JOURNALD.contains(&documented),
+        "the journald config should carry {documented}"
+    );
+}
+
 // Every value is required or an explicit default: a config without a
 // required field must fail at startup, not run degraded.
 #[test]

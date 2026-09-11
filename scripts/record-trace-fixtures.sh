@@ -34,6 +34,14 @@ need() {
 }
 need nix jq cargo
 
+# The gate at the end replays the Leios window through nix/unit-test.nix, which
+# is a NixOS test and wants a hypervisor. Checked here rather than there,
+# because reaching that gate costs the whole capture.
+[ -w /dev/kvm ] || {
+  echo "error: /dev/kvm is not writable, and the gate this run ends with needs it" >&2
+  exit 1
+}
+
 # The Leios source pinned in flake.nix, and the patched cardano-node rev its
 # own lock file pins, the same binary the proto-devnet demo runs. cardano-cli
 # comes from the same rev: only the patched build can address the Dijkstra era
@@ -291,8 +299,17 @@ for window in "${windows[@]}"; do
   cp "$workdir/$window" "$recordings/$window"
 done
 
-if cargo test --quiet --manifest-path "$repo/Cargo.toml" \
-  -p metsuke --test binary --test logselect --test logsource --test logtail; then
+# Everything that reads these windows, not only the Rust half. The crates name
+# namespaces out of them; nix/unit-test.nix replays the Leios window into a
+# journal and asserts what reaches the spool, so a window that satisfies cargo
+# can still leave `just vm` red, and the tree stays red until somebody runs it.
+gate() {
+  cargo test --quiet --manifest-path "$repo/Cargo.toml" \
+    -p metsuke --test binary --test logselect --test logsource --test logtail &&
+    nix build "$repo#hydraJobs.units.x86_64-linux" --accept-flake-config --no-link
+}
+
+if gate; then
   for window in "${windows[@]}"; do
     echo "recorded: $window"
   done

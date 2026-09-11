@@ -107,6 +107,14 @@ def every-pool-without-a-key-is-an-error [] {
   assert error { $stripped | as-file }
 }
 
+# An answer that lists no pool at all takes the same refusal as one where none
+# has a key: the roster it would write is the one that refuses everybody.
+def an-answer-with-no-pools-is-an-error [] {
+  let answer = recorded
+
+  assert error { {tip: $answer.tip, pool_state: {}} | as-file }
+}
+
 def a-key-that-is-not-96-bytes-is-an-error [] {
   let entry = recorded | get pool_state | get $POOL
   let short = $entry | upsert poolParams.spsBlsKey.bksKey.blsPubKey "abcd"
@@ -263,6 +271,7 @@ def main [] {
   a-pool-with-no-key-lists-none
   a-pool-with-no-key-is-left-out
   every-pool-without-a-key-is-an-error
+  an-answer-with-no-pools-is-an-error
   a-key-that-is-not-96-bytes-is-an-error
   an-answer-missing-a-half-is-an-error
   a-key-that-is-not-a-pool-id-is-an-error
