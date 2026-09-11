@@ -24,20 +24,27 @@ def demand [value: any, name: string] {
 # The keys one pool's `pool-state` entry registers: the one in force and the one
 # a re-registration has announced for the next epoch, together. ADR 0011 has why
 # both.
+#
+# A path per half rather than one for both: cardano-cli answers `poolParams` as
+# a ledger StakePoolState, whose JSON keys are that record's own field names,
+# and `futurePoolParams` as a StakePoolParams, whose instance is written by
+# hand. The two carry the same key under different names and different nesting,
+# so a half read with the other's path reads as a pool that registered nothing.
 export def keys-of []: record -> list<string> {
   let entry = $in
-  ["poolParams" "futurePoolParams"]
-  | each {|field| $entry | get --optional $field }
-  | where {|params| $params != null }
-  | each {|params|
-      let key = $params | get --optional spsLeiosKey.leiosPubKey
-      if $key == null {
-        error make {msg: "a pool's parameters carry no spsLeiosKey.leiosPubKey"}
+  [
+    {half: "poolParams", key: ($entry | get --optional poolParams.spsBlsKey.bksKey.blsPubKey)}
+    {half: "futurePoolParams", key: ($entry | get --optional futurePoolParams.blsKey.blsPubKey)}
+  ]
+  | where {|found| ($entry | get --optional $found.half) != null }
+  | each {|found|
+      if $found.key == null {
+        error make {msg: $"a pool's ($found.half) carries no BLS public key"}
       }
-      if not ($key =~ $LEIOS_KEY_HEX) {
-        error make {msg: $"leiosPubKey ($key) is not 96 bytes of hex"}
+      if not ($found.key =~ $LEIOS_KEY_HEX) {
+        error make {msg: $"blsPubKey ($found.key) is not 96 bytes of hex"}
       }
-      $key
+      $found.key
     }
   | uniq
 }

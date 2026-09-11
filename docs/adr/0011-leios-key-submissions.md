@@ -14,7 +14,7 @@ one that leaks is not rotated. That pool ends, and any successor is an
 unrelated pool holding none of its delegation.
 
 Leios gives every pool a second registered key, a BLS12-381 key the node forges
-and votes with (`spsLeiosKey.leiosPubKey` in `cardano-cli query pool-state`).
+and votes with (`spsBlsKey.bksKey.blsPubKey` in `cardano-cli query pool-state`).
 It is not an identity key: it does not hash to the pool id, so a submission it
 signed cannot say whose it is without reading the chain. Its registration
 carries a proof of possession the ledger has already checked, and a future node

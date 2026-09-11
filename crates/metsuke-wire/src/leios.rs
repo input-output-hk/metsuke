@@ -14,7 +14,7 @@ pub const DST: &[u8] = b"METSUKE_SUBMISSION_V1_BLS_SIG_BLS12381G1_XMD:SHA-256_SS
 
 /// Compressed sizes for the minimal-signature-size variant: the public key is
 /// the G2 point and the signature the G1 one, which is the way round Leios
-/// picked (`spsLeiosKey.leiosPubKey` is 96 bytes).
+/// picked (`spsBlsKey.bksKey.blsPubKey` is 96 bytes).
 pub const PUBLIC_KEY_BYTES: usize = 96;
 pub const SIGNATURE_BYTES: usize = 48;
 

@@ -5,10 +5,11 @@ use roster.nu *
 
 # fixtures/query-answer.json is a recording: the two answers `main query` makes,
 # taken from the local Leios devnet (docs/research/leios-devnet.md) with
-# cardano-cli 11.1.0.0. Every pool in it has one registered key and no announced
+# cardano-cli 11.2.2.0. Every pool in it has one registered key and no announced
 # one, so the recording covers the roster's shape and not a rotation in flight.
 # Re-record it from a node at the tip: its syncProgress has to clear `as-file`'s
-# own default or every test here refuses it.
+# own default or every test here refuses it, and `query` names the era because
+# `latest` is Conway while the devnet forges Dijkstra.
 const ANSWER = path self fixtures/query-answer.json
 const ROSTER = path self roster.nu
 
@@ -34,20 +35,30 @@ def the-recorded-answer-becomes-a-roster [] {
 # it was taken has to travel with it.
 def the-tip-the-answer-was-taken-at-travels-with-it [] {
   let roster = generated
-  assert equal $roster.epoch 2
-  assert equal $roster.slot 2605
+  assert equal $roster.epoch 0
+  assert equal $roster.slot 144
 }
 
-# The rotation case, which the recording has no announced registration for. The
-# shape is not guessed: cardano-cli encodes both fields from one `Maybe
-# PoolParams` (`Cardano.CLI.Type.Common`, the `ToJSON (Params crypto)`
-# instance), so an announced registration is the recorded entry's own
-# `poolParams` under the other name, which is what this builds.
+# The announced half in the shape cardano-cli answers it in, which is not the
+# registered half's. `futurePoolParams` is a ledger StakePoolParams, whose
+# hand-written ToJSON (`Cardano.Ledger.State.StakePool`) emits the key as a flat
+# `blsKey`; `poolParams` is a StakePoolState, whose JSON comes from its own field
+# names and nests the key under `spsBlsKey.bksKey`. Building this half by copying
+# the other is what stops holding when they diverge.
+def announced-half [key: string]: record -> record {
+  let entry = $in
+  {
+    blsKey: {
+      blsPubKey: $key
+      blsPossessionProof: $entry.poolParams.spsBlsKey.bksKey.blsPossessionProof
+    }
+  }
+}
+
+# The rotation case, which the recording has no announced registration for.
 def both-the-registered-and-the-announced-key-are-listed [] {
   let entry = recorded | get pool_state | get $POOL
-  let announced = $entry | upsert futurePoolParams (
-    $entry.poolParams | upsert spsLeiosKey.leiosPubKey $OTHER_KEY
-  )
+  let announced = $entry | upsert futurePoolParams ($entry | announced-half $OTHER_KEY)
 
   assert equal ($announced | keys-of) [$KEY $OTHER_KEY]
 }
@@ -56,21 +67,21 @@ def both-the-registered-and-the-announced-key-are-listed [] {
 # checks is membership.
 def a-key-announced-unchanged-is-listed-once [] {
   let entry = recorded | get pool_state | get $POOL
-  let unchanged = $entry | upsert futurePoolParams $entry.poolParams
+  let unchanged = $entry | upsert futurePoolParams ($entry | announced-half $KEY)
 
   assert equal ($unchanged | keys-of) [$KEY]
 }
 
 def a-pool-with-no-leios-key-is-an-error [] {
   let entry = recorded | get pool_state | get $POOL
-  let keyless = $entry | update poolParams { reject spsLeiosKey }
+  let keyless = $entry | update poolParams { reject spsBlsKey }
 
   assert error { $keyless | keys-of }
 }
 
 def a-key-that-is-not-96-bytes-is-an-error [] {
   let entry = recorded | get pool_state | get $POOL
-  let short = $entry | upsert poolParams.spsLeiosKey.leiosPubKey "abcd"
+  let short = $entry | upsert poolParams.spsBlsKey.bksKey.blsPubKey "abcd"
 
   assert error { $short | keys-of }
 }
@@ -86,11 +97,15 @@ def a-node-still-catching-up-is-an-error [] {
   assert error { $syncing | as-file }
 }
 
-# The recording is a caught-up node, so the threshold is what decides rather
-# than the shape of the answer.
+# One answer, accepted under one threshold and refused under another, so what
+# decides is the threshold and not the shape of the answer. The figure is set
+# here rather than taken from the recording, which would only hold while a
+# re-recording kept landing in the narrow band between the two.
 def the-threshold-is-what-refuses-an-answer [] {
-  assert equal (generated | get epoch) 2
-  assert error { recorded | as-file --min-sync 99.9 }
+  let behind = recorded | upsert tip.syncProgress "99.85"
+
+  assert equal ($behind | as-file --min-sync 99.8 | from json | get epoch) 0
+  assert error { $behind | as-file --min-sync 99.9 }
 }
 
 # Refused rather than assumed caught up: a cli that stops reporting it must not
@@ -124,7 +139,7 @@ def each-generate-replaces-the-file-by-rename [] {
 
   assert not equal $first $second
   assert equal (ls $dir | get name | path basename) ["roster.json"]
-  assert equal (open $into | get epoch) 2
+  assert equal (open $into | get epoch) 0
   rm --recursive --force $dir
 }
 
@@ -177,7 +192,7 @@ def a-query-that-fails-once-is-retried [] {
   let run = query-with $dir --attempts 3
 
   assert equal $run.exit_code 0
-  assert equal ($run.stdout | from json | get tip.epoch) 2
+  assert equal ($run.stdout | from json | get tip.epoch) 0
   assert str contains $run.stderr "attempt 1 of 3 failed"
   rm --recursive --force $dir
 }
