@@ -16,7 +16,13 @@ recordings="$repo/crates/metsuke/tests/fixtures/recordings"
 # How far the first run syncs before it is restarted. The replay body only
 # exists while the node is rebuilding its ledger from a snapshot older than
 # its chain, so the wider that gap the wider the window to scrape it in.
-SYNC_BLOCKS="${SYNC_BLOCKS:-20000}"
+#
+# A maximum rather than a target, and it cannot be derived: the endpoint says
+# where the node has reached, never where the chain ends, and this script
+# builds no cardano-cli to ask. So it is set low enough for a network respun
+# some days ago, and a respin younger than this many blocks stops the run
+# below with the height to use instead.
+SYNC_BLOCKS="${SYNC_BLOCKS:-8000}"
 PORT="${PORT:-3010}"
 # The port the testnet config's PrometheusSimple backend already names, so
 # moving the endpoint means editing that config, not this line.
@@ -109,13 +115,21 @@ count_metrics() { grep -cvE '^#|^[[:space:]]*$'; }
 # the body it stopped on. Runs under `$( )`, where `exit` would only leave the
 # subshell and let the caller report a timeout that did not happen: 1 is the
 # timeout, 2 is the relay dying under it, and the caller separates them.
+#
+# $3 is an optional second predicate for a state waiting cannot leave, and 3
+# is what it returns: the body is printed either way, so the caller can say
+# what the node had reached when it gave up.
 scrape_until() {
-  local deadline=$((SECONDS + $1)) predicate=$2 body
+  local deadline=$((SECONDS + $1)) predicate=$2 abort=${3:-} body
   while [ "$SECONDS" -lt "$deadline" ]; do
     body=$(curl -sf -m 3 "$metrics_url" || true)
     if [ -n "$body" ] && "$predicate" "$body"; then
       printf '%s' "$body"
       return 0
+    fi
+    if [ -n "$abort" ] && "$abort" "$body"; then
+      printf '%s' "$body"
+      return 3
     fi
     kill -0 "$node_pid" 2>/dev/null || return 2
     sleep 1
@@ -148,14 +162,26 @@ bootstrapping() {
   [ -n "$height" ] && [ "$height" -ge "$SYNC_BLOCKS" ]
 }
 echo "syncing to block $SYNC_BLOCKS"
-bootstrap=$(scrape_until 3600 bootstrapping) ||
-  gave_up $? "never reached block $SYNC_BLOCKS"
 # A caught-up node is a third state, and its body is not what this cassette
-# claims to be.
-if grep -q 'CaughtUp' "$node_dir/node.log"; then
-  echo "error: caught up before block $SYNC_BLOCKS; raise SYNC_BLOCKS" >&2
-  exit 1
-fi
+# claims to be. Watched for rather than checked afterwards: at the tip the
+# node advances at the chain's own pace, so a SYNC_BLOCKS above it is an hour
+# of waiting that was never going to end, and the height it stopped at is the
+# one thing that says what to use instead.
+caught_up() { grep -q 'CaughtUp' "$node_dir/node.log"; }
+bootstrap=$(scrape_until 3600 bootstrapping caught_up)
+status=$?
+case "$status" in
+  0) ;;
+  3)
+    echo "error: caught up at block" \
+      "$(sed -n 's/^cardano_node_metrics_blockNum_int //p' <<<"$bootstrap")," \
+      "under SYNC_BLOCKS=$SYNC_BLOCKS, so this chain is shorter than that." \
+      "Set SYNC_BLOCKS below the height above: the body has to come from a" \
+      "node that is still syncing." >&2
+    exit 1
+    ;;
+  *) gave_up "$status" "never reached block $SYNC_BLOCKS" ;;
+esac
 printf '%s' "$bootstrap" >"$recordings/leios-testnet-relay-bootstrap.prom"
 echo "recorded: leios-testnet-relay-bootstrap.prom ($(count_metrics <<<"$bootstrap") metrics," \
   "block $(sed -n 's/^cardano_node_metrics_blockNum_int //p' <<<"$bootstrap"))"

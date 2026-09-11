@@ -37,11 +37,11 @@
     "CHaP_2": {
       "flake": false,
       "locked": {
-        "lastModified": 1786144110,
-        "narHash": "sha256-7hIsWllt2gyPIZ8Wvb1BImf9xfQwDkz0B3sXIZpctxg=",
+        "lastModified": 1788515479,
+        "narHash": "sha256-UoIoRsh+rWKJCJ03z8R/a2RJE9eA0rq8acYHwZWN3aQ=",
         "owner": "intersectmbo",
         "repo": "cardano-haskell-packages",
-        "rev": "89f08ac683754f1746d5cd1ff4ea60ba13faec29",
+        "rev": "244c29aac8aa9ae3611105ece01497bc91c40ff7",
         "type": "github"
       },
       "original": {
@@ -643,11 +643,11 @@
         "utils": "utils_2"
       },
       "locked": {
-        "lastModified": 1788040658,
-        "narHash": "sha256-39dG8aoCCTeMqe9wV+Q4g1BxvJXRQpgxps7oEqQWAjw=",
+        "lastModified": 1788777256,
+        "narHash": "sha256-7hYll0WQ5ou7MgFnaizWlbfhH0MRutwypJpwIHsQ1CY=",
         "owner": "intersectmbo",
         "repo": "cardano-node",
-        "rev": "6a540bd43a83e697fd662b973f7e99cee02a59fb",
+        "rev": "afa091b4af2795d1d9c46e59145ed16127760f7b",
         "type": "github"
       },
       "original": {
@@ -660,16 +660,16 @@
     "cardano-node-leios_2": {
       "flake": false,
       "locked": {
-        "lastModified": 1788041145,
-        "narHash": "sha256-nTSpAenigGKGw9bONa4ko4E3V//ISteNncJVAv1P9sQ=",
+        "lastModified": 1788777437,
+        "narHash": "sha256-rRdKgPAiSAiIW5xs+HJFGC3n0B3ZxiZx4uoVKFf2bfw=",
         "owner": "input-output-hk",
         "repo": "ouroboros-leios",
-        "rev": "e8594e1355c0c6d36ebb9886c8c8c47fa946046b",
+        "rev": "4c030ceee6eb0e7e3d495599d74ca11c8078dfbb",
         "type": "github"
       },
       "original": {
         "owner": "input-output-hk",
-        "ref": "refs/tags/prototype-2026w35",
+        "ref": "refs/tags/prototype-2026w36",
         "repo": "ouroboros-leios",
         "type": "github"
       }
@@ -1614,11 +1614,11 @@
     "hackageNix_3": {
       "flake": false,
       "locked": {
-        "lastModified": 1786117442,
-        "narHash": "sha256-hgIx8tjpy6tosXgl5kz38zLGJgnGmLAkix4syRYlEts=",
+        "lastModified": 1788733461,
+        "narHash": "sha256-O4GC+w90Uv2ySOi45gF7junZNLJevZZNNJJ3q+L8olc=",
         "owner": "input-output-hk",
         "repo": "hackage.nix",
-        "rev": "2fd0dc78a03f432400ad9018f43e2ab31a00ac98",
+        "rev": "28ff55bf37cdae6069e0b1bf1aab484c7e71efad",
         "type": "github"
       },
       "original": {
@@ -3512,16 +3512,16 @@
         "pre-commit-hooks": "pre-commit-hooks_2"
       },
       "locked": {
-        "lastModified": 1788041145,
-        "narHash": "sha256-nTSpAenigGKGw9bONa4ko4E3V//ISteNncJVAv1P9sQ=",
+        "lastModified": 1788777437,
+        "narHash": "sha256-rRdKgPAiSAiIW5xs+HJFGC3n0B3ZxiZx4uoVKFf2bfw=",
         "owner": "input-output-hk",
         "repo": "ouroboros-leios",
-        "rev": "e8594e1355c0c6d36ebb9886c8c8c47fa946046b",
+        "rev": "4c030ceee6eb0e7e3d495599d74ca11c8078dfbb",
         "type": "github"
       },
       "original": {
         "owner": "input-output-hk",
-        "ref": "refs/tags/prototype-2026w35",
+        "ref": "refs/tags/prototype-2026w36",
         "repo": "ouroboros-leios",
         "type": "github"
       }
@@ -3533,17 +3533,17 @@
         "nixpkgs": "nixpkgs_7"
       },
       "locked": {
-        "lastModified": 1786460888,
-        "narHash": "sha256-DtcG6a1tT/+OporqwbuDjGY6O5p3nh8G+kndtmtmcnA=",
+        "lastModified": 1788438859,
+        "narHash": "sha256-3ORbos6Om/OkJ/sK4ADIeohRKSUEmiwNyG3Tu9cT9XA=",
         "owner": "input-output-hk",
         "repo": "ouroboros-leios-formal-spec",
-        "rev": "eeb5b2da0083cf3b7a9e80d172685ae941638125",
+        "rev": "73d61e931ebd93ea58dacf2ad3e2562dbbdc0fbe",
         "type": "github"
       },
       "original": {
         "owner": "input-output-hk",
         "repo": "ouroboros-leios-formal-spec",
-        "rev": "eeb5b2da0083cf3b7a9e80d172685ae941638125",
+        "rev": "73d61e931ebd93ea58dacf2ad3e2562dbbdc0fbe",
         "type": "github"
       }
     },
