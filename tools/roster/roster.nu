@@ -25,11 +25,10 @@ def demand [value: any, name: string] {
 # a re-registration has announced for the next epoch, together. ADR 0011 has why
 # both.
 #
-# A path per half rather than one for both: cardano-cli answers `poolParams` as
-# a ledger StakePoolState, whose JSON keys are that record's own field names,
-# and `futurePoolParams` as a StakePoolParams, whose instance is written by
-# hand. The two carry the same key under different names and different nesting,
-# so a half read with the other's path reads as a pool that registered nothing.
+# Before W42, poolParams held StakePoolState and futurePoolParams held
+# StakePoolParams, with different nesting for their keys. W42 returns the
+# StakePoolState directly, with blsKey and futureStakePoolParams fields.
+# Keep both layouts so the generator also works during rolling upgrades.
 # A half carrying no key lists none rather than failing here: what to do about a
 # pool the chain registers no key for is a decision about the whole answer, and
 # `as-file` is where it is taken. A key that is present and the wrong shape
@@ -37,6 +36,8 @@ def demand [value: any, name: string] {
 export def keys-of []: record -> list<string> {
   let entry = $in
   [
+    ($entry | get --optional blsKey.bksKey.blsPubKey)
+    ($entry | get --optional futureStakePoolParams.blsKey.blsPubKey)
     ($entry | get --optional poolParams.spsBlsKey.bksKey.blsPubKey)
     ($entry | get --optional futurePoolParams.blsKey.blsPubKey)
   ]

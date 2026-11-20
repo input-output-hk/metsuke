@@ -11,6 +11,7 @@ use roster.nu *
 # own default or every test here refuses it, and `query` names the era because
 # `latest` is Conway while the devnet forges Dijkstra.
 const ANSWER = path self fixtures/query-answer.json
+const W42_POOLS = path self fixtures/w42-pool-state.json
 const ROSTER = path self roster.nu
 
 const POOL = "eb8865c72876f93e07d3db55c14c03a542afa1ab8ad83065723a3204"
@@ -29,6 +30,42 @@ def the-recorded-answer-becomes-a-roster [] {
   let roster = generated
   assert equal ($roster.pools | get $POOL) [$KEY]
   assert equal ($roster.pools | columns | length) 3
+}
+
+# Recorded from leios1-metsuke-a-1 on 2026-10-19 after the W42 upgrade.
+# Only pool-state is recorded here; the tip comes from the existing fixture.
+def w42-pool-state-becomes-a-roster [] {
+    let answer = recorded | update pool_state (open $W42_POOLS)
+    let pools = $answer | as-file | from json | get pools
+    assert equal ($pools | columns | length) 3
+    assert equal (
+    $pools | get 5f0b42b4fbdc7e442d5da37744cafdca86e0e7f3bf94223e75e9312b
+  ) [
+        "b4696f340bf20cda70e2558fcae97da3d3dfca58fdfc8388505f824d7a3a67f43d93b6d30ade366aa5571a64defb17ca10310605bb7dfb200704f25ae9c51fe85b3bd4f707b72679a1cd7c1e434b48c34a169c29eef3440a8245a4611fd60c1d"
+    ]
+}
+
+def w42-rotation-and-validation [] {
+    let entry = {
+        blsKey: {
+            bksKey: {blsPubKey: $KEY}
+        }
+        futureStakePoolParams: {
+            blsKey: {blsPubKey: $OTHER_KEY}
+        }
+    }
+    assert equal ($entry | keys-of) [$KEY $OTHER_KEY]
+    assert equal (
+    $entry | update futureStakePoolParams.blsKey.blsPubKey $KEY | keys-of
+  ) [$KEY]
+    assert equal (
+    $entry | update blsKey null | keys-of
+  ) [$OTHER_KEY]
+    assert equal ({blsKey: null, futureStakePoolParams: null} | keys-of) []
+    assert error { $entry | update blsKey.bksKey.blsPubKey "abcd" | keys-of }
+    assert error {
+    $entry | update futureStakePoolParams.blsKey.blsPubKey "abcd" | keys-of
+  }
 }
 
 # A roster nobody has updated is a roster that refuses whoever rotated, so where
@@ -264,6 +301,8 @@ def the-attempt-count-is-what-bounds-the-retry [] {
 
 def main [] {
   the-recorded-answer-becomes-a-roster
+  w42-pool-state-becomes-a-roster
+  w42-rotation-and-validation
   each-generate-replaces-the-file-by-rename
   the-tip-the-answer-was-taken-at-travels-with-it
   both-the-registered-and-the-announced-key-are-listed

@@ -1,0 +1,110 @@
+{
+    "5f0b42b4fbdc7e442d5da37744cafdca86e0e7f3bf94223e75e9312b": {
+        "accountId": {
+            "keyHash": "e4cbf4a93681ee9f253fa89b1e9362c9427eafb52d02463c712beee2"
+        },
+        "blsKey": {
+            "bksKey": {
+                "blsPossessionProof": "93f0913cb68490566dab9ea5f7ca2963b795ba662a5599a41c65017803e4c98cf6497ca5d083896ec100af28aacc6a3b",
+                "blsPubKey": "b4696f340bf20cda70e2558fcae97da3d3dfca58fdfc8388505f824d7a3a67f43d93b6d30ade366aa5571a64defb17ca10310605bb7dfb200704f25ae9c51fe85b3bd4f707b72679a1cd7c1e434b48c34a169c29eef3440a8245a4611fd60c1d"
+            },
+            "bksRegisteredIn": 0
+        },
+        "cost": 500000000,
+        "delegators": null,
+        "deposit": 500000000,
+        "futureStakePoolParams": null,
+        "margin": 1,
+        "metadata": {
+            "hash": "ef480ebe167cffd551e58caa2c0a47121232874d6c79c34b45afee6433b95d90",
+            "url": "https://pools.play.dev.cardano.org/leios3.json"
+        },
+        "numDelegators": 2,
+        "owners": [
+            "871e0f1463ce9a02930167e4687b12be4c93c769ebf950711bc32e04"
+        ],
+        "pledge": 10000000000000,
+        "relays": [
+            {
+                "single host name": {
+                    "dnsName": "leios-node.play.dev.cardano.org",
+                    "port": 3001
+                }
+            }
+        ],
+        "retiring": null,
+        "vrf": "91dca1ff17bdf4958ae0f0b89a68cec2e2d6a73cfb3f331ca3f6305fff68bd76"
+    },
+    "8a04e2c7db3dff509c9f5f2b8e27d715eb8f3d0665deddc2e436f414": {
+        "accountId": {
+            "keyHash": "8a009a544ac7486956941decc05efb793d339d479095cb9569f6543b"
+        },
+        "blsKey": {
+            "bksKey": {
+                "blsPossessionProof": "805438cd07ebc6fd19f424401fd0395dc801a8561302bd1ae7bcc48cbdbe664d3a4dfb8fa5dc3a0bc69045b0cd9f9a4c",
+                "blsPubKey": "8d5e3e9901dbfa64a9c5d9f9949ecb7491b4e35656963bbf6e478c4e53d329f3d1209ed5924c228305d4fcff8a4935d40d508fe3ec6cb8e892d8a00b22c789669336e852d0a10eb2340ea1becf7c87e76eaeacfa5a847104354c5b095b84e2b4"
+            },
+            "bksRegisteredIn": 0
+        },
+        "cost": 500000000,
+        "delegators": null,
+        "deposit": 500000000,
+        "futureStakePoolParams": null,
+        "margin": 1,
+        "metadata": {
+            "hash": "d1711612793d02edcd769d41ab2dfd4155caec13f4a71bb2a9e788dbd7558872",
+            "url": "https://pools.play.dev.cardano.org/leios1.json"
+        },
+        "numDelegators": 3,
+        "owners": [
+            "17d6e5dbc905918d1e16b0b2df27029391ac73f13966cf183b8051a9"
+        ],
+        "pledge": 10000000000000,
+        "relays": [
+            {
+                "single host name": {
+                    "dnsName": "leios-node.play.dev.cardano.org",
+                    "port": 3001
+                }
+            }
+        ],
+        "retiring": null,
+        "vrf": "fc9edaecf83c70da19c94c683b5786daeee73545356cc4a564597e9977d2557d"
+    },
+    "8a89ad6a871bdc17039285768e4ac8e24df94c7ddcc342752852976b": {
+        "accountId": {
+            "keyHash": "2138e8159d43e6942d5709f4a581d061816ab15753549e8b9347ee53"
+        },
+        "blsKey": {
+            "bksKey": {
+                "blsPossessionProof": "881bf5706270b5de986da87b5621088e5cbf6fa441daaa5a5b2d8cdaeb15fd4c8b49cea0df2d211d764d138d015ded34",
+                "blsPubKey": "954ef2360afbbe4afe1318aa78dd13a218534e70cb746c94794a75d0454e3baa9e68b3195dbdc77e59305007fd7ca4c10cd7f25102b3f8ab23f6a00ad06ecf25e4e7bdd140de37217eece53fea007b836b17a376ffc4fc9fc03e89c3efbabec7"
+            },
+            "bksRegisteredIn": 0
+        },
+        "cost": 500000000,
+        "delegators": null,
+        "deposit": 500000000,
+        "futureStakePoolParams": null,
+        "margin": 1,
+        "metadata": {
+            "hash": "e03babf589e05a6b84e53d570744f6bd36ae1fa9feccf244f41b8d0b7d95527a",
+            "url": "https://pools.play.dev.cardano.org/leios2.json"
+        },
+        "numDelegators": 2,
+        "owners": [
+            "590c24dac4f9d84365cba09b87010125bb965687a0b7a51f298ba8e9"
+        ],
+        "pledge": 10000000000000,
+        "relays": [
+            {
+                "single host name": {
+                    "dnsName": "leios-node.play.dev.cardano.org",
+                    "port": 3001
+                }
+            }
+        ],
+        "retiring": null,
+        "vrf": "0e48b3a68c4438a57aed97fdaa40c496da2f994a998728e949057b38768995a4"
+    }
+}

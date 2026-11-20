@@ -19,6 +19,10 @@ submission is starts there —
 `metsuke_fetch::sync::checked` per downloaded object — and each says in its own
 words what it does with the absence.
 
+## Search & Discovery
+
+- Scope discovery to the repository or an explicit directory. Use descriptive Find for unknown locations, then symbol search or Glob; read only relevant sections.
+
 ## Invariants
 
 Each is an accepted decision; read the ADR before working near it.
@@ -36,6 +40,10 @@ Each is an accepted decision; read the ADR before working near it.
 - Research notes live under docs/research/.
 - $CARGO_TARGET_DIR is set, look for dependencies there.
 - Coverage is `cargo llvm-cov --workspace` in the devShell; read it as a floor, because binary-spawning tests record nothing. metsuke-jfb.6 has the measurement. NixOS tests (`hydraJobs.units`, nix/e2e-test.nix) are outside it.
+
+## Lints and Gates
+
+- Fix the cause of lint, type and clippy failures; keep diagnostics enabled. Report a gate as passing only with its command output. Verify UI changes visually and include migrations for schema changes.
 
 ## Tests
 
