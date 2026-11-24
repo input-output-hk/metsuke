@@ -14,12 +14,12 @@ use metsuke_wire::hex;
 use time::OffsetDateTime;
 
 mod support;
-use metsuke_server::config::{HttpConfig, IngestConfig};
+use metsuke_server::config::{HttpConfig, IngestConfig, MetricsConfig};
 use support::{
     DEVELOPER_PASSWORD, DEVELOPER_USER, ServerToml, developer_config, developer_toml_with_rows,
-    envelope_at, example_s3_archive, filesystem_archive, http_toml, ingest_toml, nonzero_u32,
-    nonzero_u64, object_name, other_key, permissive_config, permissive_http, pool_of, seal,
-    server_toml, stored_submission, test_key,
+    envelope_at, example_s3_archive, filesystem_archive, http_toml, ingest_toml, metrics_toml,
+    nonzero_u32, nonzero_u64, object_name, other_key, permissive_config, permissive_http,
+    permissive_metrics, pool_of, seal, server_toml, stored_submission, test_key,
 };
 
 /// What the S3 archive reads its credentials from. Passed to every spawn, so
@@ -106,14 +106,21 @@ impl Server {
         self.dir.path().join("archive")
     }
 
+    /// `host:port` of the metrics listener, read off the line the server
+    /// logged at startup.
+    fn metrics_address(&self) -> String {
+        let announced = "metrics for scraping at ";
+        let logged = self.logged_until(announced);
+        let url = logged
+            .lines()
+            .find_map(|line| line.split_once(announced).map(|(_, url)| url.trim()))
+            .unwrap_or_else(|| panic!("no metrics address announced, got: {logged}"));
+        host_port(url)
+    }
+
     /// `host:port`, for a test that opens its own socket.
     fn address(&self) -> String {
-        self.url
-            .trim_start_matches("http://")
-            .split('/')
-            .next()
-            .expect("the startup line names host:port")
-            .to_string()
+        host_port(&self.url)
     }
 
     /// The high-water mark of the serving process's virtual size, in
@@ -132,16 +139,17 @@ impl Server {
             .unwrap()
     }
 
-    /// How many sockets the serving process holds, the listener excluded: a
-    /// connection still in the kernel's backlog is not one of them.
+    /// How many sockets the serving process holds, the two listeners excluded:
+    /// a connection still in the kernel's backlog is not one of them.
     fn connections(&self) -> usize {
         let sockets = std::fs::read_dir(format!("/proc/{}/fd", self.child.id()))
             .expect("a live process has a descriptor table")
             .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
             .filter(|target| target.to_string_lossy().starts_with("socket:"))
             .count();
-        // Less the listener, which is open for the process's whole life.
-        sockets - 1
+        // Less the submission and metrics listeners, which are open for the
+        // process's whole life.
+        sockets - 2
     }
 
     /// Kill the server, so what follows reads files nobody is writing.
@@ -313,6 +321,15 @@ impl Server {
             headers,
         )
     }
+}
+
+/// The `host:port` of a URL a startup line announced.
+fn host_port(url: &str) -> String {
+    url.trim_start_matches("http://")
+        .split('/')
+        .next()
+        .expect("the startup line names host:port")
+        .to_string()
 }
 
 /// The client the server itself is reached with, generous enough that a
@@ -620,6 +637,76 @@ fn an_s3_archive_without_credentials_exits_nonzero_naming_them() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("AWS_ACCESS_KEY_ID"), "{stderr}");
+}
+
+/// The same, where a log pipeline under pressure cannot drop it: the metrics
+/// listener is bound and announced at startup, answers its one route, and
+/// counts what the submission route did.
+#[test]
+fn the_metrics_listener_counts_what_the_submission_route_did() {
+    let key = test_key();
+    let server = Server::start(&[pool_of(&key)]);
+    assert_eq!(server.post(&key, &envelope_now(&key, 1)).0, 200);
+    let stranger = other_key();
+    assert_eq!(server.post(&stranger, &envelope_now(&stranger, 1)).0, 403);
+
+    let address = server.metrics_address();
+    let url = format!("http://{address}{}", metsuke_server::metrics::PATH);
+    let mut response = agent().get(&url).call().unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        metsuke_server::metrics::CONTENT_TYPE
+    );
+    let body = response.body_mut().read_to_string().unwrap();
+    let pool = pool_of(&key).to_bech32();
+    for sample in [
+        format!("metsuke_submissions_accepted_total{{pool=\"{pool}\",kind=\"metrics\"}} 1\n"),
+        "metsuke_submissions_refused_total{reason=\"not_allowlisted\"} 1\n".to_string(),
+    ] {
+        assert!(body.contains(&sample), "want {sample:?} in: {body}");
+    }
+
+    let elsewhere = agent()
+        .get(format!("http://{address}/v1/submissions"))
+        .call()
+        .unwrap();
+    assert_eq!(elsewhere.status().as_u16(), 404);
+    let posted = agent().post(&url).send(Vec::<u8>::new()).unwrap();
+    assert_eq!(posted.status().as_u16(), 405);
+    assert_eq!(posted.headers().get("allow").unwrap(), "GET, HEAD");
+}
+
+/// The listener serves one connection at a time, so a local process that
+/// connects and never asks is in front of every scrape. It holds the listener
+/// for `connection_timeout_ms` and no longer: not the submission route's head
+/// deadline, which is longer than a scraper waits.
+#[test]
+fn a_connection_that_never_asks_delays_a_scrape_by_the_metrics_deadline_alone() {
+    let deadline = Duration::from_millis(300);
+    let server = Server::start_with(&[pool_of(&test_key())], |config, _| {
+        config.metrics = metrics_toml(&MetricsConfig {
+            connection_timeout_ms: nonzero_u64(deadline.as_millis() as u64),
+            ..permissive_metrics()
+        });
+    });
+    let address = server.metrics_address();
+    let url = format!("http://{address}{}", metsuke_server::metrics::PATH);
+    let _silent = std::net::TcpStream::connect(&address).unwrap();
+
+    let started = std::time::Instant::now();
+    let response = agent().get(&url).call().unwrap();
+
+    assert_eq!(response.status().as_u16(), 200);
+    // At least the deadline, or the silent connection was not in front of the
+    // scrape and this proved nothing; well short of the head deadline, or the
+    // loop waited that out instead.
+    let waited = started.elapsed();
+    let idle = Duration::from_millis(permissive_http().idle_timeout_ms.get());
+    assert!(
+        waited >= deadline && waited < idle / 2,
+        "the scrape waited {waited:?}, against a {deadline:?} deadline"
+    );
 }
 
 /// A working server has to look like one. The archive is the record of what

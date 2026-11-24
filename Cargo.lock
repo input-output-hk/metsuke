@@ -1005,7 +1005,7 @@ dependencies = [
 
 [[package]]
 name = "metsuke-server"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "blake2",
@@ -1014,6 +1014,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "metsuke",
  "metsuke-wire",
  "proptest",
  "rusty-s3",

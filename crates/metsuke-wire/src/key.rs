@@ -25,6 +25,9 @@ pub enum Kind {
 }
 
 impl Kind {
+    /// Every kind, in declaration order, so `kind as usize` indexes it.
+    pub const ALL: [Kind; 2] = [Kind::Metrics, Kind::Logs];
+
     /// `None` for a version this build has no name for. A submission it cannot name
     /// is a submission it cannot file, which is the only reason ingest still reads
     /// the version at all.
@@ -44,9 +47,7 @@ impl Kind {
     }
 
     pub fn parse(segment: &str) -> Option<Kind> {
-        [Kind::Metrics, Kind::Logs]
-            .into_iter()
-            .find(|kind| kind.as_str() == segment)
+        Kind::ALL.into_iter().find(|kind| kind.as_str() == segment)
     }
 }
 

@@ -61,6 +61,7 @@ let
     lib.toInt (lib.head matched);
 
   listenPort = 8080;
+  serverMetricsPort = 8081;
   s3Port = 3900;
 
   # Applying the page's snippets is an edit to the file the node reads, and a
@@ -550,6 +551,11 @@ let
           settings = {
             listen = "127.0.0.1:${toString listenPort}";
             public_url = "https://metsuke.example.org";
+            metrics = {
+              listen = "127.0.0.1:${toString serverMetricsPort}";
+              connection_timeout_ms = 2000;
+              versions_per_pool = 4;
+            };
             http = {
               idle_timeout_ms = 30000;
               read_timeout_ms = 60000;
@@ -1013,6 +1019,23 @@ let
             # signature-check an S3 fetch of the same archive, so identical
             # bytes here means the download route hands out bytes that verify.
             e2e.succeed("cmp /tmp/downloaded.zst /tmp/direct.zst")
+
+        with subtest("the metrics listener counts what the archive holds"):
+            # Before the units stop, and against the archive's own listing: the
+            # counters are per process, so every object listed above was
+            # counted by this one.
+            exposition = e2e.succeed(
+                "curl -sSf http://127.0.0.1:${toString serverMetricsPort}/metrics"
+            )
+            accepted = sum(
+                float(line.rsplit(" ", 1)[1])
+                for line in exposition.splitlines()
+                if line.startswith(
+                    'metsuke_submissions_accepted_total{pool="${poolId}",'
+                )
+            )
+            assert accepted >= len(listing["keys"]) > 0, (accepted, exposition)
+            assert 'metsuke_agent_last_accepted_timestamp_seconds{pool="${poolId}",' in exposition, exposition
 
         with subtest("the stored bytes verify against the key that signed them"):
             # Last, and after the units stop: this opens the server's index as

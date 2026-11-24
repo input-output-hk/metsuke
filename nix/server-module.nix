@@ -83,6 +83,18 @@ let
     };
   };
 
+  # The host of `host:port` as a one-element list, or null without a port.
+  splitPort = builtins.match "(.*):[0-9]+";
+
+  # The loopback rule both address assertions apply, matched as a literal
+  # rather than parsed, as the server's own check is: a name is not enough.
+  # IPv6 is any spelling of ::1, which is zeros and colons up to a last group
+  # of 1; the server refuses a malformed one at load.
+  isLoopbackHost =
+    host:
+    builtins.match "127\\.[0-9]+\\.[0-9]+\\.[0-9]+" host != null
+    || builtins.match "\\[[0:]*:0*1]" host != null;
+
   # TOML has no null, so a nullable setting is left out of the file rather than
   # written as one, and the server reads the absence. No `leios_roster` is no
   # Leios keys (ADR 0011); no `downloads` is a deployment offering no agent
@@ -339,6 +351,25 @@ in
               };
             };
           };
+
+          metrics = mkOption {
+            type = types.submodule {
+              options = {
+                listen = mkOption {
+                  type = types.str;
+                  example = "127.0.0.1:8081";
+                  description = ''
+                    Where the Prometheus exposition is served, as a loopback
+                    address and port. Its own listener, because the exposition is
+                    unauthenticated and `listen` is what a reverse proxy
+                    publishes; the server refuses anything off loopback.
+                  '';
+                };
+                connection_timeout_ms = positive;
+                versions_per_pool = positive;
+              };
+            };
+          };
         };
       };
     };
@@ -481,18 +512,27 @@ in
         assertion =
           let
             origin = builtins.match "(https?)://([^/?#@]+)/?" cfg.settings.public_url;
-            loopback =
-              let
-                authority = builtins.elemAt origin 1;
-                # The port comes off first, or a loopback address carrying one
-                # fails a test the server passes.
-                ported = builtins.match "(.*):[0-9]+" authority;
-                host = if ported == null then authority else builtins.head ported;
-              in
-              builtins.match "127\\.[0-9]+\\.[0-9]+\\.[0-9]+" host != null || host == "[::1]";
+            authority = builtins.elemAt origin 1;
+            # The port comes off first, or a loopback address carrying one
+            # fails a test the server passes.
+            ported = splitPort authority;
           in
-          origin != null && (builtins.head origin == "https" || loopback);
+          origin != null
+          && (
+            builtins.head origin == "https"
+            || isLoopbackHost (if ported == null then authority else builtins.head ported)
+          );
         message = "services.metsuke-server.settings.public_url is ${cfg.settings.public_url}. It has to be a bare origin with nothing after the host, and either https or http on a loopback address. Every install command the onboarding pages print is built from it, so a plaintext one tells every pool operator to fetch a binary in clear and install it as root, and anything after the host sends the agent's endpoint and the fetch tool's to different roots.";
+      }
+      {
+        # The server refuses this at load too, asserted here for the reason
+        # the one above gives, and matched as a literal for the same reason.
+        assertion =
+          let
+            ported = splitPort cfg.settings.metrics.listen;
+          in
+          ported != null && isLoopbackHost (builtins.head ported);
+        message = "services.metsuke-server.settings.metrics.listen is ${cfg.settings.metrics.listen}. It has to be a loopback address and port, such as 127.0.0.1:8081: the exposition is unauthenticated, so only this host may reach it.";
       }
       {
         assertion = !cfg.roster.enable || cfg.settings.ingest.leios_roster == rosterFile;

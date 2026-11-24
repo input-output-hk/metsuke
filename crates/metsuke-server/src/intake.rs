@@ -7,15 +7,17 @@
 //! plaintext inside the signed bytes, so what an object is filed under comes
 //! out of bytes the signature already covered.
 
-use std::sync::Mutex;
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Mutex};
 
 use metsuke_wire::envelope::{Ack, ContainerError, Header, HeaderError, PoolId, read_header};
 use metsuke_wire::journal::INFO;
 use time::{Duration, OffsetDateTime};
 
 use crate::archive::{ArchiveError, Kind, ObjectName, Store, StoredSubmission};
-use crate::authority::{Signed, Unauthorised};
+use crate::authority::{AttributionError, Signed, Unauthorised};
 use crate::config::IngestConfig;
+use crate::metrics::Metrics;
 use crate::ratelimit::{Charged, RateLimiter};
 use crate::roster::Roster;
 
@@ -23,8 +25,17 @@ use crate::roster::Roster;
 /// is what the client logs, so each names what to change.
 #[derive(Debug, thiserror::Error)]
 pub enum Rejection {
+    /// The signing headers did not decode, so nothing names a pool.
+    #[error(transparent)]
+    Unattributed(#[from] AttributionError),
     #[error("body is {found} bytes, over the {max} byte limit")]
     OversizedBody { found: usize, max: u64 },
+    /// The body broke off mid-read (`serve::read_body`).
+    #[error("could not read the request body: {0}")]
+    BodyUnreadable(String),
+    /// The whole body did not arrive within `read_timeout_ms`.
+    #[error("the request body did not arrive within {secs}s")]
+    BodyTimeout { secs: u64 },
     /// The body is not a submission container at all, which is answerable
     /// from its first eight bytes and so is answered before anything else.
     #[error("body is not a submission: {0}")]
@@ -91,9 +102,10 @@ pub enum IngestError {
     Archive(#[from] ArchiveError),
 }
 
-/// The limiter is the server's only mutable state, so it is the only thing
-/// behind a lock: an upload takes it for the charge alone and never across the
-/// archive write, and a developer reading the archive never takes it at all.
+/// The limiter is the only mutable state anything here decides by, so it is
+/// the only thing an upload waits on: taken for the charge alone and never
+/// across the archive write, and never by a developer reading the archive.
+/// `metrics` changes too, and nothing reads it to decide anything (`metrics`).
 pub struct Intake<A: Store> {
     config: IngestConfig,
     limiter: Mutex<RateLimiter>,
@@ -102,21 +114,36 @@ pub struct Intake<A: Store> {
     /// Leios-key submission refusable with a reason rather than by a
     /// deployment that forgot to configure one (ADR 0011).
     roster: Option<Roster>,
+    /// Built here, from the allowlist `submit` admits by, so every admitted
+    /// pool has its counters. Shared with `http`, which counts refusals, and
+    /// with the listener a scraper reads.
+    metrics: Arc<Metrics>,
 }
 
 impl<A: Store> Intake<A> {
-    pub fn new(config: IngestConfig, archive: A, roster: Option<Roster>) -> Self {
+    pub fn new(
+        config: IngestConfig,
+        archive: A,
+        roster: Option<Roster>,
+        versions_per_pool: NonZeroUsize,
+    ) -> Self {
         let limiter = RateLimiter::new(
             config.rate_limit_uploads,
             config.rate_limit_uploads_total,
             config.rate_limit_window_secs,
         );
+        let metrics = Arc::new(Metrics::new(&config.allowlist, versions_per_pool));
         Intake {
             config,
             limiter: Mutex::new(limiter),
             archive,
             roster,
+            metrics,
         }
+    }
+
+    pub fn metrics(&self) -> &Arc<Metrics> {
+        &self.metrics
     }
 
     /// The body cap, so the HTTP layer refuses at the number this checks
@@ -255,11 +282,20 @@ impl<A: Store> Intake<A> {
         // part of the header that was signed, but reading that takes bucket
         // credentials, and which builds are reporting is the question during
         // a rollout.
+        let version = metsuke_wire::http::one_line(header.agent_version);
         eprintln!(
-            "{INFO}accepted {}, {} bytes, from agent {}",
+            "{INFO}accepted {}, {} bytes, from agent {version}",
             stored.object_key(),
             signed.wire_bytes.len(),
-            metsuke_wire::http::one_line(header.agent_version),
+        );
+        // The clock read again rather than `now`: an archive write can take
+        // its whole timeout, and what this records is when the object landed.
+        self.metrics.accepted(
+            pool_id,
+            kind,
+            signed.wire_bytes.len(),
+            version,
+            OffsetDateTime::now_utc(),
         );
         Ok(Ack {
             latest_version: crate::CLIENT_VERSION.to_string(),

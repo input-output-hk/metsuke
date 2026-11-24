@@ -5,44 +5,24 @@
 
 use metsuke_server::archive::FilesystemArchive;
 use metsuke_server::authority::{Attributed, AttributionError};
-use metsuke_server::developer::Developer;
 use metsuke_server::http::{
-    self, Answer, AnswerBody, KEY_FIELD, Method, OBJECT_PATH, Request, SUBMISSIONS_PATH,
-    SUBMIT_PATH, UNAUTHORIZED_BODY,
+    Answer, AnswerBody, KEY_FIELD, Method, OBJECT_PATH, Request, SUBMISSIONS_PATH, SUBMIT_PATH,
+    UNAUTHORIZED_BODY,
 };
 use metsuke_server::instructions;
-use metsuke_server::intake::Intake;
 use metsuke_wire::envelope::{HEADER_SIGNATURE, HEADER_VKEY, SigningKey};
 
 mod support;
 use base64::Engine as _;
 use metsuke_wire::hex;
 use support::{
-    DEVELOPER_PASSWORD, DEVELOPER_USER, FailingArchive, developer_config, envelope_for, other_key,
-    permissive_config, pool_of, seal, test_key,
+    Answering, DEVELOPER_PASSWORD, DEVELOPER_USER, FailingArchive, envelope_for, other_key,
+    permissive_config, pool_of, seal, submission_request, test_key,
 };
 
 /// The server one request is answered by: an archive under a temporary
 /// directory, the suite's developer account, and the shipped pages.
-struct Server<A: metsuke_server::archive::Store> {
-    intake: Intake<A>,
-    developer: Developer,
-    pages: http::Pages,
-    _dir: tempfile::TempDir,
-}
-
-impl<A> Server<A>
-where
-    A: metsuke_server::archive::Store
-        + metsuke_server::archive::Bytes
-        + metsuke_server::archive::List,
-{
-    fn answer(&self, request: Request) -> Answer {
-        http::answer(&self.intake, &self.developer, &self.pages, request)
-    }
-}
-
-fn server() -> Server<FilesystemArchive> {
+fn server() -> Answering<FilesystemArchive> {
     let dir = tempfile::tempdir().unwrap();
     let archive = FilesystemArchive::new(&dir.path().join("archive"));
     over(archive, dir)
@@ -54,7 +34,7 @@ fn server() -> Server<FilesystemArchive> {
 const UNREACHABLE_REASON: &str = "the bucket at s3.example is unreachable";
 
 /// The same server over an archive that fails whichever half is used.
-fn unreachable_archive() -> Server<FailingArchive> {
+fn unreachable_archive() -> Answering<FailingArchive> {
     let dir = tempfile::tempdir().unwrap();
     over(
         FailingArchive {
@@ -64,14 +44,8 @@ fn unreachable_archive() -> Server<FailingArchive> {
     )
 }
 
-fn over<A: metsuke_server::archive::Store>(archive: A, dir: tempfile::TempDir) -> Server<A> {
-    let developer = Developer::new(&developer_config(dir.path()), support::developer_accounts());
-    Server {
-        intake: Intake::new(permissive_config(&[pool_of(&test_key())]), archive, None),
-        developer,
-        pages: http::Pages::from(support::test_pages()),
-        _dir: dir,
-    }
+fn over<A: metsuke_server::archive::Store>(archive: A, dir: tempfile::TempDir) -> Answering<A> {
+    Answering::over(permissive_config(&[pool_of(&test_key())]), archive, dir)
 }
 
 fn get(target: &str) -> Request {
@@ -95,21 +69,8 @@ fn pull(target: &str) -> Request {
     }
 }
 
-/// A sealed submission with the two ADR-0001 headers a well-formed upload
-/// carries.
 fn post(key: &SigningKey, counter: u64) -> Request {
-    let (body, attestation) = seal(key, &envelope_for(key, counter));
-    Request {
-        method: Method::Post,
-        target: SUBMIT_PATH.to_string(),
-        submission: Attributed::decode(
-            Some(&hex::encode(&attestation.key_bytes())),
-            Some(&hex::encode(&attestation.signature_bytes())),
-            None,
-        ),
-        authorization: None,
-        body,
-    }
+    submission_request(key, &envelope_for(key, counter))
 }
 
 /// The answer's body where it is bytes, which is every answer but a download.
@@ -228,6 +189,7 @@ fn the_developer_routes_take_only_get() {
             });
 
             assert_eq!(answer.status, 405, "{path} answered {method:?}");
+            assert_eq!(allowed(&answer), Some("GET"));
         }
     }
 }
@@ -251,6 +213,7 @@ fn the_details_page_takes_only_get() {
     });
 
     assert_eq!(answer.status, 405);
+    assert_eq!(allowed(&answer), Some("GET, HEAD"));
 }
 
 #[test]
@@ -261,6 +224,7 @@ fn the_instructions_page_takes_only_get() {
     });
 
     assert_eq!(answer.status, 405);
+    assert_eq!(allowed(&answer), Some("GET, HEAD"));
 }
 
 /// metsuke-n1th.
@@ -284,6 +248,7 @@ fn the_favicon_route_takes_only_get() {
     });
 
     assert_eq!(answer.status, 405);
+    assert_eq!(allowed(&answer), Some("GET, HEAD"));
 }
 
 #[test]
@@ -303,7 +268,16 @@ fn the_submit_route_takes_only_post() {
     let answer = server().answer(get(SUBMIT_PATH));
 
     assert_eq!(answer.status, 405);
-    assert!(body(&answer).contains("POST"), "got: {}", body(&answer));
+    assert_eq!(allowed(&answer), Some("POST"));
+}
+
+/// The methods a 405 says the route takes, which RFC 9110 requires it to.
+fn allowed(answer: &Answer) -> Option<&str> {
+    answer
+        .headers
+        .iter()
+        .find(|(name, _)| *name == "allow")
+        .map(|(_, value)| value.as_str())
 }
 
 #[test]
@@ -318,7 +292,7 @@ fn a_sealed_submission_from_an_allowlisted_pool_is_acked() {
 }
 
 /// The 4xx an agent reads as permanent, each from the check that produced it
-/// (`http::status_for`).
+/// (`refusal::Refusal::status`).
 #[test]
 fn a_pool_off_the_allowlist_is_forbidden() {
     let stranger = other_key();
@@ -593,7 +567,7 @@ fn a_download_answers_the_stored_bytes_as_a_stream() {
 
 /// The key of the one object the archive holds, read off the listing because
 /// the id in it is the server's, stamped at receipt.
-fn stored_key<A>(server: &Server<A>) -> String
+fn stored_key<A>(server: &Answering<A>) -> String
 where
     A: metsuke_server::archive::Store
         + metsuke_server::archive::Bytes

@@ -67,7 +67,26 @@ deploy the release and the tag only a name for it, so this entry precedes a
 
 ### Unreleased
 
-Nothing since 0.2.1.
+Nothing since 0.3.0.
+
+### 0.3.0 — 2026-11-24
+
+A **major** by `docs/releasing.md`, in the minor position because the number is
+still `0.x`: a new required table, so a config from 0.2.1 stops the server.
+
+- The roster reads the BLS key where `pool-state` answers it as of
+  prototype-2026w42, which returns the StakePoolState directly with `blsKey`
+  and `futureStakePoolParams`. The w36 layout is still read, so the generator
+  works across a rolling upgrade.
+- `[metrics]` is required. `listen` is a loopback address the server serves a
+  Prometheus exposition on, apart from the top-level `listen` so no proxy route
+  reaches it; `connection_timeout_ms` bounds each connection to it, which are
+  served one at a time; `versions_per_pool` bounds the agent versions shown per
+  pool. A config without them, or with `listen` off loopback, stops the server
+  at startup, and the NixOS module refuses to evaluate. It counts what the journal
+  already says, so ingest stays visible when a log pipeline drops lines:
+  accepted submissions and bytes per allowlisted pool and kind, refused
+  submissions by reason, and when each pool's agent versions last landed.
 
 ### 0.2.1 — 2026-09-11
 

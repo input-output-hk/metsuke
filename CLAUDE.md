@@ -4,8 +4,9 @@ Telemetry for the MusashiNet rewards program: `crates/metsuke` (SPO agent) scrap
 cardano-node's Prometheus endpoint and uploads signed submissions; `crates/metsuke-server`
 verifies and archives them to S3; `crates/metsuke-fetch` is the developer's tool that
 pulls the archive back down; `crates/metsuke-wire` is what they agree on, and it is the
-only one any of them links. `metsuke-fetch`'s tests are the exception: they pull from
-the real server, so that crate dev-depends on it. Security is the top constraint:
+only one any of them links. Two test suites are the exception: `metsuke-fetch`'s pull
+from the real server, so that crate dev-depends on it, and `metsuke-server`'s read its
+metrics exposition back through the agent's scrape parser. Security is the top constraint:
 least privilege, smallest attack surface.
 
 Whose a submission is comes from the key that signed it, and only a **Cold Key**

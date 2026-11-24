@@ -40,6 +40,11 @@ let
         settings = {
           listen = "127.0.0.1:0";
           public_url = "https://metsuke.example.org";
+          metrics = {
+            listen = "127.0.0.1:0";
+            connection_timeout_ms = 2000;
+            versions_per_pool = 4;
+          };
           archive.filesystem.root = "/var/lib/metsuke-server/archive";
           http = {
             idle_timeout_ms = 30000;

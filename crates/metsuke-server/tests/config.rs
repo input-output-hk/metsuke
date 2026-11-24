@@ -14,6 +14,7 @@ use support::{example_archive, example_config as example, pool_of, server_toml, 
 fn the_shipped_example_config_loads() {
     let config = ServerConfig::from_toml(&example()).unwrap();
     assert_eq!(config.listen, "127.0.0.1:8080");
+    assert_eq!(config.metrics.listen.get().to_string(), "127.0.0.1:8081");
     assert!(config.ingest.allowlist.contains_key(&pool_of(&test_key())));
     assert_eq!(config.ingest.rate_limit_uploads.get(), 100);
     let ArchiveConfig::S3(s3) = config.archive else {
@@ -94,7 +95,7 @@ fn an_archive_without_a_kind_is_refused() {
 }
 
 /// The fields typed `NonZero`, so zero and absence are the same refusal.
-const NONZERO_FIELDS: [&str; 15] = [
+const NONZERO_FIELDS: [&str; 17] = [
     "idle_timeout_ms",
     "read_timeout_ms",
     "write_timeout_ms",
@@ -110,6 +111,8 @@ const NONZERO_FIELDS: [&str; 15] = [
     "max_timestamp_skew_secs",
     "rate_limit_uploads",
     "rate_limit_uploads_total",
+    "connection_timeout_ms",
+    "versions_per_pool",
 ];
 
 /// The rest, where only absence is a mistake. Together with `NONZERO_FIELDS`
@@ -134,6 +137,71 @@ fn every_field_is_required() {
             error.contains(field),
             "config without {field} must fail naming it, got: {error}"
         );
+    }
+}
+
+/// The example's `[metrics]` header and the `listen` under it, which
+/// `without("listen")` cannot reach alone: that drops the top-level `listen` too.
+const METRICS_LISTEN: &str = "[metrics]\nlisten = \"127.0.0.1:8081\"";
+
+fn metrics_table(replacement: &str) -> String {
+    let example = example();
+    assert!(
+        example.contains(METRICS_LISTEN),
+        "the example's [metrics] moved"
+    );
+    example.replace(METRICS_LISTEN, replacement)
+}
+
+/// `example()` up to its `[metrics]` table, which is the file's last.
+fn without_metrics() -> String {
+    let example = example();
+    let (before, table) = example
+        .split_once("[metrics]")
+        .expect("the example has a [metrics] table");
+    assert!(
+        !table.contains("\n["),
+        "[metrics] is no longer the last table"
+    );
+    before.to_string()
+}
+
+#[test]
+fn the_metrics_listener_is_required() {
+    for (config, missing) in [
+        (without_metrics(), "metrics"),
+        (metrics_table("[metrics]"), "listen"),
+    ] {
+        let error = ServerConfig::from_toml(&config).unwrap_err().to_string();
+        assert!(error.contains(missing), "want {missing}, got: {error}");
+    }
+}
+
+/// The exposition answers whoever connects, so it may only be bound where
+/// nothing but this host connects, and a name is not an address that says so.
+#[test]
+fn a_metrics_listener_off_loopback_is_refused() {
+    for value in ["0.0.0.0:8081", "[::]:8081", "192.0.2.1:8081"] {
+        let error =
+            ServerConfig::from_toml(&metrics_table(&format!("[metrics]\nlisten = \"{value}\"")))
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("not a loopback address"), "{value}: {error}");
+    }
+    let error = ServerConfig::from_toml(&metrics_table("[metrics]\nlisten = \"localhost:8081\""))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("listen"), "got: {error}");
+}
+
+/// Both loopbacks, and a kernel-chosen port, which is how the suites bind.
+#[test]
+fn a_metrics_listener_on_loopback_loads() {
+    for value in ["127.0.0.1:0", "[::1]:9100"] {
+        let config =
+            ServerConfig::from_toml(&metrics_table(&format!("[metrics]\nlisten = \"{value}\"")))
+                .unwrap();
+        assert_eq!(config.metrics.listen.get().to_string(), value);
     }
 }
 

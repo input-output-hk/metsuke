@@ -24,9 +24,14 @@ use crate::authority::{Attributed, AttributionError};
 use crate::developer::{self, Developer, Filters, Unauthorized};
 use crate::instructions;
 use crate::intake::{IngestError, Intake, Rejection};
+use crate::metrics::{self, Metrics};
+use crate::refusal::Refusal;
 
 /// Where submissions arrive.
 pub const SUBMIT_PATH: &str = "/v1/submit";
+
+/// What every refusal and every unrouted answer is written as.
+const TEXT_PLAIN: &str = "text/plain; charset=utf-8";
 
 /// The developer routes and the field a download names its object in
 /// (`metsuke_wire::http`), re-exported so a route reads off one name here.
@@ -63,28 +68,15 @@ pub struct Request {
 }
 
 impl Request {
+    /// Whether this is a submission, which is the one route whose refusals
+    /// are counted (`refuse_submission`).
+    pub fn is_submission(&self) -> bool {
+        self.method == Method::Post && self.path() == SUBMIT_PATH
+    }
+
     /// The route the target names, which is the target up to its query.
     pub fn path(&self) -> &str {
         self.target.split('?').next().unwrap_or_default()
-    }
-}
-
-/// The status a rejected submission answers with. Takes a `Rejection` and not
-/// an `IngestError`, so what this can answer is only ever the client's fault
-/// and only ever 4xx: a rejection's text is the client's to read, where an
-/// availability failure's is `unavailable`'s to withhold. What the 4xx/5xx
-/// split means to the agent is ADR 0004; the finer codes are what an operator
-/// reads off the proxy log.
-pub fn status_for(rejection: &Rejection) -> u16 {
-    match rejection {
-        Rejection::OversizedBody { .. } => 413,
-        Rejection::RateLimited { .. } | Rejection::ServerBusy { .. } => 429,
-        Rejection::UnknownPool { .. } | Rejection::BadSignature | Rejection::Unauthorised(_) => 403,
-        Rejection::NotASubmission(_)
-        | Rejection::UnreadableHeader(_)
-        | Rejection::KeylessSchema { .. }
-        | Rejection::NotItsProvenance { .. }
-        | Rejection::StaleTimestamp { .. } => 400,
     }
 }
 
@@ -177,23 +169,15 @@ pub fn answer<A: Store + Bytes + List>(
         // needed and who issues one.
         instructions::PATH => match request.method {
             Method::Get | Method::Head => html(pages.quickstart.clone()),
-            _ => refuse(None, 405, format!("{} takes GET", instructions::PATH)),
+            _ => wrong_method(instructions::PATH, GET_HEAD),
         },
         instructions::DETAILS_PATH => match request.method {
             Method::Get | Method::Head => html(pages.details.clone()),
-            _ => refuse(
-                None,
-                405,
-                format!("{} takes GET", instructions::DETAILS_PATH),
-            ),
+            _ => wrong_method(instructions::DETAILS_PATH, GET_HEAD),
         },
         instructions::ANALYSIS_PATH => match request.method {
             Method::Get | Method::Head => html(pages.analysis.clone()),
-            _ => refuse(
-                None,
-                405,
-                format!("{} takes GET", instructions::ANALYSIS_PATH),
-            ),
+            _ => wrong_method(instructions::ANALYSIS_PATH, GET_HEAD),
         },
         // The files the page links, under the names it links them by. A name
         // outside the shipped set is a 404 naming none of them: what is served
@@ -210,11 +194,7 @@ pub fn answer<A: Store + Bytes + List>(
                     None => refuse(None, 404, "no such file".to_string()),
                 }
             }
-            _ => refuse(
-                None,
-                405,
-                format!("{} takes GET", instructions::FILES_PREFIX),
-            ),
+            _ => wrong_method(instructions::FILES_PREFIX, GET_HEAD),
         },
         instructions::ICON_PATH | instructions::ICON_LEGACY_PATH => match request.method {
             Method::Get | Method::Head => Answer {
@@ -223,13 +203,11 @@ pub fn answer<A: Store + Bytes + List>(
                 body: AnswerBody::Bytes(bytes::Bytes::from_static(instructions::ICON.as_bytes())),
                 headers: Vec::new(),
             },
-            _ => refuse(None, 405, format!("{path} takes GET")),
+            _ => wrong_method(&path, GET_HEAD),
         },
-        // A known route reached with the wrong method is named, because a
-        // client that guessed the method is not a client at the wrong address.
         SUBMIT_PATH => match request.method {
-            Method::Post => submit(intake, &request),
-            _ => refuse(None, 405, format!("{SUBMIT_PATH} takes POST")),
+            Method::Post => submit(intake, request),
+            _ => wrong_method(SUBMIT_PATH, "POST"),
         },
         // Authentication comes before the method check: answering 405 first
         // would confirm the route exists to a client that never presented a
@@ -240,7 +218,7 @@ pub fn answer<A: Store + Bytes + List>(
                 Err(error) => return challenge(&path, &error),
             };
             if request.method != Method::Get {
-                return refuse(None, 405, format!("{path} takes GET"));
+                return wrong_method(&path, "GET");
             }
             // Who read what, which is the account's whole point: a refusal
             // names one and so does the request that was allowed.
@@ -254,6 +232,26 @@ pub fn answer<A: Store + Bytes + List>(
             None,
             404,
             format!("no route {path}, submissions go to {SUBMIT_PATH}"),
+        ),
+    }
+}
+
+/// What the metrics listener answers, which is one route and nothing else.
+/// Unlogged, unlike `refuse`: only this host reaches it, and a scraper's
+/// wrong path is not a refusal anyone needs in the journal.
+pub fn scrape(metrics: &Metrics, method: Method, path: &str) -> Answer {
+    match (path, method) {
+        (metrics::PATH, Method::Get | Method::Head) => Answer {
+            content_type: metrics::CONTENT_TYPE,
+            ..plain(200, metrics.render())
+        },
+        (metrics::PATH, _) => allowing(
+            plain(405, format!("{} takes {GET_HEAD}", metrics::PATH)),
+            GET_HEAD,
+        ),
+        _ => plain(
+            404,
+            format!("no route {path}, metrics are at {}", metrics::PATH),
         ),
     }
 }
@@ -351,10 +349,12 @@ fn unavailable(signer: Option<PoolId>, reason: &str, withheld: &str) -> Answer {
     refuse_withholding(signer, 503, reason.to_string(), Some(withheld.to_string()))
 }
 
-fn submit<A: Store>(intake: &Intake<A>, request: &Request) -> Answer {
-    let headers = match &request.submission {
+fn submit<A: Store>(intake: &Intake<A>, request: Request) -> Answer {
+    let headers = match request.submission {
         Ok(headers) => headers,
-        Err(error) => return refuse(None, 400, error.to_string()),
+        Err(error) => {
+            return refuse_submission(intake.metrics(), None, Rejection::from(error).into());
+        }
     };
     let claimed = headers.pool_id();
     let submission = headers.over(&request.body);
@@ -369,26 +369,70 @@ fn submit<A: Store>(intake: &Intake<A>, request: &Request) -> Answer {
             ),
             headers: Vec::new(),
         },
-        Err(IngestError::Rejected(rejection)) => {
-            refuse(Some(claimed), status_for(&rejection), rejection.to_string())
-        }
-        Err(IngestError::Archive(error)) => unavailable(
-            Some(claimed),
-            "the archive cannot be written",
-            &error.to_string(),
+        Err(error) => refuse_submission(intake.metrics(), Some(claimed), error),
+    }
+}
+
+/// Every refusal of the submission route, whichever layer caught it: counted
+/// by its reason, then answered with that reason's status. With `panicked`,
+/// the one way to refuse a submission, so none can be answered and go
+/// uncounted. The archive's failure is withheld as `unavailable` withholds it.
+pub fn refuse_submission(metrics: &Metrics, signer: Option<PoolId>, error: IngestError) -> Answer {
+    let refusal = Refusal::from(&error);
+    metrics.refused(refusal);
+    let status = refusal.status();
+    match error {
+        IngestError::Rejected(rejection) => refuse(signer, status, rejection.to_string()),
+        IngestError::Archive(error) => refuse_withholding(
+            signer,
+            status,
+            "the archive cannot be written".to_string(),
+            Some(error.to_string()),
         ),
     }
 }
 
-/// The 413 an oversized body earns, worded by the intake so the client reads
-/// one sentence for the cap whichever layer caught it. `serve` is the layer
-/// that catches it, because it is the one reading the body.
-pub fn oversized(signer: Option<PoolId>, found: usize, max: u64) -> Answer {
+/// What a request whose answer panicked gets, on any route: a 503 rather
+/// than a dropped connection the client would read as a network fault.
+/// `submission` holds the counters where the request was a submission.
+pub fn panicked(submission: Option<&Metrics>) -> Answer {
+    if let Some(metrics) = submission {
+        metrics.refused(Refusal::Panicked);
+    }
     refuse(
-        signer,
-        413,
-        Rejection::OversizedBody { found, max }.to_string(),
+        None,
+        Refusal::Panicked.status(),
+        "the server could not answer".to_string(),
     )
+}
+
+/// What the read-only routes take. HEAD is answered as its GET (`serve`).
+const GET_HEAD: &str = "GET, HEAD";
+
+/// A known route reached with a method it does not take. Named rather than a
+/// 404, because a client that guessed the method is not a client at the wrong
+/// address.
+fn wrong_method(path: &str, methods: &'static str) -> Answer {
+    allowing(
+        refuse(None, 405, format!("{path} takes {methods}")),
+        methods,
+    )
+}
+
+/// A 405 with the `Allow` RFC 9110 requires of it, naming what the route takes.
+fn allowing(mut answer: Answer, methods: &'static str) -> Answer {
+    answer.headers.push(("allow", methods.to_string()));
+    answer
+}
+
+/// A plain-text answer, which is what every refusal is.
+fn plain(status: u16, body: String) -> Answer {
+    Answer {
+        status,
+        content_type: TEXT_PLAIN,
+        body: AnswerBody::Bytes(body.into_bytes().into()),
+        headers: Vec::new(),
+    }
 }
 
 /// Every refusal is logged: the reason text is the only record of why a
@@ -411,12 +455,7 @@ fn refuse_withholding(
         None => reason.clone(),
     };
     eprintln!("{severity}refused {}: {status}, {logged}", named(signer));
-    Answer {
-        status,
-        content_type: "text/plain; charset=utf-8",
-        body: AnswerBody::Bytes(reason.into_bytes().into()),
-        headers: Vec::new(),
-    }
+    plain(status, reason)
 }
 
 /// How a request is named before anything it claims has been verified.
