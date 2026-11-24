@@ -275,7 +275,7 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
     // this server already offers, is the deployment's mistake and this is
     // where it should stop.
     let pages = instructions::pages(public_url.as_url(), agent_builds(downloads.as_ref())?)?;
-    let listener = serve::bind(&listen, metrics.listen)?;
+    let listener = serve::bind(&listen, &metrics)?;
     // The bound address, not the configured one: `:0` is how the tests and
     // any readiness check learn the port.
     eprintln!(
@@ -298,7 +298,7 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
         }
         None => eprintln!("{INFO}cold-key submissions only: no Leios key roster is configured"),
     }
-    let intake = Intake::new(ingest, archive, roster);
+    let intake = Intake::new(ingest, archive, roster, metrics.versions_per_pool);
     match listener.serve(limits, intake, developer, pages)? {}
 }
 

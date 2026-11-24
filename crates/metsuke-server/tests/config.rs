@@ -95,7 +95,7 @@ fn an_archive_without_a_kind_is_refused() {
 }
 
 /// The fields typed `NonZero`, so zero and absence are the same refusal.
-const NONZERO_FIELDS: [&str; 15] = [
+const NONZERO_FIELDS: [&str; 17] = [
     "idle_timeout_ms",
     "read_timeout_ms",
     "write_timeout_ms",
@@ -111,6 +111,8 @@ const NONZERO_FIELDS: [&str; 15] = [
     "max_timestamp_skew_secs",
     "rate_limit_uploads",
     "rate_limit_uploads_total",
+    "connection_timeout_ms",
+    "versions_per_pool",
 ];
 
 /// The rest, where only absence is a mistake. Together with `NONZERO_FIELDS`
@@ -138,23 +140,36 @@ fn every_field_is_required() {
     }
 }
 
-/// The example's `[metrics]` table, which `without("listen")` cannot reach
-/// alone: that drops the top-level `listen` too.
-const METRICS_TABLE: &str = "[metrics]\nlisten = \"127.0.0.1:8081\"";
+/// The example's `[metrics]` header and the `listen` under it, which
+/// `without("listen")` cannot reach alone: that drops the top-level `listen` too.
+const METRICS_LISTEN: &str = "[metrics]\nlisten = \"127.0.0.1:8081\"";
 
 fn metrics_table(replacement: &str) -> String {
     let example = example();
     assert!(
-        example.contains(METRICS_TABLE),
+        example.contains(METRICS_LISTEN),
         "the example's [metrics] moved"
     );
-    example.replace(METRICS_TABLE, replacement)
+    example.replace(METRICS_LISTEN, replacement)
+}
+
+/// `example()` up to its `[metrics]` table, which is the file's last.
+fn without_metrics() -> String {
+    let example = example();
+    let (before, table) = example
+        .split_once("[metrics]")
+        .expect("the example has a [metrics] table");
+    assert!(
+        !table.contains("\n["),
+        "[metrics] is no longer the last table"
+    );
+    before.to_string()
 }
 
 #[test]
 fn the_metrics_listener_is_required() {
     for (config, missing) in [
-        (metrics_table(""), "metrics"),
+        (without_metrics(), "metrics"),
         (metrics_table("[metrics]"), "listen"),
     ] {
         let error = ServerConfig::from_toml(&config).unwrap_err().to_string();

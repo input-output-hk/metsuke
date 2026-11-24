@@ -24,7 +24,11 @@ let
     inherit archive;
     listen = "127.0.0.1:0";
     public_url = "https://metsuke.example.org";
-    metrics.listen = "127.0.0.1:0";
+    metrics = {
+      listen = "127.0.0.1:0";
+      connection_timeout_ms = 2000;
+      versions_per_pool = 4;
+    };
     http = {
       idle_timeout_ms = 30000;
       read_timeout_ms = 60000;
@@ -48,10 +52,9 @@ let
     };
   };
 
-  # What systemd would run, read off the unit the module rendered rather than
-  # rebuilt here: that the module's own rendering loads is the whole contract.
-  execStartFor =
-    archive:
+  # The system the module renders for `settings`.
+  systemFor =
+    settings:
     (pkgs.nixos {
       imports = [ serverModule ];
       services.metsuke-server = {
@@ -62,9 +65,53 @@ let
           AWS_ACCESS_KEY_ID=not-a-real-key
           AWS_SECRET_ACCESS_KEY=not-a-real-secret
         ''}";
-        settings = settingsFor archive;
+        inherit settings;
       };
-    }).config.systemd.services.metsuke-server.serviceConfig.ExecStart;
+    }).config;
+
+  # What systemd would run, read off the unit the module rendered rather than
+  # rebuilt here: that the module's own rendering loads is the whole contract.
+  execStartFor =
+    archive: (systemFor (settingsFor archive)).systemd.services.metsuke-server.serviceConfig.ExecStart;
+
+  # The module's `metrics.listen` assertion against the server's rule
+  # (`config::LoopbackAddr`): every spelling of a loopback address passes, and
+  # nothing else. Read off the assertion's own boolean, so a refusal here is
+  # not a failed evaluation of the whole check.
+  loopbackCases = {
+    "127.0.0.1:8081" = true;
+    "127.1.2.3:8081" = true;
+    "[::1]:8081" = true;
+    "[0:0:0:0:0:0:0:1]:8081" = true;
+    "[0::1]:8081" = true;
+    "0.0.0.0:8081" = false;
+    "[::]:8081" = false;
+    "[::2]:8081" = false;
+    "[1::1]:8081" = false;
+    "[::ffff:127.0.0.1]:8081" = false;
+    "localhost:8081" = false;
+    "127.0.0.1" = false;
+  };
+  metricsListenPasses =
+    listen:
+    let
+      settings = settingsFor { filesystem.root = "/var/lib/metsuke-server/archive"; };
+      system = systemFor (
+        settings
+        // {
+          metrics = settings.metrics // {
+            inherit listen;
+          };
+        }
+      );
+      prefix = "services.metsuke-server.settings.metrics.listen ";
+    in
+    (pkgs.lib.findFirst (
+      assertion: pkgs.lib.hasPrefix prefix assertion.message
+    ) (throw "the module has no metrics.listen assertion") system.assertions).assertion;
+  misjudged = pkgs.lib.filterAttrs (
+    listen: loopback: metricsListenPasses listen != loopback
+  ) loopbackCases;
 
   s3 = execStartFor {
     s3 = {
@@ -84,6 +131,11 @@ let
   filesystem = execStartFor { filesystem.root = "/var/lib/metsuke-server/archive"; };
 in
 pkgs.runCommand "metsuke-server-config" { } ''
+  ${pkgs.lib.optionalString (misjudged != { }) ''
+    echo ${pkgs.lib.escapeShellArg "metrics.listen judged against the server's loopback rule: ${builtins.toJSON misjudged}"} >&2
+    exit 1
+  ''}
+
   # The archive root the filesystem config names: the module requires it under
   # the state directory the unit may write, which is not a path this build has.
   export HOME=$PWD

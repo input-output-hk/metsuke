@@ -551,7 +551,11 @@ let
           settings = {
             listen = "127.0.0.1:${toString listenPort}";
             public_url = "https://metsuke.example.org";
-            metrics.listen = "127.0.0.1:${toString serverMetricsPort}";
+            metrics = {
+              listen = "127.0.0.1:${toString serverMetricsPort}";
+              connection_timeout_ms = 2000;
+              versions_per_pool = 4;
+            };
             http = {
               idle_timeout_ms = 30000;
               read_timeout_ms = 60000;

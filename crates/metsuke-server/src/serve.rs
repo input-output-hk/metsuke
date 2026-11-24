@@ -24,12 +24,12 @@ use tokio::sync::{Semaphore, mpsc};
 
 use crate::archive::{Bytes as ArchiveBytes, List, ObjectStream, Store};
 use crate::authority::Attributed;
-use crate::config::{HttpConfig, LoopbackAddr};
+use crate::config::{HttpConfig, MetricsConfig};
 use crate::developer::Developer;
 use crate::http::{self, Answer, AnswerBody, Method, Request};
 use crate::instructions;
 use crate::intake::{Intake, Rejection};
-use crate::metrics::{Metrics, Refusal};
+use crate::metrics::Metrics;
 
 /// How much of an object is moved per read: copy granularity, not a bound
 /// anything can observe (CLAUDE.md `## Conventions`). Never a frame size. No
@@ -51,6 +51,9 @@ pub struct Listener {
     address: SocketAddr,
     scrapes: TcpListener,
     metrics_address: SocketAddr,
+    /// `config::MetricsConfig::connection_timeout_ms`, which `expose` serves
+    /// `scrapes` under.
+    scrape_timeout: Duration,
 }
 
 /// Which socket could not be bound, so the error names the setting to fix.
@@ -79,7 +82,7 @@ pub enum BindError {
 /// Nothing left on the async side blocks, so a second scheduler thread would
 /// buy nothing. Both are bound before either is announced, so a server that
 /// says it is accepting is one a scraper can also reach.
-pub fn bind(listen: &str, metrics: LoopbackAddr) -> Result<Listener, BindError> {
+pub fn bind(listen: &str, metrics: &MetricsConfig) -> Result<Listener, BindError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .enable_time()
@@ -90,8 +93,8 @@ pub fn bind(listen: &str, metrics: LoopbackAddr) -> Result<Listener, BindError> 
         source,
     })?;
     let (scrapes, metrics_address) =
-        bound(&runtime, metrics.get()).map_err(|source| BindError::Metrics {
-            listen: metrics.get(),
+        bound(&runtime, metrics.listen.get()).map_err(|source| BindError::Metrics {
+            listen: metrics.listen.get(),
             source,
         })?;
     Ok(Listener {
@@ -100,6 +103,7 @@ pub fn bind(listen: &str, metrics: LoopbackAddr) -> Result<Listener, BindError> 
         address,
         scrapes,
         metrics_address,
+        scrape_timeout: millis(metrics.connection_timeout_ms.get()),
     })
 }
 
@@ -139,11 +143,9 @@ impl Listener {
             developer,
             pages: http::Pages::from(pages),
         });
-        let idle = millis(limits.idle_timeout_ms.get());
-        let write_timeout = millis(limits.write_timeout_ms.get());
         self.runtime.block_on(async move {
             let mut submissions = std::pin::pin!(accept(self.listener, limits, serving));
-            let mut scrapes = std::pin::pin!(expose(self.scrapes, idle, write_timeout, metrics));
+            let mut scrapes = std::pin::pin!(expose(self.scrapes, self.scrape_timeout, metrics));
             std::future::poll_fn(|context| match submissions.as_mut().poll(context) {
                 Poll::Ready(stopped) => Poll::Ready(stopped),
                 Poll::Pending => scrapes.as_mut().poll(context),
@@ -156,13 +158,12 @@ impl Listener {
 /// The metrics listener's loop: one connection at a time, one request each.
 /// A scraper asks once a period, so serial costs nothing, and it is what gives
 /// this listener its own capacity rather than a share of the submission
-/// route's slots. The head and stalled-write deadlines are the submission
-/// route's, so a connection that never asks holds the loop no longer than one
-/// idle client holds a slot there.
+/// route's slots. Each connection is dropped at `connection_timeout` whatever
+/// it is doing, so one that never asks, or never reads its answer, delays the
+/// scrape queued behind it by that and no more; `n` of them by `n` times it.
 async fn expose(
     listener: TcpListener,
-    idle: Duration,
-    write_timeout: Duration,
+    connection_timeout: Duration,
     metrics: Arc<Metrics>,
 ) -> Result<std::convert::Infallible, io::Error> {
     loop {
@@ -171,16 +172,12 @@ async fn expose(
             let answer = http::scrape(&metrics, method_of(request.method()), request.uri().path());
             async move { Ok::<_, std::convert::Infallible>(respond(answer)) }
         });
-        let served = connection(idle)
+        let served = hyper::server::conn::http1::Builder::new()
             .keep_alive(false)
-            .serve_connection(
-                TokioIo::new(WriteDeadline::new(stream, write_timeout)),
-                service,
-            )
-            .await;
-        if let Err(error) = served
-            && !error.is_timeout()
-        {
+            .serve_connection(TokioIo::new(stream), service);
+        // Elapsed is the deadline doing its job, as a head timeout is on the
+        // submission route, and is not logged either.
+        if let Ok(Err(error)) = tokio::time::timeout(connection_timeout, served).await {
             eprintln!("{WARNING}a metrics scrape ended: {error}");
         }
     }
@@ -223,7 +220,9 @@ async fn accept<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
                     )
                 }
             });
-            let served = connection(idle)
+            let served = hyper::server::conn::http1::Builder::new()
+                .timer(TokioTimer::new())
+                .header_read_timeout(idle)
                 .serve_connection(
                     TokioIo::new(WriteDeadline::new(stream, write_timeout)),
                     service,
@@ -263,14 +262,6 @@ async fn next_stream(listener: &TcpListener, what: &str) -> Result<TcpStream, io
             Err(error) => return Err(error),
         }
     }
-}
-
-/// What both listeners serve a connection with: `idle_timeout_ms` bounds the
-/// head, and `WriteDeadline` the writes, which hyper has no bound of its own for.
-fn connection(idle: Duration) -> hyper::server::conn::http1::Builder {
-    let mut builder = hyper::server::conn::http1::Builder::new();
-    builder.timer(TokioTimer::new()).header_read_timeout(idle);
-    builder
 }
 
 /// Whether an accept failure was about the connection that failed rather than
@@ -384,8 +375,8 @@ async fn blocking<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
     serving: Arc<Serving<A>>,
     request: Request,
 ) -> Answer {
-    // Held for the panic arm alone, which has no `IngestError` to refuse with
-    // and so is counted here rather than by `http::refuse_submission`.
+    // Held for the panic arm alone: the request is gone by then, and with it
+    // the route that decides whether the panic is a counted refusal.
     let submission = request
         .is_submission()
         .then(|| Arc::clone(serving.intake.metrics()));
@@ -394,14 +385,9 @@ async fn blocking<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
     })
     .await
     .unwrap_or_else(|error| {
-        // A panic in `http::answer`, which nothing there is meant to do. The
-        // client gets a 503 rather than a dropped connection it would read as
-        // a network fault.
+        // A panic in `http::answer`, which nothing there is meant to do.
         eprintln!("{ERR}answering panicked: {error}");
-        if let Some(metrics) = submission {
-            metrics.refused(Refusal::Panicked);
-        }
-        http::refuse(None, 503, "the server could not answer".to_string())
+        http::panicked(submission.as_deref())
     })
 }
 

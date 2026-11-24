@@ -7,6 +7,7 @@
 //! plaintext inside the signed bytes, so what an object is filed under comes
 //! out of bytes the signature already covered.
 
+use std::num::NonZeroUsize;
 use std::sync::{Arc, Mutex};
 
 use metsuke_wire::envelope::{Ack, ContainerError, Header, HeaderError, PoolId, read_header};
@@ -120,13 +121,18 @@ pub struct Intake<A: Store> {
 }
 
 impl<A: Store> Intake<A> {
-    pub fn new(config: IngestConfig, archive: A, roster: Option<Roster>) -> Self {
+    pub fn new(
+        config: IngestConfig,
+        archive: A,
+        roster: Option<Roster>,
+        versions_per_pool: NonZeroUsize,
+    ) -> Self {
         let limiter = RateLimiter::new(
             config.rate_limit_uploads,
             config.rate_limit_uploads_total,
             config.rate_limit_window_secs,
         );
-        let metrics = Arc::new(Metrics::new(&config.allowlist));
+        let metrics = Arc::new(Metrics::new(&config.allowlist, versions_per_pool));
         Intake {
             config,
             limiter: Mutex::new(limiter),

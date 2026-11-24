@@ -150,7 +150,8 @@ for each is written down, because a test reads it.
 
 Four of its fields are decisions rather than defaults. Bind `listen` to
 loopback and put a TLS terminator in front of it. `metrics.listen` is a second
-loopback port, which only a scraper on the host reads and nothing proxies.
+loopback port, which only a scraper on the host reads and nothing proxies; keep
+`metrics.connection_timeout_ms` well under that scraper's `scrape_timeout`.
 `archive.s3` names the bucket and region the step above created.
 `ingest.allowlist` is the generated table, never a hand-written one.
 

@@ -10,7 +10,7 @@ use metsuke_wire::envelope::{PoolId, SubmissionKey};
 mod support;
 use support::{
     envelope_for, permissive_config, pool_of, seal_with, submission, test_key, test_leios_key,
-    test_now,
+    test_now, versions_per_pool,
 };
 
 /// A server holding a roster that lists `keys` for `pool`, with `pool`
@@ -38,7 +38,12 @@ fn intake_listing(
     let archive = FilesystemArchive::new(&dir.path().join("archive"));
     let roster = Roster::load(&path).expect("the roster loads");
     (
-        Intake::new(permissive_config(&[pool]), archive, Some(roster)),
+        Intake::new(
+            permissive_config(&[pool]),
+            archive,
+            Some(roster),
+            versions_per_pool(),
+        ),
         dir,
     )
 }
@@ -120,7 +125,12 @@ fn a_server_without_a_roster_refuses_every_leios_key() {
     let pool = pool_of(&test_key());
     let dir = tempfile::tempdir().unwrap();
     let archive = FilesystemArchive::new(&dir.path().join("archive"));
-    let intake = Intake::new(permissive_config(&[pool]), archive, None);
+    let intake = Intake::new(
+        permissive_config(&[pool]),
+        archive,
+        None,
+        versions_per_pool(),
+    );
     let key = test_leios_key(1);
     let (body, attestation) = seal_with(&key, &envelope_for(&test_key(), 1));
 

@@ -12,16 +12,17 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::num::NonZeroUsize;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
 use metsuke_wire::envelope::PoolId;
 use time::OffsetDateTime;
 
 use crate::applications::Codes;
 use crate::archive::Kind;
-use crate::authority::Unauthorised;
-use crate::intake::{IngestError, Rejection};
+use crate::refusal::Refusal;
 
 /// The one route the metrics listener answers.
 pub const PATH: &str = "/metrics";
@@ -30,108 +31,14 @@ pub const PATH: &str = "/metrics";
 /// scraper reads without negotiating.
 pub const CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
 
-/// Agent versions held per pool, the oldest-seen evicted past it. Reporting
-/// shape, not a limit (CLAUDE.md `## Conventions`): it changes nothing
-/// accepted, stored, sent or refused, only how many version series one pool
-/// shows in a scrape. A scraper may keep more across scrapes. Four covers a
-/// pool mid-rollout across a few hosts; past that the oldest build is the one
-/// least worth a series.
-const VERSIONS_PER_POOL: usize = 4;
-
-/// The enum, its label and the list of every variant written once, so a
-/// variant cannot have a label without a counter or a counter without a label.
-macro_rules! refusals {
-    ($($(#[$doc:meta])* $variant:ident => $label:literal,)*) => {
-        /// Why a `POST` to the submission route was refused, as the `reason`
-        /// label spells it. Every refusal of that route lands on exactly one,
-        /// and nothing else is counted: a 404 or a developer's 401 says
-        /// nothing about whether pools are reaching the archive.
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub enum Refusal {
-            $($(#[$doc])* $variant,)*
-        }
-
-        impl Refusal {
-            /// In declaration order, so `refusal as usize` indexes it.
-            pub const ALL: &[Refusal] = &[$(Refusal::$variant,)*];
-
-            pub fn label(self) -> &'static str {
-                match self {
-                    $(Refusal::$variant => $label,)*
-                }
-            }
-        }
-    };
-}
-
-refusals! {
-    /// The signing headers did not decode, so nothing names a pool.
-    Unattributed => "unattributed",
-    /// Over `max_body_bytes`, whether declared up front or found while reading.
-    Oversized => "oversized",
-    /// The body broke off mid-read.
-    BodyUnreadable => "body_unreadable",
-    /// The body did not arrive within `read_timeout_ms`.
-    BodyTimeout => "body_timeout",
-    NotASubmission => "not_a_submission",
-    NotAllowlisted => "not_allowlisted",
-    /// A Leios-key submission reached a server configured with no roster.
-    NoRoster => "no_roster",
-    /// The roster lists no such Leios key for the pool claimed.
-    LeiosKeyUnregistered => "leios_key_unregistered",
-    BadSignature => "bad_signature",
-    /// Sealed further from this server's clock than `max_timestamp_skew_secs`.
-    ClockSkew => "clock_skew",
-    RateLimited => "rate_limited",
-    ServerBusy => "server_busy",
-    HeaderUnreadable => "header_unreadable",
-    NotItsProvenance => "not_its_provenance",
-    KeylessSchema => "keyless_schema",
-    /// The archive write failed: the server's fault, answered 503.
-    ArchiveUnavailable => "archive_unavailable",
-    /// Answering the submission panicked, answered 503.
-    Panicked => "panicked",
-}
-
-impl From<&Rejection> for Refusal {
-    fn from(rejection: &Rejection) -> Refusal {
-        match rejection {
-            Rejection::Unattributed(_) => Refusal::Unattributed,
-            Rejection::OversizedBody { .. } => Refusal::Oversized,
-            Rejection::BodyUnreadable(_) => Refusal::BodyUnreadable,
-            Rejection::BodyTimeout { .. } => Refusal::BodyTimeout,
-            Rejection::NotASubmission(_) => Refusal::NotASubmission,
-            Rejection::UnknownPool { .. } => Refusal::NotAllowlisted,
-            Rejection::RateLimited { .. } => Refusal::RateLimited,
-            Rejection::ServerBusy { .. } => Refusal::ServerBusy,
-            Rejection::BadSignature => Refusal::BadSignature,
-            Rejection::Unauthorised(Unauthorised::NoRoster) => Refusal::NoRoster,
-            Rejection::Unauthorised(Unauthorised::Unregistered { .. }) => {
-                Refusal::LeiosKeyUnregistered
-            }
-            Rejection::StaleTimestamp { .. } => Refusal::ClockSkew,
-            Rejection::UnreadableHeader(_) => Refusal::HeaderUnreadable,
-            Rejection::NotItsProvenance { .. } => Refusal::NotItsProvenance,
-            Rejection::KeylessSchema { .. } => Refusal::KeylessSchema,
-        }
-    }
-}
-
-impl From<&IngestError> for Refusal {
-    fn from(error: &IngestError) -> Refusal {
-        match error {
-            IngestError::Rejected(rejection) => Refusal::from(rejection),
-            IngestError::Archive(_) => Refusal::ArchiveUnavailable,
-        }
-    }
-}
-
 /// Every counter this server keeps. Built once from the allowlist and never
 /// resized, so the series a scrape returns are fixed for the process's life
 /// and a pool that has sent nothing reads zero rather than being absent.
 pub struct Metrics {
     pools: BTreeMap<PoolId, Observed>,
     refused: [AtomicU64; Refusal::ALL.len()],
+    /// `config::MetricsConfig::versions_per_pool`.
+    versions_per_pool: NonZeroUsize,
 }
 
 /// What one allowlisted pool's submissions have added up to.
@@ -141,10 +48,19 @@ struct Observed {
     accepted: PerKind,
     accepted_bytes: PerKind,
     /// Each agent version this pool's submissions reported, against when the
-    /// last of them was archived. A timestamp rather than a count, because a
+    /// last of them landed.
+    versions: Mutex<BTreeMap<String, Landed>>,
+}
+
+/// When a version last landed, told twice for two readers.
+struct Landed {
+    /// What the scrape shows. A timestamp rather than a count, because a
     /// count that reached one and stayed there is what `increase` cannot tell
     /// from no submission at all.
-    versions: Mutex<BTreeMap<String, OffsetDateTime>>,
+    archived_at: OffsetDateTime,
+    /// What eviction orders by. Monotonic, and read under the lock, so the
+    /// version that landed last is the latest here whatever the wall clock did.
+    seen: Instant,
 }
 
 type PerKind = [AtomicU64; Kind::ALL.len()];
@@ -170,7 +86,7 @@ const PER_KIND: [PerKindFamily; 2] = [
 ];
 
 impl Metrics {
-    pub fn new(allowlist: &Codes) -> Metrics {
+    pub fn new(allowlist: &Codes, versions_per_pool: NonZeroUsize) -> Metrics {
         let observed = |pool_id: &PoolId| Observed {
             label: pool_id.to_bech32(),
             accepted: std::array::from_fn(|_| AtomicU64::new(0)),
@@ -183,6 +99,7 @@ impl Metrics {
                 .map(|pool_id| (*pool_id, observed(pool_id)))
                 .collect(),
             refused: std::array::from_fn(|_| AtomicU64::new(0)),
+            versions_per_pool,
         }
     }
 
@@ -193,7 +110,8 @@ impl Metrics {
     /// versions that bound to the same text are one series. `archived_at` is
     /// read once the archive write returned, and only ever moves a version's
     /// time forward, so two submissions finishing out of order cannot set it
-    /// back.
+    /// back. Past `versions_per_pool`, the version that landed longest ago is
+    /// dropped, by `Landed::seen`.
     pub fn accepted(
         &self,
         pool_id: PoolId,
@@ -209,15 +127,19 @@ impl Metrics {
         observed.accepted[kind as usize].fetch_add(1, Ordering::Relaxed);
         observed.accepted_bytes[kind as usize].fetch_add(bytes as u64, Ordering::Relaxed);
         let mut versions = observed.versions.lock().expect("no panic holds this lock");
-        let latest = versions.entry(version).or_insert(archived_at);
-        *latest = (*latest).max(archived_at);
-        if versions.len() > VERSIONS_PER_POOL {
-            let oldest = versions
+        let seen = Instant::now();
+        let landed = versions
+            .entry(version)
+            .or_insert(Landed { archived_at, seen });
+        landed.archived_at = landed.archived_at.max(archived_at);
+        landed.seen = seen;
+        if versions.len() > self.versions_per_pool.get() {
+            let stalest = versions
                 .iter()
-                .min_by_key(|(_, at)| **at)
+                .min_by_key(|(_, landed)| landed.seen)
                 .map(|(version, _)| version.clone())
                 .expect("a map over its bound holds an entry");
-            versions.remove(&oldest);
+            versions.remove(&stalest);
         }
     }
 
@@ -268,9 +190,9 @@ impl Metrics {
         for observed in self.pools.values() {
             let pool = &observed.label;
             let versions = observed.versions.lock().expect("no panic holds this lock");
-            for (version, archived_at) in versions.iter() {
+            for (version, landed) in versions.iter() {
                 let version = escaped(version);
-                let seconds = archived_at.unix_timestamp_nanos() as f64 / 1e9;
+                let seconds = landed.archived_at.unix_timestamp_nanos() as f64 / 1e9;
                 emit(
                     &mut out,
                     format_args!("{name}{{pool=\"{pool}\",version=\"{version}\"}} {seconds}"),

@@ -106,3 +106,8 @@ list_max_rows = 1000
 # top-level listen is what a reverse proxy publishes.
 [metrics]
 listen = "127.0.0.1:8081"
+# Connections are served one at a time, so this is how long one that never
+# asks holds up the scrape behind it. Well under Prometheus' 10s scrape_timeout.
+connection_timeout_ms = 2000
+# Agent versions shown per pool; the one that landed longest ago is dropped past it.
+versions_per_pool = 4

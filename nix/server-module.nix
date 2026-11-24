@@ -88,8 +88,12 @@ let
 
   # The loopback rule both address assertions apply, matched as a literal
   # rather than parsed, as the server's own check is: a name is not enough.
+  # IPv6 is any spelling of ::1, which is zeros and colons up to a last group
+  # of 1; the server refuses a malformed one at load.
   isLoopbackHost =
-    host: builtins.match "127\\.[0-9]+\\.[0-9]+\\.[0-9]+" host != null || host == "[::1]";
+    host:
+    builtins.match "127\\.[0-9]+\\.[0-9]+\\.[0-9]+" host != null
+    || builtins.match "\\[[0:]*:0*1]" host != null;
 
   # TOML has no null, so a nullable setting is left out of the file rather than
   # written as one, and the server reads the absence. No `leios_roster` is no
@@ -350,15 +354,19 @@ in
 
           metrics = mkOption {
             type = types.submodule {
-              options.listen = mkOption {
-                type = types.str;
-                example = "127.0.0.1:8081";
-                description = ''
-                  Where the Prometheus exposition is served, as a loopback
-                  address and port. Its own listener, because the exposition is
-                  unauthenticated and `listen` is what a reverse proxy
-                  publishes; the server refuses anything off loopback.
-                '';
+              options = {
+                listen = mkOption {
+                  type = types.str;
+                  example = "127.0.0.1:8081";
+                  description = ''
+                    Where the Prometheus exposition is served, as a loopback
+                    address and port. Its own listener, because the exposition is
+                    unauthenticated and `listen` is what a reverse proxy
+                    publishes; the server refuses anything off loopback.
+                  '';
+                };
+                connection_timeout_ms = positive;
+                versions_per_pool = positive;
               };
             };
           };

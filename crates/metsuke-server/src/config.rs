@@ -4,7 +4,7 @@
 //! `NonZero`, so serde refuses it at load rather than at first use.
 
 use std::net::SocketAddr;
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -73,6 +73,15 @@ pub struct HttpConfig {
 #[serde(deny_unknown_fields)]
 pub struct MetricsConfig {
     pub listen: LoopbackAddr,
+    /// How long one connection to `listen` may last, from accept to close,
+    /// whatever it is doing. The listener serves one connection at a time, so
+    /// this is how long a connection that never asks delays the scrape queued
+    /// behind it; keep it well under the scraper's own `scrape_timeout`.
+    pub connection_timeout_ms: NonZeroU64,
+    /// Agent versions shown per pool, the one that landed longest ago dropped
+    /// past it. Bounds the series a pool can add to a scrape, since the
+    /// version is text the agent chose.
+    pub versions_per_pool: NonZeroUsize,
 }
 
 /// A socket address on loopback, written as an address and not a name. The

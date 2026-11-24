@@ -14,6 +14,7 @@ pub mod instructions;
 pub mod intake;
 pub mod metrics;
 pub mod ratelimit;
+pub mod refusal;
 pub mod roster;
 pub mod s3;
 pub mod serve;

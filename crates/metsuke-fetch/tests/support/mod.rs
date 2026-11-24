@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
 use std::net::TcpListener;
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -17,7 +17,7 @@ use metsuke_fetch::pull::Archive;
 use metsuke_server::applications::Codes;
 use metsuke_server::archive::{FilesystemArchive, Kind, ObjectName};
 use metsuke_server::config::{
-    AbsolutePath, DeveloperConfig, HttpConfig, IngestConfig, LoopbackAddr,
+    AbsolutePath, DeveloperConfig, HttpConfig, IngestConfig, LoopbackAddr, MetricsConfig,
 };
 use metsuke_server::developer::{Accounts, Developer};
 use metsuke_server::instructions;
@@ -170,8 +170,8 @@ impl Server {
             },
             Accounts::parse(&secret).expect("the test secret parses"),
         );
-        let listener = serve::bind("127.0.0.1:0", LoopbackAddr::localhost(0))
-            .expect("kernel-chosen ports bind");
+        let metrics = metrics_config();
+        let listener = serve::bind("127.0.0.1:0", &metrics).expect("kernel-chosen ports bind");
         let url = format!("http://{}", listener.address());
         let attested: Attested = std::sync::Arc::new(std::sync::Mutex::new(match attest {
             false => HashMap::new(),
@@ -187,6 +187,7 @@ impl Server {
                 attested: std::sync::Arc::clone(&attested),
             },
             None,
+            metrics.versions_per_pool,
         );
         std::thread::spawn(move || {
             // Its own copy of the server suite's value, which metsuke-jfb.33 is
@@ -538,6 +539,15 @@ fn http_config() -> HttpConfig {
         read_timeout_ms: nonzero_u64(30_000),
         write_timeout_ms: nonzero_u64(30_000),
         max_concurrent_requests: nonzero_u32(8),
+    }
+}
+
+/// Nothing here scrapes, so the bounds only have to load.
+fn metrics_config() -> MetricsConfig {
+    MetricsConfig {
+        listen: LoopbackAddr::localhost(0),
+        connection_timeout_ms: nonzero_u64(30_000),
+        versions_per_pool: NonZeroUsize::new(4).expect("four is not zero"),
     }
 }
 

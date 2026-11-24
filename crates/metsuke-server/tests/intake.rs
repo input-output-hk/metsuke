@@ -4,8 +4,8 @@
 
 use metsuke_server::archive::{FilesystemArchive, List, ObjectName};
 use metsuke_server::config::IngestConfig;
-use metsuke_server::http::status_for;
 use metsuke_server::intake::{IngestError, Intake, Rejection};
+use metsuke_server::refusal::Refusal;
 use metsuke_wire::envelope::{
     CONTAINER_MAGIC, ContainerError, Envelope, SCHEMA_VERSION_LINES, SCHEMA_VERSION_SCRAPES,
     SigningKey,
@@ -16,7 +16,7 @@ mod support;
 use support::{
     FailingArchive, attested, cold_submission, envelope_at, envelope_for, intake_for, intake_with,
     lines_envelope_at, nonzero_u32, nonzero_u64, other_key, permissive_config, pool_of, seal,
-    skew_of, test_agent_id, test_key, test_now, trace_line,
+    skew_of, test_agent_id, test_key, test_now, trace_line, versions_per_pool,
 };
 
 fn rejection(error: IngestError) -> Rejection {
@@ -227,7 +227,7 @@ fn tampered_body_is_rejected() {
         .unwrap_err();
 
     let rejection = rejection(error);
-    assert_eq!(status_for(&rejection), 403);
+    assert_eq!(Refusal::from(&rejection).status(), 403);
     assert!(
         matches!(rejection, Rejection::BadSignature),
         "expected the signature check to reject"
@@ -305,7 +305,7 @@ fn the_shared_budget_refuses_a_pool_inside_its_own_limit() {
     let error = submit(&intake, &second, &envelope_for(&second, 1)).unwrap_err();
 
     let rejection = rejection(error);
-    assert_eq!(status_for(&rejection), 429);
+    assert_eq!(Refusal::from(&rejection).status(), 429);
     assert!(
         matches!(rejection, Rejection::ServerBusy { max: 1, .. }),
         "expected the shared window to reject"
@@ -355,7 +355,7 @@ fn a_submission_sealed_outside_the_window_is_refused() {
             .unwrap_err();
 
         let rejection = rejection(error);
-        assert_eq!(status_for(&rejection), 400);
+        assert_eq!(Refusal::from(&rejection).status(), 400);
         assert!(
             matches!(rejection, Rejection::StaleTimestamp { max_secs: 300, .. }),
             "offset {offset}: expected the timestamp check to reject, got {rejection:?}"
@@ -419,7 +419,7 @@ fn a_submission_whose_header_names_another_pool_is_refused() {
         .unwrap_err();
 
     let rejection = rejection(error);
-    assert_eq!(status_for(&rejection), 400);
+    assert_eq!(Refusal::from(&rejection).status(), 400);
     assert!(
         matches!(rejection, Rejection::NotItsProvenance { .. }),
         "got: {rejection:?}"
@@ -444,7 +444,7 @@ fn a_body_that_is_not_a_container_is_refused_before_the_allowlist() {
         .unwrap_err();
 
     let rejection = rejection(error);
-    assert_eq!(status_for(&rejection), 400);
+    assert_eq!(Refusal::from(&rejection).status(), 400);
     assert!(
         matches!(
             rejection,
@@ -489,7 +489,7 @@ fn a_header_frame_that_does_not_read_is_refused() {
     let error = submit_container(&intake, &key, b"{}", 2, b"").unwrap_err();
 
     let rejection = rejection(error);
-    assert_eq!(status_for(&rejection), 400);
+    assert_eq!(Refusal::from(&rejection).status(), 400);
     assert!(
         matches!(rejection, Rejection::UnreadableHeader(_)),
         "expected the header read to reject"
@@ -509,7 +509,7 @@ fn a_schema_version_with_no_key_segment_is_refused() {
     let error = submit_header(&intake, &key, header(&key, unknown), b"").unwrap_err();
 
     let rejection = rejection(error);
-    assert_eq!(status_for(&rejection), 400);
+    assert_eq!(Refusal::from(&rejection).status(), 400);
     assert!(
         matches!(
             rejection,
@@ -556,6 +556,7 @@ fn archive_failure_is_not_a_rejection() {
             reason: "archive is down",
         },
         None,
+        versions_per_pool(),
     );
     let envelope = envelope_for(&key, 1);
     let (body, attestation) = seal(&key, &envelope);

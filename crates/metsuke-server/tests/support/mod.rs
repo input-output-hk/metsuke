@@ -6,7 +6,7 @@
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
-use std::num::{NonZeroU32, NonZeroU64};
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::path::{Path, PathBuf};
 
 use metsuke_server::applications::ApplicationCode;
@@ -15,8 +15,11 @@ use metsuke_server::archive::{
     StoredSubmission,
 };
 use metsuke_server::authority::{Attributed, Signed};
-use metsuke_server::config::{AbsolutePath, DeveloperConfig, HttpConfig, IngestConfig};
-use metsuke_server::developer::{Accounts, percent_decoded};
+use metsuke_server::config::{
+    AbsolutePath, DeveloperConfig, HttpConfig, IngestConfig, LoopbackAddr, MetricsConfig,
+};
+use metsuke_server::developer::{Accounts, Developer, percent_decoded};
+use metsuke_server::http::{self, Answer, Method, Request, SUBMIT_PATH};
 use metsuke_server::instructions::Pages;
 use metsuke_server::intake::Intake;
 use metsuke_wire::envelope::{
@@ -275,7 +278,7 @@ pub fn server_toml(dir: &Path, allowed: &[PoolId]) -> ServerToml {
         archive: filesystem_archive(&dir.join("archive")),
         ingest: ingest_toml(&permissive_config(allowed)),
         developer: developer_toml(dir),
-        metrics: "[metrics]\nlisten = \"127.0.0.1:0\"\n".to_string(),
+        metrics: metrics_toml(&permissive_metrics()),
         downloads: None,
     }
 }
@@ -319,6 +322,39 @@ read_timeout_ms = {read_timeout_ms}
 write_timeout_ms = {write_timeout_ms}
 max_concurrent_requests = {max_concurrent_requests}
 "
+    )
+}
+
+/// `[metrics]` on a kernel-chosen port. The deadline is bounded for the
+/// reason `permissive_http` gives; four versions is what the version tests
+/// count against.
+pub fn permissive_metrics() -> MetricsConfig {
+    MetricsConfig {
+        listen: LoopbackAddr::localhost(0),
+        connection_timeout_ms: nonzero_u64(10_000),
+        versions_per_pool: versions_per_pool(),
+    }
+}
+
+/// What every intake a test builds holds per pool.
+pub fn versions_per_pool() -> NonZeroUsize {
+    NonZeroUsize::new(4).expect("four is not zero")
+}
+
+/// `[metrics]` as the file holds it, destructured as `http_toml` is.
+pub fn metrics_toml(config: &MetricsConfig) -> String {
+    let MetricsConfig {
+        listen,
+        connection_timeout_ms,
+        versions_per_pool,
+    } = config;
+    format!(
+        "[metrics]
+listen = \"{}\"
+connection_timeout_ms = {connection_timeout_ms}
+versions_per_pool = {versions_per_pool}
+",
+        listen.get()
     )
 }
 
@@ -406,11 +442,55 @@ pub fn permissive_config(allowed: &[PoolId]) -> IngestConfig {
 pub fn intake_with(config: IngestConfig) -> (Intake<FilesystemArchive>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let archive = FilesystemArchive::new(&dir.path().join("archive"));
-    (Intake::new(config, archive, None), dir)
+    (Intake::new(config, archive, None, versions_per_pool()), dir)
 }
 
 pub fn intake_for(pools: &[PoolId]) -> (Intake<FilesystemArchive>, tempfile::TempDir) {
     intake_with(permissive_config(pools))
+}
+
+/// What `serve` hands `http::answer`: an intake holding `config` over
+/// `archive`, the suite's developer account, and the shipped pages. `dir` is
+/// held because dropping it deletes what the account file and archive live in.
+pub struct Answering<A: Store> {
+    pub intake: Intake<A>,
+    developer: Developer,
+    pages: http::Pages,
+    _dir: tempfile::TempDir,
+}
+
+impl<A: Store> Answering<A> {
+    pub fn over(config: IngestConfig, archive: A, dir: tempfile::TempDir) -> Answering<A> {
+        Answering {
+            intake: Intake::new(config, archive, None, versions_per_pool()),
+            developer: Developer::new(&developer_config(dir.path()), developer_accounts()),
+            pages: http::Pages::from(test_pages()),
+            _dir: dir,
+        }
+    }
+}
+
+impl<A: Store + Bytes + List> Answering<A> {
+    pub fn answer(&self, request: Request) -> Answer {
+        http::answer(&self.intake, &self.developer, &self.pages, request)
+    }
+}
+
+/// `envelope` sealed by `key` and posted with the two ADR-0001 headers a
+/// well-formed upload carries.
+pub fn submission_request(key: &SigningKey, envelope: &Envelope) -> Request {
+    let (body, attestation) = seal(key, envelope);
+    Request {
+        method: Method::Post,
+        target: SUBMIT_PATH.to_string(),
+        submission: Attributed::decode(
+            Some(&metsuke_wire::hex::encode(&attestation.key_bytes())),
+            Some(&metsuke_wire::hex::encode(&attestation.signature_bytes())),
+            None,
+        ),
+        authorization: None,
+        body,
+    }
 }
 
 /// Permissive but for the freshness window, which `permissive_config` leaves
