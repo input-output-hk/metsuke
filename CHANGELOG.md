@@ -67,6 +67,17 @@ deploy the release and the tag only a name for it, so this entry precedes a
 
 ### Unreleased
 
+Nothing since 0.3.0.
+
+### 0.3.0 — 2026-11-24
+
+A **major** by `docs/releasing.md`, in the minor position because the number is
+still `0.x`: a new required field, so a config from 0.2.1 stops the server.
+
+- The roster reads the BLS key where `pool-state` answers it as of
+  prototype-2026w42, which returns the StakePoolState directly with `blsKey`
+  and `futureStakePoolParams`. The w36 layout is still read, so the generator
+  works across a rolling upgrade.
 - `[metrics] listen` is required: a loopback address the server serves a
   Prometheus exposition on, apart from `listen` so no proxy route reaches it.
   A config without it, or with an address off loopback, stops the server at
