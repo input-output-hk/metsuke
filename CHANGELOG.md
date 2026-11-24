@@ -67,7 +67,13 @@ deploy the release and the tag only a name for it, so this entry precedes a
 
 ### Unreleased
 
-Nothing since 0.2.1.
+- `[metrics] listen` is required: a loopback address the server serves a
+  Prometheus exposition on, apart from `listen` so no proxy route reaches it.
+  A config without it, or with an address off loopback, stops the server at
+  startup, and the NixOS module refuses to evaluate. It counts what the journal
+  already says, so ingest stays visible when a log pipeline drops lines:
+  accepted submissions and bytes per allowlisted pool and kind, refused
+  submissions by reason, and when each pool's agent versions last landed.
 
 ### 0.2.1 — 2026-09-11
 

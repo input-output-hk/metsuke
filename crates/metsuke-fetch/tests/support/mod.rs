@@ -16,7 +16,9 @@ use std::time::Duration;
 use metsuke_fetch::pull::Archive;
 use metsuke_server::applications::Codes;
 use metsuke_server::archive::{FilesystemArchive, Kind, ObjectName};
-use metsuke_server::config::{AbsolutePath, DeveloperConfig, HttpConfig, IngestConfig};
+use metsuke_server::config::{
+    AbsolutePath, DeveloperConfig, HttpConfig, IngestConfig, LoopbackAddr,
+};
 use metsuke_server::developer::{Accounts, Developer};
 use metsuke_server::instructions;
 use metsuke_server::intake::Intake;
@@ -168,7 +170,8 @@ impl Server {
             },
             Accounts::parse(&secret).expect("the test secret parses"),
         );
-        let listener = serve::bind("127.0.0.1:0").expect("a kernel-chosen port binds");
+        let listener = serve::bind("127.0.0.1:0", LoopbackAddr::localhost(0))
+            .expect("kernel-chosen ports bind");
         let url = format!("http://{}", listener.address());
         let attested: Attested = std::sync::Arc::new(std::sync::Mutex::new(match attest {
             false => HashMap::new(),

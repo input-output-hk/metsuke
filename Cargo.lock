@@ -1014,6 +1014,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "metsuke",
  "metsuke-wire",
  "proptest",
  "rusty-s3",

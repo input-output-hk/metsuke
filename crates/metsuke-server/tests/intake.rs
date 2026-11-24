@@ -7,38 +7,17 @@ use metsuke_server::config::IngestConfig;
 use metsuke_server::http::status_for;
 use metsuke_server::intake::{IngestError, Intake, Rejection};
 use metsuke_wire::envelope::{
-    CONTAINER_MAGIC, ContainerError, Envelope, PoolId, SCHEMA_VERSION_LINES,
-    SCHEMA_VERSION_SCRAPES, SigningKey,
+    CONTAINER_MAGIC, ContainerError, Envelope, SCHEMA_VERSION_LINES, SCHEMA_VERSION_SCRAPES,
+    SigningKey,
 };
 use time::Duration;
 
 mod support;
 use support::{
-    FailingArchive, attested, cold_submission, envelope_at, envelope_for, lines_envelope_at,
-    nonzero_u32, nonzero_u64, other_key, permissive_config, pool_of, seal, test_agent_id, test_key,
-    test_now, trace_line,
+    FailingArchive, attested, cold_submission, envelope_at, envelope_for, intake_for, intake_with,
+    lines_envelope_at, nonzero_u32, nonzero_u64, other_key, permissive_config, pool_of, seal,
+    skew_of, test_agent_id, test_key, test_now, trace_line,
 };
-
-/// An intake wired to a temporary directory, ready to submit to. The
-/// directory is returned because dropping it deletes the archive.
-fn intake_with(config: IngestConfig) -> (Intake<FilesystemArchive>, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
-    let archive = FilesystemArchive::new(&dir.path().join("archive"));
-    (Intake::new(config, archive, None), dir)
-}
-
-fn intake_for(pools: &[PoolId]) -> (Intake<FilesystemArchive>, tempfile::TempDir) {
-    intake_with(permissive_config(pools))
-}
-
-/// Permissive but for the freshness window, which `permissive_config` leaves
-/// wide enough that no other test meets it.
-fn skew_of(secs: u32, key: &SigningKey) -> IngestConfig {
-    IngestConfig {
-        max_timestamp_skew_secs: nonzero_u32(secs),
-        ..permissive_config(&[pool_of(key)])
-    }
-}
 
 fn rejection(error: IngestError) -> Rejection {
     match error {

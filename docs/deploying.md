@@ -148,10 +148,11 @@ services.metsuke-server = {
 the one to copy from, and it is the only place either the values or the reason
 for each is written down, because a test reads it.
 
-Three of its fields are decisions rather than defaults. Bind `listen` to
-loopback and put a TLS terminator in front of it. `archive.s3` names the bucket
-and region the step above created. `ingest.allowlist` is the generated table,
-never a hand-written one.
+Four of its fields are decisions rather than defaults. Bind `listen` to
+loopback and put a TLS terminator in front of it. `metrics.listen` is a second
+loopback port, which only a scraper on the host reads and nothing proxies.
+`archive.s3` names the bucket and region the step above created.
+`ingest.allowlist` is the generated table, never a hand-written one.
 
 `settings.downloads` names store paths, so where those builds come from is a
 deployment decision rather than a value to copy. Take them from a second

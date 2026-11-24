@@ -28,6 +28,7 @@
 let
   metricsPort = 12798;
   listenPort = 8080;
+  serverMetricsPort = 8081;
   # What `signingKey` below hashes to: the agent refuses to start unless the
   # two agree (`identity::check_pool_id`), so a wrong value here fails the test
   # rather than travelling.
@@ -95,6 +96,7 @@ let
         archive.filesystem.root = "${stateDirectory}/archive";
         listen = "127.0.0.1:${toString listenPort}";
         public_url = "https://metsuke.example.org";
+        metrics.listen = "127.0.0.1:${toString serverMetricsPort}";
         http = {
           idle_timeout_ms = 30000;
           read_timeout_ms = 60000;

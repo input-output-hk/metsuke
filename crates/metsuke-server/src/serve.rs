@@ -24,11 +24,12 @@ use tokio::sync::{Semaphore, mpsc};
 
 use crate::archive::{Bytes as ArchiveBytes, List, ObjectStream, Store};
 use crate::authority::Attributed;
-use crate::config::HttpConfig;
+use crate::config::{HttpConfig, LoopbackAddr};
 use crate::developer::Developer;
 use crate::http::{self, Answer, AnswerBody, Method, Request};
 use crate::instructions;
-use crate::intake::Intake;
+use crate::intake::{Intake, Rejection};
+use crate::metrics::{Metrics, Refusal};
 
 /// How much of an object is moved per read: copy granularity, not a bound
 /// anything can observe (CLAUDE.md `## Conventions`). Never a frame size. No
@@ -42,31 +43,74 @@ struct Serving<A: Store> {
     pages: http::Pages,
 }
 
-/// A bound listener that has not been served yet. Two steps because the
-/// startup line names the address the kernel chose (`main::serve`).
+/// Both bound listeners, not served yet. Two steps because the startup lines
+/// name the addresses the kernel chose (`main::serve`).
 pub struct Listener {
     runtime: tokio::runtime::Runtime,
     listener: TcpListener,
     address: SocketAddr,
+    scrapes: TcpListener,
+    metrics_address: SocketAddr,
 }
 
-/// Bind `listen`, on a runtime this owns. One thread for the accept loop and
-/// the connections, plus the blocking pool everything that touches the archive
-/// runs on: the archive is reached with ureq, so a store or a fetch would
-/// otherwise stop every other connection this thread is serving. Nothing left
-/// on the async side blocks, so a second scheduler thread would buy nothing.
-pub fn bind(listen: &str) -> Result<Listener, io::Error> {
+/// Which socket could not be bound, so the error names the setting to fix.
+#[derive(Debug, thiserror::Error)]
+pub enum BindError {
+    #[error("cannot start the runtime: {0}")]
+    Runtime(#[source] io::Error),
+    #[error("cannot listen on {listen}: {source}")]
+    Submissions {
+        listen: String,
+        #[source]
+        source: io::Error,
+    },
+    #[error("cannot serve metrics on {listen}: {source}")]
+    Metrics {
+        listen: SocketAddr,
+        #[source]
+        source: io::Error,
+    },
+}
+
+/// Bind `listen` and `metrics`, on a runtime this owns. One thread for both
+/// accept loops and the connections, plus the blocking pool everything that
+/// touches the archive runs on: the archive is reached with ureq, so a store or
+/// a fetch would otherwise stop every other connection this thread is serving.
+/// Nothing left on the async side blocks, so a second scheduler thread would
+/// buy nothing. Both are bound before either is announced, so a server that
+/// says it is accepting is one a scraper can also reach.
+pub fn bind(listen: &str, metrics: LoopbackAddr) -> Result<Listener, BindError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .enable_time()
-        .build()?;
-    let listener = runtime.block_on(TcpListener::bind(listen))?;
-    let address = listener.local_addr()?;
+        .build()
+        .map_err(BindError::Runtime)?;
+    let (listener, address) = bound(&runtime, listen).map_err(|source| BindError::Submissions {
+        listen: listen.to_string(),
+        source,
+    })?;
+    let (scrapes, metrics_address) =
+        bound(&runtime, metrics.get()).map_err(|source| BindError::Metrics {
+            listen: metrics.get(),
+            source,
+        })?;
     Ok(Listener {
         runtime,
         listener,
         address,
+        scrapes,
+        metrics_address,
     })
+}
+
+/// One socket bound, with the address the kernel chose for it.
+fn bound(
+    runtime: &tokio::runtime::Runtime,
+    at: impl tokio::net::ToSocketAddrs,
+) -> Result<(TcpListener, SocketAddr), io::Error> {
+    let listener = runtime.block_on(TcpListener::bind(at))?;
+    let address = listener.local_addr()?;
+    Ok((listener, address))
 }
 
 impl Listener {
@@ -74,8 +118,14 @@ impl Listener {
         self.address
     }
 
-    /// Serve until accepting fails in a way this process cannot serve through
-    /// (`one_connection`). Only returns on that.
+    pub fn metrics_address(&self) -> SocketAddr {
+        self.metrics_address
+    }
+
+    /// Serve both until either fails to accept in a way this process cannot
+    /// serve through (`one_connection`). Only returns on that: a server whose
+    /// metrics listener died would otherwise look, to everything watching it,
+    /// like one that stopped accepting submissions.
     pub fn serve<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
         self,
         limits: HttpConfig,
@@ -83,13 +133,56 @@ impl Listener {
         developer: Developer,
         pages: instructions::Pages,
     ) -> Result<std::convert::Infallible, io::Error> {
+        let metrics = Arc::clone(intake.metrics());
         let serving = Arc::new(Serving {
             intake,
             developer,
             pages: http::Pages::from(pages),
         });
-        self.runtime
-            .block_on(accept(self.listener, limits, serving))
+        let idle = millis(limits.idle_timeout_ms.get());
+        let write_timeout = millis(limits.write_timeout_ms.get());
+        self.runtime.block_on(async move {
+            let mut submissions = std::pin::pin!(accept(self.listener, limits, serving));
+            let mut scrapes = std::pin::pin!(expose(self.scrapes, idle, write_timeout, metrics));
+            std::future::poll_fn(|context| match submissions.as_mut().poll(context) {
+                Poll::Ready(stopped) => Poll::Ready(stopped),
+                Poll::Pending => scrapes.as_mut().poll(context),
+            })
+            .await
+        })
+    }
+}
+
+/// The metrics listener's loop: one connection at a time, one request each.
+/// A scraper asks once a period, so serial costs nothing, and it is what gives
+/// this listener its own capacity rather than a share of the submission
+/// route's slots. The head and stalled-write deadlines are the submission
+/// route's, so a connection that never asks holds the loop no longer than one
+/// idle client holds a slot there.
+async fn expose(
+    listener: TcpListener,
+    idle: Duration,
+    write_timeout: Duration,
+    metrics: Arc<Metrics>,
+) -> Result<std::convert::Infallible, io::Error> {
+    loop {
+        let stream = next_stream(&listener, "a metrics connection").await?;
+        let service = service_fn(|request: hyper::Request<Incoming>| {
+            let answer = http::scrape(&metrics, method_of(request.method()), request.uri().path());
+            async move { Ok::<_, std::convert::Infallible>(respond(answer)) }
+        });
+        let served = connection(idle)
+            .keep_alive(false)
+            .serve_connection(
+                TokioIo::new(WriteDeadline::new(stream, write_timeout)),
+                service,
+            )
+            .await;
+        if let Err(error) = served
+            && !error.is_timeout()
+        {
+            eprintln!("{WARNING}a metrics scrape ended: {error}");
+        }
     }
 }
 
@@ -110,20 +203,7 @@ async fn accept<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
             .acquire_owned()
             .await
             .expect("the semaphore is never closed while the loop runs");
-        let stream = match listener.accept().await {
-            Ok((stream, _)) => stream,
-            // Losing every submission in flight over one client would be the
-            // wrong trade (`one_connection`).
-            Err(error) if one_connection(&error) => {
-                eprintln!("{WARNING}a connection was not accepted: {error}");
-                continue;
-            }
-            // Everything else, descriptor exhaustion above all, is the
-            // host's, and a process that keeps looping on it accepts nothing
-            // while looking healthy. Exiting hands the wait to systemd, which
-            // holds a restart for `RestartSec` (nix/unit.nix).
-            Err(error) => return Err(error),
-        };
+        let stream = next_stream(&listener, "a connection").await?;
         let serving = Arc::clone(&serving);
         tokio::task::spawn(async move {
             let _slot = slot;
@@ -143,9 +223,7 @@ async fn accept<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
                     )
                 }
             });
-            let served = hyper::server::conn::http1::Builder::new()
-                .timer(TokioTimer::new())
-                .header_read_timeout(idle)
+            let served = connection(idle)
                 .serve_connection(
                     TokioIo::new(WriteDeadline::new(stream, write_timeout)),
                     service,
@@ -166,6 +244,33 @@ async fn accept<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
             }
         });
     }
+}
+
+/// The next connection either listener serves. Losing every request in flight
+/// over one client would be the wrong trade, so a failure that was one
+/// connection's own is logged and skipped (`one_connection`). Everything else,
+/// descriptor exhaustion above all, is the host's, and a process that keeps
+/// looping on it accepts nothing while looking healthy: it is returned, which
+/// ends the process and hands the wait to systemd, which holds a restart for
+/// `RestartSec` (nix/unit.nix).
+async fn next_stream(listener: &TcpListener, what: &str) -> Result<TcpStream, io::Error> {
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => return Ok(stream),
+            Err(error) if one_connection(&error) => {
+                eprintln!("{WARNING}{what} was not accepted: {error}");
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// What both listeners serve a connection with: `idle_timeout_ms` bounds the
+/// head, and `WriteDeadline` the writes, which hyper has no bound of its own for.
+fn connection(idle: Duration) -> hyper::server::conn::http1::Builder {
+    let mut builder = hyper::server::conn::http1::Builder::new();
+    builder.timer(TokioTimer::new()).header_read_timeout(idle);
+    builder
 }
 
 /// Whether an accept failure was about the connection that failed rather than
@@ -206,16 +311,7 @@ async fn handle<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
     request: hyper::Request<Incoming>,
 ) -> Result<hyper::Response<ResponseBody>, std::convert::Infallible> {
     let (parts, body) = request.into_parts();
-    let method = match parts.method {
-        hyper::Method::GET => Method::Get,
-        // Answered as its GET, and hyper writes the head alone: the encoder
-        // knows the request method and drops the body, so `Content-Length` is
-        // the length a GET would have sent rather than the zero an empty body
-        // built here would report.
-        hyper::Method::HEAD => Method::Head,
-        hyper::Method::POST => Method::Post,
-        _ => Method::Other,
-    };
+    let method = method_of(&parts.method);
     let target = parts
         .uri
         .path_and_query()
@@ -252,18 +348,33 @@ async fn handle<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
         None => blocking(serving, decoded).await,
         Some(_) => {
             let max = serving.intake.max_body_bytes();
-            match read_body(body, &parts.headers, max, read_timeout, signer).await {
+            match read_body(body, &parts.headers, max, read_timeout).await {
                 Ok(body) => blocking(serving, Request { body, ..decoded }).await,
-                Err(refused) => refused,
+                Err(rejection) => {
+                    http::refuse_submission(serving.intake.metrics(), signer, rejection.into())
+                }
             }
         }
     };
     Ok(respond(answer))
 }
 
+fn method_of(method: &hyper::Method) -> Method {
+    match *method {
+        hyper::Method::GET => Method::Get,
+        // Answered as its GET, and hyper writes the head alone: the encoder
+        // knows the request method and drops the body, so `Content-Length` is
+        // the length a GET would have sent rather than the zero an empty body
+        // built here would report.
+        hyper::Method::HEAD => Method::Head,
+        hyper::Method::POST => Method::Post,
+        _ => Method::Other,
+    }
+}
+
 /// Whose body to read, where there is one to read.
 fn takes_a_body(request: &Request) -> Option<PoolId> {
-    match request.method == Method::Post && request.path() == http::SUBMIT_PATH {
+    match request.is_submission() {
         true => request.submission.as_ref().ok().map(|it| it.pool_id()),
         false => None,
     }
@@ -273,6 +384,11 @@ async fn blocking<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
     serving: Arc<Serving<A>>,
     request: Request,
 ) -> Answer {
+    // Held for the panic arm alone, which has no `IngestError` to refuse with
+    // and so is counted here rather than by `http::refuse_submission`.
+    let submission = request
+        .is_submission()
+        .then(|| Arc::clone(serving.intake.metrics()));
     tokio::task::spawn_blocking(move || {
         http::answer(&serving.intake, &serving.developer, &serving.pages, request)
     })
@@ -282,6 +398,9 @@ async fn blocking<A: Store + ArchiveBytes + List + Send + Sync + 'static>(
         // client gets a 503 rather than a dropped connection it would read as
         // a network fault.
         eprintln!("{ERR}answering panicked: {error}");
+        if let Some(metrics) = submission {
+            metrics.refused(Refusal::Panicked);
+        }
         http::refuse(None, 503, "the server could not answer".to_string())
     })
 }
@@ -295,25 +414,20 @@ async fn read_body(
     headers: &hyper::HeaderMap,
     max: u64,
     read_timeout: Duration,
-    signer: Option<PoolId>,
-) -> Result<Vec<u8>, Answer> {
+) -> Result<Vec<u8>, Rejection> {
     if let Some(declared) = declared_length(headers)
         && declared > max
     {
-        return Err(http::oversized(signer, declared as usize, max));
+        return Err(Rejection::OversizedBody {
+            found: declared as usize,
+            max,
+        });
     }
-    match tokio::time::timeout(read_timeout, bounded(body, max, signer)).await {
-        Ok(Ok(body)) => Ok(body),
-        Ok(Err(refused)) => Err(refused),
-        Err(_) => Err(http::refuse(
-            signer,
-            408,
-            format!(
-                "the request body did not arrive within {}s",
-                read_timeout.as_secs()
-            ),
-        )),
-    }
+    tokio::time::timeout(read_timeout, bounded(body, max))
+        .await
+        .unwrap_or(Err(Rejection::BodyTimeout {
+            secs: read_timeout.as_secs(),
+        }))
 }
 
 fn declared_length(headers: &hyper::HeaderMap) -> Option<u64> {
@@ -328,20 +442,17 @@ fn declared_length(headers: &hyper::HeaderMap) -> Option<u64> {
 /// Frames appended until the body ends or passes `max`. Stopping at the frame
 /// that crosses the cap is what bounds a chunked body, which declares no
 /// length to refuse in advance.
-async fn bounded(mut body: Incoming, max: u64, signer: Option<PoolId>) -> Result<Vec<u8>, Answer> {
+async fn bounded(mut body: Incoming, max: u64) -> Result<Vec<u8>, Rejection> {
     let mut collected = Vec::new();
     while let Some(frame) = body.frame().await {
-        let frame = frame.map_err(|error| {
-            http::refuse(
-                signer,
-                400,
-                format!("could not read the request body: {error}"),
-            )
-        })?;
+        let frame = frame.map_err(|error| Rejection::BodyUnreadable(error.to_string()))?;
         if let Some(data) = frame.data_ref() {
             collected.extend_from_slice(data);
             if collected.len() as u64 > max {
-                return Err(http::oversized(signer, collected.len(), max));
+                return Err(Rejection::OversizedBody {
+                    found: collected.len(),
+                    max,
+                });
             }
         }
     }

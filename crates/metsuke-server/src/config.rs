@@ -3,6 +3,7 @@
 //! and zero is the same mistake. Every field where it means nothing is a
 //! `NonZero`, so serde refuses it at load rather than at first use.
 
+use std::net::SocketAddr;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::path::{Path, PathBuf};
 
@@ -27,6 +28,7 @@ pub struct ServerConfig {
     pub archive: ArchiveConfig,
     pub ingest: IngestConfig,
     pub developer: DeveloperConfig,
+    pub metrics: MetricsConfig,
     /// The static agent builds this deployment offers, so an operator needs no
     /// nix to get one. Optional as a whole rather than defaulted, because a
     /// deployment that ships none is a deployment whose page must say so, and
@@ -62,6 +64,52 @@ pub struct HttpConfig {
     /// Connections served at once, held from accept to close. HTTP/1.1 carries
     /// one request per connection at a time, so this is the request cap too.
     pub max_concurrent_requests: NonZeroU32,
+}
+
+/// Where the Prometheus exposition is served (`metrics`). Not optional: a
+/// deployment that cannot see what it accepts is watching its journal instead,
+/// and a journal is what a log pipeline under pressure drops first.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetricsConfig {
+    pub listen: LoopbackAddr,
+}
+
+/// A socket address on loopback, written as an address and not a name. The
+/// exposition answers anyone who reaches it, and `listen` is what a reverse
+/// proxy publishes, so this listener has to be one no proxy route can reach:
+/// its own port, bound where only this host connects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "SocketAddr")]
+pub struct LoopbackAddr(SocketAddr);
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "metrics.listen {0} is not a loopback address: the exposition is unauthenticated, \
+     so only this host may reach it"
+)]
+pub struct NotLoopback(SocketAddr);
+
+impl TryFrom<SocketAddr> for LoopbackAddr {
+    type Error = NotLoopback;
+
+    fn try_from(address: SocketAddr) -> Result<LoopbackAddr, NotLoopback> {
+        match address.ip().is_loopback() {
+            true => Ok(LoopbackAddr(address)),
+            false => Err(NotLoopback(address)),
+        }
+    }
+}
+
+impl LoopbackAddr {
+    /// 127.0.0.1 at `port`, loopback by construction; 0 has the kernel choose.
+    pub fn localhost(port: u16) -> LoopbackAddr {
+        LoopbackAddr(SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)))
+    }
+
+    pub fn get(&self) -> SocketAddr {
+        self.0
+    }
 }
 
 /// A path the config states in full. Relative would be resolved against

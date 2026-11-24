@@ -132,16 +132,17 @@ impl Server {
             .unwrap()
     }
 
-    /// How many sockets the serving process holds, the listener excluded: a
-    /// connection still in the kernel's backlog is not one of them.
+    /// How many sockets the serving process holds, the two listeners excluded:
+    /// a connection still in the kernel's backlog is not one of them.
     fn connections(&self) -> usize {
         let sockets = std::fs::read_dir(format!("/proc/{}/fd", self.child.id()))
             .expect("a live process has a descriptor table")
             .filter_map(|entry| std::fs::read_link(entry.ok()?.path()).ok())
             .filter(|target| target.to_string_lossy().starts_with("socket:"))
             .count();
-        // Less the listener, which is open for the process's whole life.
-        sockets - 1
+        // Less the submission and metrics listeners, which are open for the
+        // process's whole life.
+        sockets - 2
     }
 
     /// Kill the server, so what follows reads files nobody is writing.
@@ -620,6 +621,50 @@ fn an_s3_archive_without_credentials_exits_nonzero_naming_them() {
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("AWS_ACCESS_KEY_ID"), "{stderr}");
+}
+
+/// The same, where a log pipeline under pressure cannot drop it: the metrics
+/// listener is bound and announced at startup, answers its one route, and
+/// counts what the submission route did.
+#[test]
+fn the_metrics_listener_counts_what_the_submission_route_did() {
+    let key = test_key();
+    let server = Server::start(&[pool_of(&key)]);
+    assert_eq!(server.post(&key, &envelope_now(&key, 1)).0, 200);
+    let stranger = other_key();
+    assert_eq!(server.post(&stranger, &envelope_now(&stranger, 1)).0, 403);
+
+    let announced = "metrics for scraping at ";
+    let logged = server.logged_until(announced);
+    let url = logged
+        .lines()
+        .find_map(|line| Some(line.split_once(announced)?.1.trim().to_string()))
+        .unwrap_or_else(|| panic!("no metrics address announced, got: {logged}"));
+    let mut response = agent().get(&url).call().unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(
+        response.headers().get("content-type").unwrap(),
+        metsuke_server::metrics::CONTENT_TYPE
+    );
+    let body = response.body_mut().read_to_string().unwrap();
+    let pool = pool_of(&key).to_bech32();
+    for sample in [
+        format!("metsuke_submissions_accepted_total{{pool=\"{pool}\",kind=\"metrics\"}} 1\n"),
+        "metsuke_submissions_refused_total{reason=\"not_allowlisted\"} 1\n".to_string(),
+    ] {
+        assert!(body.contains(&sample), "want {sample:?} in: {body}");
+    }
+
+    let base = url
+        .strip_suffix(metsuke_server::metrics::PATH)
+        .expect("the announced address names the route");
+    let elsewhere = agent()
+        .get(format!("{base}/v1/submissions"))
+        .call()
+        .unwrap();
+    assert_eq!(elsewhere.status().as_u16(), 404);
+    let posted = agent().post(&url).send(Vec::<u8>::new()).unwrap();
+    assert_eq!(posted.status().as_u16(), 405);
 }
 
 /// A working server has to look like one. The archive is the record of what

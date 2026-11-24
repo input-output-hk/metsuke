@@ -12,6 +12,7 @@ pub mod developer;
 pub mod http;
 pub mod instructions;
 pub mod intake;
+pub mod metrics;
 pub mod ratelimit;
 pub mod roster;
 pub mod s3;

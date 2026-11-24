@@ -8,7 +8,7 @@ use metsuke_server::archive::{Bytes, FilesystemArchive, List, Store};
 use metsuke_server::cli::{Args, ArgsError, Command, USAGE, VERSION};
 use metsuke_server::config::{
     ArchiveConfig, ConfigError, DeveloperConfig, DownloadsConfig, HttpConfig, IngestConfig,
-    S3Config, ServerConfig,
+    MetricsConfig, S3Config, ServerConfig,
 };
 use metsuke_server::developer::{Accounts, AccountsError, Developer};
 use metsuke_server::http;
@@ -67,8 +67,8 @@ enum Fatal {
     ArchiveNotVerified { failed: usize, unreadable: usize },
     #[error("the archive holds no objects, so nothing was verified")]
     ArchiveEmpty,
-    #[error("cannot listen on {listen}: {reason}")]
-    Listen { listen: String, reason: String },
+    #[error(transparent)]
+    Bind(#[from] serve::BindError),
     /// Mid-life, not startup: why it is fatal is `serve::Listener::serve`.
     #[error("the listener stopped accepting: {0}")]
     Accept(#[from] std::io::Error),
@@ -115,6 +115,7 @@ fn run() -> Result<(), Fatal> {
         archive,
         ingest,
         developer,
+        metrics,
         downloads,
     } = ServerConfig::from_toml(&text)?;
     let serving = Serving {
@@ -123,6 +124,7 @@ fn run() -> Result<(), Fatal> {
         http,
         ingest,
         developer,
+        metrics,
         downloads,
     };
     // The archive kind is matched once: pairing it with the subcommand would
@@ -168,6 +170,7 @@ struct Serving {
     http: HttpConfig,
     ingest: IngestConfig,
     developer: DeveloperConfig,
+    metrics: MetricsConfig,
     downloads: Option<DownloadsConfig>,
 }
 
@@ -251,6 +254,7 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
         http: limits,
         ingest,
         developer: credentials,
+        metrics,
         downloads,
     } = serving;
     // Read here rather than at load: `verify-archive` answers no developer
@@ -271,10 +275,7 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
     // this server already offers, is the deployment's mistake and this is
     // where it should stop.
     let pages = instructions::pages(public_url.as_url(), agent_builds(downloads.as_ref())?)?;
-    let listener = serve::bind(&listen).map_err(|source| Fatal::Listen {
-        listen: listen.clone(),
-        reason: source.to_string(),
-    })?;
+    let listener = serve::bind(&listen, metrics.listen)?;
     // The bound address, not the configured one: `:0` is how the tests and
     // any readiness check learn the port.
     eprintln!(
@@ -282,6 +283,13 @@ fn serve<A: Store + Bytes + List + Send + Sync + 'static>(
         ingest.allowlist.len(),
         listener.address(),
         http::SUBMIT_PATH,
+    );
+    // A line of its own, after the one above: that one is what a readiness
+    // wait reads the submission address off.
+    eprintln!(
+        "{INFO}metrics for scraping at http://{}{}",
+        listener.metrics_address(),
+        metsuke_server::metrics::PATH,
     );
     match &roster {
         Some(roster) => {

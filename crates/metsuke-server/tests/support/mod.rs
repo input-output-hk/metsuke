@@ -11,12 +11,14 @@ use std::path::{Path, PathBuf};
 
 use metsuke_server::applications::ApplicationCode;
 use metsuke_server::archive::{
-    ArchiveError, Bytes, Kind, List, ObjectName, ObjectStream, Page, Store, StoredSubmission,
+    ArchiveError, Bytes, FilesystemArchive, Kind, List, ObjectName, ObjectStream, Page, Store,
+    StoredSubmission,
 };
 use metsuke_server::authority::{Attributed, Signed};
 use metsuke_server::config::{AbsolutePath, DeveloperConfig, HttpConfig, IngestConfig};
 use metsuke_server::developer::{Accounts, percent_decoded};
 use metsuke_server::instructions::Pages;
+use metsuke_server::intake::Intake;
 use metsuke_wire::envelope::{
     self, AgentId, Attestation, Envelope, Payload, PayloadLine, PoolId, Provenance, Scrape,
     SigningKey, SubmissionKey, TraceLine,
@@ -215,6 +217,7 @@ pub struct ServerToml {
     pub archive: String,
     pub ingest: String,
     pub developer: String,
+    pub metrics: String,
     /// `[downloads]` as the file holds it, and `None` where the deployment
     /// offers no build, which is the section's own default and what the rest
     /// of the suite runs on.
@@ -272,6 +275,7 @@ pub fn server_toml(dir: &Path, allowed: &[PoolId]) -> ServerToml {
         archive: filesystem_archive(&dir.join("archive")),
         ingest: ingest_toml(&permissive_config(allowed)),
         developer: developer_toml(dir),
+        metrics: "[metrics]\nlisten = \"127.0.0.1:0\"\n".to_string(),
         downloads: None,
     }
 }
@@ -327,6 +331,7 @@ impl ServerToml {
             self.archive.clone(),
             self.ingest.clone(),
             self.developer.clone(),
+            self.metrics.clone(),
         ]
         .into_iter()
         .chain(self.downloads.clone())
@@ -393,6 +398,27 @@ pub fn permissive_config(allowed: &[PoolId]) -> IngestConfig {
         rate_limit_uploads_total: nonzero_u32(1000),
         rate_limit_window_secs: nonzero_u32(3600),
         leios_roster: None,
+    }
+}
+
+/// An intake wired to a temporary directory, ready to submit to. The
+/// directory is returned because dropping it deletes the archive.
+pub fn intake_with(config: IngestConfig) -> (Intake<FilesystemArchive>, tempfile::TempDir) {
+    let dir = tempfile::tempdir().unwrap();
+    let archive = FilesystemArchive::new(&dir.path().join("archive"));
+    (Intake::new(config, archive, None), dir)
+}
+
+pub fn intake_for(pools: &[PoolId]) -> (Intake<FilesystemArchive>, tempfile::TempDir) {
+    intake_with(permissive_config(pools))
+}
+
+/// Permissive but for the freshness window, which `permissive_config` leaves
+/// wide enough that no other test meets it.
+pub fn skew_of(secs: u32, key: &SigningKey) -> IngestConfig {
+    IngestConfig {
+        max_timestamp_skew_secs: nonzero_u32(secs),
+        ..permissive_config(&[pool_of(key)])
     }
 }
 

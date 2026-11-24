@@ -58,6 +58,10 @@ blake2 = "0.10.6"
 ed25519-dalek = "3.0.0"
 
 [dev-dependencies]
+# The agent's own exposition parser, written for cardano-node's endpoint and
+# not for this server's: what reads `metrics::Metrics::render` back in a test
+# is then not the code that wrote it.
+metsuke = { path = "../metsuke" }
 metsuke-wire = { path = "../metsuke-wire", features = ["fixtures"] }
 proptest = "1.11.0"
 tempfile = "3.27.0"

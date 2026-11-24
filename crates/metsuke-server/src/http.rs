@@ -24,9 +24,13 @@ use crate::authority::{Attributed, AttributionError};
 use crate::developer::{self, Developer, Filters, Unauthorized};
 use crate::instructions;
 use crate::intake::{IngestError, Intake, Rejection};
+use crate::metrics::{self, Metrics, Refusal};
 
 /// Where submissions arrive.
 pub const SUBMIT_PATH: &str = "/v1/submit";
+
+/// What every refusal and every unrouted answer is written as.
+const TEXT_PLAIN: &str = "text/plain; charset=utf-8";
 
 /// The developer routes and the field a download names its object in
 /// (`metsuke_wire::http`), re-exported so a route reads off one name here.
@@ -63,6 +67,12 @@ pub struct Request {
 }
 
 impl Request {
+    /// Whether this is a submission, which is the one route whose refusals
+    /// are counted (`refuse_submission`).
+    pub fn is_submission(&self) -> bool {
+        self.method == Method::Post && self.path() == SUBMIT_PATH
+    }
+
     /// The route the target names, which is the target up to its query.
     pub fn path(&self) -> &str {
         self.target.split('?').next().unwrap_or_default()
@@ -78,9 +88,12 @@ impl Request {
 pub fn status_for(rejection: &Rejection) -> u16 {
     match rejection {
         Rejection::OversizedBody { .. } => 413,
+        Rejection::BodyTimeout { .. } => 408,
         Rejection::RateLimited { .. } | Rejection::ServerBusy { .. } => 429,
         Rejection::UnknownPool { .. } | Rejection::BadSignature | Rejection::Unauthorised(_) => 403,
-        Rejection::NotASubmission(_)
+        Rejection::Unattributed(_)
+        | Rejection::BodyUnreadable(_)
+        | Rejection::NotASubmission(_)
         | Rejection::UnreadableHeader(_)
         | Rejection::KeylessSchema { .. }
         | Rejection::NotItsProvenance { .. }
@@ -228,7 +241,7 @@ pub fn answer<A: Store + Bytes + List>(
         // A known route reached with the wrong method is named, because a
         // client that guessed the method is not a client at the wrong address.
         SUBMIT_PATH => match request.method {
-            Method::Post => submit(intake, &request),
+            Method::Post => submit(intake, request),
             _ => refuse(None, 405, format!("{SUBMIT_PATH} takes POST")),
         },
         // Authentication comes before the method check: answering 405 first
@@ -255,6 +268,29 @@ pub fn answer<A: Store + Bytes + List>(
             404,
             format!("no route {path}, submissions go to {SUBMIT_PATH}"),
         ),
+    }
+}
+
+/// What the metrics listener answers, which is one route and nothing else.
+/// Unlogged, unlike `refuse`: only this host reaches it, and a scraper's
+/// wrong path is not a refusal anyone needs in the journal.
+pub fn scrape(metrics: &Metrics, method: Method, path: &str) -> Answer {
+    let (status, content_type, body) = match (path, method) {
+        (metrics::PATH, Method::Get | Method::Head) => {
+            (200, metrics::CONTENT_TYPE, metrics.render())
+        }
+        (metrics::PATH, _) => (405, TEXT_PLAIN, format!("{} takes GET", metrics::PATH)),
+        _ => (
+            404,
+            TEXT_PLAIN,
+            format!("no route {path}, metrics are at {}", metrics::PATH),
+        ),
+    };
+    Answer {
+        status,
+        content_type,
+        body: AnswerBody::Bytes(body.into_bytes().into()),
+        headers: Vec::new(),
     }
 }
 
@@ -351,10 +387,12 @@ fn unavailable(signer: Option<PoolId>, reason: &str, withheld: &str) -> Answer {
     refuse_withholding(signer, 503, reason.to_string(), Some(withheld.to_string()))
 }
 
-fn submit<A: Store>(intake: &Intake<A>, request: &Request) -> Answer {
-    let headers = match &request.submission {
+fn submit<A: Store>(intake: &Intake<A>, request: Request) -> Answer {
+    let headers = match request.submission {
         Ok(headers) => headers,
-        Err(error) => return refuse(None, 400, error.to_string()),
+        Err(error) => {
+            return refuse_submission(intake.metrics(), None, Rejection::from(error).into());
+        }
     };
     let claimed = headers.pool_id();
     let submission = headers.over(&request.body);
@@ -369,26 +407,23 @@ fn submit<A: Store>(intake: &Intake<A>, request: &Request) -> Answer {
             ),
             headers: Vec::new(),
         },
-        Err(IngestError::Rejected(rejection)) => {
-            refuse(Some(claimed), status_for(&rejection), rejection.to_string())
-        }
-        Err(IngestError::Archive(error)) => unavailable(
-            Some(claimed),
-            "the archive cannot be written",
-            &error.to_string(),
-        ),
+        Err(error) => refuse_submission(intake.metrics(), Some(claimed), error),
     }
 }
 
-/// The 413 an oversized body earns, worded by the intake so the client reads
-/// one sentence for the cap whichever layer caught it. `serve` is the layer
-/// that catches it, because it is the one reading the body.
-pub fn oversized(signer: Option<PoolId>, found: usize, max: u64) -> Answer {
-    refuse(
-        signer,
-        413,
-        Rejection::OversizedBody { found, max }.to_string(),
-    )
+/// Every refusal of the submission route, whichever layer caught it: counted
+/// by its reason, then answered. The one way to refuse a submission, so none
+/// can be answered and go uncounted.
+pub fn refuse_submission(metrics: &Metrics, signer: Option<PoolId>, error: IngestError) -> Answer {
+    metrics.refused(Refusal::from(&error));
+    match error {
+        IngestError::Rejected(rejection) => {
+            refuse(signer, status_for(&rejection), rejection.to_string())
+        }
+        IngestError::Archive(error) => {
+            unavailable(signer, "the archive cannot be written", &error.to_string())
+        }
+    }
 }
 
 /// Every refusal is logged: the reason text is the only record of why a
@@ -413,7 +448,7 @@ fn refuse_withholding(
     eprintln!("{severity}refused {}: {status}, {logged}", named(signer));
     Answer {
         status,
-        content_type: "text/plain; charset=utf-8",
+        content_type: TEXT_PLAIN,
         body: AnswerBody::Bytes(reason.into_bytes().into()),
         headers: Vec::new(),
     }

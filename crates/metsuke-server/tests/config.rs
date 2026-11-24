@@ -14,6 +14,7 @@ use support::{example_archive, example_config as example, pool_of, server_toml, 
 fn the_shipped_example_config_loads() {
     let config = ServerConfig::from_toml(&example()).unwrap();
     assert_eq!(config.listen, "127.0.0.1:8080");
+    assert_eq!(config.metrics.listen.get().to_string(), "127.0.0.1:8081");
     assert!(config.ingest.allowlist.contains_key(&pool_of(&test_key())));
     assert_eq!(config.ingest.rate_limit_uploads.get(), 100);
     let ArchiveConfig::S3(s3) = config.archive else {
@@ -134,6 +135,58 @@ fn every_field_is_required() {
             error.contains(field),
             "config without {field} must fail naming it, got: {error}"
         );
+    }
+}
+
+/// The example's `[metrics]` table, which `without("listen")` cannot reach
+/// alone: that drops the top-level `listen` too.
+const METRICS_TABLE: &str = "[metrics]\nlisten = \"127.0.0.1:8081\"";
+
+fn metrics_table(replacement: &str) -> String {
+    let example = example();
+    assert!(
+        example.contains(METRICS_TABLE),
+        "the example's [metrics] moved"
+    );
+    example.replace(METRICS_TABLE, replacement)
+}
+
+#[test]
+fn the_metrics_listener_is_required() {
+    for (config, missing) in [
+        (metrics_table(""), "metrics"),
+        (metrics_table("[metrics]"), "listen"),
+    ] {
+        let error = ServerConfig::from_toml(&config).unwrap_err().to_string();
+        assert!(error.contains(missing), "want {missing}, got: {error}");
+    }
+}
+
+/// The exposition answers whoever connects, so it may only be bound where
+/// nothing but this host connects, and a name is not an address that says so.
+#[test]
+fn a_metrics_listener_off_loopback_is_refused() {
+    for value in ["0.0.0.0:8081", "[::]:8081", "192.0.2.1:8081"] {
+        let error =
+            ServerConfig::from_toml(&metrics_table(&format!("[metrics]\nlisten = \"{value}\"")))
+                .unwrap_err()
+                .to_string();
+        assert!(error.contains("not a loopback address"), "{value}: {error}");
+    }
+    let error = ServerConfig::from_toml(&metrics_table("[metrics]\nlisten = \"localhost:8081\""))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("listen"), "got: {error}");
+}
+
+/// Both loopbacks, and a kernel-chosen port, which is how the suites bind.
+#[test]
+fn a_metrics_listener_on_loopback_loads() {
+    for value in ["127.0.0.1:0", "[::1]:9100"] {
+        let config =
+            ServerConfig::from_toml(&metrics_table(&format!("[metrics]\nlisten = \"{value}\"")))
+                .unwrap();
+        assert_eq!(config.metrics.listen.get().to_string(), value);
     }
 }
 
